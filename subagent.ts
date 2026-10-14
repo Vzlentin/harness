@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	assistantText,
 	effectiveRunState,
 	getRunsDir,
+	type InboxMessage,
 	inboxDir,
+	isValidRunName,
 	launchRun,
 	listRuns,
+	type RunMetadata,
 	readLatestAssistant,
 	readMetadata,
 	removeRunDir,
 	runDisplayName,
-	isValidRunName,
-	type InboxMessage,
-	type RunMetadata,
 	tmuxSessionExists,
 	updateMetadata,
 	waitForRunShutdown,
@@ -204,17 +204,19 @@ function spawnSubagent(args: string[]): void {
 }
 
 function statusSubagent(args: string[]): void {
-	if (args.length !== 1) usage();
-	const metadata = getRun(args[0]);
+	const [handle] = args;
+	if (args.length !== 1 || handle === undefined) usage();
+	const metadata = getRun(handle);
 	process.stdout.write(
 		`${runDisplayName(metadata)}: ${effectiveRunState(metadata)} (${metadata.provider}/${metadata.model}, ${metadata.thinking})\nAttach: tmux attach -t ${metadata.tmuxSession}\n`,
 	);
 }
 
 function renameSubagent(args: string[]): void {
-	if (args.length !== 2) usage();
-	const metadata = getRun(args[0]);
-	const name = normalizeRunName(args[1]);
+	const [handle, value] = args;
+	if (args.length !== 2 || handle === undefined || value === undefined) usage();
+	const metadata = getRun(handle);
+	const name = normalizeRunName(value);
 	const updated = updateMetadata(metadata.runDir, { name });
 	if (!updated) fail(`Could not rename subagent: ${metadata.handle}`);
 	process.stdout.write(`Renamed ${runDisplayName(updated)}\n`);
@@ -284,8 +286,9 @@ async function waitSubagent(args: string[]): Promise<void> {
 }
 
 async function stopSubagent(args: string[]): Promise<void> {
-	if (args.length !== 1) usage();
-	const metadata = getRun(args[0]);
+	const [handle] = args;
+	if (args.length !== 1 || handle === undefined) usage();
+	const metadata = getRun(handle);
 	const wasRunning = tmuxSessionExists(metadata.tmuxSession);
 	spawnSync("tmux", ["kill-session", "-t", metadata.tmuxSession], { stdio: "ignore" });
 	if (wasRunning) await waitForRunShutdown(metadata.runDir);

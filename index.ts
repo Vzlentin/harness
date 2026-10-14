@@ -1,19 +1,19 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext, keyHint } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text, type TUI } from "@earendil-works/pi-tui";
 import {
 	effectiveRunState,
+	type InboxMessage,
 	inboxDir,
 	launchRun,
 	listRuns,
+	type RunMetadata,
 	readMetadata,
 	removeRunDir,
 	runDisplayName,
-	type InboxMessage,
-	type RunMetadata,
 	tmuxSessionExists,
 	updateMetadata,
 	waitForRunShutdown,
@@ -69,10 +69,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				container.addChild(list);
 				container.addChild(
 					new Text(
-						theme.fg(
-							"dim",
-							`${keyHint("tui.select.confirm", "attach")}  ${keyHint("tui.select.cancel", "cancel")}`,
-						),
+						theme.fg("dim", `${keyHint("tui.select.confirm", "attach")}  ${keyHint("tui.select.cancel", "cancel")}`),
 						1,
 						0,
 					),
@@ -131,10 +128,11 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				return;
 			}
 
+			const theme = widgetContext.ui.theme;
 			const visible = activeRuns.slice(0, 5).map(({ run, state }) => {
 				const color =
 					state === "busy" ? "warning" : state === "idle" ? "success" : state === "error" ? "error" : "muted";
-				return widgetContext!.ui.theme.fg(color, `${run.name ?? run.handle}:${state}`);
+				return theme.fg(color, `${run.name ?? run.handle}:${state}`);
 			});
 			if (activeRuns.length > visible.length) {
 				visible.push(widgetContext.ui.theme.fg("muted", `+${activeRuns.length - visible.length}`));

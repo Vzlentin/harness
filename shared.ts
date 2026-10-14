@@ -4,8 +4,8 @@ import {
 	constants,
 	existsSync,
 	mkdirSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -18,10 +18,10 @@ export type RunState = "starting" | "busy" | "idle" | "exited" | "error";
 export interface RunMetadata {
 	version: 1;
 	handle: string;
-	name?: string;
-	parentSessionId?: string;
-	parentSessionFile?: string;
-	childSessionId?: string;
+	name?: string | undefined;
+	parentSessionId?: string | undefined;
+	parentSessionFile?: string | undefined;
+	childSessionId?: string | undefined;
 	tmuxSession: string;
 	runDir: string;
 	sessionFile: string;
@@ -30,14 +30,14 @@ export interface RunMetadata {
 	model: string;
 	thinking: string;
 	/** Extra pi CLI flags (tools, isolation) reused when the run is relaunched. */
-	launchArgs?: string[];
+	launchArgs?: string[] | undefined;
 	/** Set by the parent when it stops the child on quit or session switch; the child is relaunched on resume. */
-	suspended?: boolean;
+	suspended?: boolean | undefined;
 	state: RunState;
 	hasStarted: boolean;
 	createdAt: string;
 	updatedAt: string;
-	error?: string;
+	error?: string | undefined;
 }
 
 export interface InboxMessage {
@@ -86,6 +86,7 @@ export function isValidRunName(value: unknown): value is string {
 		value.length > 0 &&
 		value.length <= 64 &&
 		value.trim() === value &&
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: a name must not contain control characters.
 		!/[\u0000-\u001f\u007f]/.test(value)
 	);
 }
