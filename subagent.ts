@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { childLine, isValidRunName, request, runDisplayName, statePaths } from "./client.ts";
-
-const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+import { statePaths } from "./client.ts";
+import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -29,187 +26,89 @@ function valueAfter(args: string[], index: number, option: string): string {
 	return value;
 }
 
-function normalizeRunName(value: string): string {
-	const name = value.trim();
-	if (!isValidRunName(name)) fail("Subagent name must be a single line of 1 to 64 characters");
-	return name;
-}
-
-function checkHandle(handle: string): string {
-	if (!/^[a-z0-9]+$/.test(handle)) fail(`Invalid subagent handle: ${handle}`);
-	return handle;
-}
-
-/** `PI_SESSION_ID`, or `cli` outside Pi. */
-function caller(): string {
-	return process.env.PI_SESSION_ID || "cli";
-}
-
-/** The text of `file` as Pi gives a file argument to the model. An empty file gives nothing. */
-function fileText(file: string): string {
-	if (statSync(file).size === 0) return "";
-	return `<file name="${file}">\n${readFileSync(file, "utf8").replace(/^\uFEFF/, "")}\n</file>\n`;
-}
-
-async function spawnSubagent(args: string[]): Promise<void> {
-	let name: string | undefined;
-	let provider = process.env.PI_PROVIDER;
-	let model = process.env.PI_MODEL;
-	let thinking = process.env.PI_REASONING_LEVEL || "medium";
-	let cwd = process.cwd();
-	let tools: string | undefined;
+function spawnArgs(args: string[]): ToolArgs {
+	const spawn: ToolArgs = { action: "spawn" };
 	const prompts: string[] = [];
 	const files: string[] = [];
-
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i];
-		switch (arg) {
+	for (let i = 0; i < args.length; i += 2) {
+		const option = args[i];
+		switch (option) {
 			case "--name":
-				name = normalizeRunName(valueAfter(args, i, arg));
-				i++;
+				spawn.name = valueAfter(args, i, option);
 				break;
 			case "--provider":
-				provider = valueAfter(args, i, arg);
-				i++;
+				spawn.provider = valueAfter(args, i, option);
 				break;
 			case "--model":
-				model = valueAfter(args, i, arg);
-				i++;
+				spawn.model = valueAfter(args, i, option);
 				break;
 			case "--thinking":
-				thinking = valueAfter(args, i, arg);
-				i++;
+				spawn.thinking = valueAfter(args, i, option);
 				break;
 			case "--cwd":
-				cwd = resolve(valueAfter(args, i, arg));
-				i++;
+				spawn.cwd = valueAfter(args, i, option);
 				break;
 			case "--tools":
-				tools = valueAfter(args, i, arg);
-				i++;
+				spawn.tools = valueAfter(args, i, option).split(",");
 				break;
 			case "--prompt":
-				prompts.push(valueAfter(args, i, arg));
-				i++;
+				prompts.push(valueAfter(args, i, option));
 				break;
-			case "--file": {
-				const file = resolve(valueAfter(args, i, arg));
-				if (!existsSync(file)) fail(`File not found: ${file}`);
-				files.push(file);
-				i++;
+			case "--file":
+				files.push(valueAfter(args, i, option));
 				break;
-			}
 			default:
-				fail(`Unknown spawn argument: ${arg}`);
+				fail(`Unknown spawn argument: ${option}`);
 		}
 	}
-
-	if (!provider) fail("No provider specified and PI_PROVIDER is not set");
-	if (!model) fail("No model specified and PI_MODEL is not set");
-	if (!VALID_THINKING_LEVELS.has(thinking)) fail(`Invalid thinking level: ${thinking}`);
-	const toolNames = tools
-		?.split(",")
-		.map((tool) => tool.trim())
-		.filter((tool) => tool);
-	if (toolNames !== undefined && toolNames.length === 0) fail("--tools requires at least one tool name");
-	if (prompts.length === 0 && files.length === 0) fail("spawn requires at least one --prompt or --file");
-	if (!existsSync(cwd)) fail(`Working directory not found: ${cwd}`);
-
-	let prompt = files.map(fileText).join("");
-	if (prompts.length > 0) prompt += `Task:\n${prompts.join("\n\n")}`;
-	const child = await request(
-		{
-			type: "spawn",
-			requestId: randomUUID(),
-			caller: caller(),
-			...(name === undefined ? {} : { name }),
-			provider,
-			model,
-			thinking,
-			cwd,
-			...(toolNames === undefined ? {} : { tools: toolNames }),
-			prompt,
-		},
-		{ start: true },
-	);
-	process.stdout.write(`Spawned ${runDisplayName(child)}\nState: busy\n`);
+	return { ...spawn, prompts, files };
 }
 
-async function statusSubagent(args: string[]): Promise<void> {
-	const [handle] = args;
-	if (args.length !== 1 || handle === undefined) usage();
-	const child = await request({ type: "status", handle: checkHandle(handle) }, { start: true });
-	process.stdout.write(
-		`${runDisplayName(child)}: ${child.state} (${child.provider}/${child.model}, ${child.thinking})\n`,
-	);
-}
-
-async function renameSubagent(args: string[]): Promise<void> {
-	const [handle, value] = args;
-	if (args.length !== 2 || handle === undefined || value === undefined) usage();
-	const name = normalizeRunName(value);
-	const child = await request({ type: "rename", caller: caller(), handle: checkHandle(handle), name }, { start: true });
-	process.stdout.write(`Renamed ${runDisplayName(child)}\n`);
-}
-
-async function sendSubagent(args: string[]): Promise<void> {
-	const handle = args.shift();
+function sendArgs(args: string[]): ToolArgs {
+	const [handle, ...rest] = args;
 	if (!handle) usage();
 	let followUp = false;
 	const messageParts: string[] = [];
-	for (const arg of args) {
+	for (const arg of rest) {
 		if (arg === "--follow-up") followUp = true;
 		else if (arg.startsWith("--")) fail(`Unknown send argument: ${arg}`);
 		else messageParts.push(arg);
 	}
-	const message = messageParts.join(" ").trim();
-	if (!message) fail("send requires a message");
-	const { verb, child } = await request(
-		{
-			type: "send",
-			requestId: randomUUID(),
-			caller: caller(),
-			handle: checkHandle(handle),
-			message,
-			followUp,
-		},
-		{ start: true },
-	);
-	process.stdout.write(`${verb} ${runDisplayName(child)}\n`);
+	return { action: "send", handle, message: messageParts.join(" "), followUp };
 }
 
-function parseTimeout(args: string[]): number {
-	if (args.length === 0) return 1800;
-	if (args.length !== 2 || args[0] !== "--timeout") usage();
-	const timeout = Number(args[1]);
-	if (!Number.isInteger(timeout) || timeout <= 0) fail("--timeout must be a positive integer");
-	return timeout;
-}
-
-async function waitSubagent(args: string[]): Promise<void> {
-	const handle = args.shift();
+function waitArgs(args: string[]): ToolArgs {
+	const [handle, ...rest] = args;
 	if (!handle) usage();
-	const timeout = parseTimeout(args);
-	const { answer } = await request({ type: "wait", handle: checkHandle(handle), timeout }, { start: true });
-	process.stdout.write(`${handle} finished\n\n${answer}\n`);
+	if (rest.length === 0) return { action: "wait", handle };
+	if (rest.length !== 2 || rest[0] !== "--timeout") usage();
+	const timeout = Number(rest[1]);
+	if (!Number.isInteger(timeout) || timeout <= 0) fail("--timeout must be a positive integer");
+	return { action: "wait", handle, timeout };
 }
 
-async function stopSubagent(args: string[]): Promise<void> {
-	const [handle] = args;
-	if (args.length !== 1 || handle === undefined) usage();
-	const child = await request({ type: "stop", caller: caller(), handle: checkHandle(handle) }, { start: true });
-	process.stdout.write(`Stopped ${runDisplayName(child)}\n`);
-}
-
-async function listSubagents(args: string[]): Promise<void> {
-	if (args.length !== 0) usage();
-	const children = await request({ type: "list", caller: caller() }, { start: true });
-	if (children.length === 0) {
-		process.stdout.write("No subagents\n");
-		return;
-	}
-	for (const child of children) {
-		process.stdout.write(`${childLine(child)}\n`);
+/** The tool arguments of a CLI command. */
+function toolArgs(command: string | undefined, args: string[]): ToolArgs {
+	const [first, second] = args;
+	switch (command) {
+		case "spawn":
+			return spawnArgs(args);
+		case "send":
+			return sendArgs(args);
+		case "wait":
+			return waitArgs(args);
+		case "status":
+		case "stop":
+			if (args.length !== 1 || first === undefined) usage();
+			return { action: command, handle: first };
+		case "rename":
+			if (args.length !== 2 || first === undefined || second === undefined) usage();
+			return { action: command, handle: first, name: second };
+		case "list":
+			if (args.length !== 0) usage();
+			return { action: command };
+		default:
+			usage();
 	}
 }
 
@@ -229,37 +128,24 @@ async function hostCommand(args: string[]): Promise<void> {
 	process.exit(0);
 }
 
+/**
+ * Runs a command as a call of the `subagent` tool. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and the defaults
+ * of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
+ */
 async function main(): Promise<void> {
-	const args = process.argv.slice(2);
-	const command = args.shift();
-	switch (command) {
-		case "spawn":
-			await spawnSubagent(args);
-			break;
-		case "status":
-			await statusSubagent(args);
-			break;
-		case "rename":
-			await renameSubagent(args);
-			break;
-		case "send":
-			await sendSubagent(args);
-			break;
-		case "wait":
-			await waitSubagent(args);
-			break;
-		case "stop":
-			await stopSubagent(args);
-			break;
-		case "list":
-			await listSubagents(args);
-			break;
-		case "host":
-			await hostCommand(args);
-			break;
-		default:
-			usage();
-	}
+	const [command, ...args] = process.argv.slice(2);
+	if (command === "host") return hostCommand(args);
+	const { text } = await runTool(toolArgs(command, args), {
+		caller: process.env.PI_SESSION_ID || "cli",
+		callKey: randomUUID(),
+		provider: process.env.PI_PROVIDER,
+		model: process.env.PI_MODEL,
+		thinking: process.env.PI_REASONING_LEVEL || "medium",
+		cwd: process.cwd(),
+		send: sendToHost,
+		signal: undefined,
+	});
+	process.stdout.write(text);
 }
 
 main().catch((error: unknown) => {

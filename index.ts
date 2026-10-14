@@ -1,12 +1,37 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { childLine, request } from "./client.ts";
+import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
 
 export default function subagentExtension(pi: ExtensionAPI) {
 	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
+
+	const { parameters, output } = toolSchemas(Type);
+	pi.registerTool({
+		name: "subagent",
+		label: "Subagent",
+		description: TOOL_DESCRIPTION,
+		parameters,
+		outputSchema: output,
+		executionMode: "sequential",
+		async execute(toolCallId, args, signal, _onUpdate, ctx) {
+			const { text, data } = await runTool(args, {
+				caller: ctx.sessionManager.getSessionId(),
+				callKey: toolCallId,
+				provider: ctx.model?.provider,
+				model: ctx.model?.id,
+				thinking: pi.getThinkingLevel(),
+				cwd: ctx.cwd,
+				send: sendToHost,
+				signal,
+			});
+			return { content: [{ type: "text", text }], details: undefined, structuredContent: data };
+		},
+	});
 
 	pi.registerCommand("subagent", {
 		description: "List the subagents spawned by this session",
