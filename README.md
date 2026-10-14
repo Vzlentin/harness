@@ -11,14 +11,14 @@ Each subagent is a conversation in one durable host process. The parent can insp
 
 ## Install
 
-Clone into Pi's global extension directory and expose the CLI on `PATH`:
+Install it as a Pi package, then expose the CLI on `PATH`:
 
 ```sh
-git clone git@github.com:earendil-works/pi-subagent.git ~/.pi/agent/extensions/subagent
-ln -s ../extensions/subagent/subagent.ts ~/.pi/agent/bin/subagent
+pi install https://github.com/Vzlentin/pi-subagent
+ln -s ~/.pi/agent/git/github.com/Vzlentin/pi-subagent/subagent.ts ~/.pi/agent/bin/subagent
 ```
 
-Run `/reload` in an existing Pi session. The extension contributes its bundled skill automatically.
+Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool does not need the CLI on `PATH`; the CLI is for shells and scripts.
 
 ## Tool
 
