@@ -329,6 +329,7 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 }
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+	if (!request.cwd) throw new Error("spawn requires a working directory");
 	const { harness, place } = handler;
 	const state = await harness.snapshot(Children, context);
 	let handle = state?.requests[request.requestId];
@@ -453,7 +454,6 @@ async function childInfo(
 	const childState = await child.state(context);
 	// A closed child has no record, so it is never reported.
 	const state: ChildState = childState === "closed" ? "idle" : childState;
-	if (agent.cwd === undefined) throw new Error(`Subagent ${handle} has no working directory`);
 	return {
 		handle,
 		...(record.name === undefined ? {} : { name: record.name }),
@@ -461,7 +461,8 @@ async function childInfo(
 		provider: agent.model?.provider ?? "",
 		model: agent.model?.modelId ?? "",
 		thinking: agent.thinkingLevel,
-		cwd: agent.cwd,
+		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
+		cwd: agent.cwd ?? "",
 	};
 }
 

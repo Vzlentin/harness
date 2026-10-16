@@ -521,6 +521,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Newer")).toBe(1);
 	});
 
+	it("refuses a socket spawn without a working directory before it creates a child", async () => {
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error("no host");
+		const caller = "cli-no-cwd";
+		try {
+			const spawn = {
+				type: "spawn",
+				requestId: "spawn-no-cwd",
+				caller,
+				provider: "faux",
+				model: "faux-1",
+				thinking: "medium",
+				prompt: "Nowhere",
+			} as unknown as Parameters<typeof client.request<"spawn">>[0];
+			await expect(client.request(spawn)).rejects.toThrow("spawn requires a working directory");
+			expect(await client.request({ type: "list", caller })).toEqual([]);
+		} finally {
+			client.close();
+		}
+	});
+
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {
 		await host?.close();
 		const open = Harness.open.bind(Harness);
