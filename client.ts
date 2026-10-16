@@ -4,9 +4,11 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Op } from "@earendil-works/chord/delta";
+import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 const START_TIMEOUT_MS = 10_000;
 
@@ -20,6 +22,8 @@ export type ChildInfo = {
 	readonly provider: string;
 	readonly model: string;
 	readonly thinking: string;
+	/** The child's working directory. */
+	readonly cwd: string;
 };
 
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
@@ -49,7 +53,15 @@ export type Request =
 	| { readonly type: "status"; readonly handle: string }
 	| { readonly type: "list"; readonly caller: string }
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
-	| { readonly type: "stop"; readonly caller: string; readonly handle: string };
+	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
+	/**
+	 * The viewer's stream of the child: the reply, then one `WatchLine` after each commit to the child's conversation
+	 * and after each rename. `watch()` sends it on a connection of its own. Do not send requests on a watch connection;
+	 * the host closes the connection.
+	 */
+	| { readonly type: "watch"; readonly handle: string }
+	/** Stops the child's current turn. The viewer sends it. */
+	| { readonly type: "abort"; readonly handle: string };
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -61,7 +73,19 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
+	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo; readonly caller: string };
+	readonly abort: ChildInfo;
 };
+
+/** A line of a watch after its reply: the changes of one commit or a rename, or the end when the child was stopped. */
+export type WatchLine =
+	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
+	| { readonly stopped: true };
+
+/** The live state of a conversation view: the running turn, the streamed message and the tool slots. */
+export function liveState(view: ConversationView): LiveState | undefined {
+	return view.docs["pi.live"];
+}
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
@@ -111,6 +135,8 @@ export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
+	/** Gets the lines that no request waits for. Only `watch` sets it; otherwise such a line is dropped. */
+	#stream: { line: (line: string) => void; end: () => void } | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
 
@@ -118,7 +144,10 @@ export class Client {
 		this.#socket = socket;
 		onLines(socket, (line) => {
 			const waiter = this.#pending.shift();
-			if (waiter === undefined) return;
+			if (waiter === undefined) {
+				this.#stream?.line(line);
+				return;
+			}
 			const reply = JSON.parse(line) as Reply;
 			if (reply.ok) waiter.resolve(reply.value);
 			else waiter.reject(new Error(reply.error));
@@ -135,6 +164,28 @@ export class Client {
 		});
 	}
 
+	/**
+	 * Sends the `watch` request of `handle`. After it, the connection carries only the watch: do not send other
+	 * requests, the host closes the connection. The lines that come before `listen` wait for it.
+	 */
+	async watch(handle: string): Promise<Watch> {
+		const buffer: WatchLine[] = [];
+		let onLine: (line: WatchLine) => void = (line) => buffer.push(line);
+		let onEnd: (() => void) | undefined;
+		this.#stream = { line: (line) => onLine(JSON.parse(line) as WatchLine), end: () => onEnd?.() };
+		const reply = await this.request({ type: "watch", handle });
+		return {
+			...reply,
+			listen: (lineListener, endListener) => {
+				for (const line of buffer.splice(0)) lineListener(line);
+				onLine = lineListener;
+				if (this.#ended) endListener();
+				else onEnd = endListener;
+			},
+			close: () => this.close(),
+		};
+	}
+
 	close(): void {
 		this.#socket.end();
 	}
@@ -146,10 +197,21 @@ export class Client {
 	}
 
 	#end(reason: unknown = new Error("The subagent host closed the connection")): void {
+		if (!this.#ended) this.#stream?.end();
 		this.#ended = true;
 		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
 	}
 }
+
+/** A watch of a child on a connection of its own: the reply of the `watch` request, and the lines after it. */
+export type Watch = Replies["watch"] & {
+	/**
+	 * Calls `onLine` with each line after the reply, the lines that came before this call first, and `onEnd` once when
+	 * the connection closes. Call it once.
+	 */
+	listen(onLine: (line: WatchLine) => void, onEnd: () => void): void;
+	close(): void;
+};
 
 /**
  * A connection to the host after its `hello`. When no host listens and `start` is true, it starts one, detached, with its
@@ -180,6 +242,18 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 		}
 		client.pid = hello.pid;
 		return client;
+	} catch (error) {
+		client.close();
+		throw error;
+	}
+}
+
+/** Watches the child `handle` on a new connection. It starts the host as `connect` does. */
+export async function watch(handle: string): Promise<Watch> {
+	const client = await connect({ start: true });
+	if (client === undefined) throw new Error("Could not connect to the subagent host");
+	try {
+		return await client.watch(handle);
 	} catch (error) {
 		client.close();
 		throw error;

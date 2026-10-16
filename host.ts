@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
@@ -24,6 +25,7 @@ import {
 	type ConversationId,
 	configure,
 	createRegistry,
+	type DocumentWatch,
 	defineDoc,
 	defineExtension,
 	defineTask,
@@ -39,11 +41,13 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
 	type ChildInfo,
 	type ChildState,
+	liveState,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Reply,
 	type Request,
+	type WatchLine,
 } from "./client.ts";
 import { subagentTool } from "./durable.ts";
 
@@ -71,8 +75,10 @@ type ChildRecord = {
 	lastRequest: string;
 };
 
+type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
+
 /** The children by handle, and the handle of each spawn request ID. */
-const Children = defineDoc<{ children: Record<string, ChildRecord>; requests: Record<string, string> }>({
+const Children = defineDoc<ChildrenState>({
 	kind: "subagent.children",
 	version: 1,
 	scope: "session",
@@ -184,13 +190,24 @@ export async function runHost(options: {
 		const abort = new AbortController();
 		aborts.add(abort);
 		let queue = Promise.resolve();
+		// After a watch, the connection carries only the watch.
+		let watching = false;
 		onLines(socket, (line) => {
 			queue = queue.then(async () => {
+				if (watching) {
+					socket.destroy();
+					return;
+				}
 				let reply: Reply;
 				try {
 					const request = JSON.parse(line) as Request;
 					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
 						lastActivity = Date.now();
+					}
+					if (request.type === "watch") {
+						watching = true;
+						await serveWatch(harness, request.handle, socket);
+						return;
 					}
 					reply = { ok: true, value: await handle(request, abort.signal) };
 				} catch (error) {
@@ -275,6 +292,8 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return waitChild(request, handler);
 		case "status":
 			return childInfo(handler.harness, request.handle);
+		case "abort":
+			return abortChild(request, handler);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -404,6 +423,12 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 	return { answer: text.join("\n").trim() };
 }
 
+async function abortChild(request: Extract<Request, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
+	const conversation = await childConversation(handler.harness, await childRecord(handler.harness, request.handle));
+	await conversation.abort(context);
+	return childInfo(handler.harness, request.handle);
+}
+
 /** The depth of a child of `caller`: 1 for a caller that is not a child, and one more for each child above it. */
 function depthOf(caller: string, children: Readonly<Record<string, ChildRecord>>): number {
 	let depth = 1;
@@ -419,7 +444,7 @@ function depthOf(caller: string, children: Readonly<Record<string, ChildRecord>>
 
 async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
 	const state = await harness.snapshot(Children, context);
-	const record = state !== undefined && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
+	const record = recordOf(state, handle);
 	if (record === undefined) throw new Error(`Unknown subagent: ${handle}`);
 	return record;
 }
@@ -484,7 +509,12 @@ async function childInfo(harness: Harness, handle: string, record?: ChildRecord)
 	const agent = await conversation.agent(context);
 	let state: ChildState = "idle";
 	if (await isBusy(harness, record)) state = "busy";
-	else if ((await lastSettlement(harness, record))?.status === "unanswered") state = "error";
+	else {
+		const settled = await lastSettlement(harness, record);
+		// An aborted turn leaves the child idle.
+		if (settled?.status === "unanswered" && settled.reason !== "aborted") state = "error";
+	}
+	if (agent.cwd === undefined) throw new Error(`Subagent ${handle} has no working directory`);
 	return {
 		handle,
 		...(record.name === undefined ? {} : { name: record.name }),
@@ -492,7 +522,79 @@ async function childInfo(harness: Harness, handle: string, record?: ChildRecord)
 		provider: agent.model?.provider ?? "",
 		model: agent.model?.modelId ?? "",
 		thinking: agent.thinkingLevel,
+		cwd: agent.cwd,
 	};
+}
+
+/**
+ * Serves a watch of `handle` on the connection `socket`: the reply, with the view and the child, then one `WatchLine`
+ * after each commit to the child's conversation, and after each rename. It waits for a slow socket to drain, so
+ * pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the socket
+ * closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a
+ * `stopped` line; when the conversation watch ends for another reason, the connection ends.
+ */
+async function serveWatch(harness: Harness, handle: string, socket: Socket): Promise<void> {
+	const write = (line: Reply | WatchLine) => socket.write(`${JSON.stringify(line)}\n`);
+	let children: DocumentWatch<ChildrenState> | undefined;
+	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
+	let last: ChildInfo;
+	let caller: string;
+	try {
+		// The `Children` watch opens first, so it gets each later rename and stop of the child.
+		children = await harness.watchDoc(Children, context);
+		const record = recordOf(children?.value, handle);
+		if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+		last = await childInfo(harness, handle, record);
+		caller = record.caller;
+		watch = await (await childConversation(harness, record)).watch(context);
+	} catch (error) {
+		void children?.stop();
+		void watch?.stop();
+		if (!socket.destroyed) write({ ok: false, error: error instanceof Error ? error.message : String(error) });
+		return;
+	}
+	const conversation = watch;
+	// A socket that closed before the reply never emits `close` again.
+	if (socket.destroyed) {
+		void children.stop();
+		void conversation.stop();
+		return;
+	}
+	write({ ok: true, value: { view: conversation.value, child: last, caller } });
+	socket.once("close", () => {
+		void children.stop();
+		void conversation.stop();
+	});
+	void conversation.closed.then(() => {
+		if (!socket.writableEnded) socket.end();
+	});
+	children.start(async (state) => {
+		if (socket.writableEnded || socket.destroyed) return;
+		const record = recordOf(state, handle);
+		if (record === undefined) {
+			write({ stopped: true });
+			socket.end();
+		} else if (record.name !== undefined && record.name !== last.name) {
+			last = { ...last, name: record.name };
+			write({ ops: [], child: last });
+		}
+	});
+	conversation.start(async (view, ops) => {
+		const busy = liveState(view)?.run !== undefined;
+		// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
+		if (busy !== (last.state === "busy")) {
+			const info = await childInfo(harness, handle).catch(() => undefined);
+			if (info === undefined) return;
+			last = info;
+		}
+		if (socket.writableEnded || socket.destroyed) return;
+		if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
+	});
+}
+
+/** The record of `handle` in the `Children` value `state`. */
+function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
+	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
 }
 
 /**

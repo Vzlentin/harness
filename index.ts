@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { childLine, request } from "./client.ts";
+import { openViewerTab } from "./herdr.ts";
 import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
@@ -34,14 +35,25 @@ export default function subagentExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("subagent", {
-		description: "List the subagents spawned by this session",
+		description: "Open the viewer of a subagent spawned by this session",
 		handler: async (_args, ctx) => {
 			const children = await request({ type: "list", caller: ctx.sessionManager.getSessionId() }, { start: true });
 			if (children.length === 0) {
 				ctx.ui.notify("No subagents spawned by this session", "info");
 				return;
 			}
-			ctx.ui.notify(children.map(childLine).join("\n"), "info");
+			const lines = children.map(childLine);
+			const chosen = await ctx.ui.select("Attach to subagent", lines);
+			const child = chosen === undefined ? undefined : children[lines.indexOf(chosen)];
+			if (child === undefined) return;
+			const command = `subagent attach ${child.handle}`;
+			if (!process.env.HERDR_ENV) {
+				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
+				return;
+			}
+			if (!(await openViewerTab(child, process.env))) {
+				ctx.ui.notify(`Could not open a Herdr tab. Run in another terminal: ${command}`, "error");
+			}
 		},
 	});
 
