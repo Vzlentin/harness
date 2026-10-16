@@ -185,6 +185,31 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("keeps the name and the state of a renamed child on its watch lines", async () => {
+		gates.set("Task:\nFail", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Fail"]));
+		await until(() => called("Task:\nFail") === 1);
+		const client = await hostClient();
+		const watched = await client.watch(handle);
+		const lines: WatchLine[] = [];
+		void collect(watched.lines, lines);
+		try {
+			expect(watched.child.state).toBe("busy");
+			expect((await cli(["rename", handle, "busy name"])).code).toBe(0);
+			await until(() => lines.some((line) => !line.stopped && line.child.name === "busy name"));
+			expect(lines.find((line) => !line.stopped && line.child.name === "busy name")).toMatchObject({
+				child: { state: "busy" },
+			});
+			gates.get("Task:\nFail")?.resolve();
+			await until(() =>
+				lines.some((line) => !line.stopped && line.child.state === "error" && line.child.name === "busy name"),
+			);
+			expect((await client.request({ type: "status", handle })).state).toBe("error");
+		} finally {
+			client.close();
+		}
+	});
+
 	it("keeps watching after a watch connection closes during setup", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed watch"]));
 		await cli(["wait", handle]);

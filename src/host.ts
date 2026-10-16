@@ -7,6 +7,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
@@ -35,7 +36,6 @@ import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
-	liveState,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -453,7 +453,7 @@ async function childInfo(
 	const child = await childOf(handler, record);
 	const agent = await child.conversation.agent(context);
 	const childState = await child.state(context);
-	// A closed child has no record, so it is never reported.
+	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
 	const state: ChildState = childState === "closed" ? "idle" : childState;
 	return {
 		handle,
@@ -492,15 +492,15 @@ async function serveWatch(
 	};
 	let children: DocumentWatch<ChildrenState> | undefined;
 	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
+	let record: ChildRecord;
 	let last: ChildInfo;
-	let caller: string;
 	try {
 		// The `Children` watch opens first, so it gets each later rename and stop of the child.
 		children = await harness.watchDoc(Children, watchContext);
-		const record = recordOf(children?.value, handle);
-		if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+		const found = recordOf(children?.value, handle);
+		if (children === undefined || found === undefined) throw new Error(`Unknown subagent: ${handle}`);
+		record = found;
 		last = await childInfo(handler, handle, record);
-		caller = record.caller;
 		conversation = await (await childOf(handler, record)).conversation.watch(watchContext);
 	} catch (error) {
 		watching.abort();
@@ -512,30 +512,33 @@ async function serveWatch(
 		// Only microtasks run between the last `await` above and this call, so a socket close cannot abort the signal
 		// before the watches start.
 		void conversation.closed.then(end);
+		// pi-durable runs the callbacks of one watch in order, but not those of two watches. Both watches write through
+		// this one chain, so a line never has older info than the line before it.
+		let queue: Promise<void> = Promise.resolve();
+		const send = (ops: readonly Op[]) => {
+			queue = queue.then(async () => {
+				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
+				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
+				const child = await childInfo(handler, handle, record).catch(() => undefined);
+				if (child === undefined || !socket.writable) return;
+				if (!write({ ops, child })) await once(socket, "drain").catch(() => {});
+			});
+			return queue;
+		};
 		childrenWatch.start(async (state) => {
 			if (!socket.writable) return;
-			const record = recordOf(state, handle);
-			if (record === undefined) {
+			const next = recordOf(state, handle);
+			if (next === undefined) {
 				write({ stopped: true });
 				end();
-			} else if (record.name !== undefined && record.name !== last.name) {
-				last = { ...last, name: record.name };
-				write({ ops: [], child: last });
+			} else if (next.name !== record.name) {
+				record = next;
+				await send([]);
 			}
 		});
-		conversation.start(async (view, ops) => {
-			const busy = liveState(view)?.run !== undefined;
-			// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
-			if (busy !== (last.state === "busy")) {
-				const info = await childInfo(handler, handle).catch(() => undefined);
-				if (info === undefined) return;
-				last = info;
-			}
-			if (!socket.writable) return;
-			if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
-		});
+		conversation.start((_view, ops) => send(ops));
 	});
-	return { view: conversation.value, child: last, caller };
+	return { view: conversation.value, child: last, caller: record.caller };
 }
 
 /** The record of `handle` in the `Children` value `state`. */
