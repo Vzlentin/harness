@@ -24,7 +24,7 @@ import {
 	handleOf,
 	models,
 	piContext,
-	piTool,
+	piExtension,
 	requests,
 	root,
 	setUp,
@@ -170,13 +170,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// A Pi session that trusts its project for itself only is told what its child misses.
 		const sessionOnly = piContext("faux-1", { cwd: project, trusted: true });
 		const spawn = { action: "spawn", prompts: ["Session trust"] };
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
+		expect((await callPi(piExtension().tool, sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
 
 		// Once `/trust` saves the decision, the next request loads the project skill, and the session is told nothing.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Trusted context"]))]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
+		expect((await callPi(piExtension().tool, sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
@@ -320,7 +320,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("runs the Pi tool with the caller's session, model and thinking level", async () => {
-		const tool = piTool("low");
+		const tool = piExtension("low").tool;
 		const ctx = piContext("faux-2");
 		const spawned = await callPi(tool, ctx, { action: "spawn", name: "pi", prompts: ["From Pi"] });
 		const handle = (spawned.data as { value: { handle: string } }).value.handle;
@@ -353,7 +353,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("stops a Pi tool wait on abort and leaves the child busy", async () => {
-		const tool = piTool("medium");
+		const tool = piExtension().tool;
 		const ctx = piContext("faux-1");
 		gates.set("Task:\nPi gated", Promise.withResolvers());
 		const spawned = await callPi(tool, ctx, { action: "spawn", prompts: ["Pi gated"] });

@@ -3,13 +3,12 @@ import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, watch } from "../src/client.ts";
 import type { Host } from "../src/host.ts";
-import subagentExtension from "../src/pi-extension.ts";
 import type { Request, WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import {
@@ -20,7 +19,7 @@ import {
 	gates,
 	handleOf,
 	piContext,
-	piTool,
+	piExtension,
 	root,
 	setUp,
 	startHost,
@@ -46,21 +45,6 @@ function textsOf(view: ConversationView | undefined): string[] {
 /** The `--seq` of a logged `herdr` call. */
 function seqOf(line: string | undefined): number {
 	return Number(/--seq (\d+)/.exec(line ?? "")?.[1]);
-}
-
-/** The `/subagent` command that the Pi extension registers. */
-function piCommand(): Omit<RegisteredCommand, "name" | "sourceInfo"> {
-	const commands: Omit<RegisteredCommand, "name" | "sourceInfo">[] = [];
-	const pi = {
-		on: () => {},
-		registerCommand: (_name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => commands.push(command),
-		registerTool: () => {},
-		getThinkingLevel: () => "medium",
-	};
-	subagentExtension(pi as unknown as ExtensionAPI);
-	const [command] = commands;
-	if (command === undefined) throw new Error("no command");
-	return command;
 }
 
 /** A terminal that keeps what the TUI writes and gives it typed input. */
@@ -321,7 +305,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("opens a child from /subagent in a Herdr tab, or shows the command", async () => {
 		const herdr = await fakeHerdr();
-		const tool = piTool("medium");
+		const { tool, command } = piExtension();
 		const spawned = await callPi(tool, piContext("faux-1"), { action: "spawn", name: "tabbed", prompts: ["Tab me"] });
 		const handle = (spawned.data as { value: { handle: string } }).value.handle;
 		const notes: string[] = [];
@@ -332,7 +316,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 				notify: (message: string) => notes.push(message),
 			},
 		} as unknown as ExtensionCommandContext;
-		const command = piCommand();
 		const saved = process.env;
 		try {
 			process.env = { ...herdr.env, HERDR_ENV: "1" };
