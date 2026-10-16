@@ -30,7 +30,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type Answer, type Child, createChildren, type Place, type Spec } from "./children.ts";
+import { type Answer, type Child, createChildren, type Owner, type Place, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
@@ -112,11 +112,12 @@ export async function runHost(options: {
 	const envs = new Map<ConversationId, NodeExecutionEnv>();
 	let harness: Harness;
 	let place: Place;
+	let owner: Owner;
 	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
-		send: (request, signal) => handleRequest(request, { harness, place, signal }),
+		send: (request, signal) => handleRequest(request, { harness, place, owner, signal }),
 	});
 	const selected = [ChildContext, tool, ...entries.extensions];
 	try {
@@ -168,11 +169,13 @@ export async function runHost(options: {
 			return registry.snapshot();
 		},
 	};
+	// The host's children outlive every request: each has an anchor task in the root conversation.
+	owner = { kind: "detached", root: await harness.root(context) };
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
 	let lastActivity = Date.now();
-	const handle = (request: Request, signal: AbortSignal) => handleRequest(request, { harness, place, signal });
+	const handle = (request: Request, signal: AbortSignal) => handleRequest(request, { harness, place, owner, signal });
 
 	const server = createServer((socket) => {
 		connections.add(socket);
@@ -195,7 +198,7 @@ export async function runHost(options: {
 					}
 					if (request.type === "watch") {
 						watching = true;
-						await serveWatch({ harness, place }, request.handle, socket);
+						await serveWatch({ harness, place, owner }, request.handle, socket);
 						return;
 					}
 					reply = { ok: true, value: await handle(request, abort.signal) };
@@ -261,6 +264,7 @@ type Handler = {
 	readonly harness: Harness;
 	/** The host's store, models and tools, for the children library. */
 	readonly place: Place;
+	readonly owner: Owner;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
 };
@@ -300,12 +304,19 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 		}
 		case "stop": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
-			await (await childOf(handler, record)).close(context);
+			// Stopping a child stops the children it spawned, and removes them all.
+			const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
 			await handler.harness.commit(async (tx) => {
 				const state = await tx.doc(Children);
-				delete state.children[request.handle];
+				const removed = new Set(
+					Object.keys(state.children).filter((handle) => {
+						const child = state.children[handle];
+						return child !== undefined && closed.has(String(child.conversationId));
+					}),
+				);
+				for (const handle of removed) delete state.children[handle];
 				for (const [requestId, handle] of Object.entries(state.requests)) {
-					if (handle === request.handle) delete state.requests[requestId];
+					if (removed.has(handle)) delete state.requests[requestId];
 				}
 			}, context);
 			return { handle: request.handle, ...(record.name === undefined ? {} : { name: record.name }) };
@@ -330,9 +341,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			cwd: request.cwd,
 			...(request.tools === undefined ? {} : { tools: request.tools }),
 		};
-		const owner = { kind: "detached", root: await harness.root(context) } as const;
 		// The record is written in the commit that creates the child.
-		await library.open(place, owner, `sub:${request.requestId}`, spec, context, async (tx, id) => {
+		await library.open(place, handler.owner, `sub:${request.requestId}`, spec, context, async (tx, id) => {
 			const current = await tx.doc(Children);
 			let fresh = randomBytes(3).toString("hex");
 			while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
@@ -387,9 +397,9 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 		throw error;
 	}
 	// A cut answer still gives its text.
-	if (answer.status === "ok" || answer.reason === "cut") return { answer: answer.text };
-	if (answer.why === "pending") throw new Error(`${request.handle} stopped with queued messages after a failed turn`);
-	throw new Error(failureText(request.handle, answer.why, answer.detail));
+	if (answer.status === "ok" || answer.reason !== "unanswered") return { answer: answer.text };
+	if (answer.cause === "queued") throw new Error(`${request.handle} stopped with queued messages after a failed turn`);
+	throw new Error(failureText(request.handle, answer.cause, answer.detail));
 }
 
 async function abortChild(request: Extract<Request, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
@@ -412,8 +422,8 @@ async function ownRecord(harness: Harness, handle: string, caller: string): Prom
 	return record;
 }
 
-async function childOf(handler: Pick<Handler, "place">, record: ChildRecord): Promise<Child> {
-	const child = await library.find(handler.place, { id: String(record.conversationId) }, context);
+async function childOf(handler: Pick<Handler, "place" | "owner">, record: ChildRecord): Promise<Child> {
+	const child = await library.find(handler.place, handler.owner, { id: String(record.conversationId) }, context);
 	if (child === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
 	return child;
 }
@@ -431,7 +441,7 @@ function failureText(handle: string, reason: string, detail: unknown): string {
 
 /** The info of `handle`. A caller that already has the record gives it as `record`. */
 async function childInfo(
-	handler: Pick<Handler, "harness" | "place">,
+	handler: Pick<Handler, "harness" | "place" | "owner">,
 	handle: string,
 	record?: ChildRecord,
 ): Promise<ChildInfo> {
@@ -460,7 +470,11 @@ async function childInfo(
  * closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a
  * `stopped` line; when the conversation watch ends for another reason, the connection ends.
  */
-async function serveWatch(handler: Pick<Handler, "harness" | "place">, handle: string, socket: Socket): Promise<void> {
+async function serveWatch(
+	handler: Pick<Handler, "harness" | "place" | "owner">,
+	handle: string,
+	socket: Socket,
+): Promise<void> {
 	const { harness } = handler;
 	const write = (line: Reply | WatchLine) => socket.write(`${JSON.stringify(line)}\n`);
 	let children: DocumentWatch<ChildrenState> | undefined;

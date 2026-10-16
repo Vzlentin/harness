@@ -96,8 +96,8 @@ subagent attach a1b2c3
 
 - `status` prints `<name> (<handle>): <state> (<provider>/<model>, <thinking>)`. The state is `busy`, `idle`, or `error` when the last turn failed. After an abort from the viewer, the state is `idle`.
 - `send` prints `Prompted`, `Steered`, or `Queued follow-up for`, then the child. A steer goes in after the current tool round. A follow-up starts after the current answer.
-- `wait` waits until the child is idle, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the last answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
-- `stop` stops the child's work and removes it.
+- `wait` waits until the child answers its last message, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
+- `stop` stops the work of the child and of the children it spawned, and removes them.
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
@@ -133,7 +133,7 @@ The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/st
 - `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 2. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
 - `host.log`: the host's output.
 
-A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child permanently.
+A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child and the children it spawned permanently.
 
 A child's system prompt has what a Pi session in the child's working directory gets: the `AGENTS.md` or `CLAUDE.md` of the agent directory and of the working directory and its parents, the skills, and the working directory. User skills always load. Project skills (`.pi/skills`, and `.agents/skills` in the working directory and its parents) load only for a trusted project: a directory without project resources, then the decision saved with `/trust`, then the `defaultProjectTrust` setting, where `ask` counts as not trusted. A trust decision that a Pi session made for itself without saving it does not reach its children; when the tool spawns in such a session, it adds `The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.` to its output. The host checks the trust on every model request, so a decision saved later applies from the next request. The host reads the instructions and skills of a directory once per trust decision and keeps them until it exits. It skips packages that are not installed. When the instructions or skills of a directory fail to load, the child gets none for that request, the host writes a warning, and the next request tries again.
 
@@ -142,5 +142,4 @@ A child's system prompt has what a Pi session in the child's working directory g
 - Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
-- `stop` removes only the named child. The children that it spawned stay in the store, and no caller can reach them.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

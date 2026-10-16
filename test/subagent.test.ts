@@ -272,6 +272,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["list"])).stdout).not.toContain("nested");
 	});
 
+	it("stops the children that a child spawned with it", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
+		const nested = /Spawned nested \(([a-z0-9]+)\)/.exec((await cli(["wait", handle])).stdout)?.[1] ?? "";
+		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested})`);
+		expect((await cli(["stop", handle])).stdout).toBe(`Stopped ${handle}\n`);
+		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
+	});
+
 	it("lets a child spawn a child with the tool, but not a third level", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
 		const { stdout } = await cli(["wait", handle]);
