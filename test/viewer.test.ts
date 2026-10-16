@@ -1,5 +1,7 @@
+import { once } from "node:events";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
@@ -9,7 +11,7 @@ import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect } from "../src/client.ts";
 import type { Host } from "../src/host.ts";
-import type { Request, WatchLine } from "../src/protocol.ts";
+import { type Request, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import {
 	CLI,
@@ -180,6 +182,30 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed"));
 		} finally {
 			client.close();
+		}
+	});
+
+	it("keeps watching after a watch connection closes during setup", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closed watch"]));
+		await cli(["wait", handle]);
+		const stderr = vi.spyOn(process.stderr, "write");
+		try {
+			const socket = createConnection(statePaths().socket);
+			socket.write(`${JSON.stringify({ type: "watch", handle })}\n`, () => socket.destroy());
+			await once(socket, "close");
+			const client = await hostClient();
+			const watched = await client.watch(handle);
+			const lines: WatchLine[] = [];
+			void collect(watched.lines, lines);
+			try {
+				expect((await cli(["rename", handle, "renamed after close"])).code).toBe(0);
+				await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed after close"));
+			} finally {
+				client.close();
+			}
+			expect(stderr.mock.calls.filter(([text]) => String(text).includes("warning:"))).toEqual([]);
+		} finally {
+			stderr.mockRestore();
 		}
 	});
 

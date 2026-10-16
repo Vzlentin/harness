@@ -471,58 +471,53 @@ async function childInfo(
  * Opens a watch of `handle` on `connection` and returns the reply, with the view and the child. After the reply, each
  * commit to the child's conversation and each rename gives one `{ event: WatchLine }` line. It waits for a slow socket
  * to drain, so pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the
- * socket closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer
- * gets a `stopped` event and the connection ends; when the conversation watch ends for another reason, the connection
- * ends.
+ * socket closes, when setup fails, or when the connection ends; a wait for `drain` then stays on the closed socket and
+ * goes with it. When the child stops, the viewer gets a `stopped` event and the connection ends; when the conversation
+ * watch ends for another reason, the connection ends.
  */
 async function serveWatch(
-	handler: Pick<Handler, "harness" | "place" | "owner">,
+	handler: Pick<Handler, "harness" | "place" | "owner" | "signal">,
 	handle: string,
 	connection: Connection,
 ): Promise<Replies["watch"]> {
 	const { harness } = handler;
 	const { socket } = connection;
 	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
+	// pi-durable stops both watches when `signal` aborts: on socket close, or when `watching` aborts.
+	const watching = new AbortController();
+	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
+	const end = () => {
+		watching.abort();
+		if (socket.writable) socket.end();
+	};
 	let children: DocumentWatch<ChildrenState> | undefined;
-	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
+	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
 	let last: ChildInfo;
 	let caller: string;
 	try {
 		// The `Children` watch opens first, so it gets each later rename and stop of the child.
-		children = await harness.watchDoc(Children, context);
+		children = await harness.watchDoc(Children, watchContext);
 		const record = recordOf(children?.value, handle);
 		if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
 		last = await childInfo(handler, handle, record);
 		caller = record.caller;
-		watch = await (await childOf(handler, record)).conversation.watch(context);
+		conversation = await (await childOf(handler, record)).conversation.watch(watchContext);
 	} catch (error) {
-		void children?.stop();
-		void watch?.stop();
+		watching.abort();
 		throw error;
 	}
 	const childrenWatch = children;
-	const conversation = watch;
 	// pi-durable delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
 	connection.afterReply(() => {
-		// A socket that closed before the reply never emits `close` again.
-		if (socket.destroyed) {
-			void childrenWatch.stop();
-			void conversation.stop();
-			return;
-		}
-		socket.once("close", () => {
-			void childrenWatch.stop();
-			void conversation.stop();
-		});
-		void conversation.closed.then(() => {
-			if (!socket.writableEnded) socket.end();
-		});
+		// Only microtasks run between the last `await` above and this call, so a socket close cannot abort the signal
+		// before the watches start.
+		void conversation.closed.then(end);
 		childrenWatch.start(async (state) => {
-			if (socket.writableEnded || socket.destroyed) return;
+			if (!socket.writable) return;
 			const record = recordOf(state, handle);
 			if (record === undefined) {
 				write({ stopped: true });
-				socket.end();
+				end();
 			} else if (record.name !== undefined && record.name !== last.name) {
 				last = { ...last, name: record.name };
 				write({ ops: [], child: last });
@@ -536,7 +531,7 @@ async function serveWatch(
 				if (info === undefined) return;
 				last = info;
 			}
-			if (socket.writableEnded || socket.destroyed) return;
+			if (!socket.writable) return;
 			if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
 		});
 	});
