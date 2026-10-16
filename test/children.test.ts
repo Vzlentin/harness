@@ -147,5 +147,10 @@ describe("children library", { timeout: 30_000 }, () => {
 		await child.close(context);
 		expect(await child.settled(context, "r2")).toMatchObject({ status: "failed", reason: "unanswered" });
 		expect(called("Queued")).toBe(0);
+		await expect(child.send({ type: "input", content: "Revived", requestId: "r3" }, context)).rejects.toThrow(
+			`The child ${child.id} is closed`,
+		);
+		expect(await child.state(context)).toBe("closed");
+		expect(called("Revived")).toBe(0);
 	});
 });

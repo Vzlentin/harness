@@ -108,8 +108,8 @@ export type Child = {
 	/** The child's conversation, for what the library does not cover: its agent, a watch, an abort of its turn. */
 	readonly conversation: Conversation;
 	/**
-	 * Admits `input` and returns. A request ID admitted before is not admitted again. A new request ID becomes the last
-	 * request before the submit, so a crash between the two still finds it.
+	 * Admits `input` and returns. A request ID admitted before is not admitted again, and a closed child refuses input.
+	 * A new request ID becomes the last request before the submit, so a crash between the two still finds it.
 	 */
 	send(input: Input, context: Context): Promise<void>;
 	/**
@@ -290,8 +290,10 @@ export function createChildren(durable: typeof Durable): Children {
 			conversation,
 			async send(input, context) {
 				await place.store.commit(async (tx) => {
+					const doc = await tx.doc(ChildDoc, id);
+					if (doc.closed) throw new Error(`The child ${id} is closed`);
 					if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
-					(await tx.doc(ChildDoc, id)).lastRequest = input.requestId;
+					doc.lastRequest = input.requestId;
 					return undefined;
 				}, context);
 				await conversation.submit(input, context);
