@@ -1,15 +1,17 @@
+import { once } from "node:events";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, request, watch } from "../src/client.ts";
+import { Client, connect, request } from "../src/client.ts";
 import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import type { Request, WatchLine } from "../src/protocol.ts";
+import { type Request, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
 
@@ -25,6 +27,18 @@ function textsOf(view: ConversationView | undefined): string[] {
 		const message = entry.model?.[0];
 		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
 	});
+}
+
+/** Pushes each event of `lines` to `into`, until the connection closes. */
+async function collect(lines: AsyncIterable<WatchLine>, into: WatchLine[]): Promise<void> {
+	for await (const line of lines) into.push(line);
+}
+
+/** A client of the running host. */
+async function hostClient(): Promise<Client> {
+	const client = await connect({ start: false });
+	if (client === undefined) throw new Error("no host");
+	return client;
 }
 
 /** The `--seq` of a logged `herdr` call. */
@@ -73,13 +87,20 @@ class FakeTerminal implements Terminal {
 	}
 }
 
-/** A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab. */
-async function fakeHerdr(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+/**
+ * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab.
+ * With `failTabCreate`, `tab create` writes that text to stderr and exits with 1.
+ */
+async function fakeHerdr(failTabCreate?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
+	const tabCreate =
+		failTabCreate === undefined
+			? `echo '{"result":{"root_pane":{"pane_id":"p1"}}}'`
+			: `echo '${failTabCreate}' >&2; exit 1`;
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-if [ "$1 $2" = "tab create" ]; then echo '{"result":{"root_pane":{"pane_id":"p1"}}}'; fi
+if [ "$1 $2" = "tab create" ]; then ${tabCreate}; fi
 `;
 	await writeFile(join(bin, "herdr"), script);
 	await chmod(join(bin, "herdr"), 0o755);
@@ -107,12 +128,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.set("Task:\nWatched", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watched"]));
 		await until(() => called("Task:\nWatched") === 1);
-		const first = await watch(handle);
+		const client = await hostClient();
+		const first = await client.watch(handle);
 		const lines: WatchLine[] = [];
-		first.listen(
-			(line) => lines.push(line),
-			() => {},
-		);
+		void collect(first.lines, lines);
 		try {
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
@@ -131,41 +150,98 @@ describe("subagent", { timeout: 30_000 }, () => {
 				second?.close();
 			}
 		} finally {
-			first.close();
+			client.close();
 		}
 	});
 
 	it("sends a watch line when the child is renamed", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
 		await cli(["wait", handle]);
-		const watched = await watch(handle);
+		const client = await hostClient();
+		const watched = await client.watch(handle);
 		const lines: WatchLine[] = [];
-		watched.listen(
-			(line) => lines.push(line),
-			() => {},
-		);
+		void collect(watched.lines, lines);
 		try {
 			expect(watched.child.state).toBe("idle");
 			expect((await cli(["rename", handle, "renamed"])).code).toBe(0);
 			await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed"));
 		} finally {
-			watched.close();
+			client.close();
 		}
 	});
 
-	it("closes a watch connection that gets another request", async () => {
+	it("keeps the name and the state of a renamed child on its watch lines", async () => {
+		gates.set("Task:\nFail", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Fail"]));
+		await until(() => called("Task:\nFail") === 1);
+		const client = await hostClient();
+		const watched = await client.watch(handle);
+		const lines: WatchLine[] = [];
+		void collect(watched.lines, lines);
+		try {
+			expect(watched.child.state).toBe("busy");
+			expect((await cli(["rename", handle, "busy name"])).code).toBe(0);
+			await until(() => lines.some((line) => !line.stopped && line.child.name === "busy name"));
+			expect(lines.find((line) => !line.stopped && line.child.name === "busy name")).toMatchObject({
+				child: { state: "busy" },
+			});
+			gates.get("Task:\nFail")?.resolve();
+			await until(() =>
+				lines.some((line) => !line.stopped && line.child.state === "error" && line.child.name === "busy name"),
+			);
+			expect((await client.request({ type: "status", handle })).state).toBe("error");
+		} finally {
+			client.close();
+		}
+	});
+
+	it("keeps watching after a watch connection closes during setup", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closed watch"]));
+		await cli(["wait", handle]);
+		const stderr = vi.spyOn(process.stderr, "write");
+		try {
+			const socket = createConnection(statePaths().socket);
+			socket.write(`${JSON.stringify({ type: "watch", handle })}\n`, () => socket.destroy());
+			await once(socket, "close");
+			const client = await hostClient();
+			const watched = await client.watch(handle);
+			const lines: WatchLine[] = [];
+			void collect(watched.lines, lines);
+			try {
+				expect((await cli(["rename", handle, "renamed after close"])).code).toBe(0);
+				await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed after close"));
+			} finally {
+				client.close();
+			}
+			expect(stderr.mock.calls.filter(([text]) => String(text).includes("warning:"))).toEqual([]);
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+
+	it("answers requests on a watch connection, between the watch events", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Idle"]));
 		await cli(["wait", handle]);
-		const watcher = await connect({ start: false });
-		if (watcher === undefined) throw new Error("no host");
+		const client = await hostClient();
 		try {
-			// The child is idle, so no watch line comes before the close.
-			expect((await watcher.request({ type: "watch", handle })).child.state).toBe("idle");
-			await expect(watcher.request({ type: "status", handle })).rejects.toThrow(
-				"The harness host closed the connection",
-			);
+			const watched = await client.watch(handle);
+			expect(watched.child.state).toBe("idle");
+			const lines: WatchLine[] = [];
+			void collect(watched.lines, lines);
+			const sent = await client.request({
+				type: "input",
+				requestId: "watch-connection-send",
+				handle,
+				message: "On the watch connection",
+				followUp: false,
+			});
+			expect(sent.verb).toBe("Prompted");
+			const busy = () => lines.findIndex((line) => !line.stopped && line.child.state === "busy");
+			await until(() => busy() !== -1);
+			await until(() => lines.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"));
+			expect((await client.request({ type: "status", handle })).state).toBe("idle");
 		} finally {
-			watcher.close();
+			client.close();
 		}
 	});
 
@@ -203,7 +279,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const requests = vi.spyOn(Client.prototype, "request");
 		const sent = () =>
 			requests.mock.calls.flatMap(([sentRequest]) =>
-				sentRequest.type === "send" || sentRequest.type === "abort" ? [sentRequest as Request] : [],
+				sentRequest.type === "input" || sentRequest.type === "abort" ? [sentRequest as Request] : [],
 			);
 		const terminal = new FakeTerminal();
 		const env = { ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-7" };
@@ -231,11 +307,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await until(() => sent().length === 4);
 			gates.get("Busy turn")?.resolve();
 			await until(() => terminal.text().includes("Answer to Then this"));
-			expect(sent().map((r) => (r.type === "send" ? [r.message, r.followUp, r.caller] : r.type))).toEqual([
-				["Hello there", false, "cli"],
-				["Busy turn", false, "cli"],
-				["Steer it", false, "cli"],
-				["Then this", true, "cli"],
+			expect(sent().map((r) => (r.type === "input" ? [r.message, r.followUp] : r.type))).toEqual([
+				["Hello there", false],
+				["Busy turn", false],
+				["Steer it", false],
+				["Then this", true],
 			]);
 			expect(called("Steer it")).toBe(1);
 
@@ -264,7 +340,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		const reports = logLines(herdr.log);
-		const resume = `-- harness attach ${handle}`;
+		const resume = `-- env ${process.execPath} ${CLI} attach ${handle}`;
 		expect(reports[0]).toBe(
 			`pane report-agent --source custom:harness --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
 		);
@@ -293,11 +369,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));
 		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
 		const child = children.find((found) => found.handle === handle);
-		if (child === undefined) return;
+		if (child === undefined) throw new Error("no child");
 		const state = herdr.env.XDG_STATE_HOME;
 		expect(state).toBeTruthy();
-		const run = `pane run p1 '${process.execPath}' '${CLI}' attach ${handle}`;
-		expect(await openViewerTab(child, herdr.env)).toBe(true);
+		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' 'attach' '${handle}'`;
+		await openViewerTab(child, herdr.env);
 		expect(logLines(herdr.log)).toEqual([
 			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state}`,
 			run,
@@ -305,7 +381,18 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// Without XDG_STATE_HOME, the tab finds the host under HOME, as this process does.
 		const env = { ...herdr.env };
 		delete env.XDG_STATE_HOME;
-		expect(await openViewerTab(child, env)).toBe(true);
+		await openViewerTab(child, env);
 		expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${child.cwd} --label tabbed --focus`, run]);
+	});
+
+	it("rejects with the herdr error when it cannot open a Herdr tab", async () => {
+		const herdr = await fakeHerdr("no such session");
+		const handle = handleOf(await cli(["spawn", "--name", "untabbed", "--prompt", "No tab"]));
+		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
+		const child = children.find((found) => found.handle === handle);
+		if (child === undefined) throw new Error("no child");
+		await expect(openViewerTab(child, herdr.env)).rejects.toThrow("no such session");
+		expect(logLines(herdr.log)).toHaveLength(1);
+		expect(logLines(herdr.log)[0]).toMatch(/^tab create /);
 	});
 });

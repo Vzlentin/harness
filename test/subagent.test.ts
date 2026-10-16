@@ -9,7 +9,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request, watch } from "../src/client.ts";
+import { connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { subagentTool } from "../src/tool.ts";
@@ -242,11 +242,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// The viewer may send to the child of any caller.
-		const watcher = await watch(handle);
-		watcher.close();
-		expect(watcher.caller).toBe("other-session");
-		const caller = watcher.caller;
-		const viewer = { type: "send", requestId: "viewer-send", caller, handle, message: "From viewer" } as const;
+		const viewer = { type: "input", requestId: "viewer-input", handle, message: "From viewer" } as const;
 		const sent = await request({ ...viewer, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From viewer\n`);
@@ -457,6 +453,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Once")).toBe(1);
 		expect(called("Twice?")).toBe(1);
 		expect(called("Newer")).toBe(1);
+	});
+
+	it("refuses a socket spawn without a working directory before it creates a child", async () => {
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error("no host");
+		const caller = "cli-no-cwd";
+		try {
+			const spawn = {
+				type: "spawn",
+				requestId: "spawn-no-cwd",
+				caller,
+				provider: "faux",
+				model: "faux-1",
+				thinking: "medium",
+				prompt: "Nowhere",
+			} as unknown as Parameters<typeof client.request<"spawn">>[0];
+			await expect(client.request(spawn)).rejects.toThrow("spawn requires a working directory");
+			expect(await client.request({ type: "list", caller })).toEqual([]);
+		} finally {
+			client.close();
+		}
 	});
 
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {

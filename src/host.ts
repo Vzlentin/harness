@@ -7,6 +7,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
@@ -35,7 +36,6 @@ import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
-	liveState,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -177,37 +177,31 @@ export async function runHost(options: {
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
 	let lastActivity = Date.now();
-	const handle = (request: Request, signal: AbortSignal) => handleRequest(request, { harness, place, owner, signal });
 
 	const server = createServer((socket) => {
 		connections.add(socket);
 		const abort = new AbortController();
 		aborts.add(abort);
 		let queue = Promise.resolve();
-		// After a watch, the connection carries only the watch.
-		let watching = false;
 		onLines(socket, (line) => {
 			queue = queue.then(async () => {
-				if (watching) {
-					socket.destroy();
-					return;
-				}
 				let reply: Reply;
+				let start: (() => void) | undefined;
+				const connection = { socket, afterReply: (afterReply: () => void) => (start = afterReply) };
 				try {
 					const request = JSON.parse(line) as Request;
 					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
 						lastActivity = Date.now();
 					}
-					if (request.type === "watch") {
-						watching = true;
-						await serveWatch({ harness, place, owner }, request.handle, socket);
-						return;
-					}
-					reply = { ok: true, value: await handle(request, abort.signal) };
+					reply = {
+						ok: true,
+						value: await handleRequest(request, { harness, place, owner, signal: abort.signal, connection }),
+					};
 				} catch (error) {
 					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
 				}
-				if (!socket.destroyed) socket.write(`${JSON.stringify(reply)}\n`);
+				if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`);
+				start?.();
 			});
 		});
 		socket.on("error", () => socket.destroy());
@@ -269,7 +263,11 @@ type Handler = {
 	readonly owner: Owner;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
+	/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
+	readonly connection?: Connection;
 };
+
+type Connection = { readonly socket: Socket; afterReply(start: () => void): void };
 
 function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
@@ -282,13 +280,18 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send":
-			return sendChild(request, handler);
+			return sendChild(request, handler, await ownRecord(handler.harness, request.handle, request.caller));
+		case "input":
+			return sendChild(request, handler, await childRecord(handler.harness, request.handle));
 		case "wait":
 			return waitChild(request, handler);
 		case "status":
 			return childInfo(handler, request.handle);
 		case "abort":
 			return abortChild(request, handler);
+		case "watch":
+			if (handler.connection === undefined) throw new Error("A watch needs a connection");
+			return serveWatch(handler, request.handle, handler.connection);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -329,6 +332,7 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 }
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+	if (!request.cwd) throw new Error("spawn requires a working directory");
 	const { harness, place } = handler;
 	const state = await harness.snapshot(Children, context);
 	let handle = state?.requests[request.requestId];
@@ -369,10 +373,10 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 }
 
 async function sendChild(
-	request: Extract<Request, { type: "send" }>,
+	request: Extract<Request, { type: "send" | "input" }>,
 	handler: Handler,
+	record: ChildRecord,
 ): Promise<{ verb: string; child: ChildInfo }> {
-	const record = await ownRecord(handler.harness, request.handle, request.caller);
 	const child = await childOf(handler, record);
 	const busy = (await child.state(context)) === "busy";
 	await child.send(
@@ -451,9 +455,8 @@ async function childInfo(
 	const child = await childOf(handler, record);
 	const agent = await child.conversation.agent(context);
 	const childState = await child.state(context);
-	// A closed child has no record, so it is never reported.
+	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
 	const state: ChildState = childState === "closed" ? "idle" : childState;
-	if (agent.cwd === undefined) throw new Error(`Subagent ${handle} has no working directory`);
 	return {
 		handle,
 		...(record.name === undefined ? {} : { name: record.name }),
@@ -461,79 +464,83 @@ async function childInfo(
 		provider: agent.model?.provider ?? "",
 		model: agent.model?.modelId ?? "",
 		thinking: agent.thinkingLevel,
-		cwd: agent.cwd,
+		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
+		cwd: agent.cwd ?? "",
 	};
 }
 
 /**
- * Serves a watch of `handle` on the connection `socket`: the reply, with the view and the child, then one `WatchLine`
- * after each commit to the child's conversation, and after each rename. It waits for a slow socket to drain, so
- * pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the socket
- * closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a
- * `stopped` line; when the conversation watch ends for another reason, the connection ends.
+ * Opens a watch of `handle` on `connection` and returns the reply, with the view and the child. After the reply, each
+ * commit to the child's conversation and each rename gives one `{ event: WatchLine }` line. It waits for a slow socket
+ * to drain, so pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the
+ * socket closes, when setup fails, or when the connection ends; a wait for `drain` then stays on the closed socket and
+ * goes with it. When the child stops, the viewer gets a `stopped` event and the connection ends; when the conversation
+ * watch ends for another reason, the connection ends.
  */
 async function serveWatch(
-	handler: Pick<Handler, "harness" | "place" | "owner">,
+	handler: Pick<Handler, "harness" | "place" | "owner" | "signal">,
 	handle: string,
-	socket: Socket,
-): Promise<void> {
+	connection: Connection,
+): Promise<Replies["watch"]> {
 	const { harness } = handler;
-	const write = (line: Reply | WatchLine) => socket.write(`${JSON.stringify(line)}\n`);
+	const { socket } = connection;
+	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
+	// pi-durable stops both watches when `signal` aborts: on socket close, or when `watching` aborts.
+	const watching = new AbortController();
+	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
+	const end = () => {
+		watching.abort();
+		if (socket.writable) socket.end();
+	};
 	let children: DocumentWatch<ChildrenState> | undefined;
-	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
+	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
+	let record: ChildRecord;
 	let last: ChildInfo;
-	let caller: string;
 	try {
 		// The `Children` watch opens first, so it gets each later rename and stop of the child.
-		children = await harness.watchDoc(Children, context);
-		const record = recordOf(children?.value, handle);
-		if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+		children = await harness.watchDoc(Children, watchContext);
+		const found = recordOf(children?.value, handle);
+		if (children === undefined || found === undefined) throw new Error(`Unknown subagent: ${handle}`);
+		record = found;
 		last = await childInfo(handler, handle, record);
-		caller = record.caller;
-		watch = await (await childOf(handler, record)).conversation.watch(context);
+		conversation = await (await childOf(handler, record)).conversation.watch(watchContext);
 	} catch (error) {
-		void children?.stop();
-		void watch?.stop();
-		if (!socket.destroyed) write({ ok: false, error: error instanceof Error ? error.message : String(error) });
-		return;
+		watching.abort();
+		throw error;
 	}
-	const conversation = watch;
-	// A socket that closed before the reply never emits `close` again.
-	if (socket.destroyed) {
-		void children.stop();
-		void conversation.stop();
-		return;
-	}
-	write({ ok: true, value: { view: conversation.value, child: last, caller } });
-	socket.once("close", () => {
-		void children.stop();
-		void conversation.stop();
+	const childrenWatch = children;
+	// pi-durable delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
+	connection.afterReply(() => {
+		// Only microtasks run between the last `await` above and this call, so a socket close cannot abort the signal
+		// before the watches start.
+		void conversation.closed.then(end);
+		// pi-durable runs the callbacks of one watch in order, but not those of two watches. Both watches write through
+		// this one chain, so a line never has older info than the line before it.
+		let queue: Promise<void> = Promise.resolve();
+		const send = (ops: readonly Op[]) => {
+			queue = queue.then(async () => {
+				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
+				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
+				const child = await childInfo(handler, handle, record).catch(() => undefined);
+				if (child === undefined || !socket.writable) return;
+				if (!write({ ops, child })) await once(socket, "drain").catch(() => {});
+			});
+			return queue;
+		};
+		childrenWatch.start(async (state) => {
+			if (!socket.writable) return;
+			const next = recordOf(state, handle);
+			if (next === undefined) {
+				write({ stopped: true });
+				end();
+			} else if (next.name !== record.name) {
+				record = next;
+				await send([]);
+			}
+		});
+		conversation.start((_view, ops) => send(ops));
 	});
-	void conversation.closed.then(() => {
-		if (!socket.writableEnded) socket.end();
-	});
-	children.start(async (state) => {
-		if (socket.writableEnded || socket.destroyed) return;
-		const record = recordOf(state, handle);
-		if (record === undefined) {
-			write({ stopped: true });
-			socket.end();
-		} else if (record.name !== undefined && record.name !== last.name) {
-			last = { ...last, name: record.name };
-			write({ ops: [], child: last });
-		}
-	});
-	conversation.start(async (view, ops) => {
-		const busy = liveState(view)?.run !== undefined;
-		// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
-		if (busy !== (last.state === "busy")) {
-			const info = await childInfo(handler, handle).catch(() => undefined);
-			if (info === undefined) return;
-			last = info;
-		}
-		if (socket.writableEnded || socket.destroyed) return;
-		if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
-	});
+	return { view: conversation.value, child: last };
 }
 
 /** The record of `handle` in the `Children` value `state`. */
