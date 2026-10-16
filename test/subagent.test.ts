@@ -9,10 +9,11 @@ import * as durable from "@earendil-works/pi-durable";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request, watch } from "../client.ts";
-import subagentEntry, { subagentTool } from "../durable.ts";
-import type { Host } from "../host.ts";
-import { SESSION_TRUST_HINT } from "../index.ts";
+import { connect, request, watch } from "../src/client.ts";
+import subagentEntry from "../src/durable-entry.ts";
+import type { Host } from "../src/host.ts";
+import { SESSION_TRUST_HINT } from "../src/pi-extension.ts";
+import { subagentTool } from "../src/tool.ts";
 import {
 	CLI,
 	called,

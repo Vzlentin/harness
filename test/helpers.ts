@@ -12,11 +12,11 @@ import {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { statePaths } from "../client.ts";
-import { type Host, runHost } from "../host.ts";
-import subagentExtension from "../index.ts";
+import { type Host, runHost } from "../src/host.ts";
+import subagentExtension from "../src/pi-extension.ts";
+import { statePaths } from "../src/protocol.ts";
 
-export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "subagent.ts");
+export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
 export let root: string;
 

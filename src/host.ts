@@ -37,6 +37,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
@@ -47,12 +48,11 @@ import {
 	type Reply,
 	type Request,
 	type WatchLine,
-} from "./client.ts";
-import { ChildContext } from "./context.ts";
-import { subagentTool } from "./durable.ts";
+} from "./protocol.ts";
+import { subagentTool } from "./tool.ts";
 
 /** The root of this package, whose `piDurable` entry the host does not load. */
-const PACKAGE_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
+const PACKAGE_DIR = realpathSync(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;

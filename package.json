@@ -8,16 +8,16 @@
 	],
 	"type": "module",
 	"bin": {
-		"subagent": "./subagent.ts"
+		"subagent": "./src/cli.ts"
 	},
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./src/pi-extension.ts"
 		]
 	},
 	"piDurable": {
 		"extensions": [
-			"./durable.ts"
+			"./src/durable-entry.ts"
 		]
 	},
 	"engines": {

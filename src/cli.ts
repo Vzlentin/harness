@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { statePaths } from "./client.ts";
+import { statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {

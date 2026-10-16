@@ -1,8 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import type { Context } from "@earendil-works/chord/context";
 import type * as Ai from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
-import { childLine, isValidRunName, type Replies, type Request, request, runDisplayName } from "./client.ts";
+import type * as Durable from "@earendil-works/pi-durable";
+import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
+import { request } from "./client.ts";
+import { childLine, isValidRunName, type Replies, type Request, runDisplayName } from "./protocol.ts";
 
 const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -206,4 +210,42 @@ function normalizeRunName(value: string): string {
 function checkHandle(handle: string): string {
 	if (!/^[a-z0-9]+$/.test(handle)) throw new Error(`Invalid subagent handle: ${handle}`);
 	return handle;
+}
+
+/** How a host reaches the subagent host. */
+export type DurableScope = {
+	/** The caller that owns the children of the calling conversation. */
+	caller(api: ToolExecutionApi, context: Context): Promise<string>;
+	readonly send: Send;
+};
+
+/**
+ * The pi-durable extension with the `subagent` tool. A call that runs again after a restart has the same task, so its
+ * spawn or send has the same request ID and does not repeat.
+ */
+export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: DurableScope): Extension {
+	const { parameters, output } = toolSchemas(ai.Type);
+	const tool = durable.defineTool({
+		name: "subagent",
+		description: TOOL_DESCRIPTION,
+		parameters,
+		structuredOutputSchema: output,
+		replay: "safe",
+		executionMode: "sequential",
+		async execute(args, api, context) {
+			const agent = await api.agent(context);
+			const { text, data } = await runTool(args, {
+				caller: await scope.caller(api, context),
+				callKey: String(api.taskId),
+				provider: agent.model?.provider,
+				model: agent.model?.modelId,
+				thinking: agent.thinkingLevel,
+				cwd: agent.cwd,
+				send: scope.send,
+				signal: context.abortSignal,
+			});
+			return { output: [{ type: "text", text }], structuredOutput: data };
+		},
+	});
+	return durable.defineExtension({ name: "pi-subagent", tools: [tool] });
 }

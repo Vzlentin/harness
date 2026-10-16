@@ -15,7 +15,7 @@ Install it as a Pi package, then expose the CLI on `PATH`:
 
 ```sh
 pi install https://github.com/Vzlentin/pi-subagent
-ln -s ~/.pi/agent/git/github.com/Vzlentin/pi-subagent/subagent.ts ~/.local/bin/subagent
+ln -s ~/.pi/agent/git/github.com/Vzlentin/pi-subagent/src/cli.ts ~/.local/bin/subagent
 ```
 
 Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool does not need the CLI on `PATH`; the CLI is for shells and scripts.
@@ -42,7 +42,7 @@ A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` 
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
 - In Pi, the caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `subagent list` in that session show the tool's children.
-- In a pi-durable host, the `piDurable` entry `durable.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
+- In a pi-durable host, the `piDurable` entry `src/durable-entry.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
 
@@ -103,7 +103,7 @@ subagent attach a1b2c3
 
 The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller.
 
-Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `subagent.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
+Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `src/cli.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
 
 ## Viewer
 

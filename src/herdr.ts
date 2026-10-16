@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { ChildInfo } from "./client.ts";
+import type { ChildInfo } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:pi-subagent";
 
@@ -16,7 +16,7 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
 
 /** Opens a Herdr tab that runs the viewer of `child`. It resolves with false when a `herdr` call fails. */
 export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<boolean> {
-	// The tab must find the same host as `statePaths()` in client.ts.
+	// The tab must find the same host as `statePaths()` in protocol.ts.
 	const state = env.XDG_STATE_HOME;
 	const created = await herdr(
 		[
@@ -38,8 +38,8 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 		return false;
 	}
 	if (typeof pane !== "string") return false;
-	// The tab's shell may not have the CLI on PATH, so run this package's subagent.ts with this Node.
-	const viewer = `${[process.execPath, fileURLToPath(new URL("./subagent.ts", import.meta.url))]
+	// The tab's shell may not have the CLI on PATH, so run this package's cli.ts with this Node.
+	const viewer = `${[process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url))]
 		.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
 		.join(" ")} attach ${child.handle}`;
 	return (await herdr(["pane", "run", pane, viewer], env)) !== undefined;

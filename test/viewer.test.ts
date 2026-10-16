@@ -7,10 +7,11 @@ import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, type Request, type WatchLine, watch } from "../client.ts";
-import type { Host } from "../host.ts";
-import subagentExtension from "../index.ts";
-import { attach } from "../viewer.ts";
+import { Client, connect, watch } from "../src/client.ts";
+import type { Host } from "../src/host.ts";
+import subagentExtension from "../src/pi-extension.ts";
+import type { Request, WatchLine } from "../src/protocol.ts";
+import { attach } from "../src/viewer.ts";
 import {
 	CLI,
 	called,

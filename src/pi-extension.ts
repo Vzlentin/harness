@@ -2,9 +2,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { childLine, request } from "./client.ts";
+import { request } from "./client.ts";
 import { savedTrust } from "./context.ts";
 import { openViewerTab } from "./herdr.ts";
+import { childLine } from "./protocol.ts";
 import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
@@ -13,7 +14,7 @@ export const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
 export default function subagentExtension(pi: ExtensionAPI) {
-	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
+	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "..", "skills")] }));
 
 	const { parameters, output } = toolSchemas(Type);
 	pi.registerTool({

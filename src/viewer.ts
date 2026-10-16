@@ -18,17 +18,9 @@ import {
 	Text,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import {
-	type ChildInfo,
-	type Client,
-	connect,
-	liveState,
-	runDisplayName,
-	type Watch,
-	type WatchLine,
-	watch,
-} from "./client.ts";
+import { type Client, connect, type Watch, watch } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
+import { type ChildInfo, liveState, runDisplayName, type WatchLine } from "./protocol.ts";
 
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
 
