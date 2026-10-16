@@ -1,8 +1,16 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { ChildInfo } from "./protocol.ts";
+import { type ChildInfo, childLabel } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:pi-subagent";
+
+/**
+ * The words of the command that runs the viewer of `handle`, with this Node and this package's cli.ts, so it does not
+ * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
+ */
+export function viewerCommand(handle: string): string[] {
+	return ["env", process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "attach", handle];
+}
 
 /**
  * Runs `herdr` with `args` and gives its output. It is undefined when `herdr` fails: a failing call never stops the
@@ -25,7 +33,7 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 			"--cwd",
 			child.cwd,
 			"--label",
-			child.name ?? child.handle,
+			childLabel(child),
 			"--focus",
 			...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
 		],
@@ -38,10 +46,9 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 		return false;
 	}
 	if (typeof pane !== "string") return false;
-	// The tab's shell may not have the CLI on PATH, so run this package's cli.ts with this Node.
-	const viewer = `${[process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url))]
-		.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
-		.join(" ")} attach ${child.handle}`;
+	const viewer = viewerCommand(child.handle)
+		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
+		.join(" ");
 	return (await herdr(["pane", "run", pane, viewer], env)) !== undefined;
 }
 
@@ -69,7 +76,7 @@ export function agentReporter(
 			const state = busy ? "working" : "idle";
 			if (state === reported) return;
 			reported = state;
-			call("report-agent", ["--state", state], ["--", "subagent", "attach", handle]);
+			call("report-agent", ["--state", state], ["--", ...viewerCommand(handle)]);
 		},
 		async release() {
 			call("release-agent", [], []);

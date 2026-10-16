@@ -20,7 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { type Client, connect, type Watch, watch } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
-import { type ChildInfo, liveState, runDisplayName, type WatchLine } from "./protocol.ts";
+import { type ChildInfo, childLabel, liveState, runDisplayName, type WatchLine } from "./protocol.ts";
 
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
 
@@ -90,7 +90,7 @@ class Viewer {
 		this.tui.addChild(this.editor);
 		this.tui.setFocus(this.editor);
 		this.partial = new AssistantMessageComponent(undefined, false, this.markdown);
-		this.reporter = agentReporter(options.env, this.child.name ?? this.child.handle, handle);
+		this.reporter = agentReporter(options.env, childLabel(this.child), handle);
 		const { promise, resolve } = Promise.withResolvers<number>();
 		this.exited = promise;
 		this.#exit = resolve;

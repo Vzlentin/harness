@@ -102,6 +102,11 @@ export function isValidRunName(value: unknown): value is string {
 	);
 }
 
+/** The label of a child: its name, or its handle when it has no name. */
+export function childLabel(child: { readonly handle: string; readonly name?: string | undefined }): string {
+	return child.name ?? child.handle;
+}
+
 export function runDisplayName(metadata: { readonly handle: string; readonly name?: string | undefined }): string {
 	return metadata.name ? `${metadata.name} (${metadata.handle})` : metadata.handle;
 }

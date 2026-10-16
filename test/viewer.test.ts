@@ -279,7 +279,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		const reports = logLines(herdr.log);
-		const resume = `-- subagent attach ${handle}`;
+		const resume = `-- env ${process.execPath} ${CLI} attach ${handle}`;
 		expect(reports[0]).toBe(
 			`pane report-agent --source custom:pi-subagent --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
 		);
@@ -321,7 +321,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env = { ...herdr.env, HERDR_ENV: "1" };
 			const state = process.env.XDG_STATE_HOME;
 			expect(state).toBeTruthy();
-			const run = `pane run p1 '${process.execPath}' '${CLI}' attach ${handle}`;
+			const run = `pane run p1 'env' '${process.execPath}' '${CLI}' 'attach' '${handle}'`;
 			await command.handler("", ctx);
 			expect(logLines(herdr.log)).toEqual([
 				`tab create --cwd ${root} --label tabbed --focus --env XDG_STATE_HOME=${state}`,

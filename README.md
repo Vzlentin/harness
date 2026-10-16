@@ -18,7 +18,7 @@ pi install https://github.com/Vzlentin/pi-subagent
 ln -s ~/.pi/agent/git/github.com/Vzlentin/pi-subagent/src/cli.ts ~/.local/bin/subagent
 ```
 
-Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool does not need the CLI on `PATH`; the CLI is for shells and scripts.
+Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool, the Herdr viewer tab, and the Herdr resume command do not need the CLI on `PATH`; the CLI is for shells and scripts.
 
 ## Tool
 
@@ -103,7 +103,7 @@ subagent attach a1b2c3
 
 The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller.
 
-Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `src/cli.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
+Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs `env <node> <pkg>/src/cli.ts attach <handle>`: the viewer with this Node and this package's `src/cli.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
 
 ## Viewer
 
@@ -120,7 +120,7 @@ The viewer shows the user messages, the assistant text and thinking, and one lin
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
-In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:pi-subagent --agent <name or handle> --state working|idle --seq <n> <pane> -- subagent attach <handle>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer. Herdr runs the resume command in a shell, so the `subagent` CLI must be on that shell's `PATH` (see [Install](#install)).
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:pi-subagent --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <pkg>/src/cli.ts attach <handle>`. The resume command is the same command that the `/subagent` tab runs. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
 
 ## Host
 
