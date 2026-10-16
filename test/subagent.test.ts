@@ -593,25 +593,17 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a store from before the children library", async () => {
-		const stateDir = join(root, "old-state");
-		await mkdir(stateDir);
-		const store = join(stateDir, "durable.sqlite");
-		const OldChildren = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
-			kind: "subagent.children",
-			version: 1,
-			scope: "session",
-			initial: () => ({ children: {}, requests: {} }),
-		});
-		const old = await Harness.open(
-			await openNodeSqliteStorage(store),
-			{ models, registry: durable.createRegistry() },
-			BACKGROUND_CONTEXT,
+		const stateDir = await childrenStore("old-state", 1);
+		await expect(runHost({ stateDir, models })).rejects.toThrow(
+			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
-		await old.commit(async (tx) => {
-			(await tx.doc(OldChildren)).requests.old = "abcdef";
-		}, BACKGROUND_CONTEXT);
-		await old.close(BACKGROUND_CONTEXT);
-		await expect(runHost({ stateDir, models })).rejects.toThrow(`${store} was written by an older pi-subagent`);
+	});
+
+	it("does not take a store from a newer pi-subagent for an old one", async () => {
+		const stateDir = await childrenStore("new-state", 3);
+		const refusal = runHost({ stateDir, models });
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
+		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
 	it("starts one host for two clients", async () => {
@@ -656,3 +648,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 });
+
+/** A state directory whose store has a `subagent.children` document at `version`, as another pi-subagent writes it. */
+async function childrenStore(name: string, version: number): Promise<string> {
+	const stateDir = join(root, name);
+	await mkdir(stateDir);
+	const Children = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
+		kind: "subagent.children",
+		version,
+		scope: "session",
+		initial: () => ({ children: {}, requests: {} }),
+	});
+	const store = await Harness.open(
+		await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+		{ models, registry: durable.createRegistry() },
+		BACKGROUND_CONTEXT,
+	);
+	await store.commit(async (tx) => {
+		(await tx.doc(Children)).requests.other = "abcdef";
+	}, BACKGROUND_CONTEXT);
+	await store.close(BACKGROUND_CONTEXT);
+	return stateDir;
+}

@@ -149,9 +149,11 @@ export async function runHost(options: {
 			context,
 		);
 		// A store from before the children library would mix children that it does not know with those it does.
+		// pi-durable refuses a stored version below the definition's with this message; any other error is not an old store.
 		await harness.snapshot(Children, context).catch(async (error: unknown) => {
 			await harness.close(context);
 			const message = error instanceof Error ? error.message : String(error);
+			if (!message.includes("(subagent.children) requires migration from version")) throw error;
 			throw new Error(
 				`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent (${message}). Stop the host, remove the file and run the command again.`,
 			);
