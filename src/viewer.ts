@@ -20,7 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { type Client, connect } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
-import { type ChildInfo, childLabel, liveState, type Replies, runDisplayName, type WatchLine } from "./protocol.ts";
+import { type ChildInfo, childLabel, liveState, runDisplayName, type WatchLine } from "./protocol.ts";
 
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
 
@@ -39,41 +39,38 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 		client.close();
 		throw error;
 	}
-	const viewer = new Viewer(handle, options, client, watched);
-	viewer.tui.start();
-	viewer.render();
-	viewer.reporter.report(viewer.child.state === "busy");
-	void viewer.follow(watched.lines);
-	return viewer.exited;
+	return new Viewer(handle, options, client, watched).start();
 }
 
 /** The terminal screen of one attached child, and the state that its handlers share. */
 class Viewer {
-	readonly tui: TuiMainScreen;
-	readonly transcript = new Container();
-	readonly notice = new Text("", 1, 0);
-	readonly status = new Text("", 1, 0);
-	readonly editor: Editor;
-	readonly components = new Map<EntryRecord["id"], Component>();
-	readonly partial: AssistantMessageComponent;
-	readonly markdown: ReturnType<typeof getMarkdownTheme>;
-	readonly muted: (text: string) => string;
-	readonly reporter: ReturnType<typeof agentReporter>;
-	readonly exited: Promise<number>;
+	private readonly tui: TuiMainScreen;
+	private readonly transcript = new Container();
+	private readonly notice = new Text("", 1, 0);
+	private readonly status = new Text("", 1, 0);
+	private readonly editor: Editor;
+	private readonly components = new Map<EntryRecord["id"], Component>();
+	private readonly partial: AssistantMessageComponent;
+	private readonly markdown: ReturnType<typeof getMarkdownTheme>;
+	private readonly muted: (text: string) => string;
+	private readonly reporter: ReturnType<typeof agentReporter>;
+	private readonly exited: Promise<number>;
 	readonly #exit: (code: number) => void;
-	readonly handle: string;
-	readonly terminal: Terminal;
-	readonly client: Client;
-	view: ConversationView;
-	child: ChildInfo;
-	done = false;
+	private readonly handle: string;
+	private readonly terminal: Terminal;
+	private readonly client: Client;
+	private view: ConversationView;
+	private readonly lines: AsyncIterable<WatchLine>;
+	private child: ChildInfo;
+	private done = false;
 
-	constructor(handle: string, options: AttachOptions, client: Client, watched: Replies["watch"]) {
+	constructor(handle: string, options: AttachOptions, client: Client, watched: Awaited<ReturnType<Client["watch"]>>) {
 		this.handle = handle;
 		this.terminal = options.terminal;
 		this.client = client;
 		this.view = watched.view;
 		this.child = watched.child;
+		this.lines = watched.lines;
 
 		initTheme();
 		this.markdown = getMarkdownTheme();
@@ -95,9 +92,18 @@ class Viewer {
 		this.tui.addInputListener((data) => this.handleKey(data));
 	}
 
-	render(): void {
+	/** Starts the terminal and the watch, and resolves with the exit code. */
+	start(): Promise<number> {
+		this.tui.start();
+		this.render();
+		this.reporter.report(this.child.state === "busy");
+		void this.follow(this.lines);
+		return this.exited;
+	}
+
+	private render(): void {
 		this.transcript.clear();
-		for (const component of transcriptOf(this.view, this.components, this.partial, this.markdown, this.muted)) {
+		for (const component of this.transcriptOf()) {
 			this.transcript.addChild(component);
 		}
 		const child = this.child;
@@ -107,7 +113,7 @@ class Viewer {
 		this.tui.requestRender();
 	}
 
-	handleKey(data: string): { consume: true } | undefined {
+	private handleKey(data: string): { consume: true } | undefined {
 		if (matchesKey(data, "ctrl+c")) {
 			void this.finish(0);
 			return { consume: true };
@@ -128,7 +134,7 @@ class Viewer {
 		return undefined;
 	}
 
-	send(message: string, followUp: boolean): void {
+	private send(message: string, followUp: boolean): void {
 		if (message.trim() === "") return;
 		this.editor.addToHistory(message);
 		const request = {
@@ -142,12 +148,12 @@ class Viewer {
 	}
 
 	/** Shows each event of the watch, and finishes when the connection closes. */
-	async follow(lines: AsyncIterable<WatchLine>): Promise<void> {
+	private async follow(lines: AsyncIterable<WatchLine>): Promise<void> {
 		for await (const line of lines) this.onLine(line);
 		await this.finish(1, "The subagent host closed the connection");
 	}
 
-	onLine(line: WatchLine): void {
+	private onLine(line: WatchLine): void {
 		if (this.done) return;
 		if (line.stopped) {
 			void this.finish(0, `${runDisplayName(this.child)} was stopped`);
@@ -159,7 +165,7 @@ class Viewer {
 		this.reporter.report(this.child.state === "busy");
 	}
 
-	async finish(code: number, message?: string): Promise<void> {
+	private async finish(code: number, message?: string): Promise<void> {
 		if (this.done) return;
 		this.done = true;
 		this.tui.stop();
@@ -169,69 +175,58 @@ class Viewer {
 		this.#exit(code);
 	}
 
-	readonly showError = (error: unknown): void => {
+	private readonly showError = (error: unknown): void => {
 		this.notice.setText(`Error: ${error instanceof Error ? error.message : String(error)}`);
 		this.tui.requestRender();
 	};
-}
 
-/** The components of the transcript: each user and assistant message, one line for each tool call, and the partial. */
-function transcriptOf(
-	view: ConversationView,
-	components: Map<EntryRecord["id"], Component>,
-	partial: AssistantMessageComponent,
-	markdown: ReturnType<typeof getMarkdownTheme>,
-	muted: (text: string) => string,
-): Component[] {
-	const live = liveState(view);
-	const results = new Map<string, string>();
-	for (const entry of view.entries) {
-		const message = entry.model?.[0];
-		if (entry.kind === "pi.tool-result" && message?.role === "toolResult") {
-			results.set(message.toolCallId, message.isError ? "error" : "done");
+	/** The components of the transcript: each user and assistant message, one line for each tool call, and the partial. */
+	private transcriptOf(): Component[] {
+		const live = liveState(this.view);
+		const results = new Map<string, string>();
+		for (const entry of this.view.entries) {
+			const message = entry.model?.[0];
+			if (entry.kind === "pi.tool-result" && message?.role === "toolResult") {
+				results.set(message.toolCallId, message.isError ? "error" : "done");
+			}
 		}
+		const toolLines = (message: AssistantMessage) =>
+			message.content.flatMap((part) => {
+				if (part.type !== "toolCall") return [];
+				const state = results.get(part.id) ?? live?.tools?.find((slot) => slot.callId === part.id)?.status ?? "pending";
+				return [new Text(this.muted(`${part.name}  ${state}`), 1, 0)];
+			});
+		const shown: Component[] = [];
+		for (const entry of this.view.entries) {
+			const message = entry.model?.[0];
+			if (message === undefined) continue;
+			const component = this.componentOf(entry, message);
+			if (component !== undefined) shown.push(component);
+			if (message.role === "assistant") shown.push(...toolLines(message));
+		}
+		const streaming = live?.generation?.message;
+		if (streaming !== undefined) {
+			this.partial.updateContent(streaming, true);
+			shown.push(this.partial, ...toolLines(streaming));
+		}
+		return shown;
 	}
-	const toolLines = (message: AssistantMessage) =>
-		message.content.flatMap((part) => {
-			if (part.type !== "toolCall") return [];
-			const state = results.get(part.id) ?? live?.tools?.find((slot) => slot.callId === part.id)?.status ?? "pending";
-			return [new Text(muted(`${part.name}  ${state}`), 1, 0)];
-		});
-	const shown: Component[] = [];
-	for (const entry of view.entries) {
-		const message = entry.model?.[0];
-		if (message === undefined) continue;
-		const component = componentOf(entry, message, components, markdown);
-		if (component !== undefined) shown.push(component);
-		if (message.role === "assistant") shown.push(...toolLines(message));
-	}
-	const streaming = live?.generation?.message;
-	if (streaming !== undefined) {
-		partial.updateContent(streaming, true);
-		shown.push(partial, ...toolLines(streaming));
-	}
-	return shown;
-}
 
-/** The component of a user or assistant entry, made once for each entry. */
-function componentOf(
-	entry: EntryRecord,
-	message: Message,
-	components: Map<EntryRecord["id"], Component>,
-	markdown: ReturnType<typeof getMarkdownTheme>,
-): Component | undefined {
-	const cached = components.get(entry.id);
-	if (cached !== undefined) return cached;
-	let component: Component | undefined;
-	if (entry.kind === "pi.user" && message.role === "user") {
-		const text =
-			typeof message.content === "string"
-				? message.content
-				: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-		component = new UserMessageComponent(text, markdown);
-	} else if (entry.kind === "pi.assistant" && message.role === "assistant") {
-		component = new AssistantMessageComponent(message, false, markdown);
+	/** The component of a user or assistant entry, made once for each entry. */
+	private componentOf(entry: EntryRecord, message: Message): Component | undefined {
+		const cached = this.components.get(entry.id);
+		if (cached !== undefined) return cached;
+		let component: Component | undefined;
+		if (entry.kind === "pi.user" && message.role === "user") {
+			const text =
+				typeof message.content === "string"
+					? message.content
+					: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+			component = new UserMessageComponent(text, this.markdown);
+		} else if (entry.kind === "pi.assistant" && message.role === "assistant") {
+			component = new AssistantMessageComponent(message, false, this.markdown);
+		}
+		if (component !== undefined) this.components.set(entry.id, component);
+		return component;
 	}
-	if (component !== undefined) components.set(entry.id, component);
-	return component;
 }
