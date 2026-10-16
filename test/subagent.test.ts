@@ -9,7 +9,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request, watch } from "../src/client.ts";
+import { connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { SESSION_TRUST_HINT } from "../src/pi-extension.ts";
@@ -252,10 +252,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// The viewer may send to the child of any caller.
-		const watcher = await watch(handle);
-		watcher.close();
-		expect(watcher.caller).toBe("other-session");
-		const caller = watcher.caller;
+		const watched = await request({ type: "watch", handle }, { start: false });
+		expect(watched?.caller).toBe("other-session");
+		const caller = watched?.caller ?? "";
 		const viewer = { type: "send", requestId: "viewer-send", caller, handle, message: "From viewer" } as const;
 		const sent = await request({ ...viewer, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");

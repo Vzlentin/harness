@@ -7,7 +7,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, watch } from "../src/client.ts";
+import { Client, connect } from "../src/client.ts";
 import type { Host } from "../src/host.ts";
 import type { Request, WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
@@ -40,6 +40,18 @@ function textsOf(view: ConversationView | undefined): string[] {
 		const message = entry.model?.[0];
 		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
 	});
+}
+
+/** Pushes each event of `lines` to `into`, until the connection closes. */
+async function collect(lines: AsyncIterable<WatchLine>, into: WatchLine[]): Promise<void> {
+	for await (const line of lines) into.push(line);
+}
+
+/** A client of the running host. */
+async function hostClient(): Promise<Client> {
+	const client = await connect({ start: false });
+	if (client === undefined) throw new Error("no host");
+	return client;
 }
 
 /** The `--seq` of a logged `herdr` call. */
@@ -129,12 +141,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.set("Task:\nWatched", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watched"]));
 		await until(() => called("Task:\nWatched") === 1);
-		const first = await watch(handle);
+		const client = await hostClient();
+		const first = await client.watch(handle);
 		const lines: WatchLine[] = [];
-		first.listen(
-			(line) => lines.push(line),
-			() => {},
-		);
+		void collect(first.lines, lines);
 		try {
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
@@ -153,41 +163,50 @@ describe("subagent", { timeout: 30_000 }, () => {
 				second?.close();
 			}
 		} finally {
-			first.close();
+			client.close();
 		}
 	});
 
 	it("sends a watch line when the child is renamed", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
 		await cli(["wait", handle]);
-		const watched = await watch(handle);
+		const client = await hostClient();
+		const watched = await client.watch(handle);
 		const lines: WatchLine[] = [];
-		watched.listen(
-			(line) => lines.push(line),
-			() => {},
-		);
+		void collect(watched.lines, lines);
 		try {
 			expect(watched.child.state).toBe("idle");
 			expect((await cli(["rename", handle, "renamed"])).code).toBe(0);
 			await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed"));
 		} finally {
-			watched.close();
+			client.close();
 		}
 	});
 
-	it("closes a watch connection that gets another request", async () => {
+	it("answers requests on a watch connection, between the watch events", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Idle"]));
 		await cli(["wait", handle]);
-		const watcher = await connect({ start: false });
-		if (watcher === undefined) throw new Error("no host");
+		const client = await hostClient();
 		try {
-			// The child is idle, so no watch line comes before the close.
-			expect((await watcher.request({ type: "watch", handle })).child.state).toBe("idle");
-			await expect(watcher.request({ type: "status", handle })).rejects.toThrow(
-				"The subagent host closed the connection",
-			);
+			const watched = await client.watch(handle);
+			expect(watched.child.state).toBe("idle");
+			const lines: WatchLine[] = [];
+			void collect(watched.lines, lines);
+			const sent = await client.request({
+				type: "send",
+				requestId: "watch-connection-send",
+				caller: watched.caller,
+				handle,
+				message: "On the watch connection",
+				followUp: false,
+			});
+			expect(sent.verb).toBe("Prompted");
+			const busy = () => lines.findIndex((line) => !line.stopped && line.child.state === "busy");
+			await until(() => busy() !== -1);
+			await until(() => lines.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"));
+			expect((await client.request({ type: "status", handle })).state).toBe("idle");
 		} finally {
-			watcher.close();
+			client.close();
 		}
 	});
 

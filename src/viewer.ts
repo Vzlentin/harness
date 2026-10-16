@@ -18,9 +18,9 @@ import {
 	Text,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import { type Client, connect, type Watch, watch } from "./client.ts";
+import { type Client, connect } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
-import { type ChildInfo, childLabel, liveState, runDisplayName, type WatchLine } from "./protocol.ts";
+import { type ChildInfo, childLabel, liveState, type Replies, runDisplayName, type WatchLine } from "./protocol.ts";
 
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
 
@@ -30,22 +30,20 @@ export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.
  * 0 after Ctrl+C or when the child is stopped, 1 when the host closes the connection. The child keeps running.
  */
 export async function attach(handle: string, options: AttachOptions): Promise<number> {
-	const watcher = await watch(handle);
-	let control: Client;
+	const client = await connect({ start: true });
+	if (client === undefined) throw new Error("Could not connect to the subagent host");
+	let watched: Awaited<ReturnType<Client["watch"]>>;
 	try {
-		control = await hostClient();
+		watched = await client.watch(handle);
 	} catch (error) {
-		watcher.close();
+		client.close();
 		throw error;
 	}
-	const viewer = new Viewer(handle, options, watcher, control);
+	const viewer = new Viewer(handle, options, client, watched);
 	viewer.tui.start();
 	viewer.render();
 	viewer.reporter.report(viewer.child.state === "busy");
-	watcher.listen(
-		(line) => viewer.onLine(line),
-		() => void viewer.finish(1, "The subagent host closed the connection"),
-	);
+	void viewer.follow(watched.lines);
 	return viewer.exited;
 }
 
@@ -65,19 +63,19 @@ class Viewer {
 	readonly #exit: (code: number) => void;
 	readonly handle: string;
 	readonly terminal: Terminal;
-	readonly watcher: Watch;
-	readonly control: Client;
+	readonly client: Client;
+	readonly caller: string;
 	view: ConversationView;
 	child: ChildInfo;
 	done = false;
 
-	constructor(handle: string, options: AttachOptions, watcher: Watch, control: Client) {
+	constructor(handle: string, options: AttachOptions, client: Client, watched: Replies["watch"]) {
 		this.handle = handle;
 		this.terminal = options.terminal;
-		this.watcher = watcher;
-		this.control = control;
-		this.view = watcher.view;
-		this.child = watcher.child;
+		this.client = client;
+		this.caller = watched.caller;
+		this.view = watched.view;
+		this.child = watched.child;
 
 		initTheme();
 		this.markdown = getMarkdownTheme();
@@ -119,9 +117,7 @@ class Viewer {
 		if (matchesKey(data, "escape")) {
 			// An idle child has no turn to abort.
 			if (this.child.state === "busy") {
-				this.control
-					.request({ type: "abort", handle: this.handle })
-					.then(() => this.notice.setText(""), this.showError);
+				this.client.request({ type: "abort", handle: this.handle }).then(() => this.notice.setText(""), this.showError);
 			}
 			return { consume: true };
 		}
@@ -140,12 +136,18 @@ class Viewer {
 		const request = {
 			type: "send",
 			requestId: randomUUID(),
-			caller: this.watcher.caller,
+			caller: this.caller,
 			handle: this.handle,
 			message,
 			followUp,
 		} as const;
-		this.control.request(request).then(() => this.notice.setText(""), this.showError);
+		this.client.request(request).then(() => this.notice.setText(""), this.showError);
+	}
+
+	/** Shows each event of the watch, and finishes when the connection closes. */
+	async follow(lines: AsyncIterable<WatchLine>): Promise<void> {
+		for await (const line of lines) this.onLine(line);
+		await this.finish(1, "The subagent host closed the connection");
 	}
 
 	onLine(line: WatchLine): void {
@@ -165,8 +167,7 @@ class Viewer {
 		this.done = true;
 		this.tui.stop();
 		if (message !== undefined) this.terminal.write(`${message}\n`);
-		this.watcher.close();
-		this.control.close();
+		this.client.close();
 		await this.reporter.release();
 		this.#exit(code);
 	}
@@ -175,12 +176,6 @@ class Viewer {
 		this.notice.setText(`Error: ${error instanceof Error ? error.message : String(error)}`);
 		this.tui.requestRender();
 	};
-}
-
-async function hostClient(): Promise<Client> {
-	const client = await connect({ start: true });
-	if (client === undefined) throw new Error("Could not connect to the subagent host");
-	return client;
 }
 
 /** The components of the transcript: each user and assistant message, one line for each tool call, and the partial. */

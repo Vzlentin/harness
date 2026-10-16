@@ -5,7 +5,7 @@ import type { Op } from "@earendil-works/chord/delta";
 import { type ConversationView, LiveDoc, type LiveState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export type ChildState = "busy" | "idle" | "error";
 
@@ -50,9 +50,9 @@ export type Request =
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
 	/**
-	 * The viewer's stream of the child: the reply, then one `WatchLine` after each commit to the child's conversation
-	 * and after each rename. `watch()` sends it on a connection of its own. Do not send requests on a watch connection;
-	 * the host closes the connection.
+	 * The viewer's stream of the child: the reply, then one `{ event: WatchLine }` line after each commit to the child's
+	 * conversation and after each rename. Every other line on the connection stays a reply, in request order. A
+	 * connection carries one watch.
 	 */
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
@@ -72,7 +72,10 @@ export type Replies = {
 	readonly abort: ChildInfo;
 };
 
-/** A line of a watch after its reply: the changes of one commit or a rename, or the end when the child was stopped. */
+/**
+ * An event of a watch after its reply, sent as `{ event: WatchLine }`: the changes of one commit or a rename, or the end
+ * when the child was stopped.
+ */
 export type WatchLine =
 	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
 	| { readonly stopped: true };

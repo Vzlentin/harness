@@ -130,7 +130,7 @@ The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/st
 
 - `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
 - `lock.sqlite`: one host at a time.
-- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 2. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
+- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 3. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
 - `host.log`: the host's output.
 
 A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child and the children it spawned permanently.

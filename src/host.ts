@@ -177,37 +177,31 @@ export async function runHost(options: {
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
 	let lastActivity = Date.now();
-	const handle = (request: Request, signal: AbortSignal) => handleRequest(request, { harness, place, owner, signal });
 
 	const server = createServer((socket) => {
 		connections.add(socket);
 		const abort = new AbortController();
 		aborts.add(abort);
 		let queue = Promise.resolve();
-		// After a watch, the connection carries only the watch.
-		let watching = false;
 		onLines(socket, (line) => {
 			queue = queue.then(async () => {
-				if (watching) {
-					socket.destroy();
-					return;
-				}
 				let reply: Reply;
+				let start: (() => void) | undefined;
+				const connection = { socket, afterReply: (afterReply: () => void) => (start = afterReply) };
 				try {
 					const request = JSON.parse(line) as Request;
 					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
 						lastActivity = Date.now();
 					}
-					if (request.type === "watch") {
-						watching = true;
-						await serveWatch({ harness, place, owner }, request.handle, socket);
-						return;
-					}
-					reply = { ok: true, value: await handle(request, abort.signal) };
+					reply = {
+						ok: true,
+						value: await handleRequest(request, { harness, place, owner, signal: abort.signal, connection }),
+					};
 				} catch (error) {
 					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
 				}
-				if (!socket.destroyed) socket.write(`${JSON.stringify(reply)}\n`);
+				if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`);
+				start?.();
 			});
 		});
 		socket.on("error", () => socket.destroy());
@@ -269,7 +263,11 @@ type Handler = {
 	readonly owner: Owner;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
+	/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
+	readonly connection?: Connection;
 };
+
+type Connection = { readonly socket: Socket; afterReply(start: () => void): void };
 
 function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
@@ -289,6 +287,9 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return childInfo(handler, request.handle);
 		case "abort":
 			return abortChild(request, handler);
+		case "watch":
+			if (handler.connection === undefined) throw new Error("A watch needs a connection");
+			return serveWatch(handler, request.handle, handler.connection);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -467,19 +468,21 @@ async function childInfo(
 }
 
 /**
- * Serves a watch of `handle` on the connection `socket`: the reply, with the view and the child, then one `WatchLine`
- * after each commit to the child's conversation, and after each rename. It waits for a slow socket to drain, so
- * pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the socket
- * closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a
- * `stopped` line; when the conversation watch ends for another reason, the connection ends.
+ * Opens a watch of `handle` on `connection` and returns the reply, with the view and the child. After the reply, each
+ * commit to the child's conversation and each rename gives one `{ event: WatchLine }` line. It waits for a slow socket
+ * to drain, so pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the
+ * socket closes; a wait for `drain` then stays on the closed socket and goes with it. When the child stops, the viewer
+ * gets a `stopped` event and the connection ends; when the conversation watch ends for another reason, the connection
+ * ends.
  */
 async function serveWatch(
 	handler: Pick<Handler, "harness" | "place" | "owner">,
 	handle: string,
-	socket: Socket,
-): Promise<void> {
+	connection: Connection,
+): Promise<Replies["watch"]> {
 	const { harness } = handler;
-	const write = (line: Reply | WatchLine) => socket.write(`${JSON.stringify(line)}\n`);
+	const { socket } = connection;
+	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
 	let children: DocumentWatch<ChildrenState> | undefined;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let last: ChildInfo;
@@ -495,46 +498,49 @@ async function serveWatch(
 	} catch (error) {
 		void children?.stop();
 		void watch?.stop();
-		if (!socket.destroyed) write({ ok: false, error: error instanceof Error ? error.message : String(error) });
-		return;
+		throw error;
 	}
+	const childrenWatch = children;
 	const conversation = watch;
-	// A socket that closed before the reply never emits `close` again.
-	if (socket.destroyed) {
-		void children.stop();
-		void conversation.stop();
-		return;
-	}
-	write({ ok: true, value: { view: conversation.value, child: last, caller } });
-	socket.once("close", () => {
-		void children.stop();
-		void conversation.stop();
-	});
-	void conversation.closed.then(() => {
-		if (!socket.writableEnded) socket.end();
-	});
-	children.start(async (state) => {
-		if (socket.writableEnded || socket.destroyed) return;
-		const record = recordOf(state, handle);
-		if (record === undefined) {
-			write({ stopped: true });
-			socket.end();
-		} else if (record.name !== undefined && record.name !== last.name) {
-			last = { ...last, name: record.name };
-			write({ ops: [], child: last });
+	// pi-durable delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
+	connection.afterReply(() => {
+		// A socket that closed before the reply never emits `close` again.
+		if (socket.destroyed) {
+			void childrenWatch.stop();
+			void conversation.stop();
+			return;
 		}
+		socket.once("close", () => {
+			void childrenWatch.stop();
+			void conversation.stop();
+		});
+		void conversation.closed.then(() => {
+			if (!socket.writableEnded) socket.end();
+		});
+		childrenWatch.start(async (state) => {
+			if (socket.writableEnded || socket.destroyed) return;
+			const record = recordOf(state, handle);
+			if (record === undefined) {
+				write({ stopped: true });
+				socket.end();
+			} else if (record.name !== undefined && record.name !== last.name) {
+				last = { ...last, name: record.name };
+				write({ ops: [], child: last });
+			}
+		});
+		conversation.start(async (view, ops) => {
+			const busy = liveState(view)?.run !== undefined;
+			// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
+			if (busy !== (last.state === "busy")) {
+				const info = await childInfo(handler, handle).catch(() => undefined);
+				if (info === undefined) return;
+				last = info;
+			}
+			if (socket.writableEnded || socket.destroyed) return;
+			if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
+		});
 	});
-	conversation.start(async (view, ops) => {
-		const busy = liveState(view)?.run !== undefined;
-		// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
-		if (busy !== (last.state === "busy")) {
-			const info = await childInfo(handler, handle).catch(() => undefined);
-			if (info === undefined) return;
-			last = info;
-		}
-		if (socket.writableEnded || socket.destroyed) return;
-		if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
-	});
+	return { view: conversation.value, child: last, caller };
 }
 
 /** The record of `handle` in the `Children` value `state`. */
