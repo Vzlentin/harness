@@ -88,13 +88,20 @@ class FakeTerminal implements Terminal {
 	}
 }
 
-/** A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab. */
-async function fakeHerdr(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+/**
+ * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab.
+ * With `failTabCreate`, `tab create` writes that text to stderr and exits with 1.
+ */
+async function fakeHerdr(failTabCreate?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
+	const tabCreate =
+		failTabCreate === undefined
+			? `echo '{"result":{"root_pane":{"pane_id":"p1"}}}'`
+			: `echo '${failTabCreate}' >&2; exit 1`;
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-if [ "$1 $2" = "tab create" ]; then echo '{"result":{"root_pane":{"pane_id":"p1"}}}'; fi
+if [ "$1 $2" = "tab create" ]; then ${tabCreate}; fi
 `;
 	await writeFile(join(bin, "herdr"), script);
 	await chmod(join(bin, "herdr"), 0o755);
@@ -342,5 +349,62 @@ describe("subagent", { timeout: 30_000 }, () => {
 		} finally {
 			process.env = saved;
 		}
+	});
+
+	it("shows the herdr error and the command when /subagent cannot open a Herdr tab", async () => {
+		const herdr = await fakeHerdr("no such session");
+		const { tool, command } = piExtension();
+		const spawned = await callPi(tool, piContext("faux-1"), { action: "spawn", name: "untabbed", prompts: ["No tab"] });
+		const handle = (spawned.data as { value: { handle: string } }).value.handle;
+		const notes: string[] = [];
+		const ctx = {
+			sessionManager: { getSessionId: () => "pi-session" },
+			ui: {
+				select: async (_title: string, options: string[]) => options.find((option) => option.includes(handle)),
+				notify: (message: string) => notes.push(message),
+			},
+		} as unknown as ExtensionCommandContext;
+		const saved = process.env;
+		try {
+			process.env = { ...herdr.env, HERDR_ENV: "1" };
+			await command.handler("", ctx);
+		} finally {
+			process.env = saved;
+		}
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toContain("no such session");
+		expect(notes[0]).toContain(`Run in another terminal: subagent attach ${handle}`);
+		expect(logLines(herdr.log)).toHaveLength(1);
+		expect(logLines(herdr.log)[0]).toMatch(/^tab create /);
+	});
+
+	it("opens the selected child from /subagent when its name starts with the handle of another child", async () => {
+		const herdr = await fakeHerdr();
+		const { tool, command } = piExtension();
+		const first = await callPi(tool, piContext("faux-1"), { action: "spawn", prompts: ["Unnamed"] });
+		const handleA = (first.data as { value: { handle: string } }).value.handle;
+		const name = `${handleA}  copy`;
+		const second = await callPi(tool, piContext("faux-1"), { action: "spawn", name, prompts: ["Named"] });
+		const handleB = (second.data as { value: { handle: string } }).value.handle;
+		const notes: string[] = [];
+		const ctx = {
+			sessionManager: { getSessionId: () => "pi-session" },
+			ui: {
+				select: async (_title: string, options: string[]) => options.find((option) => option.includes(`(${handleB})`)),
+				notify: (message: string) => notes.push(message),
+			},
+		} as unknown as ExtensionCommandContext;
+		const saved = process.env;
+		try {
+			process.env = { ...herdr.env, HERDR_ENV: "1" };
+			await command.handler("", ctx);
+		} finally {
+			process.env = saved;
+		}
+		expect(notes).toEqual([]);
+		const lines = logLines(herdr.log);
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain(`--label ${name} --focus`);
+		expect(lines[1]).toMatch(new RegExp(`'attach' '${handleB}'$`));
 	});
 });

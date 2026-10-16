@@ -13,17 +13,20 @@ export function viewerCommand(handle: string): string[] {
 }
 
 /**
- * Runs `herdr` with `args` and gives its output. It is undefined when `herdr` fails: a failing call never stops the
- * caller.
+ * Runs `herdr` with `args` and gives its output. When `herdr` fails, it rejects with the stderr of `herdr`, or with the
+ * error of `execFile` when stderr is empty.
  */
-export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
-	return new Promise((resolve) => {
-		execFile("herdr", args, { env }, (error, stdout) => resolve(error === null ? stdout : undefined));
+export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile("herdr", args, { env }, (error, stdout, stderr) => {
+			if (error) reject(new Error(stderr.trim() || error.message));
+			else resolve(stdout);
+		});
 	});
 }
 
-/** Opens a Herdr tab that runs the viewer of `child`. It resolves with false when a `herdr` call fails. */
-export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<boolean> {
+/** Opens a Herdr tab that runs the viewer of `child`. It rejects when a `herdr` call fails or gives no pane ID. */
+export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
 	// The tab must find the same host as `statePaths()` in protocol.ts.
 	const state = env.XDG_STATE_HOME;
 	const created = await herdr(
@@ -41,15 +44,15 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 	);
 	let pane: unknown;
 	try {
-		pane = (JSON.parse(created ?? "") as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane?.pane_id;
+		pane = (JSON.parse(created) as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane?.pane_id;
 	} catch {
-		return false;
+		pane = undefined;
 	}
-	if (typeof pane !== "string") return false;
+	if (typeof pane !== "string") throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 	const viewer = viewerCommand(child.handle)
 		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
 		.join(" ");
-	return (await herdr(["pane", "run", pane, viewer], env)) !== undefined;
+	await herdr(["pane", "run", pane, viewer], env);
 }
 
 /**
@@ -69,7 +72,8 @@ export function agentReporter(
 		if (pane === undefined) return;
 		seq = Math.max(Date.now(), seq + 1);
 		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(seq), pane];
-		calls = calls.then(() => herdr([...args, ...resume], env));
+		// A failed report never stops the caller.
+		calls = calls.then(() => herdr([...args, ...resume], env)).catch(() => {});
 	};
 	return {
 		report(busy) {
