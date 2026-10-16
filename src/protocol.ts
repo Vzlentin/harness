@@ -2,7 +2,7 @@ import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Op } from "@earendil-works/chord/delta";
-import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
+import { type ConversationView, LiveDoc, type LiveState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
 export const PROTOCOL_VERSION = 2;
@@ -79,7 +79,7 @@ export type WatchLine =
 
 /** The live state of a conversation view: the running turn, the streamed message and the tool slots. */
 export function liveState(view: ConversationView): LiveState | undefined {
-	return view.docs["pi.live"];
+	return view.docs[LiveDoc.definition.kind];
 }
 
 /** One reply line. */
