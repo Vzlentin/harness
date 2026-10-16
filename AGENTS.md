@@ -2,6 +2,7 @@
 - README.md is the behaviour spec: CLI commands, arguments and output lines, the tool, and where state lives. Update it in the same change as the behaviour.
 - `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent` (remote `pi-subagent`), a fork of `badlogic/pi-subagent` (remote `badlogic`).
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together.
-- Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui` to the extension, so they are `peerDependencies` at `"*"`. Processes that run outside Pi need their own `pi-ai`, `pi-coding-agent` and `pi-tui`, so these three are also `optionalDependencies` at `^1.3.0`. Do not put them in `dependencies` or `devDependencies`. `chord` and `pi-durable` stay in `dependencies`.
-- Pi loads the source directly and the `bin` runs `src/cli.ts`, so the source must run with Node type stripping. There is no build step.
+- The `@earendil-works/*` packages are `dependencies`. pi-subagent imports this package inside Pi, where Pi's loader maps `pi-ai`, `pi-coding-agent` and `pi-tui` to Pi's own copies. The modules that `exports` lists, except `host` (for tests), must not import `chord` or `pi-durable` at runtime (types only), so Pi does not load them.
+- The checkout runs from source: the `bin` runs `src/cli.ts`, so the source must run with Node type stripping. `prepare` builds `dist/` for packages that install this one, because Node does not strip types under `node_modules`. Code that starts the CLI must use the extension of its own module, so it runs `dist/cli.js` from `dist/`.
+- pi-subagent is the Pi extension. A change to `exports` or to the protocol needs a change there too.
 - Tests must not call a real model, start tmux, or use the user's Pi or Git configuration. Use a temporary `PI_CODING_AGENT_DIR` and pi-ai's faux provider.

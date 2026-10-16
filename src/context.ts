@@ -12,10 +12,8 @@ import {
 	DefaultPackageManager,
 	formatSkillsForPrompt,
 	getAgentDir,
-	hasTrustRequiringProjectResources,
 	loadProjectContextFiles,
 	loadSkills,
-	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -26,18 +24,7 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-
-/**
- * Whether Pi trusts the project in `cwd` with no one to ask: a directory without project resources is trusted, then a
- * decision saved with `/trust` counts, then the `defaultProjectTrust` setting, where `ask` means not trusted.
- */
-export function savedTrust(cwd: string): boolean {
-	if (!hasTrustRequiringProjectResources(cwd)) return true;
-	const agentDir = getAgentDir();
-	const decision = new ProjectTrustStore(agentDir).get(cwd);
-	if (decision !== null) return decision;
-	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
-}
+import { savedTrust } from "./trust.ts";
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
 type PiTool<T extends TSchema> = {

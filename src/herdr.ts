@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChildInfo } from "./protocol.ts";
 
@@ -38,8 +39,8 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 		return false;
 	}
 	if (typeof pane !== "string") return false;
-	// The tab's shell may not have the CLI on PATH, so run this package's cli.ts with this Node.
-	const viewer = `${[process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url))]
+	// The tab's shell may not have the CLI on PATH, so run this package's CLI with this Node.
+	const viewer = `${[process.execPath, fileURLToPath(new URL(`./cli${extname(import.meta.url)}`, import.meta.url))]
 		.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
 		.join(" ")} attach ${child.handle}`;
 	return (await herdr(["pane", "run", pane, viewer], env)) !== undefined;

@@ -1,29 +1,32 @@
 # Harness
 
-A durable agent harness on Pi and pi-durable. It starts as observable, persistent Pi subagents for independent reviews, investigations, and delegated implementation.
+A durable agent harness on Pi's libraries and pi-durable. It starts with observable, persistent subagents for independent reviews, investigations, and delegated implementation.
 
 Each subagent is a conversation in one durable host process. The parent can inspect status, wait for durable results, steer active work, and queue follow-ups.
 
+Pi gets the `subagent` tool, the `/subagent` command and the skill from [pi-subagent](https://github.com/Vzlentin/pi-subagent), which uses this package as a library.
+
 ## Requirements
 
-- Pi
 - Node.js 22.19 or newer
+- Pi's agent directory (`~/.pi/agent`) for models, logins, settings, skills and project trust
 
 ## Install
 
-Install it as a Pi package, then expose the CLI on `PATH`. The CLI is `harness`; `subagent` is the same CLI:
+Clone the repository, install, and put the CLI on `PATH`. The CLI is `harness`; `subagent` is the same CLI:
 
 ```sh
-pi install https://github.com/Vzlentin/harness
-ln -s ~/.pi/agent/git/github.com/Vzlentin/harness/src/cli.ts ~/.local/bin/harness
-ln -s ~/.pi/agent/git/github.com/Vzlentin/harness/src/cli.ts ~/.local/bin/subagent
+git clone https://github.com/Vzlentin/harness ~/Dev/perso/harness
+cd ~/Dev/perso/harness && npm ci
+ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/harness
+ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/subagent
 ```
 
-Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool does not need the CLI on `PATH`; the CLI is for shells and scripts. The skill tells agents to use `subagent` in bash when they do not have the tool.
+The checkout runs from its TypeScript source. `npm ci` and an install as a dependency also build `dist/` (the `prepare` script), because Node does not strip types under `node_modules`. Other packages import the modules of `dist/` through the `exports` of `package.json`: `harness/client`, `harness/protocol`, `harness/tool`, `harness/herdr`, `harness/trust` and `harness/host`. A process that a module of `dist/` starts, such as the host or a Herdr viewer tab, runs `dist/cli.js`.
 
 ## Tool
 
-The extension gives Pi the `subagent` tool. It does what the CLI does, with one `action` and its arguments:
+The `subagent` tool does what the CLI does, with one `action` and its arguments:
 
 | `action` | Arguments |
 | --- | --- |
@@ -42,7 +45,7 @@ A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` 
 
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
-- In Pi, the caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `harness list` in that session show the tool's children.
+- In Pi, pi-subagent gives the tool. The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
 - In a pi-durable host, the `piDurable` entry `src/durable-entry.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
@@ -104,7 +107,7 @@ harness attach a1b2c3
 
 The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller.
 
-Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `src/cli.ts`, so it does not need `harness` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: harness attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
+`openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs the viewer with this Node and this package's CLI, so it does not need `harness` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. It gives false when a `herdr` call fails.
 
 ## Viewer
 
@@ -125,7 +128,7 @@ In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `
 
 ## Host
 
-The children run in one host process, `harness host`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. An open viewer is a connection, so it keeps the host running. The widget does not start the host, and shows nothing when no host runs.
+The children run in one host process, `harness host`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. An open viewer is a connection, so it keeps the host running.
 
 The host keeps its state in `$XDG_STATE_HOME/harness/` (default `~/.local/state/harness/`):
 

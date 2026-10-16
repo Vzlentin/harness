@@ -3,19 +3,41 @@
 	"version": "0.1.0",
 	"private": true,
 	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
-	"keywords": [
-		"pi-package"
-	],
 	"type": "module",
 	"bin": {
 		"harness": "./src/cli.ts",
 		"subagent": "./src/cli.ts"
 	},
-	"pi": {
-		"extensions": [
-			"./src/pi-extension.ts"
-		]
+	"exports": {
+		"./client": {
+			"types": "./dist/client.d.ts",
+			"default": "./dist/client.js"
+		},
+		"./protocol": {
+			"types": "./dist/protocol.d.ts",
+			"default": "./dist/protocol.js"
+		},
+		"./tool": {
+			"types": "./dist/tool.d.ts",
+			"default": "./dist/tool.js"
+		},
+		"./herdr": {
+			"types": "./dist/herdr.d.ts",
+			"default": "./dist/herdr.js"
+		},
+		"./trust": {
+			"types": "./dist/trust.d.ts",
+			"default": "./dist/trust.js"
+		},
+		"./host": {
+			"types": "./dist/host.d.ts",
+			"default": "./dist/host.js"
+		}
 	},
+	"files": [
+		"src",
+		"dist"
+	],
 	"piDurable": {
 		"extensions": [
 			"./src/durable-entry.ts"
@@ -26,21 +48,15 @@
 	},
 	"scripts": {
 		"check": "biome check . && tsc -p tsconfig.json && vitest --run --passWithNoTests",
-		"test": "vitest --run --passWithNoTests"
+		"test": "vitest --run --passWithNoTests",
+		"prepare": "tsc -p tsconfig.build.json"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
-		"@earendil-works/pi-durable": "1.3.0"
-	},
-	"optionalDependencies": {
-		"@earendil-works/pi-ai": "^1.3.0",
-		"@earendil-works/pi-coding-agent": "^1.3.0",
-		"@earendil-works/pi-tui": "^1.3.0"
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
+		"@earendil-works/pi-ai": "1.3.0",
+		"@earendil-works/pi-coding-agent": "1.3.0",
+		"@earendil-works/pi-durable": "1.3.0",
+		"@earendil-works/pi-tui": "1.3.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

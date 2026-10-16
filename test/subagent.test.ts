@@ -12,19 +12,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { connect, request, watch } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
-import { SESSION_TRUST_HINT } from "../src/pi-extension.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
 	CLI,
 	called,
-	callPi,
 	calls,
 	cli,
 	gates,
 	handleOf,
 	models,
-	piContext,
-	piTool,
 	requests,
 	root,
 	setUp,
@@ -167,16 +163,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
 		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"]);
 
-		// A Pi session that trusts its project for itself only is told what its child misses.
-		const sessionOnly = piContext("faux-1", { cwd: project, trusted: true });
-		const spawn = { action: "spawn", prompts: ["Session trust"] };
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
-
-		// Once `/trust` saves the decision, the next request loads the project skill, and the session is told nothing.
+		// Once `/trust` saves the decision, the next request loads the project skill.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Trusted context"]))]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
@@ -300,7 +290,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Sent message")).toBe(1);
 	});
 
-	it("gives children the host's own tool when pi-subagent is also an installed package", async () => {
+	it("gives children the host's own tool when harness is also an installed package", async () => {
 		const linked = join(root, "linked-package");
 		await symlink(dirname(CLI), linked);
 		const settings = join(root, "agent", "settings.json");
@@ -317,58 +307,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await host?.close();
 			host = await startHost();
 		}
-	});
-
-	it("runs the Pi tool with the caller's session, model and thinking level", async () => {
-		const tool = piTool("low");
-		const ctx = piContext("faux-2");
-		const spawned = await callPi(tool, ctx, { action: "spawn", name: "pi", prompts: ["From Pi"] });
-		const handle = (spawned.data as { value: { handle: string } }).value.handle;
-		expect(spawned.text).toBe(`Spawned pi (${handle})\nState: busy\n`);
-		expect(spawned.data).toMatchObject({
-			action: "spawn",
-			value: { handle, name: "pi", provider: "faux", model: "faux-2", thinking: "low" },
-		});
-		expect(await callPi(tool, ctx, { action: "wait", handle })).toEqual({
-			text: `${handle} finished\n\nAnswer to Task:\nFrom Pi\n`,
-			data: { action: "wait", value: { answer: "Answer to Task:\nFrom Pi" } },
-		});
-		expect(calls.find((call) => call.prompt === "Task:\nFrom Pi")).toEqual({
-			provider: "faux",
-			model: "faux-2",
-			thinking: "low",
-			prompt: "Task:\nFrom Pi",
-		});
-		expect((await cli(["list"], { PI_SESSION_ID: "pi-session" })).stdout).toContain(
-			`pi (${handle})  idle      faux/faux-2  low\n`,
-		);
-
-		const args = { action: "spawn", provider: "faux", model: "faux-1", thinking: "high", prompts: ["Pi override"] };
-		const other = (await callPi(tool, ctx, args)).data as { value: { handle: string } };
-		await callPi(tool, ctx, { action: "wait", handle: other.value.handle });
-		expect(calls.find((call) => call.prompt === "Task:\nPi override")).toMatchObject({
-			model: "faux-1",
-			thinking: "high",
-		});
-	});
-
-	it("stops a Pi tool wait on abort and leaves the child busy", async () => {
-		const tool = piTool("medium");
-		const ctx = piContext("faux-1");
-		gates.set("Task:\nPi gated", Promise.withResolvers());
-		const spawned = await callPi(tool, ctx, { action: "spawn", prompts: ["Pi gated"] });
-		const handle = (spawned.data as { value: { handle: string } }).value.handle;
-		await until(() => called("Task:\nPi gated") === 1);
-		await expect(callPi(tool, ctx, { action: "wait", handle }, AbortSignal.timeout(100))).rejects.toMatchObject({
-			name: "TimeoutError",
-		});
-		expect((await callPi(tool, ctx, { action: "status", handle })).text).toBe(
-			`${handle}: busy (faux/faux-1, medium)\n`,
-		);
-		gates.get("Task:\nPi gated")?.resolve();
-		expect((await callPi(tool, ctx, { action: "wait", handle })).text).toBe(
-			`${handle} finished\n\nAnswer to Task:\nPi gated\n`,
-		);
 	});
 
 	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {

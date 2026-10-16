@@ -1,33 +1,17 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, watch } from "../src/client.ts";
+import { Client, connect, request, watch } from "../src/client.ts";
+import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import subagentExtension from "../src/pi-extension.ts";
 import type { Request, WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
-import {
-	CLI,
-	called,
-	callPi,
-	cli,
-	gates,
-	handleOf,
-	piContext,
-	piTool,
-	root,
-	setUp,
-	startHost,
-	tearDown,
-	textOf,
-	until,
-} from "./helpers.ts";
+import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
 
 // The in-process client finds the host under the test's HOME, not the user's home, when XDG_STATE_HOME is not set.
 vi.mock("node:os", async (importOriginal) => ({
@@ -46,21 +30,6 @@ function textsOf(view: ConversationView | undefined): string[] {
 /** The `--seq` of a logged `herdr` call. */
 function seqOf(line: string | undefined): number {
 	return Number(/--seq (\d+)/.exec(line ?? "")?.[1]);
-}
-
-/** The `/subagent` command that the Pi extension registers. */
-function piCommand(): Omit<RegisteredCommand, "name" | "sourceInfo"> {
-	const commands: Omit<RegisteredCommand, "name" | "sourceInfo">[] = [];
-	const pi = {
-		on: () => {},
-		registerCommand: (_name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => commands.push(command),
-		registerTool: () => {},
-		getThinkingLevel: () => "medium",
-	};
-	subagentExtension(pi as unknown as ExtensionAPI);
-	const [command] = commands;
-	if (command === undefined) throw new Error("no command");
-	return command;
 }
 
 /** A terminal that keeps what the TUI writes and gives it typed input. */
@@ -319,45 +288,24 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(logLines(herdr.log)).toEqual(reports);
 	});
 
-	it("opens a child from /subagent in a Herdr tab, or shows the command", async () => {
+	it("opens the viewer of a child in a Herdr tab", async () => {
 		const herdr = await fakeHerdr();
-		const tool = piTool("medium");
-		const spawned = await callPi(tool, piContext("faux-1"), { action: "spawn", name: "tabbed", prompts: ["Tab me"] });
-		const handle = (spawned.data as { value: { handle: string } }).value.handle;
-		const notes: string[] = [];
-		const ctx = {
-			sessionManager: { getSessionId: () => "pi-session" },
-			ui: {
-				select: async (_title: string, options: string[]) => options.find((option) => option.includes(handle)),
-				notify: (message: string) => notes.push(message),
-			},
-		} as unknown as ExtensionCommandContext;
-		const command = piCommand();
-		const saved = process.env;
-		try {
-			process.env = { ...herdr.env, HERDR_ENV: "1" };
-			const state = process.env.XDG_STATE_HOME;
-			expect(state).toBeTruthy();
-			const run = `pane run p1 '${process.execPath}' '${CLI}' attach ${handle}`;
-			await command.handler("", ctx);
-			expect(logLines(herdr.log)).toEqual([
-				`tab create --cwd ${root} --label tabbed --focus --env XDG_STATE_HOME=${state}`,
-				run,
-			]);
-			expect(notes).toEqual([]);
-			// Without XDG_STATE_HOME, the host directory is under HOME: link it to the same host.
-			await mkdir(join(root, "home", ".local"), { recursive: true });
-			await symlink(state as string, join(root, "home", ".local", "state"));
-			delete process.env.XDG_STATE_HOME;
-			await command.handler("", ctx);
-			expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${root} --label tabbed --focus`, run]);
-			process.env = { ...herdr.env };
-			delete process.env.HERDR_ENV;
-			await command.handler("", ctx);
-			expect(logLines(herdr.log)).toHaveLength(4);
-			expect(notes).toEqual([`Run in another terminal: harness attach ${handle}`]);
-		} finally {
-			process.env = saved;
-		}
+		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));
+		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
+		const child = children.find((found) => found.handle === handle);
+		if (child === undefined) return;
+		const state = herdr.env.XDG_STATE_HOME;
+		expect(state).toBeTruthy();
+		const run = `pane run p1 '${process.execPath}' '${CLI}' attach ${handle}`;
+		expect(await openViewerTab(child, herdr.env)).toBe(true);
+		expect(logLines(herdr.log)).toEqual([
+			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state}`,
+			run,
+		]);
+		// Without XDG_STATE_HOME, the tab finds the host under HOME, as this process does.
+		const env = { ...herdr.env };
+		delete env.XDG_STATE_HOME;
+		expect(await openViewerTab(child, env)).toBe(true);
+		expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${child.cwd} --label tabbed --focus`, run]);
 	});
 });

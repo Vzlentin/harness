@@ -11,9 +11,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Host, runHost } from "../src/host.ts";
-import subagentExtension from "../src/pi-extension.ts";
 import { statePaths } from "../src/protocol.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
@@ -166,55 +164,10 @@ export function called(prompt: string): number {
 	return calls.filter((call) => call.prompt === prompt).length;
 }
 
-/** The `subagent` tool that the Pi extension registers, with `thinking` as Pi's thinking level. */
-export function piTool(thinking: string): ToolDefinition {
-	const tools: ToolDefinition[] = [];
-	const pi = {
-		on: () => {},
-		registerCommand: () => {},
-		registerTool: (tool: ToolDefinition) => tools.push(tool),
-		getThinkingLevel: () => thinking,
-	};
-	subagentExtension(pi as unknown as ExtensionAPI);
-	const [tool] = tools;
-	if (tool === undefined) throw new Error("no tool");
-	return tool;
-}
-
-/**
- * The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`, in `cwd` (default the
- * root), whose project the session trusts when `trusted` is true.
- */
-export function piContext(
-	model: string,
-	scope: { readonly cwd?: string; readonly trusted?: boolean } = {},
-): ExtensionToolContext {
-	return {
-		model: { provider: "faux", id: model },
-		sessionManager: { getSessionId: () => "pi-session" },
-		cwd: scope.cwd ?? root,
-		isProjectTrusted: () => scope.trusted === true,
-	} as unknown as ExtensionToolContext;
-}
-
-let piCalls = 0;
-
-/** Calls the Pi tool and gives its text and structured content. */
-export async function callPi(
-	tool: ToolDefinition,
-	ctx: ExtensionToolContext,
-	args: Record<string, unknown>,
-	signal?: AbortSignal,
-): Promise<{ text: string; data: unknown }> {
-	const result = await tool.execute(`call-${++piCalls}`, args, signal, undefined, ctx);
-	const [content] = result.content;
-	return { text: content?.type === "text" ? content.text : "", data: result.structuredContent };
-}
-
 /** Makes a temporary root with the agent dir, home and state, points `process.env` at it and sets up the faux provider. */
 export async function setUp(): Promise<void> {
 	// macOS limits a Unix socket path to 104 bytes, so the state stays short, under /tmp.
-	root = await mkdtemp("/tmp/pi-subagent-");
+	root = await mkdtemp("/tmp/harness-");
 	requests.clear();
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
