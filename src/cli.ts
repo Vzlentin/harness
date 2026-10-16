@@ -10,15 +10,15 @@ function fail(message: string): never {
 
 function usage(): never {
 	fail(`Usage:
-  subagent spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]
+  harness spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]
     [--cwd <dir>] [--tools <names>] (--prompt <text> | --file <path>)...
-  subagent status <handle>
-  subagent rename <handle> <name>
-  subagent send <handle> [--follow-up] <message>
-  subagent wait <handle> [--timeout <seconds>]
-  subagent stop <handle>
-  subagent list
-  subagent attach <handle>`);
+  harness status <handle>
+  harness rename <handle> <name>
+  harness send <handle> [--follow-up] <message>
+  harness wait <handle> [--timeout <seconds>]
+  harness stop <handle>
+  harness list
+  harness attach <handle>`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -121,7 +121,7 @@ async function hostCommand(args: string[]): Promise<void> {
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
 	const host = await runHost({ stateDir: statePaths().dir, models: modelRuntime });
 	if (host === undefined) {
-		process.stderr.write(`Another subagent host runs (pid ${process.pid} exits)\n`);
+		process.stderr.write(`Another harness host runs (pid ${process.pid} exits)\n`);
 		process.exit(0);
 	}
 	for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => void host.close());

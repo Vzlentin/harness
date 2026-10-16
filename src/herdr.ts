@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { ChildInfo } from "./protocol.ts";
 
-const HERDR_SOURCE = "custom:pi-subagent";
+const HERDR_SOURCE = "custom:harness";
 
 /**
  * Runs `herdr` with `args` and gives its output. It is undefined when `herdr` fails: a failing call never stops the
@@ -69,7 +69,7 @@ export function agentReporter(
 			const state = busy ? "working" : "idle";
 			if (state === reported) return;
 			reported = state;
-			call("report-agent", ["--state", state], ["--", "subagent", "attach", handle]);
+			call("report-agent", ["--state", state], ["--", "harness", "attach", handle]);
 		},
 		async release() {
 			call("release-agent", [], []);

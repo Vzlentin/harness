@@ -212,7 +212,7 @@ function checkHandle(handle: string): string {
 	return handle;
 }
 
-/** How a host reaches the subagent host. */
+/** How a host reaches the harness host. */
 export type DurableScope = {
 	/** The caller that owns the children of the calling conversation. */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;

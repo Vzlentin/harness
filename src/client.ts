@@ -42,7 +42,7 @@ export class Client {
 	}
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
-		if (this.#ended) return Promise.reject(new Error("The subagent host closed the connection"));
+		if (this.#ended) return Promise.reject(new Error("The harness host closed the connection"));
 		return new Promise((resolve, reject) => {
 			this.#pending.push({ resolve: resolve as (value: unknown) => void, reject });
 			this.#socket.write(`${JSON.stringify(request)}\n`);
@@ -81,7 +81,7 @@ export class Client {
 		this.#socket.destroy();
 	}
 
-	#end(reason: unknown = new Error("The subagent host closed the connection")): void {
+	#end(reason: unknown = new Error("The harness host closed the connection")): void {
 		if (!this.#ended) this.#stream?.end();
 		this.#ended = true;
 		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
@@ -112,7 +112,7 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 		const deadline = Date.now() + START_TIMEOUT_MS;
 		while (socket === undefined) {
 			options.signal?.throwIfAborted();
-			if (Date.now() > deadline) throw new Error(`Could not start the subagent host; see ${paths.log}`);
+			if (Date.now() > deadline) throw new Error(`Could not start the harness host; see ${paths.log}`);
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 			socket = await tryConnect(paths.socket);
 		}
@@ -122,7 +122,7 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 		const hello = await client.request({ type: "hello", version: PROTOCOL_VERSION });
 		if (hello.version !== PROTOCOL_VERSION) {
 			throw new Error(
-				`The subagent host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}; stop it and try again`,
+				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}; stop it and try again`,
 			);
 		}
 		client.pid = hello.pid;
@@ -136,7 +136,7 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 /** Watches the child `handle` on a new connection. It starts the host as `connect` does. */
 export async function watch(handle: string): Promise<Watch> {
 	const client = await connect({ start: true });
-	if (client === undefined) throw new Error("Could not connect to the subagent host");
+	if (client === undefined) throw new Error("Could not connect to the harness host");
 	try {
 		return await client.watch(handle);
 	} catch (error) {

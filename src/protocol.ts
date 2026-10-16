@@ -85,9 +85,9 @@ export function liveState(view: ConversationView): LiveState | undefined {
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
-/** The files of the host: `$XDG_STATE_HOME/pi-subagent/`, default `~/.local/state/pi-subagent/`. */
+/** The files of the host: `$XDG_STATE_HOME/harness/`, default `~/.local/state/harness/`. */
 export function statePaths(): { dir: string; socket: string; log: string } {
-	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "pi-subagent");
+	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness");
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 

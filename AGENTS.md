@@ -1,6 +1,6 @@
 - Check: `npm run check` (Biome, TypeScript, Vitest).
 - README.md is the behaviour spec: CLI commands, arguments and output lines, the tool, and where state lives. Update it in the same change as the behaviour.
-- This is a fork of `badlogic/pi-subagent`, kept as the remote `badlogic`. `origin` is `Vzlentin/pi-subagent`.
+- `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent` (remote `pi-subagent`), a fork of `badlogic/pi-subagent` (remote `badlogic`).
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together.
 - Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui` to the extension, so they are `peerDependencies` at `"*"`. Processes that run outside Pi need their own `pi-ai`, `pi-coding-agent` and `pi-tui`, so these three are also `optionalDependencies` at `^1.3.0`. Do not put them in `dependencies` or `devDependencies`. `chord` and `pi-durable` stay in `dependencies`.
 - Pi loads the source directly and the `bin` runs `src/cli.ts`, so the source must run with Node type stripping. There is no build step.

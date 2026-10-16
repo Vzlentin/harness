@@ -51,7 +51,7 @@ async function openDurable(store: string): Promise<Harness> {
 
 /**
  * A pi-durable host over `store` with the `subagent` tool, where the caller is `durable-test:<conversation ID>`. With
- * `hangSpawn`, a spawn reaches the subagent host, but the tool call never finishes.
+ * `hangSpawn`, a spawn reaches the harness host, but the tool call never finishes.
  */
 async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
 	const registry = durable.createRegistry();
@@ -618,20 +618,20 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(clients[1]?.pid).toBe(pid);
 			expect(pid).not.toBe(process.pid);
 			// The other started host finds the lock held and exits.
-			const log = join(state, "pi-subagent", "host.log");
-			await until(() => readFileSync(log, "utf8").includes("Another subagent host runs"));
+			const log = join(state, "harness", "host.log");
+			await until(() => readFileSync(log, "utf8").includes("Another harness host runs"));
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			if (pid !== undefined) process.kill(pid, "SIGTERM");
 		}
-		await until(() => !existsSync(join(state, "pi-subagent", "host.sock")));
+		await until(() => !existsSync(join(state, "harness", "host.sock")));
 	});
 
 	it("stops waiting for the host to start when the request aborts", async () => {
 		const state = join(root, "state3");
-		await mkdir(join(state, "pi-subagent"), { recursive: true });
+		await mkdir(join(state, "harness"), { recursive: true });
 		// With the lock held, the started host exits at once, and nothing ever listens.
-		const lock = new DatabaseSync(join(state, "pi-subagent", "lock.sqlite"));
+		const lock = new DatabaseSync(join(state, "harness", "lock.sqlite"));
 		lock.exec("BEGIN EXCLUSIVE");
 		process.env.XDG_STATE_HOME = state;
 		try {
@@ -640,8 +640,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 				name: "TimeoutError",
 			});
 			// The lock stays held until the started host has found it held and exited.
-			const log = join(state, "pi-subagent", "host.log");
-			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another subagent host runs"));
+			const log = join(state, "harness", "host.log");
+			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another harness host runs"));
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			lock.close();

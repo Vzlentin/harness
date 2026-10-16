@@ -44,7 +44,7 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 	viewer.reporter.report(viewer.child.state === "busy");
 	watcher.listen(
 		(line) => viewer.onLine(line),
-		() => void viewer.finish(1, "The subagent host closed the connection"),
+		() => void viewer.finish(1, "The harness host closed the connection"),
 	);
 	return viewer.exited;
 }
@@ -179,7 +179,7 @@ class Viewer {
 
 async function hostClient(): Promise<Client> {
 	const client = await connect({ start: true });
-	if (client === undefined) throw new Error("Could not connect to the subagent host");
+	if (client === undefined) throw new Error("Could not connect to the harness host");
 	return client;
 }
 

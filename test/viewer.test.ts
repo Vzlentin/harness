@@ -193,7 +193,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			// The child is idle, so no watch line comes before the close.
 			expect((await watcher.request({ type: "watch", handle })).child.state).toBe("idle");
 			await expect(watcher.request({ type: "status", handle })).rejects.toThrow(
-				"The subagent host closed the connection",
+				"The harness host closed the connection",
 			);
 		} finally {
 			watcher.close();
@@ -295,15 +295,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		const reports = logLines(herdr.log);
-		const resume = `-- subagent attach ${handle}`;
+		const resume = `-- harness attach ${handle}`;
 		expect(reports[0]).toBe(
-			`pane report-agent --source custom:pi-subagent --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
+			`pane report-agent --source custom:harness --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
 		);
 		expect(reports).toContain(
-			`pane report-agent --source custom:pi-subagent --agent viewed --state working --seq ${seqOf(reports[1])} pane-7 ${resume}`,
+			`pane report-agent --source custom:harness --agent viewed --state working --seq ${seqOf(reports[1])} pane-7 ${resume}`,
 		);
 		expect(reports.at(-1)).toBe(
-			`pane release-agent --source custom:pi-subagent --agent viewed --seq ${seqOf(reports.at(-1))} pane-7`,
+			`pane release-agent --source custom:harness --agent viewed --seq ${seqOf(reports.at(-1))} pane-7`,
 		);
 		const seqs = reports.map(seqOf);
 		expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
@@ -355,7 +355,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			delete process.env.HERDR_ENV;
 			await command.handler("", ctx);
 			expect(logLines(herdr.log)).toHaveLength(4);
-			expect(notes).toEqual([`Run in another terminal: subagent attach ${handle}`]);
+			expect(notes).toEqual([`Run in another terminal: harness attach ${handle}`]);
 		} finally {
 			process.env = saved;
 		}

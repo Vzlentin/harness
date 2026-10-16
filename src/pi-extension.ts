@@ -58,7 +58,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 			const chosen = await ctx.ui.select("Attach to subagent", lines);
 			const child = chosen === undefined ? undefined : children[lines.indexOf(chosen)];
 			if (child === undefined) return;
-			const command = `subagent attach ${child.handle}`;
+			const command = `harness attach ${child.handle}`;
 			if (!process.env.HERDR_ENV) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 				return;

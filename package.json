@@ -1,13 +1,14 @@
 {
-	"name": "pi-subagent",
+	"name": "harness",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Observable, persistent Pi subagents",
+	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
 	"keywords": [
 		"pi-package"
 	],
 	"type": "module",
 	"bin": {
+		"harness": "./src/cli.ts",
 		"subagent": "./src/cli.ts"
 	},
 	"pi": {
