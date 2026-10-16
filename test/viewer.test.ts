@@ -244,9 +244,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const lines: WatchLine[] = [];
 			void collect(watched.lines, lines);
 			const sent = await client.request({
-				type: "send",
+				type: "input",
 				requestId: "watch-connection-send",
-				caller: watched.caller,
 				handle,
 				message: "On the watch connection",
 				followUp: false,
@@ -295,7 +294,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const requests = vi.spyOn(Client.prototype, "request");
 		const sent = () =>
 			requests.mock.calls.flatMap(([sentRequest]) =>
-				sentRequest.type === "send" || sentRequest.type === "abort" ? [sentRequest as Request] : [],
+				sentRequest.type === "input" || sentRequest.type === "abort" ? [sentRequest as Request] : [],
 			);
 		const terminal = new FakeTerminal();
 		const env = { ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-7" };
@@ -323,11 +322,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await until(() => sent().length === 4);
 			gates.get("Busy turn")?.resolve();
 			await until(() => terminal.text().includes("Answer to Then this"));
-			expect(sent().map((r) => (r.type === "send" ? [r.message, r.followUp, r.caller] : r.type))).toEqual([
-				["Hello there", false, "cli"],
-				["Busy turn", false, "cli"],
-				["Steer it", false, "cli"],
-				["Then this", true, "cli"],
+			expect(sent().map((r) => (r.type === "input" ? [r.message, r.followUp] : r.type))).toEqual([
+				["Hello there", false],
+				["Busy turn", false],
+				["Steer it", false],
+				["Then this", true],
 			]);
 			expect(called("Steer it")).toBe(1);
 

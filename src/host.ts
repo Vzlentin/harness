@@ -280,7 +280,9 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send":
-			return sendChild(request, handler);
+			return sendChild(request, handler, await ownRecord(handler.harness, request.handle, request.caller));
+		case "input":
+			return sendChild(request, handler, await childRecord(handler.harness, request.handle));
 		case "wait":
 			return waitChild(request, handler);
 		case "status":
@@ -371,10 +373,10 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 }
 
 async function sendChild(
-	request: Extract<Request, { type: "send" }>,
+	request: Extract<Request, { type: "send" | "input" }>,
 	handler: Handler,
+	record: ChildRecord,
 ): Promise<{ verb: string; child: ChildInfo }> {
-	const record = await ownRecord(handler.harness, request.handle, request.caller);
 	const child = await childOf(handler, record);
 	const busy = (await child.state(context)) === "busy";
 	await child.send(
@@ -538,7 +540,7 @@ async function serveWatch(
 		});
 		conversation.start((_view, ops) => send(ops));
 	});
-	return { view: conversation.value, child: last, caller: record.caller };
+	return { view: conversation.value, child: last };
 }
 
 /** The record of `handle` in the `Children` value `state`. */

@@ -64,7 +64,6 @@ class Viewer {
 	readonly handle: string;
 	readonly terminal: Terminal;
 	readonly client: Client;
-	readonly caller: string;
 	view: ConversationView;
 	child: ChildInfo;
 	done = false;
@@ -73,7 +72,6 @@ class Viewer {
 		this.handle = handle;
 		this.terminal = options.terminal;
 		this.client = client;
-		this.caller = watched.caller;
 		this.view = watched.view;
 		this.child = watched.child;
 
@@ -134,9 +132,8 @@ class Viewer {
 		if (message.trim() === "") return;
 		this.editor.addToHistory(message);
 		const request = {
-			type: "send",
+			type: "input",
 			requestId: randomUUID(),
-			caller: this.caller,
 			handle: this.handle,
 			message,
 			followUp,

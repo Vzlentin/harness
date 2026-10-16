@@ -252,10 +252,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// The viewer may send to the child of any caller.
-		const watched = await request({ type: "watch", handle }, { start: false });
-		expect(watched?.caller).toBe("other-session");
-		const caller = watched?.caller ?? "";
-		const viewer = { type: "send", requestId: "viewer-send", caller, handle, message: "From viewer" } as const;
+		const viewer = { type: "input", requestId: "viewer-input", handle, message: "From viewer" } as const;
 		const sent = await request({ ...viewer, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From viewer\n`);

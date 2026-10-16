@@ -56,7 +56,15 @@ export type Request =
 	 */
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
-	| { readonly type: "abort"; readonly handle: string };
+	| { readonly type: "abort"; readonly handle: string }
+	/** The viewer's message to the child. It has no caller. */
+	| {
+			readonly type: "input";
+			readonly requestId: string;
+			readonly handle: string;
+			readonly message: string;
+			readonly followUp: boolean;
+	  };
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -68,8 +76,9 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
-	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo; readonly caller: string };
+	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
+	readonly input: Replies["send"];
 };
 
 /**
