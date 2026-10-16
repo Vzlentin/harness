@@ -11,7 +11,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { connect, request, watch } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
-import type { Host } from "../src/host.ts";
+import { type Host, runHost } from "../src/host.ts";
 import { SESSION_TRUST_HINT } from "../src/pi-extension.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
@@ -582,6 +582,28 @@ describe("subagent", { timeout: 30_000 }, () => {
 		host = await startHost();
 		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nSurvive\n`);
 		expect(called("Task:\nSurvive")).toBe(2);
+	});
+
+	it("refuses a store from before the children library", async () => {
+		const stateDir = join(root, "old-state");
+		await mkdir(stateDir);
+		const store = join(stateDir, "durable.sqlite");
+		const OldChildren = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
+			kind: "subagent.children",
+			version: 1,
+			scope: "session",
+			initial: () => ({ children: {}, requests: {} }),
+		});
+		const old = await Harness.open(
+			await openNodeSqliteStorage(store),
+			{ models, registry: durable.createRegistry() },
+			BACKGROUND_CONTEXT,
+		);
+		await old.commit(async (tx) => {
+			(await tx.doc(OldChildren)).requests.old = "abcdef";
+		}, BACKGROUND_CONTEXT);
+		await old.close(BACKGROUND_CONTEXT);
+		await expect(runHost({ stateDir, models })).rejects.toThrow(`${store} was written by an older pi-subagent`);
 	});
 
 	it("starts one host for two clients", async () => {

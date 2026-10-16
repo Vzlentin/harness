@@ -128,7 +128,7 @@ The children run in one host process, `subagent host`. The first command that ne
 
 The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/state/pi-subagent/`):
 
-- `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again.
+- `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
 - `lock.sqlite`: one host at a time.
 - `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 2. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
 - `host.log`: the host's output.
