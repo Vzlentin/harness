@@ -1,11 +1,11 @@
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createChildren, type Owner, type Place } from "../src/children.ts";
-import { models, root, setUp, tearDown } from "./helpers.ts";
+import { called, gates, models, root, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
 const faux = { provider: "faux", model: "faux-1" } as const;
@@ -13,10 +13,26 @@ let harness: Harness;
 let place: Place;
 let owner: Owner;
 
+/** A task that runs until it is aborted, to own children as a workflows script task does. */
+const Holder = durable.defineTask<null, { phase: "hold" }, null>({
+	name: "test.holder",
+	version: 1,
+	initial: () => ({ phase: "hold" }),
+	phases: {
+		hold: async (_task, runtime, taskContext) => {
+			await runtime.sleep(runtime.now() + 3_600_000, taskContext);
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), taskContext);
+		},
+	},
+	abort: (_task, runtime, taskContext) =>
+		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
+});
+
 beforeAll(async () => {
 	await setUp();
 	const registry = durable.createRegistry();
 	registry.install(library.extension);
+	registry.install(durable.defineExtension({ name: "test-holder", tasks: [Holder] }));
 	harness = await Harness.open(
 		await openNodeSqliteStorage(join(root, "children.sqlite")),
 		{ models, registry },
@@ -87,5 +103,49 @@ describe("children library", { timeout: 30_000 }, () => {
 		await expect(library.find(place, other, { id: String(child.id) }, context)).rejects.toThrow(
 			`The child ${child.id} belongs to another owner`,
 		);
+	});
+
+	it("aborts the turn of a child when its owner task aborts", async () => {
+		const rootConversation = await harness.root(context);
+		const taskId = await rootConversation.commit(
+			(tx) => tx.createTask(Holder, null, { ownership: { kind: "conversation" } }),
+			context,
+		);
+		const taskOwner: Owner = { kind: "task", taskId, conversation: rootConversation.id };
+		const child = await library.open(place, taskOwner, "t:owned", { root: "test", ...faux, cwd: root }, context);
+		gates.set("Owned", Promise.withResolvers());
+		await child.send({ type: "input", content: "Owned", requestId: "r1" }, context);
+		await until(() => called("Owned") === 1);
+		await harness.abortTask(taskId, context);
+		expect(await child.settled(context, "r1")).toMatchObject({
+			status: "failed",
+			reason: "unanswered",
+			cause: "aborted",
+		});
+	});
+
+	it("stops only the wait when a wait is cancelled", async () => {
+		const child = await library.open(place, owner, "t:slow", { root: "test", ...faux, cwd: root }, context);
+		const gate = Promise.withResolvers<void>();
+		gates.set("Slow", gate);
+		await child.send({ type: "input", content: "Slow", requestId: "r1" }, context);
+		await until(() => called("Slow") === 1);
+		const wait = withCancel(context);
+		const waiting = child.settled(wait.context, "r1");
+		wait.cancel();
+		await expect(waiting).rejects.toThrow();
+		gate.resolve();
+		expect(await child.settled(context, "r1")).toMatchObject({ status: "ok", text: "Answer to Slow" });
+	});
+
+	it("withdraws queued input when it closes a child", async () => {
+		const child = await library.open(place, owner, "t:queue", { root: "test", ...faux, cwd: root }, context);
+		gates.set("Busy", Promise.withResolvers());
+		await child.send({ type: "input", content: "Busy", requestId: "r1" }, context);
+		await until(() => called("Busy") === 1);
+		await child.send({ type: "input", content: "Queued", whenBusy: "followUp", requestId: "r2" }, context);
+		await child.close(context);
+		expect(await child.settled(context, "r2")).toMatchObject({ status: "failed", reason: "unanswered" });
+		expect(called("Queued")).toBe(0);
 	});
 });
