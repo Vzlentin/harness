@@ -37,7 +37,6 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
 	type ChildInfo,
 	type ChildState,
@@ -49,6 +48,7 @@ import {
 	type Request,
 	type WatchLine,
 } from "./client.ts";
+import { ChildContext } from "./context.ts";
 import { subagentTool } from "./durable.ts";
 
 /** The root of this package, whose `piDurable` entry the host does not load. */
@@ -143,7 +143,7 @@ export async function runHost(options: {
 		caller: async (api) => String(api.conversationId),
 		send: (request, signal) => handleRequest(request, { harness, models, registry, signal }),
 	});
-	const selected = [CodingTools, tool, ...entries.extensions];
+	const selected = [ChildContext, tool, ...entries.extensions];
 	try {
 		for (const extension of selected) registry.install(extension);
 		registry.install(SubagentTasks);

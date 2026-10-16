@@ -38,7 +38,9 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		model: text("spawn: the model; default yours"),
 		thinking: text("spawn: off, minimal, low, medium, high, xhigh or max; default yours"),
 		cwd: text("spawn: the child's working directory; default yours"),
-		tools: texts("spawn: the only tools the child gets; default read, write, edit, bash and the package tools"),
+		tools: texts(
+			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash and the package tools",
+		),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),
 		handle: text("send, wait, status, rename, stop: the hex ID that spawn prints in parentheses, not the name"),
