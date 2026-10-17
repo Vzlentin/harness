@@ -4,7 +4,7 @@ A durable agent harness on Pi's libraries and pi-durable. It starts with observa
 
 Each subagent is a conversation in one durable host process. The parent can inspect status, wait for durable results, steer active work, and queue follow-ups.
 
-Pi gets the `subagent` tool, the `/subagent` command and the skill from [pi-subagent](https://github.com/Vzlentin/pi-subagent), which uses this package as a library.
+Pi gets the `subagent` tool and the `/subagent` command from a Pi extension that imports this checkout (see [Pi](#pi)).
 
 ## Requirements
 
@@ -22,7 +22,11 @@ ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/harness
 ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/subagent
 ```
 
-The checkout runs from its TypeScript source. `npm ci` and an install as a dependency also build `dist/` (the `prepare` script), because Node does not strip types under `node_modules`. Other packages import the modules of `dist/` through the `exports` of `package.json`: `harness/client`, `harness/protocol`, `harness/tool`, `harness/herdr`, `harness/trust` and `harness/host`. A process that a module of `dist/` starts, such as the host or a Herdr viewer tab, runs `dist/cli.js`.
+The checkout runs from its TypeScript source, with Node type stripping. There is no build step.
+
+## Pi
+
+The Pi extension `subagent.ts` and the `subagent` skill are in [Vzlentin/dotfiles](https://github.com/Vzlentin/dotfiles). The extension imports `src/client.ts`, `src/tool.ts`, `src/protocol.ts`, `src/herdr.ts` and `src/trust.ts` from this checkout, by default `~/Dev/perso/harness` (`HARNESS_DIR` changes it). So Pi and the CLI run the same code and start the same host, from `src/cli.ts`.
 
 ## Tool
 
@@ -45,7 +49,7 @@ A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` 
 
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
-- In Pi, pi-subagent gives the tool. The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
+- In Pi, the extension gives the tool. The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
 - In a pi-durable host, the `piDurable` entry `src/durable-entry.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
@@ -107,7 +111,7 @@ harness attach a1b2c3
 
 The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller. The viewer sends text with an `input` request, stops a turn with an `abort` request, and changes the model or the thinking level with a `configure` request. None of these requests has a caller.
 
-`openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs `env <node> <cli> attach <handle>`: the viewer with this Node and this package's CLI (`src/cli.ts` in a checkout, `dist/cli.js` under `node_modules`), so it does not need `harness` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. When a `herdr` call fails, it rejects with the stderr of `herdr`, or with the reason that the call failed.
+`openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs `env <node> <checkout>/src/cli.ts attach <handle>`: the viewer with this Node and this checkout's CLI, so it does not need `harness` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. When a `herdr` call fails, it rejects with the stderr of `herdr`, or with the reason that the call failed.
 
 ## Viewer
 
@@ -138,7 +142,7 @@ The viewer uses Pi's default theme and keys, not your Pi settings.
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
-In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <cli> attach <handle>`. The resume command is the same command that `openViewerTab` runs. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <checkout>/src/cli.ts attach <handle>`. The resume command is the same command that `openViewerTab` runs. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
 
 ## Host
 
