@@ -2,16 +2,21 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { apply } from "@earendil-works/chord/delta";
 import { getSelectListTheme, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { type ConversationView, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
+import { type ConversationView, type EntryRecord, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
 import {
 	type Component,
 	Container,
 	Editor,
+	fuzzyFilter,
+	Input,
 	type KeybindingDefinitions,
 	KeybindingsManager,
 	Loader,
 	matchesKey,
+	type OverlayHandle,
 	ScrollView,
+	type SelectItem,
+	SelectList,
 	setKeybindings,
 	type Terminal,
 	Text,
@@ -19,11 +24,12 @@ import {
 	TuiAltScreen,
 	truncateToWidth,
 	VStack,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { ChatView, inboxOf, liveOf, queuedLines, queuedTexts, statusText } from "./chat.ts";
 import { type Client, connect } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
-import { type ChildInfo, childLabel, runDisplayName, type WatchLine } from "./protocol.ts";
+import { type ChildInfo, childLabel, type ModelInfo, runDisplayName, type WatchLine } from "./protocol.ts";
 
 // Pi gives its theme object only to extensions. Pi's cards color with the theme that `initTheme()` sets in this module,
 // so the viewer loads the same module by its path to color its own lines the same way.
@@ -48,19 +54,28 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 	const client = await connect({ start: true });
 	if (client === undefined) throw new Error("Could not connect to the harness host");
 	let watched: Awaited<ReturnType<Client["watch"]>>;
+	let models: readonly ModelInfo[];
 	try {
 		watched = await client.watch(handle);
+		models = await client.request({ type: "models" });
 	} catch (error) {
 		client.close();
 		throw error;
 	}
-	return new Viewer(handle, options, client, watched).start();
+	return new Viewer(handle, options, client, watched, models).start();
 }
 
-/** One line, cut to the width. */
+/** One line, cut to the width, with `hints` at the right end: the first hints go when they do not all fit. */
 class Line implements Component {
 	text = "";
+	hints: readonly string[] = [];
+	style: (text: string) => string = (text) => text;
 	render(width: number): string[] {
+		for (let first = 0; first < this.hints.length; first++) {
+			const right = `${this.hints.slice(first).join(" · ")} `;
+			const gap = width - visibleWidth(this.text) - visibleWidth(right);
+			if (gap >= 2) return [`${this.text}${" ".repeat(gap)}${this.style(right)}`];
+		}
 		return [truncateToWidth(this.text, width)];
 	}
 	invalidate(): void {}
@@ -89,10 +104,19 @@ class Viewer {
 	private view: ConversationView;
 	private readonly lines: AsyncIterable<WatchLine>;
 	private child: ChildInfo;
+	private readonly models: readonly ModelInfo[];
+	private picker: OverlayHandle | undefined;
 	private done = false;
 
-	constructor(handle: string, options: AttachOptions, client: Client, watched: Awaited<ReturnType<Client["watch"]>>) {
+	constructor(
+		handle: string,
+		options: AttachOptions,
+		client: Client,
+		watched: Awaited<ReturnType<Client["watch"]>>,
+		models: readonly ModelInfo[],
+	) {
 		this.handle = handle;
+		this.models = models;
 		this.terminal = options.terminal;
 		this.client = client;
 		this.view = watched.view;
@@ -174,10 +198,11 @@ class Viewer {
 			[
 				`${child.provider}/${child.model} · ${child.thinking}`,
 				`${compactCount(usage.tokens)} tok $${usage.cost.toFixed(3)}`,
-				"ctrl+o expand",
-				"ctrl+c exit",
+				...this.contextText(),
 			].join(" │ "),
 		)}`;
+		this.footer.style = (text) => this.color("dim", text);
+		this.footer.hints = ["shift+tab thinking", "ctrl+l model", "ctrl+o expand", "ctrl+c exit"];
 		this.tui.requestRender();
 	}
 
@@ -199,6 +224,16 @@ class Viewer {
 	}
 
 	private handleKey(data: string): { consume: true } | undefined {
+		// The model picker gets every key while it shows.
+		if (this.picker !== undefined) return undefined;
+		if (matchesKey(data, "shift+tab")) {
+			this.cycleThinking();
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+l")) {
+			this.pickModel();
+			return { consume: true };
+		}
 		if (matchesKey(data, "ctrl+c")) {
 			void this.finish(0, `${runDisplayName(this.child)} keeps running. Reattach: harness attach ${this.handle}`);
 			return { consume: true };
@@ -235,6 +270,83 @@ class Viewer {
 			return { consume: true };
 		}
 		return undefined;
+	}
+
+	/** `<used>%/<window> ctx` for the last answer's prompt and output, when the host knows the model. */
+	private contextText(): string[] {
+		const window = this.modelInfo()?.contextWindow;
+		const used = lastUsage(this.view.entries);
+		if (window === undefined || window === 0 || used === undefined) return [];
+		return [`${((100 * used) / window).toFixed(1)}%/${compactCount(window)} ctx`];
+	}
+
+	private modelInfo(): ModelInfo | undefined {
+		return this.models.find((model) => model.provider === this.child.provider && model.id === this.child.model);
+	}
+
+	/** Shift+Tab: the next thinking level of the child's model, after the last one `off` again. */
+	private cycleThinking(): void {
+		const levels = this.modelInfo()?.thinkingLevels ?? [];
+		if (levels.length < 2) {
+			this.showNotice(`${this.child.provider}/${this.child.model} has no thinking levels`);
+			return;
+		}
+		const thinking = levels[(levels.indexOf(this.child.thinking) + 1) % levels.length];
+		this.configure({ type: "configure", handle: this.handle, ...(thinking === undefined ? {} : { thinking }) });
+	}
+
+	/** Ctrl+L: a list of the models with a login. Typing filters it, Enter picks, Esc closes. */
+	private pickModel(): void {
+		if (this.models.length === 0) {
+			this.showNotice("The host has no models with a login");
+			return;
+		}
+		const items = this.models.map((model) => ({
+			value: `${model.provider}/${model.id}`,
+			label: `${model.provider}/${model.id}`,
+			description: model.name,
+		}));
+		const close = () => {
+			this.picker?.hide();
+			this.picker = undefined;
+			this.tui.setFocus(this.editor);
+			this.tui.requestRender();
+		};
+		const picker = new ModelPicker(
+			items,
+			`${this.child.provider}/${this.child.model}`,
+			(text) => this.color("borderMuted", text),
+			(item) => {
+				close();
+				const model = this.models.find((found) => `${found.provider}/${found.id}` === item.value);
+				if (model !== undefined) {
+					this.configure({ type: "configure", handle: this.handle, provider: model.provider, model: model.id });
+				}
+			},
+			close,
+		);
+		this.picker = this.tui.showOverlay(picker, { width: "70%", minWidth: 40, maxHeight: "60%" });
+		this.tui.setFocus(picker);
+		this.tui.requestRender();
+	}
+
+	private configure(request: {
+		readonly type: "configure";
+		readonly handle: string;
+		readonly provider?: string;
+		readonly model?: string;
+		readonly thinking?: string;
+	}): void {
+		this.client.request(request).then((child) => {
+			this.child = child;
+			this.notice.setText("");
+			this.render();
+		}, this.showError);
+	}
+
+	private showNotice(text: string): void {
+		this.notice.setText(this.color("muted", text));
+		this.tui.requestRender();
 	}
 
 	/** Aborts the turn. The host withdraws the queued messages, so they go back to the editor, steers first. */
@@ -315,4 +427,82 @@ function compactCount(count: number): string {
 function tildePath(path: string): string {
 	const home = homedir();
 	return home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
+}
+
+/** The prompt and output tokens of the last answer, which fill the context window of the next request. */
+function lastUsage(entries: readonly EntryRecord[]): number | undefined {
+	for (const entry of entries.toReversed()) {
+		const message = entry.model?.[0];
+		if (entry.kind !== "pi.assistant" || message?.role !== "assistant") continue;
+		const { usage } = message;
+		return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	}
+	return undefined;
+}
+
+/** The keys that the list of the model picker gets; the filter gets the others. */
+const LIST_KEYS = ["up", "down", "enter", "escape", "pageUp", "pageDown"] as const;
+
+/** A filter over a list of models, fuzzy as Pi's model selector: typing narrows the list, ↑↓ move, Enter picks, Esc closes. */
+class ModelPicker implements Component {
+	private readonly input = new Input();
+	private readonly items: SelectItem[];
+	private readonly onSelect: (item: SelectItem) => void;
+	private readonly onCancel: () => void;
+	private readonly border: (text: string) => string;
+	private list: SelectList;
+	focused = true;
+
+	constructor(
+		items: SelectItem[],
+		current: string,
+		border: (text: string) => string,
+		onSelect: (item: SelectItem) => void,
+		onCancel: () => void,
+	) {
+		this.items = items;
+		this.border = border;
+		this.onSelect = onSelect;
+		this.onCancel = onCancel;
+		this.input.focused = true;
+		this.list = this.listOf(items);
+		this.list.setSelectedIndex(
+			Math.max(
+				0,
+				items.findIndex((item) => item.value === current),
+			),
+		);
+	}
+
+	/** A frame with full-width lines, so the transcript does not show through. */
+	render(width: number): string[] {
+		const inner = Math.max(1, width - 2);
+		const body = [" Model", ...this.input.render(inner), ...this.list.render(inner)].map((line) => {
+			const cut = truncateToWidth(line, inner);
+			return `${this.border("│")}${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))}${this.border("│")}`;
+		});
+		return [this.border(`╭${"─".repeat(inner)}╮`), ...body, this.border(`╰${"─".repeat(inner)}╯`)];
+	}
+
+	handleInput(data: string): void {
+		if (LIST_KEYS.some((key) => matchesKey(data, key))) {
+			this.list.handleInput(data);
+			return;
+		}
+		this.input.handleInput(data);
+		const query = this.input.getValue();
+		this.list = this.listOf(fuzzyFilter(this.items, query, (item) => `${item.label} ${item.description ?? ""}`));
+	}
+
+	invalidate(): void {
+		this.input.invalidate();
+		this.list.invalidate();
+	}
+
+	private listOf(items: SelectItem[]): SelectList {
+		const list = new SelectList(items, 10, getSelectListTheme());
+		list.onSelect = this.onSelect;
+		list.onCancel = this.onCancel;
+		return list;
+	}
 }

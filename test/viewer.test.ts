@@ -392,6 +392,48 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(terminal.text()).toContain(`carded (${handle}) keeps running. Reattach: harness attach ${handle}\n`);
 	});
 
+	it("changes the thinking level with Shift+Tab and the model with Ctrl+L", async () => {
+		const handle = handleOf(await cli(["spawn", "--name", "tuned", "--prompt", "Tune me"]));
+		await cli(["wait", handle]);
+		const models = (await request({ type: "models" }, { start: false })) ?? [];
+		expect(models.map((model) => `${model.provider}/${model.id}`)).toEqual(["faux/faux-1", "faux/faux-2"]);
+		const levels = models[0]?.thinkingLevels ?? [];
+		const next = levels[(levels.indexOf("medium") + 1) % levels.length];
+		const window = models[0]?.contextWindow ?? 0;
+		expect(window).toBeGreaterThan(0);
+
+		const terminal = new FakeTerminal();
+		const exited = attach(handle, { terminal, env: process.env });
+		await until(() => terminal.text().includes("Answer to Task:"));
+		expect(terminal.text()).toMatch(/\d+\.\d%\/\S+ ctx/);
+
+		terminal.input("\u001b[Z");
+		await until(() => terminal.text().includes(`faux/faux-1 · ${next}`));
+		expect((await cli(["status", handle])).stdout).toBe(`tuned (${handle}): idle (faux/faux-1, ${next})\n`);
+
+		terminal.input("\u000c");
+		await until(() => terminal.text().includes("faux/faux-2"));
+		terminal.input("faux-2");
+		terminal.input("\r");
+		await until(() => terminal.text().includes(`faux/faux-2 · ${next}`));
+		expect((await cli(["status", handle])).stdout).toBe(`tuned (${handle}): idle (faux/faux-2, ${next})\n`);
+
+		// The host refuses a level that the model does not have, and a model that it does not know.
+		const client = await hostClient();
+		try {
+			await expect(client.request({ type: "configure", handle, thinking: "loud" })).rejects.toThrow(
+				"faux/faux-2 has no thinking level loud",
+			);
+			await expect(client.request({ type: "configure", handle, provider: "faux", model: "nope" })).rejects.toThrow(
+				"Unknown model: faux/nope",
+			);
+		} finally {
+			client.close();
+		}
+		terminal.input("\u0003");
+		expect(await exited).toBe(0);
+	});
+
 	it("opens the viewer of a child in a Herdr tab", async () => {
 		const herdr = await fakeHerdr();
 		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));

@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -36,6 +36,7 @@ import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
+	type ModelInfo,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -289,6 +290,10 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return childInfo(handler, request.handle);
 		case "abort":
 			return abortChild(request, handler);
+		case "configure":
+			return configureChild(request, handler);
+		case "models":
+			return modelInfos(handler.place.models);
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 			return serveWatch(handler, request.handle, handler.connection);
@@ -412,6 +417,34 @@ async function abortChild(request: Extract<Request, { type: "abort" }>, handler:
 	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
 	await child.conversation.abort(context);
 	return childInfo(handler, request.handle);
+}
+
+async function configureChild(request: Extract<Request, { type: "configure" }>, handler: Handler): Promise<ChildInfo> {
+	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
+	const agent = await child.conversation.agent(context);
+	const provider = request.provider ?? agent?.model?.provider;
+	const modelId = request.model ?? agent?.model?.modelId;
+	if (provider === undefined || modelId === undefined) throw new Error(`Subagent ${request.handle} has no model`);
+	const model = handler.place.models.getModel(provider, modelId);
+	if (model === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
+	let thinkingLevel = clampThinkingLevel(model, agent?.thinkingLevel ?? "off");
+	if (request.thinking !== undefined) {
+		const level = getSupportedThinkingLevels(model).find((supported) => supported === request.thinking);
+		if (level === undefined) throw new Error(`${provider}/${modelId} has no thinking level ${request.thinking}`);
+		thinkingLevel = level;
+	}
+	await child.conversation.configure({ model: { provider, modelId }, thinkingLevel }, context);
+	return childInfo(handler, request.handle);
+}
+
+async function modelInfos(models: Models): Promise<ModelInfo[]> {
+	return (await models.getAvailable()).map((model) => ({
+		provider: model.provider,
+		id: model.id,
+		name: model.name,
+		contextWindow: model.contextWindow,
+		thinkingLevels: getSupportedThinkingLevels(model),
+	}));
 }
 
 async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {

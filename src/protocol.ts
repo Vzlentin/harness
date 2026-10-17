@@ -5,7 +5,7 @@ import type { Op } from "@earendil-works/chord/delta";
 import type { ConversationView } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 export type ChildState = "busy" | "idle" | "error";
 
@@ -19,6 +19,16 @@ export type ChildInfo = {
 	readonly thinking: string;
 	/** The child's working directory. */
 	readonly cwd: string;
+};
+
+/** A model that the host can run, with what the viewer needs to show and change it. */
+export type ModelInfo = {
+	readonly provider: string;
+	readonly id: string;
+	readonly name: string;
+	readonly contextWindow: number;
+	/** The thinking levels of the model, from `off`. */
+	readonly thinkingLevels: readonly string[];
 };
 
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
@@ -57,6 +67,19 @@ export type Request =
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
 	| { readonly type: "abort"; readonly handle: string }
+	/** The models that have a login, for the viewer's model picker and context window. */
+	| { readonly type: "models" }
+	/**
+	 * The viewer's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
+	 * when the model has it, and takes the nearest level that it has otherwise.
+	 */
+	| {
+			readonly type: "configure";
+			readonly handle: string;
+			readonly provider?: string;
+			readonly model?: string;
+			readonly thinking?: string;
+	  }
 	/** The viewer's message to the child. It has no caller. */
 	| {
 			readonly type: "input";
@@ -79,6 +102,8 @@ export type Replies = {
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
 	readonly input: Replies["send"];
+	readonly models: readonly ModelInfo[];
+	readonly configure: ChildInfo;
 };
 
 /**
