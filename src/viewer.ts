@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { apply } from "@earendil-works/chord/delta";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSelectListTheme, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type ConversationView, type EntryRecord, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
 import {
@@ -335,7 +336,7 @@ class Viewer {
 		readonly handle: string;
 		readonly provider?: string;
 		readonly model?: string;
-		readonly thinking?: string;
+		readonly thinking?: ModelThinkingLevel;
 	}): void {
 		this.client.request(request).then((child) => {
 			this.child = child;

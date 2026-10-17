@@ -2,10 +2,11 @@ import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Op } from "@earendil-works/chord/delta";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export type ChildState = "busy" | "idle" | "error";
 
@@ -16,7 +17,7 @@ export type ChildInfo = {
 	readonly state: ChildState;
 	readonly provider: string;
 	readonly model: string;
-	readonly thinking: string;
+	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
 };
@@ -28,7 +29,7 @@ export type ModelInfo = {
 	readonly name: string;
 	readonly contextWindow: number;
 	/** The thinking levels of the model, from `off`. */
-	readonly thinkingLevels: readonly string[];
+	readonly thinkingLevels: readonly ModelThinkingLevel[];
 };
 
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
@@ -41,7 +42,10 @@ export type Request =
 			readonly name?: string;
 			readonly provider: string;
 			readonly model: string;
-			readonly thinking: string;
+			/** The level the caller asks for; the host refuses it when the model does not have it. */
+			readonly thinking?: string;
+			/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
+			readonly callerThinking: string;
 			readonly cwd: string;
 			readonly tools?: readonly string[];
 			readonly prompt: string;
@@ -78,7 +82,7 @@ export type Request =
 			readonly handle: string;
 			readonly provider?: string;
 			readonly model?: string;
-			readonly thinking?: string;
+			readonly thinking?: ModelThinkingLevel;
 	  }
 	/** The viewer's message to the child. It has no caller. */
 	| {

@@ -421,8 +421,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// The host refuses a level that the model does not have, and a model that it does not know.
 		const client = await hostClient();
 		try {
-			await expect(client.request({ type: "configure", handle, thinking: "loud" })).rejects.toThrow(
-				"faux/faux-2 has no thinking level loud",
+			await expect(client.request({ type: "configure", handle, thinking: "xhigh" })).rejects.toThrow(
+				"faux/faux-2 has no thinking level xhigh",
 			);
 			await expect(client.request({ type: "configure", handle, provider: "faux", model: "nope" })).rejects.toThrow(
 				"Unknown model: faux/nope",

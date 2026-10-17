@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
+import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -31,7 +31,15 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type Answer, type Child, createChildren, type Owner, type Place, type Spec } from "./children.ts";
+import {
+	type Answer,
+	type Child,
+	createChildren,
+	type Owner,
+	type Place,
+	resolveModel,
+	type Spec,
+} from "./children.ts";
 import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
@@ -348,7 +356,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			...(parent === undefined ? { root: request.caller } : { parent }),
 			provider: request.provider,
 			model: request.model,
-			thinking: request.thinking,
+			...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+			fallbackThinking: request.callerThinking,
 			cwd: request.cwd,
 			...(request.tools === undefined ? {} : { tools: request.tools }),
 		};
@@ -422,18 +431,7 @@ async function abortChild(request: Extract<Request, { type: "abort" }>, handler:
 async function configureChild(request: Extract<Request, { type: "configure" }>, handler: Handler): Promise<ChildInfo> {
 	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
 	const agent = await child.conversation.agent(context);
-	const provider = request.provider ?? agent?.model?.provider;
-	const modelId = request.model ?? agent?.model?.modelId;
-	if (provider === undefined || modelId === undefined) throw new Error(`Subagent ${request.handle} has no model`);
-	const model = handler.place.models.getModel(provider, modelId);
-	if (model === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
-	let thinkingLevel = clampThinkingLevel(model, agent?.thinkingLevel ?? "off");
-	if (request.thinking !== undefined) {
-		const level = getSupportedThinkingLevels(model).find((supported) => supported === request.thinking);
-		if (level === undefined) throw new Error(`${provider}/${modelId} has no thinking level ${request.thinking}`);
-		thinkingLevel = level;
-	}
-	await child.conversation.configure({ model: { provider, modelId }, thinkingLevel }, context);
+	await child.conversation.configure(resolveModel(handler.place.models, agent, request), context);
 	return childInfo(handler, request.handle);
 }
 
