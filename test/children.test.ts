@@ -132,6 +132,56 @@ describe("children library", { timeout: 30_000 }, () => {
 		});
 	});
 
+	it("finds the children of an ended task from a new task of its group, and only from that group", async () => {
+		const rootConversation = await harness.root(context);
+		const holder = () =>
+			rootConversation.commit((tx) => tx.createTask(Holder, null, { ownership: { kind: "conversation" } }), context);
+		const first = await holder();
+		const ownerOf = (taskId: TaskId, group?: string): Owner => ({
+			kind: "task",
+			taskId,
+			conversation: rootConversation.id,
+			...(group === undefined ? {} : { group }),
+		});
+		const child = await library.open(
+			place,
+			ownerOf(first, "run-1"),
+			"t:group",
+			{ root: "test", ...faux, cwd: root },
+			context,
+		);
+		expect(await child.ask({ type: "input", content: "Grouped", requestId: "r1" }, context)).toMatchObject({
+			status: "ok",
+			text: "Answer to Grouped",
+		});
+		await harness.abortTask(first, context);
+		const second = await holder();
+		const found = await library.find(place, ownerOf(second, "run-1"), { key: "t:group" }, context);
+		expect(found?.id).toBe(child.id);
+		expect(await found?.ask({ type: "input", content: "Again", requestId: "r2" }, context)).toMatchObject({
+			status: "ok",
+			text: "Answer to Again",
+		});
+		for (const other of [ownerOf(second, "run-2"), ownerOf(first)]) {
+			await expect(library.find(place, other, { key: "t:group" }, context)).rejects.toThrow(
+				`The child ${child.id} belongs to another owner`,
+			);
+		}
+		await harness.abortTask(second, context);
+	});
+
+	it("closes only the subtree under a child with below, and the child stays open", async () => {
+		const parent = await library.open(place, owner, "t:below", { root: "test", ...faux, cwd: root }, context);
+		const child = await library.open(place, owner, "t:below-child", { parent: String(parent.id), ...faux }, context);
+		expect(await parent.close(context, { below: true })).toEqual([child.id]);
+		expect(await child.state(context)).toBe("closed");
+		expect(await parent.state(context)).toBe("idle");
+		expect(await parent.ask({ type: "input", content: "Still open", requestId: "r1" }, context)).toMatchObject({
+			status: "ok",
+			text: "Answer to Still open",
+		});
+	});
+
 	it("stops only the wait when a wait is cancelled", async () => {
 		const child = await library.open(place, owner, "t:slow", { root: "test", ...faux, cwd: root }, context);
 		const gate = Promise.withResolvers<void>();
