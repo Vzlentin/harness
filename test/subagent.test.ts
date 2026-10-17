@@ -14,6 +14,7 @@ import { createChildren } from "../src/children.ts";
 import { type Client, connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
+import { projectDir } from "../src/projects.ts";
 import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
@@ -562,14 +563,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ stateDir, project: "a", models })).rejects.toThrow(
+		await expect(runHost({ stateDir, project: "a", cwd: stateDir, models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
 		const stateDir = await childrenStore("new-state", 3);
-		const refusal = runHost({ stateDir, project: "a", models });
+		const refusal = runHost({ stateDir, project: "a", cwd: stateDir, models });
 		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
@@ -644,7 +645,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 				await defaults?.close();
 			}
 			process.env.XDG_STATE_HOME = join(root, "state-empty");
-			const empty = await runHost({ stateDir: statePaths("main").dir, project: "main", models: createModels() });
+			const empty = await runHost({
+				stateDir: statePaths("main").dir,
+				project: "main",
+				cwd: projectDir("main"),
+				models: createModels(),
+			});
 			try {
 				await expect(request({ type: "watch", handle: AGENT_HANDLE }, { start: false })).rejects.toThrow(
 					"No model for the main agent",
@@ -708,11 +714,16 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("opens the agent of a project, and refuses an unknown project", async () => {
-		expect(await cli(["nope"])).toEqual({ code: 1, stdout: "", stderr: "Unknown harness project: nope\n" });
-		const mismatch = await cli(["--project", "main", "nope"]);
-		expect(mismatch.code).toBe(1);
-		expect(mismatch.stderr).toBe("--project main does not match the project nope\n");
+	it("prints the usage for a word that is not a project, and refuses --project with a project", async () => {
+		const unknown = await cli(["lsit"]);
+		expect(unknown.code).toBe(1);
+		expect(unknown.stdout).toBe("");
+		expect(unknown.stderr).toMatch(/^Usage:/);
+		expect(await cli(["--project", "main", "main"])).toEqual({
+			code: 1,
+			stdout: "",
+			stderr: "harness main takes no --project\n",
+		});
 	});
 
 	it("starts one host for two clients", async () => {

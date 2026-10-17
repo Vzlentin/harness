@@ -21,10 +21,9 @@ import {
 import { ChatView } from "./chat.ts";
 import { footerText, headerText, Line } from "./chrome.ts";
 import { type Client, connect } from "./client.ts";
-import { agentReporter } from "./herdr.ts";
+import { agentReporter, viewerTarget } from "./herdr.ts";
 import { ModelPicker } from "./picker.ts";
 import {
-	AGENT_HANDLE,
 	type ChildInfo,
 	childLabel,
 	type ModelInfo,
@@ -62,7 +61,7 @@ const KEYBINDINGS: KeybindingDefinitions = {
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
 
 /**
- * Shows the conversation of the child `handle`, or of the project agent for `AGENT_HANDLE`, in `terminal` and sends
+ * Shows the conversation of the child `handle`, or of the project agent for `agent`, in `terminal` and sends
  * what the user types to it. It starts the host when none runs, and rejects before the terminal starts when the handle
  * is unknown. It resolves with the exit code: 0 after Ctrl+C or when the child is stopped, 1 when the host closes the
  * connection. The child keeps running.
@@ -99,6 +98,8 @@ class Viewer {
 	private readonly exited: Promise<number>;
 	readonly #exit: (code: number) => void;
 	private readonly handle: string;
+	/** The title of the child and the command that opens this viewer again. */
+	private readonly target: ReturnType<typeof viewerTarget>;
 	private readonly terminal: Terminal;
 	private readonly client: Client;
 	private view: ConversationView;
@@ -117,9 +118,7 @@ class Viewer {
 			action: () =>
 				void this.finish(
 					0,
-					this.handle === AGENT_HANDLE
-						? `${childLabel(this.child)} keeps running. Reattach: harness ${this.client.project}`
-						: `${runDisplayName(this.child)} keeps running. Reattach: harness attach ${this.handle}`,
+					`${this.target.title(this.child)} keeps running. Reattach: harness ${this.target.resume.join(" ")}`,
 				),
 			hint: "exit",
 		},
@@ -148,6 +147,7 @@ class Viewer {
 		this.models = models;
 		this.terminal = options.terminal;
 		this.client = client;
+		this.target = viewerTarget(handle, client.project);
 		this.view = watched.view;
 		this.child = watched.child;
 		this.lines = watched.lines;
@@ -201,11 +201,7 @@ class Viewer {
 
 	private render(): void {
 		this.chat.apply(this.view);
-		// The agent's name already says what it is; a child's shows its handle too.
-		this.header.text = headerText(
-			this.child,
-			this.handle === AGENT_HANDLE ? childLabel(this.child) : runDisplayName(this.child),
-		);
+		this.header.text = headerText(this.child, this.target.title(this.child));
 		this.syncLoader(statusText(liveOf(this.view)));
 		this.queued.setText(
 			queued(inboxOf(this.view))

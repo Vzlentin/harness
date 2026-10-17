@@ -69,6 +69,11 @@ export function checkProject(name: string, projects: Readonly<Record<string, str
 	return name;
 }
 
+/** The directory of the project `name`: the home directory for `main`. It throws for an unknown project. */
+export function projectDir(name: string, projects: Readonly<Record<string, string>> = readProjects()): string {
+	return checkProject(name, projects) === MAIN_PROJECT ? homedir() : (projects[name] as string);
+}
+
 /**
  * The project of a command: `HARNESS_PROJECT` in `env`, then the project with the longest directory that is `cwd` or
  * contains it, then `main`. An unknown `HARNESS_PROJECT` is an error.

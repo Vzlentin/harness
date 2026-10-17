@@ -117,7 +117,7 @@ harness web
 harness main
 ```
 
-`harness <project>` opens the viewer of the agent of the project (see [Viewer](#viewer)). It starts the host when none runs. An unknown project is an error: `Unknown harness project: <name>`. A `--project` before it must name the same project.
+`harness <project>` opens the viewer of the agent of the project (see [Viewer](#viewer)). It starts the host when none runs. A single word that is not `main`, a project or a command prints the usage. A `--project` before it is an error: `harness <project> takes no --project`.
 
 - The agent works in the project directory, or in the home directory for `main`. Its system prompt, tools and bash env are the same as a child's in that directory (see [Host](#host)). Its bash commands get `PI_SESSION_ID`, the agent's conversation ID.
 - When it is first opened, the agent gets Pi's default model (`defaultProvider` and `defaultModel` in Pi's `settings.json`) when it has a login, else the first model with a login, and Pi's `defaultThinkingLevel` (default `medium`), or the nearest level that the model has. Without a model with a login, the viewer does not start and prints `No model for the <project> agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`. The viewer changes its model and thinking level as for a child.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { addProject, checkProject, MAIN_PROJECT, readProjects } from "./projects.ts";
+import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects } from "./projects.ts";
 import { AGENT_HANDLE, statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
@@ -23,7 +23,7 @@ function usage(): never {
   harness attach <handle>
   harness create <name> --cwd <dir>
   harness projects
-Any command takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
+Any command but harness <project> takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -156,7 +156,12 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
 	const { runHost } = await import("./host.ts");
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
-	const host = await runHost({ stateDir: statePaths(project).dir, project, models: modelRuntime });
+	const host = await runHost({
+		stateDir: statePaths(project).dir,
+		project,
+		cwd: projectDir(project),
+		models: modelRuntime,
+	});
 	if (host === undefined) {
 		process.stderr.write(`Another harness host runs (pid ${process.pid} exits)\n`);
 		process.exit(0);
@@ -173,11 +178,11 @@ async function attachCommand(args: string[]): Promise<void> {
 	await openViewer(handle);
 }
 
-/** Opens the viewer of the agent of the project `name` in this terminal. */
+/** Opens the viewer of the agent of the project `name`, which is `main` or a project, in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
-	if (project !== undefined && project !== name) fail(`--project ${project} does not match the project ${name}`);
+	if (project !== undefined) fail(`harness ${name} takes no --project`);
 	// The viewer's connection resolves the project from the env.
-	process.env.HARNESS_PROJECT = checkProject(name);
+	process.env.HARNESS_PROJECT = name;
 	await openViewer(AGENT_HANDLE);
 }
 
@@ -203,8 +208,13 @@ async function main(): Promise<void> {
 	if (command === "create") return createCommand(args);
 	if (command === "projects") return projectsCommand(args);
 	if (command === "host") return hostCommand(args, checkProject(project ?? MAIN_PROJECT));
-	// Any other word alone is a project, whose agent opens.
-	if (command !== undefined && !command.startsWith("-") && !COMMANDS.has(command) && args.length === 0) {
+	// A project alone opens its agent. Any other word goes to the usage.
+	if (
+		command !== undefined &&
+		!COMMANDS.has(command) &&
+		args.length === 0 &&
+		(command === MAIN_PROJECT || Object.hasOwn(readProjects(), command))
+	) {
 		return agentCommand(command, project);
 	}
 	// Every connection resolves the project from the env, so --project goes there.

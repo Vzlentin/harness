@@ -189,6 +189,23 @@ export type Children = {
 	): Promise<Child | undefined>;
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
+	/**
+	 * The `send` and `state` of `Child` for any conversation: `read` gives its last request, and `write` records a new
+	 * request ID in the commit that admits it, before the submit. `state` is never `closed`.
+	 */
+	turn(
+		place: Place,
+		id: ConversationId,
+		conversation: Conversation,
+		read: (context: Context) => Promise<string | null | undefined>,
+		write: (tx: Tx, requestId: string) => Promise<void>,
+	): Turn;
+};
+
+/** The input and the state of one conversation, as `Children.turn` gives them. */
+export type Turn = {
+	send(input: Input, context: Context): Promise<void>;
+	state(context: Context): Promise<Exclude<ChildState, "closed">>;
 };
 
 type OwnerState = { kind: "task"; taskId: number } | { kind: "detached" };
@@ -317,8 +334,34 @@ export function createChildren(durable: typeof Durable): Children {
 		return { status: "ok", text, entry };
 	}
 
+	const turn: Children["turn"] = (place, id, conversation, readLast, write) => ({
+		async send(input, context) {
+			await place.store.commit(async (tx) => {
+				if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
+				await write(tx, input.requestId);
+				return undefined;
+			}, context);
+			await conversation.submit(input, context);
+		},
+		async state(context) {
+			const live = await place.store.snapshot(durable.LiveDoc, id, context);
+			if (live?.run !== undefined) return "busy";
+			const requestId = await readLast(context);
+			const settled =
+				requestId == null ? undefined : await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
+			// An aborted turn leaves the conversation idle.
+			return settled?.status === "unanswered" && settled.reason !== "aborted" ? "error" : "idle";
+		},
+	});
+
 	function makeChild(place: Place, id: ConversationId, childLineage: Lineage, conversation: Conversation): Child {
 		const lastRequest = async (context: Context) => (await place.store.snapshot(ChildDoc, id, context))?.lastRequest;
+		const turns = turn(place, id, conversation, lastRequest, async (tx, requestId) => {
+			const doc = await tx.doc(ChildDoc, id);
+			if (doc.closed) throw new Error(`The child ${id} is closed`);
+			await answers.prepare(tx, id, requestId);
+			doc.lastRequest = requestId;
+		});
 		/** `answer` of the turn `attempt`, with the `respond` answer of a schema ask, or `no-respond` without one. */
 		const withRespond = async (answer: Answer, attempt: string, schema: JsonObject | undefined, context: Context) => {
 			if (schema === undefined || answer.status !== "ok") return answer;
@@ -392,28 +435,12 @@ export function createChildren(durable: typeof Durable): Children {
 			id,
 			lineage: childLineage,
 			conversation,
-			async send(input, context) {
-				await place.store.commit(async (tx) => {
-					const doc = await tx.doc(ChildDoc, id);
-					if (doc.closed) throw new Error(`The child ${id} is closed`);
-					if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
-					await answers.prepare(tx, id, input.requestId);
-					doc.lastRequest = input.requestId;
-					return undefined;
-				}, context);
-				await conversation.submit(input, context);
-			},
+			send: turns.send,
 			ask,
 			settled,
 			async state(context) {
 				if ((await place.store.snapshot(ChildDoc, id, context))?.closed === true) return "closed";
-				const live = await place.store.snapshot(durable.LiveDoc, id, context);
-				if (live?.run !== undefined) return "busy";
-				const requestId = await lastRequest(context);
-				const settled =
-					requestId == null ? undefined : await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
-				// An aborted turn leaves the child idle.
-				return settled?.status === "unanswered" && settled.reason !== "aborted" ? "error" : "idle";
+				return turns.state(context);
 			},
 			async usage(context) {
 				let sum: unknown = { models: {}, tools: {} };
@@ -454,6 +481,7 @@ export function createChildren(durable: typeof Durable): Children {
 		answerExtension: answers.extension,
 		lineage,
 		find,
+		turn,
 		async open(place, owner, key, spec, context, setup) {
 			const existing = await find(place, owner, { key }, context);
 			if (existing !== undefined) return existing;
