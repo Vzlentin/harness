@@ -349,6 +349,9 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 			return serveWatch(handler, request.handle, handler.connection);
 		case "start":
+			// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without
+			// a model for the agent, the task still starts: its children may name their own.
+			await handler.agent().catch(() => undefined);
 			return startTask(handler, request);
 		case "task":
 			return taskInfo(handler.harness, request.key);
@@ -361,7 +364,16 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			const own = Object.entries(state?.children ?? {})
 				.filter(([, record]) => record.caller === request.caller)
 				.sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
-			return Promise.all(own.map(([handle, record]) => childInfo(handler, handle, record)));
+			// A child that the library closed outside `stop`, such as a subagent of a workflow session when its run ends,
+			// keeps its record until a `stop`, and is not listed.
+			const infos = await Promise.all(
+				own.map(async ([handle, record]) =>
+					(await (await childOf(handler, record)).state(context)) === "closed"
+						? undefined
+						: childInfo(handler, handle, record),
+				),
+			);
+			return infos.filter((info) => info !== undefined);
 		}
 		case "rename": {
 			await ownRecord(handler.harness, request.handle, request.caller);

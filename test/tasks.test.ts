@@ -50,6 +50,23 @@ afterAll(async () => {
 });
 
 describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
+	// First in the file, so nothing has set up the project agent before this start.
+	it("sets up the project agent before a start, so a child without a model takes the agent's", async () => {
+		const reply = await request(
+			{
+				type: "start",
+				kind: KIND,
+				key: "agent-model",
+				input: { cwd: root, prompt: "Fixture agent", agentModel: true },
+			},
+			{ start: false },
+		);
+		expect(reply).toMatchObject({ key: "agent-model" });
+		expect(await taskRequest("wait-task", "agent-model")).toMatchObject({
+			outcome: { status: "completed", result: "Answer to Fixture agent" },
+		});
+	});
+
 	it("starts a task once per key and waits for its outcome", async () => {
 		const started = await start("one", "Fixture one");
 		expect(started).toMatchObject({ key: "one", kind: KIND });

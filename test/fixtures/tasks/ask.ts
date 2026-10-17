@@ -11,14 +11,15 @@ export default function askEntry({
 	readonly children: Children;
 	readonly place: Place;
 }) {
-	const Ask = durable.defineTask<{ cwd: string; prompt: string }, { phase: "ask" }, string>({
+	const Ask = durable.defineTask<{ cwd: string; prompt: string; agentModel?: boolean }, { phase: "ask" }, string>({
 		name: "fixture.ask",
 		version: 1,
 		initial: () => ({ phase: "ask" }),
 		phases: {
 			ask: async (task, runtime, context) => {
 				const owner = { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId } as const;
-				const spec = { root: "fixture", provider: "faux", model: "faux-1", cwd: task.input.cwd };
+				const model = task.input.agentModel === true ? {} : { provider: "faux", model: "faux-1" };
+				const spec = { root: "fixture", ...model, cwd: task.input.cwd };
 				const child = await children.open(place, owner, `fixture:${runtime.taskId}`, spec, context);
 				const answer = await child.ask({ type: "input", content: task.input.prompt, requestId: "q" }, context);
 				await runtime.commit(

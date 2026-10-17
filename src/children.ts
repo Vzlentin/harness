@@ -51,10 +51,12 @@ export type Place = {
 /**
  * Who owns a child, which decides what aborts reach it: a running task in `conversation`, whose abort aborts the child,
  * or an anchor task of its own in `root`, the store's root conversation, so the child outlives every request. The
- * owner's conversation gives the spec what it leaves out.
+ * owner's conversation gives the spec what it leaves out. A task owner with a `group` finds the children of every task
+ * of that group, such as the tasks of one workflow run across resumes; an abort still reaches only the children that
+ * its own task opened.
  */
 export type Owner =
-	| { readonly kind: "task"; readonly taskId: TaskId; readonly conversation: ConversationId }
+	| { readonly kind: "task"; readonly taskId: TaskId; readonly conversation: ConversationId; readonly group?: string }
 	| { readonly kind: "detached"; readonly root: Conversation };
 
 /** What a child runs with. JSON only, so a socket can carry it. A field left out comes from the owner's agent. */
@@ -150,9 +152,11 @@ export type Child = {
 	usage(context: Context): Promise<UsageState>;
 	/**
 	 * Withdraws the queued input of the child and its subtree, aborts them, background work included, and marks them
-	 * closed. Gives the conversations it closed, the child first.
+	 * closed. Gives the conversations it closed, parents first. With `below`, it does this only for the subtree under
+	 * the child, and the child stays open. A turn of the child's conversation that a task outside the child's owner
+	 * sent, such as a later task of its group, is aborted only through `conversation.abort`.
 	 */
-	close(context: Context): Promise<ConversationId[]>;
+	close(context: Context, options?: { readonly below?: boolean }): Promise<ConversationId[]>;
 };
 
 export type Children = {
@@ -208,7 +212,7 @@ export type Turn = {
 	state(context: Context): Promise<Exclude<ChildState, "closed">>;
 };
 
-type OwnerState = { kind: "task"; taskId: number } | { kind: "detached" };
+type OwnerState = { kind: "task"; taskId: number; group?: string } | { kind: "detached" };
 
 type ChildDocState = {
 	key: string;
@@ -270,9 +274,13 @@ export function createChildren(durable: typeof Durable): Children {
 	const extension = durable.defineExtension({ name: "pi-subagent-children", tasks: [Anchor] });
 
 	const ownerState = (owner: Owner): OwnerState =>
-		owner.kind === "task" ? { kind: "task", taskId: owner.taskId } : { kind: "detached" };
-	const sameOwner = (a: Readonly<OwnerState>, b: OwnerState) =>
-		a.kind === b.kind && (a.kind === "detached" || (b.kind === "task" && a.taskId === b.taskId));
+		owner.kind === "detached"
+			? { kind: "detached" }
+			: { kind: "task", taskId: owner.taskId, ...(owner.group === undefined ? {} : { group: owner.group }) };
+	const sameOwner = (a: Readonly<OwnerState>, b: OwnerState) => {
+		if (a.kind === "detached" || b.kind === "detached") return a.kind === b.kind;
+		return a.group !== undefined || b.group !== undefined ? a.group === b.group : a.taskId === b.taskId;
+	};
 
 	const lineageOf = (doc: Readonly<ChildDocState>): Lineage => ({
 		key: doc.key,
@@ -449,8 +457,8 @@ export function createChildren(durable: typeof Durable): Children {
 				}
 				return sum as UsageState;
 			},
-			async close(context) {
-				const ids = await subtree(place, id, context);
+			async close(context, options) {
+				const ids = (await subtree(place, id, context)).slice(options?.below === true ? 1 : 0);
 				for (const member of ids) {
 					await (await place.store.conversation(member, context))?.abort(context, { background: true });
 					await place.store.commit(async (tx) => {
