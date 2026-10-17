@@ -214,7 +214,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await cli(["wait", handle]);
 		const stderr = vi.spyOn(process.stderr, "write");
 		try {
-			const socket = createConnection(statePaths().socket);
+			const socket = createConnection(statePaths("main").socket);
 			socket.write(`${JSON.stringify({ type: "watch", handle })}\n`, () => socket.destroy());
 			await once(socket, "close");
 			const client = await hostClient();
@@ -356,7 +356,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		const reports = logLines(herdr.log);
-		const resume = `-- env ${process.execPath} ${CLI} attach ${handle}`;
+		const resume = `-- env ${process.execPath} ${CLI} attach ${handle} --project main`;
 		expect(reports[0]).toBe(
 			`pane report-agent --source custom:harness --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
 		);
@@ -478,16 +478,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const child = children.find((found) => found.handle === handle);
 		if (child === undefined) throw new Error("no child");
 		const state = herdr.env.XDG_STATE_HOME;
+		const config = herdr.env.XDG_CONFIG_HOME;
 		expect(state).toBeTruthy();
-		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' 'attach' '${handle}'`;
+		expect(config).toBeTruthy();
+		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' 'attach' '${handle}' '--project' 'main'`;
 		await openViewerTab(child, herdr.env);
 		expect(logLines(herdr.log)).toEqual([
-			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state}`,
+			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state} --env XDG_CONFIG_HOME=${config}`,
 			run,
 		]);
-		// Without XDG_STATE_HOME, the tab finds the host under HOME, as this process does.
+		// Without XDG_STATE_HOME and XDG_CONFIG_HOME, the tab finds the host under HOME, as this process does.
 		const env = { ...herdr.env };
 		delete env.XDG_STATE_HOME;
+		delete env.XDG_CONFIG_HOME;
 		await openViewerTab(child, env);
 		expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${child.cwd} --label tabbed --focus`, run]);
 	});

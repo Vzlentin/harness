@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { statePaths } from "./protocol.ts";
+import { mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { MAIN_PROJECT, projectsPath, readProjects, resolveProject, statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -18,7 +20,10 @@ function usage(): never {
   harness wait <handle> [--timeout <seconds>]
   harness stop <handle>
   harness list
-  harness attach <handle>`);
+  harness attach <handle>
+  harness create <name> --cwd <dir>
+  harness projects
+Any command takes --project <name>; without it, the project is HARNESS_PROJECT, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -113,13 +118,64 @@ function toolArgs(command: string | undefined, args: string[]): ToolArgs {
 	}
 }
 
-/** Runs the host in this process with Pi's models. It exits at once when another host runs. */
-async function hostCommand(args: string[]): Promise<void> {
+/** The names that a project cannot have: `main` and the commands. */
+const RESERVED_NAMES = new Set([
+	MAIN_PROJECT,
+	"spawn",
+	"status",
+	"rename",
+	"send",
+	"wait",
+	"stop",
+	"list",
+	"attach",
+	"host",
+	"create",
+	"projects",
+]);
+
+/** Adds the project `name` with the real path of `dir` to `projects.json`. */
+function createCommand(args: string[]): void {
+	const [name, option, dir] = args;
+	if (args.length !== 3 || name === undefined || option !== "--cwd" || dir === undefined) usage();
+	if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) {
+		fail(`A project name has 1 to 32 characters: a-z first, then a-z, 0-9 or -: ${name}`);
+	}
+	if (RESERVED_NAMES.has(name)) fail(`A project cannot have the name ${name}`);
+	let real: string;
+	try {
+		real = realpathSync(resolve(dir));
+	} catch {
+		fail(`No such directory: ${dir}`);
+	}
+	if (!statSync(real).isDirectory()) fail(`Not a directory: ${dir}`);
+	const projects = readProjects();
+	if (Object.hasOwn(projects, name)) fail(`The project ${name} exists (${projects[name]})`);
+	const path = projectsPath();
+	mkdirSync(dirname(path), { recursive: true });
+	// A temporary file, then a rename, so a stop in between does not truncate the projects.
+	const temporary = `${path}.${process.pid}.tmp`;
+	writeFileSync(temporary, `${JSON.stringify({ ...projects, [name]: real }, null, "\t")}\n`);
+	renameSync(temporary, path);
+	process.stdout.write(`Created ${name} (${real})\n`);
+}
+
+function projectsCommand(args: string[]): void {
+	if (args.length !== 0) usage();
+	for (const [name, dir] of Object.entries(readProjects())) process.stdout.write(`${name}  ${dir}\n`);
+	process.stdout.write(`${MAIN_PROJECT}\n`);
+}
+
+/**
+ * Runs the host of `project` in this process with Pi's models. It exits at once when another host runs. The project
+ * comes only from `--project`, not from the env: a host can start from a child's shell of another project.
+ */
+async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
 	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
 	const { runHost } = await import("./host.ts");
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
-	const host = await runHost({ stateDir: statePaths().dir, models: modelRuntime });
+	const host = await runHost({ stateDir: statePaths(project).dir, project, models: modelRuntime });
 	if (host === undefined) {
 		process.stderr.write(`Another harness host runs (pid ${process.pid} exits)\n`);
 		process.exit(0);
@@ -143,8 +199,19 @@ async function attachCommand(args: string[]): Promise<void> {
  * of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
  */
 async function main(): Promise<void> {
-	const [command, ...args] = process.argv.slice(2);
-	if (command === "host") return hostCommand(args);
+	const all = process.argv.slice(2);
+	const at = all.indexOf("--project");
+	let project: string | undefined;
+	if (at !== -1) {
+		project = valueAfter(all, at, "--project");
+		all.splice(at, 2);
+	}
+	const [command, ...args] = all;
+	if (command === "create") return createCommand(args);
+	if (command === "projects") return projectsCommand(args);
+	if (command === "host") return hostCommand(args, resolveProject({ HARNESS_PROJECT: project ?? MAIN_PROJECT }, "/"));
+	// Every connection resolves the project from the env, so --project goes there.
+	if (project !== undefined) process.env.HARNESS_PROJECT = resolveProject({ HARNESS_PROJECT: project }, "/");
 	if (command === "attach") return attachCommand(args);
 	const { text } = await runTool(toolArgs(command, args), {
 		caller: process.env.PI_SESSION_ID || "cli",

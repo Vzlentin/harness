@@ -180,7 +180,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	it("gives the child's bash its session ID, provider, model and thinking level", async () => {
 		const handle = handleOf(await cli(["spawn", "--thinking", "low", "--prompt", "Environment"]));
 		const { stdout } = await cli(["wait", handle]);
-		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low\n`));
+		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low main\n`));
 	});
 
 	it("steers a busy child after its tool round", async () => {
@@ -552,14 +552,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ stateDir, models })).rejects.toThrow(
+		await expect(runHost({ stateDir, project: "a", models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
 		const stateDir = await childrenStore("new-state", 3);
-		const refusal = runHost({ stateDir, models });
+		const refusal = runHost({ stateDir, project: "a", models });
 		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
@@ -576,20 +576,20 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(clients[1]?.pid).toBe(pid);
 			expect(pid).not.toBe(process.pid);
 			// The other started host finds the lock held and exits.
-			const log = join(state, "harness", "host.log");
+			const log = join(state, "harness", "main", "host.log");
 			await until(() => readFileSync(log, "utf8").includes("Another harness host runs"));
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			if (pid !== undefined) process.kill(pid, "SIGTERM");
 		}
-		await until(() => !existsSync(join(state, "harness", "host.sock")));
+		await until(() => !existsSync(join(state, "harness", "main", "host.sock")));
 	});
 
 	it("stops waiting for the host to start when the request aborts", async () => {
 		const state = join(root, "state3");
-		await mkdir(join(state, "harness"), { recursive: true });
+		await mkdir(join(state, "harness", "main"), { recursive: true });
 		// With the lock held, the started host exits at once, and nothing ever listens.
-		const lock = new DatabaseSync(join(state, "harness", "lock.sqlite"));
+		const lock = new DatabaseSync(join(state, "harness", "main", "lock.sqlite"));
 		lock.exec("BEGIN EXCLUSIVE");
 		process.env.XDG_STATE_HOME = state;
 		try {
@@ -598,7 +598,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				name: "TimeoutError",
 			});
 			// The lock stays held until the started host has found it held and exited.
-			const log = join(state, "harness", "host.log");
+			const log = join(state, "harness", "main", "host.log");
 			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another harness host runs"));
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");

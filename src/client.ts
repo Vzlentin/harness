@@ -1,15 +1,19 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
+	MAIN_PROJECT,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Reply,
 	type Request,
+	resolveProject,
 	statePaths,
+	stateRoot,
 	type WatchLine,
 } from "./protocol.ts";
 
@@ -82,16 +86,18 @@ export class Client {
 }
 
 /**
- * A connection to the host after its `hello`. When no host listens and `start` is true, it starts one, detached, with its
- * output in `host.log`, and tries to connect for 10 s, or until `signal` aborts. When no host listens and `start` is
- * false, it is undefined.
+ * A connection to the host of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`), after its `hello`.
+ * When no host listens and `start` is true, it starts one, detached, with its output in `host.log`, and tries to
+ * connect for 10 s, or until `signal` aborts. When no host listens and `start` is false, it is undefined.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
-	const paths = statePaths();
+	const project = resolveProject(process.env, process.cwd());
+	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
 	if (socket === undefined) {
 		if (!options.start) return undefined;
-		startHost(paths.dir, paths.log);
+		if (project === MAIN_PROJECT) await refuseOldHost();
+		startHost(project, paths.dir, paths.log);
 		const deadline = Date.now() + START_TIMEOUT_MS;
 		while (socket === undefined) {
 			options.signal?.throwIfAborted();
@@ -106,6 +112,11 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 		if (hello.version !== PROTOCOL_VERSION) {
 			throw new Error(
 				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}; stop it and try again`,
+			);
+		}
+		if (hello.project !== project) {
+			throw new Error(
+				`The harness host (pid ${hello.pid}) at ${paths.socket} runs project ${hello.project}, not ${project}`,
 			);
 		}
 		client.pid = hello.pid;
@@ -165,12 +176,25 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 	});
 }
 
-function startHost(dir: string, log: string): void {
+/** Throws when a host from before the projects listens on `host.sock` in the state root. */
+async function refuseOldHost(): Promise<void> {
+	const path = join(stateRoot(), "host.sock");
+	const socket = await tryConnect(path);
+	if (socket === undefined) return;
+	socket.destroy();
+	throw new Error(`An older harness host listens on ${path}; stop it and run the command again`);
+}
+
+function startHost(project: string, dir: string, log: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 	try {
 		const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-		spawn(process.execPath, [cli, "host"], { cwd: dir, detached: true, stdio: ["ignore", output, output] }).unref();
+		spawn(process.execPath, [cli, "host", "--project", project], {
+			cwd: dir,
+			detached: true,
+			stdio: ["ignore", output, output],
+		}).unref();
 	} finally {
 		closeSync(output);
 	}

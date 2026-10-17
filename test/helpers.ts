@@ -127,7 +127,7 @@ async function respond(
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
 	if (prompt === "Task:\nEnvironment") {
-		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL"';
+		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL $HARNESS_PROJECT"';
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
 	}
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
@@ -160,8 +160,9 @@ export function handleOf(result: Result): string {
 	return handle;
 }
 
-export function startHost(): Promise<Host | undefined> {
-	return runHost({ stateDir: statePaths().dir, models });
+/** Runs the host of `project` in this process. */
+export function startHost(project = "main"): Promise<Host | undefined> {
+	return runHost({ stateDir: statePaths(project).dir, project, models });
 }
 
 /** Polls `check` for up to 10 s. */
@@ -185,12 +186,20 @@ export async function setUp(): Promise<void> {
 	process.env = {
 		...environment,
 		XDG_STATE_HOME: join(root, "state"),
+		XDG_CONFIG_HOME: join(root, "config"),
 		PI_CODING_AGENT_DIR: join(root, "agent"),
 		HOME: join(root, "home"),
 		PI_PROVIDER: "faux",
 		PI_MODEL: "faux-1",
 	};
-	for (const name of ["PI_SESSION_ID", "PI_REASONING_LEVEL", "PI_SESSION_FILE", "HERDR_ENV", "HERDR_PANE_ID"]) {
+	for (const name of [
+		"PI_SESSION_ID",
+		"PI_REASONING_LEVEL",
+		"PI_SESSION_FILE",
+		"HERDR_ENV",
+		"HERDR_PANE_ID",
+		"HARNESS_PROJECT",
+	]) {
 		delete process.env[name];
 	}
 	const faux = fauxProvider({

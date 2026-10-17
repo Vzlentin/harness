@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -44,6 +44,7 @@ import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
+	MAIN_PROJECT,
 	type ModelInfo,
 	onLines,
 	PROTOCOL_VERSION,
@@ -93,17 +94,26 @@ export type Host = {
 };
 
 /**
- * Runs the host in this process: the store in `stateDir`, the children's models from `models`, and the socket. It is
- * undefined when another host holds the lock.
+ * Runs the host of `project` in this process: the store in `stateDir`, the children's models from `models`, and the
+ * socket. It is undefined when another host holds the lock.
  */
 export async function runHost(options: {
 	readonly stateDir: string;
+	readonly project: string;
 	readonly models: Models;
 }): Promise<Host | undefined> {
-	const { stateDir, models } = options;
+	const { stateDir, project, models } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 	if (lock === undefined) return undefined;
+	if (project === MAIN_PROJECT) {
+		try {
+			moveOldStore(stateDir);
+		} catch (error) {
+			lock.close();
+			throw error;
+		}
+	}
 	const socketPath = join(stateDir, "host.sock");
 	rmSync(socketPath, { force: true });
 
@@ -126,7 +136,7 @@ export async function runHost(options: {
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
-		send: (request, signal) => handleRequest(request, { harness, place, owner, signal }),
+		send: (request, signal) => handleRequest(request, { project, harness, place, owner, signal }),
 	});
 	const selected = [ChildContext, tool, ...entries.extensions];
 	try {
@@ -144,7 +154,7 @@ export async function runHost(options: {
 					const cached = envs.get(conversationId);
 					if (cached !== undefined) return cached;
 					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId) };
+					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId), HARNESS_PROJECT: project };
 					if (agent?.model !== undefined) {
 						shellEnv.PI_PROVIDER = agent.model.provider;
 						shellEnv.PI_MODEL = agent.model.modelId;
@@ -205,7 +215,14 @@ export async function runHost(options: {
 					}
 					reply = {
 						ok: true,
-						value: await handleRequest(request, { harness, place, owner, signal: abort.signal, connection }),
+						value: await handleRequest(request, {
+							project,
+							harness,
+							place,
+							owner,
+							signal: abort.signal,
+							connection,
+						}),
 					};
 				} catch (error) {
 					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -267,6 +284,7 @@ export async function runHost(options: {
 }
 
 type Handler = {
+	readonly project: string;
 	readonly harness: Harness;
 	/** The host's store, models and tools, for the children library. */
 	readonly place: Place;
@@ -286,7 +304,7 @@ function handleRequest<T extends Request["type"]>(
 async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
 	switch (request.type) {
 		case "hello":
-			return { version: PROTOCOL_VERSION, pid: process.pid };
+			return { version: PROTOCOL_VERSION, pid: process.pid, project: handler.project };
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send":
@@ -593,6 +611,28 @@ function takeLock(directory: string): DatabaseSync | undefined {
 	} catch {
 		database.close();
 		return undefined;
+	}
+}
+
+/**
+ * Moves the store of a host from before the projects, in the parent of `stateDir`, into `stateDir`, when `stateDir` has
+ * no store. It throws when an old host still holds the old lock. The old `lock.sqlite` and `host.log` stay.
+ */
+function moveOldStore(stateDir: string): void {
+	const root = dirname(stateDir);
+	if (existsSync(join(stateDir, "durable.sqlite")) || !existsSync(join(root, "durable.sqlite"))) return;
+	const oldLock = takeLock(root);
+	if (oldLock === undefined) {
+		throw new Error(`An older harness host runs on ${join(root, "durable.sqlite")}; stop it and run the command again`);
+	}
+	try {
+		// The store goes last, so a stop in between leaves it in the root, and the next start moves the rest.
+		for (const suffix of ["-wal", "-shm", ""]) {
+			const from = join(root, `durable.sqlite${suffix}`);
+			if (existsSync(from)) renameSync(from, join(stateDir, `durable.sqlite${suffix}`));
+		}
+	} finally {
+		oldLock.close();
 	}
 }
 
