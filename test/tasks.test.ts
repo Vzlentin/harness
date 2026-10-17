@@ -2,10 +2,10 @@ import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request } from "../src/client.ts";
+import { request } from "../src/client.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, statePaths, type TaskInfo } from "../src/protocol.ts";
+import { AGENT_HANDLE, type Request, statePaths, type TaskInfo } from "../src/protocol.ts";
 import { aborted, called, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
@@ -27,18 +27,11 @@ function start(key: string, prompt: string, kind = KIND): Promise<TaskInfo> {
 	});
 }
 
-/** The reply and every line of a `watch-task` of `key`, until the host ends the connection. */
-async function watchTask(key: string): Promise<{ first: TaskInfo; lines: TaskInfo[] }> {
-	const client = await connect({ start: false });
-	if (client === undefined) throw new Error("no host");
-	try {
-		const watch = await client.watchTask(key);
-		const lines: TaskInfo[] = [];
-		for await (const line of watch.lines) lines.push(line);
-		return { first: watch.task, lines };
-	} finally {
-		client.close();
-	}
+/** Sends the request `type` of the task of `key`, through the socket. */
+async function taskRequest<T extends "task" | "wait-task" | "abort-task">(type: T, key: string): Promise<TaskInfo> {
+	const reply = await request({ type, key } as Extract<Request, { type: T }>, { start: false });
+	if (reply === undefined) throw new Error("no host");
+	return reply;
 }
 
 beforeAll(async () => {
@@ -57,23 +50,23 @@ afterAll(async () => {
 });
 
 describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
-	it("starts a task once per key and watches it to its outcome", async () => {
+	it("starts a task once per key and waits for its outcome", async () => {
 		const started = await start("one", "Fixture one");
 		expect(started).toMatchObject({ key: "one", kind: KIND });
-		const { first, lines } = await watchTask("one");
-		expect(first.id).toBe(started.id);
-		expect(lines.at(-1)).toMatchObject({
+		expect(await taskRequest("wait-task", "one")).toEqual({
 			key: "one",
 			id: started.id,
+			kind: KIND,
 			status: "terminal",
 			outcome: { status: "completed", result: "Answer to Fixture one" },
 		});
 		expect((await start("one", "Other input")).id).toBe(started.id);
 		expect(called("Other input")).toBe(0);
 		expect((await start("one", "Other input", "fixture.nope")).id).toBe(started.id);
-		expect(await request({ type: "task", key: "one" }, { start: false })).toMatchObject({ status: "terminal" });
+		expect(await taskRequest("task", "one")).toMatchObject({ status: "terminal" });
 		await expect(start("two", "Fixture two", "fixture.nope")).rejects.toThrow("Unknown task kind: fixture.nope");
-		await expect(request({ type: "task", key: "nope" }, { start: false })).rejects.toThrow("Unknown task: nope");
+		await expect(taskRequest("task", "nope")).rejects.toThrow("Unknown task: nope");
+		await expect(taskRequest("wait-task", "nope")).rejects.toThrow("Unknown task: nope");
 	});
 
 	it("keeps a task running through an abort of the agent, and stops it and its child with abort-task", async () => {
@@ -81,21 +74,13 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		const started = await start("gated", "Fixture gated");
 		await until(() => called("Fixture gated") === 1);
 		await request({ type: "abort", handle: AGENT_HANDLE }, { start: false });
-		expect(await request({ type: "task", key: "gated" }, { start: false })).toMatchObject({ status: "running" });
+		const running = await taskRequest("task", "gated");
+		expect(running).toMatchObject({ id: started.id, status: "running" });
 		expect(aborted.has("Fixture gated")).toBe(false);
-		const client = await connect({ start: false });
-		if (client === undefined) throw new Error("no host");
-		try {
-			// The watch opens while the task runs, and the abort ends it with the outcome line.
-			const watch = await client.watchTask("gated");
-			expect(watch.task).toMatchObject({ id: started.id, status: "running" });
-			await request({ type: "abort-task", key: "gated" }, { start: false });
-			const lines: TaskInfo[] = [];
-			for await (const line of watch.lines) lines.push(line);
-			expect(lines).toEqual([{ ...watch.task, status: "terminal", outcome: { status: "aborted" } }]);
-		} finally {
-			client.close();
-		}
+		// The wait starts while the task runs, and the abort ends it with the outcome.
+		const waiting = taskRequest("wait-task", "gated");
+		expect(await taskRequest("abort-task", "gated")).toMatchObject({ id: started.id });
+		expect(await waiting).toEqual({ ...running, status: "terminal", outcome: { status: "aborted" } });
 		expect(aborted.has("Fixture gated")).toBe(true);
 		gates.delete("Fixture gated");
 	});
@@ -107,8 +92,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		await host?.close();
 		gates.delete("Fixture restart");
 		host = await startHost();
-		const { lines } = await watchTask("restart");
-		expect(lines.at(-1)).toMatchObject({
+		expect(await taskRequest("wait-task", "restart")).toMatchObject({
 			status: "terminal",
 			outcome: { status: "completed", result: "Answer to Fixture restart" },
 		});

@@ -115,11 +115,8 @@ export type Request =
 	 */
 	| { readonly type: "start"; readonly kind: string; readonly input: JsonValue; readonly key: string }
 	| { readonly type: "task"; readonly key: string }
-	/**
-	 * The stream of the task: the reply, then one `{ event: TaskInfo }` line at each change of its status, and a last
-	 * line with its outcome, after which the connection ends. A connection carries one watch.
-	 */
-	| { readonly type: "watch-task"; readonly key: string }
+	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
+	| { readonly type: "wait-task"; readonly key: string }
 	/** Aborts the task and the work that it owns. */
 	| { readonly type: "abort-task"; readonly key: string };
 
@@ -140,7 +137,7 @@ export type Replies = {
 	readonly configure: ChildInfo;
 	readonly start: TaskInfo;
 	readonly task: TaskInfo;
-	readonly "watch-task": { readonly task: TaskInfo };
+	readonly "wait-task": TaskInfo;
 	readonly "abort-task": TaskInfo;
 };
 

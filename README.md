@@ -193,10 +193,10 @@ A client starts and follows the tasks of the entries with four requests:
 
 - `start { kind, input, key }` creates a task of the kind `kind`, with the input `input`, and replies with its info `{ key, id, kind, status, outcome? }`. `outcome` is there only when the task is terminal. The key is the client's own name for the task. A repeated `start` with a known key gives the first task, and its new kind and input are ignored. An unknown kind gives `Unknown task kind: <kind>`.
 - `task { key }` replies with the info of the task.
-- `watch-task { key }` replies with `{ task }`. Each later change of the task's status is a `{ "event": <info> }` line. The last line has the outcome, and then the host ends the connection.
+- `wait-task { key }` waits until the task is terminal, and replies with its info, with the outcome. To follow the status during the run, poll `task`.
 - `abort-task { key }` aborts the task and the work that it owns, such as the turns of its children, and replies with the info.
 
-The other requests refuse a key that no `start` gave with `Unknown task: <key>`. A started task is a background task of the root conversation, so an abort of the project agent (Esc in its viewer) does not reach it. A task that a host stop interrupts continues when the host starts again. The children that tasks open are not in `list`.
+The other requests refuse a key that no `start` gave with `Unknown task: <key>`. The host keeps each key and its task in `durable.sqlite`, and no request removes a key, so the key map only grows. A started task is a background task of the root conversation, so an abort of the project agent (Esc in its viewer) does not reach it. A task that a host stop interrupts continues when the host starts again. The children that tasks open are not in `list`.
 
 A host from before the projects kept its state in `$XDG_STATE_HOME/harness/`. To keep its children, stop that host, then move `durable.sqlite` and its `-wal` and `-shm` files into `main/` before the `main` host starts.
 
