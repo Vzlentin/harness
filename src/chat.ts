@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { color } from "./theme.ts";
 import { liveOf, userText } from "./view-state.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: Pi's tool definitions differ in their schemas.
@@ -72,12 +73,10 @@ export class ChatView {
 	private expanded = false;
 	private readonly ui: TUI;
 	private readonly cwd: string;
-	private readonly muted: (text: string) => string;
 
-	constructor(ui: TUI, cwd: string, muted: (text: string) => string) {
+	constructor(ui: TUI, cwd: string) {
 		this.ui = ui;
 		this.cwd = cwd;
-		this.muted = muted;
 	}
 
 	apply(view: ConversationView): void {
@@ -171,10 +170,10 @@ export class ChatView {
 			card.updateResult(displayedResult(message));
 			this.running.delete(card);
 		} else if (entry.kind === "pi.compaction") {
-			this.addText(this.muted("[compaction]"));
+			this.addText(color("muted", "[compaction]"));
 			if (message?.role === "user") this.addText(userText(message.content));
 		} else if (entry.kind === "pi.reset") {
-			this.addText(this.muted("[new context]"));
+			this.addText(color("muted", "[new context]"));
 		}
 	}
 

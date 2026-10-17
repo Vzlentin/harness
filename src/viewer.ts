@@ -149,7 +149,7 @@ class Viewer {
 		this.keybindings = new KeybindingsManager(KEYBINDINGS);
 		setKeybindings(this.keybindings);
 		this.tui = new TuiAltScreen(this.terminal, false);
-		this.chat = new ChatView(this.tui, this.child.cwd, (text) => color("muted", text));
+		this.chat = new ChatView(this.tui, this.child.cwd);
 		this.scroll = new ScrollView(this.chat.transcript, { follow: "end", primary: true });
 		this.editor = new Editor(
 			this.tui,
