@@ -132,6 +132,7 @@ export async function runHost(options: {
 	try {
 		for (const extension of selected) registry.install(extension);
 		registry.install(library.extension);
+		registry.install(library.answerExtension);
 		harness = await Harness.open(
 			await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
 			{

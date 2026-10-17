@@ -2,6 +2,7 @@
  * The children library: creates and drives child conversations on whatever pi-durable store its caller hands it. Its
  * caller passes its pi-durable module, so a process never holds two copies.
  */
+import type { JsonValue } from "@earendil-works/chord";
 import { type Context, withCancel } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
@@ -13,6 +14,7 @@ import type {
 	DocumentReader,
 	EntryId,
 	Extension,
+	JsonObject,
 	ModelRef,
 	RegistrySnapshot,
 	Submission,
@@ -22,6 +24,7 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
+import { complete, createAnswers } from "./answer.ts";
 
 /** The deepest child by default: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -90,8 +93,13 @@ export type ChildState = "busy" | "idle" | "error" | "closed";
  * after a provider error, an abort or a close; `cause` is the settlement's reason, or `queued` when the child stopped
  * with the request still queued after a failed turn.
  */
-export type Answer =
-	| { readonly status: "ok"; readonly text: string; readonly entry: EntryId }
+export type Answer = (Ok & { readonly value?: JsonValue }) | Failure;
+
+/** A turn that reached its end. */
+export type Ok = { readonly status: "ok"; readonly text: string; readonly entry: EntryId };
+
+/** A turn without an answer that counts. */
+export type Failure =
 	| {
 			readonly status: "failed";
 			readonly reason: "cut";
@@ -114,8 +122,24 @@ export type Child = {
 	/**
 	 * Admits `input` and returns. A request ID admitted before is not admitted again, and a closed child refuses input.
 	 * A new request ID becomes the last request before the submit, so a crash between the two still finds it.
+	 * A send while a schema ask runs turns `respond` off, so that ask gives `no-respond` unless `respond` already saved
+	 * its answer.
 	 */
 	send(input: Input, context: Context): Promise<void>;
+	/**
+	 * Sends `input` as one turn and gives its answer. A request ID answered before gives its saved answer with no new
+	 * turn. A request ID that was not answered, or whose answer does not count, is sent again as `<requestId>#2`, `#3`
+	 * and so on. With `schema`, the child must answer through its `respond` tool with a value that matches the schema,
+	 * which becomes `value`; else the answer is `no-respond`. A child opened with `Spec.tools` has no `respond`, so its
+	 * schema asks give `no-respond`. A closed child refuses input, and cancelling `context` stops only the wait.
+	 */
+	ask(
+		input: Input,
+		context: Context,
+		options: { readonly schema: JsonObject },
+	): Promise<(Ok & { readonly value: JsonValue }) | Failure>;
+	ask(input: Input, context: Context, options?: { readonly schema?: undefined }): Promise<Ok | Failure>;
+	ask(input: Input, context: Context, options?: { readonly schema?: JsonObject }): Promise<Answer>;
 	/**
 	 * Waits until `request` (default: the last one) settles, then gives its answer. Cancelling the wait through
 	 * `context` stops only the wait; the child runs until `close()`.
@@ -132,8 +156,13 @@ export type Child = {
 };
 
 export type Children = {
-	/** The extension with the library's task; the caller installs it in its registry. */
+	/** The extension with the library's anchor task; the caller installs it in its registry. */
 	readonly extension: Extension;
+	/**
+	 * The extension with `respond` for schema asks; the caller installs it in its registry. Each child selects it, so
+	 * the caller does not.
+	 */
+	readonly answerExtension: Extension;
 	/**
 	 * The child of `key`: created the first time `key` is seen, with its lineage, in one commit, and the same child after.
 	 * `setup` runs in the creating commit. Before creating anything, it refuses a spec whose model neither it nor the
@@ -220,6 +249,8 @@ export function createChildren(durable: typeof Durable): Children {
 		abort: (_anchor, runtime, taskContext) =>
 			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
 	});
+	const answers = createAnswers(durable);
+	const extension = durable.defineExtension({ name: "pi-subagent-children", tasks: [Anchor] });
 
 	const ownerState = (owner: Owner): OwnerState =>
 		owner.kind === "task" ? { kind: "task", taskId: owner.taskId } : { kind: "detached" };
@@ -266,21 +297,21 @@ export function createChildren(durable: typeof Durable): Children {
 	}
 
 	/** The answer of the settled input `request` of `id`. */
-	async function answerOf(place: Place, id: ConversationId, request: string, context: Context): Promise<Answer> {
-		const settled = await read(place, (tx) => tx.submissionByRequest(id, request), context);
+	async function answerIn(tx: Tx, id: ConversationId, request: string): Promise<Ok | Failure> {
+		const settled = await tx.submissionByRequest(id, request);
 		if (settled?.status === "unanswered") {
 			return { status: "failed", reason: "unanswered", cause: settled.reason, detail: settled.detail };
 		}
 		if (settled?.status !== "done") return { status: "failed", reason: "unanswered", cause: "queued" };
 		const entry = settled.answer;
 		if (entry === undefined) return { status: "failed", reason: "unanswered", cause: "missing answer" };
-		const message = (await read(place, (tx) => tx.entry(durable.AssistantEntry, entry), context))?.model?.[0];
+		const message = (await tx.entry(durable.AssistantEntry, entry))?.model?.[0];
 		if (message?.role !== "assistant") return { status: "failed", reason: "unanswered", cause: "missing answer" };
 		const text = message.content
 			.flatMap((part) => (part.type === "text" ? [part.text] : []))
 			.join("\n")
 			.trim();
-		if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+		if (!complete(message.stopReason)) {
 			return { status: "failed", reason: "cut", text, entry, stopReason: message.stopReason };
 		}
 		return { status: "ok", text, entry };
@@ -288,6 +319,75 @@ export function createChildren(durable: typeof Durable): Children {
 
 	function makeChild(place: Place, id: ConversationId, childLineage: Lineage, conversation: Conversation): Child {
 		const lastRequest = async (context: Context) => (await place.store.snapshot(ChildDoc, id, context))?.lastRequest;
+		/** `answer` of the turn `attempt`, with the `respond` answer of a schema ask, or `no-respond` without one. */
+		const withRespond = async (answer: Answer, attempt: string, schema: JsonObject | undefined, context: Context) => {
+			if (schema === undefined || answer.status !== "ok") return answer;
+			const value = await read(place, (tx) => answers.valueIn(tx, id, attempt), context);
+			if (value === undefined) {
+				return { status: "failed", reason: "no-respond", text: answer.text, entry: answer.entry } as const;
+			}
+			return { ...answer, value };
+		};
+		const settled = async (context: Context, request?: string): Promise<Ok | Failure> => {
+			const requestId = request ?? (await lastRequest(context));
+			if (requestId == null) return { status: "failed", reason: "unanswered", cause: "no request" };
+			const record = await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
+			if (record === undefined) return { status: "failed", reason: "unanswered", cause: "no request" };
+			const submission = await place.store.submission(record.id, context);
+			// A request still queued when the child stops after a failed turn never settles, so idle ends the wait too.
+			const wait = withCancel(context);
+			try {
+				await Promise.race([
+					...(submission === undefined ? [] : [submission.wait(wait.context)]),
+					conversation.waitForIdle(wait.context),
+				]);
+			} finally {
+				wait.cancel();
+			}
+			context.abortSignal?.throwIfAborted();
+			return read(place, (tx) => answerIn(tx, id, requestId), context);
+		};
+		function ask(
+			input: Input,
+			context: Context,
+			options: { readonly schema: JsonObject },
+		): Promise<(Ok & { readonly value: JsonValue }) | Failure>;
+		function ask(input: Input, context: Context, options?: { readonly schema?: undefined }): Promise<Ok | Failure>;
+		function ask(input: Input, context: Context, options?: { readonly schema?: JsonObject }): Promise<Answer>;
+		async function ask(
+			input: Input,
+			context: Context,
+			options?: { readonly schema?: JsonObject | undefined },
+		): Promise<Answer> {
+			const schema = options?.schema;
+			let attempt = input.requestId;
+			let saved: Answer | undefined;
+			await place.store.commit(async (tx) => {
+				let record = await tx.submissionByRequest(id, attempt);
+				for (let n = 2; record !== undefined; n++) {
+					if (record.status === "done") {
+						const answer = await answerIn(tx, id, attempt);
+						const value = schema === undefined ? undefined : await answers.valueIn(tx, id, attempt);
+						if (answer.status === "ok" && (schema === undefined || value !== undefined)) {
+							saved = value === undefined ? answer : { ...answer, value };
+							return undefined;
+						}
+					} else if (record.status !== "unanswered") break;
+					attempt = `${input.requestId}#${n}`;
+					record = await tx.submissionByRequest(id, attempt);
+				}
+				const doc = await tx.doc(ChildDoc, id);
+				if (doc.closed) throw new Error(`The child ${id} is closed`);
+				// A request that is still pending keeps its ask.
+				if (record !== undefined) return undefined;
+				await answers.prepare(tx, id, attempt, schema);
+				doc.lastRequest = attempt;
+				return undefined;
+			}, context);
+			if (saved !== undefined) return saved;
+			await conversation.submit({ ...input, requestId: attempt }, context);
+			return withRespond(await settled(context, attempt), attempt, schema, context);
+		}
 		return {
 			id,
 			lineage: childLineage,
@@ -297,30 +397,14 @@ export function createChildren(durable: typeof Durable): Children {
 					const doc = await tx.doc(ChildDoc, id);
 					if (doc.closed) throw new Error(`The child ${id} is closed`);
 					if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
+					await answers.prepare(tx, id, input.requestId);
 					doc.lastRequest = input.requestId;
 					return undefined;
 				}, context);
 				await conversation.submit(input, context);
 			},
-			async settled(context, request) {
-				const requestId = request ?? (await lastRequest(context));
-				if (requestId == null) return { status: "failed", reason: "unanswered", cause: "no request" };
-				const record = await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
-				if (record === undefined) return { status: "failed", reason: "unanswered", cause: "no request" };
-				const submission = await place.store.submission(record.id, context);
-				// A request still queued when the child stops after a failed turn never settles, so idle ends the wait too.
-				const wait = withCancel(context);
-				try {
-					await Promise.race([
-						...(submission === undefined ? [] : [submission.wait(wait.context)]),
-						conversation.waitForIdle(wait.context),
-					]);
-				} finally {
-					wait.cancel();
-				}
-				context.abortSignal?.throwIfAborted();
-				return answerOf(place, id, requestId, context);
-			},
+			ask,
+			settled,
 			async state(context) {
 				if ((await place.store.snapshot(ChildDoc, id, context))?.closed === true) return "closed";
 				const live = await place.store.snapshot(durable.LiveDoc, id, context);
@@ -366,7 +450,8 @@ export function createChildren(durable: typeof Durable): Children {
 	};
 
 	return {
-		extension: durable.defineExtension({ name: "pi-subagent-children", tasks: [Anchor] }),
+		extension,
+		answerExtension: answers.extension,
 		lineage,
 		find,
 		async open(place, owner, key, spec, context, setup) {
@@ -405,6 +490,15 @@ export function createChildren(durable: typeof Durable): Children {
 					...(tools === undefined ? {} : { tools }),
 					...(spec.instructions === undefined ? {} : { instructions: spec.instructions }),
 				});
+				// The child keeps the extensions of the owner's agent and selects the answer extension too.
+				const agent = await tx.doc(durable.AgentDoc, child.id);
+				const answerName = answers.extension.name;
+				const selection = agent.extensions;
+				if (Array.isArray(selection)) {
+					if (!selection.includes(answerName)) selection.push(answerName);
+				} else if (!selection?.add?.includes(answerName)) {
+					agent.extensions = { ...selection, add: [...(selection?.add ?? []), answerName] };
+				}
 				const state: ChildDocState = {
 					key,
 					root,
