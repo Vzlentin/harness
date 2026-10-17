@@ -287,7 +287,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const exited = attach(handle, { terminal, env });
 			await until(() => terminal.text().includes("Answer to Task:"));
 			expect(terminal.text()).toContain("View me");
-			expect(terminal.text()).toContain(`viewed (${handle})  faux/faux-1  medium  idle`);
+			expect(terminal.text()).toContain(`viewed (${handle})`);
+			expect(terminal.text()).toContain("● idle");
+			expect(terminal.text()).toContain("faux/faux-1 · medium");
 
 			// Enter on an idle child starts a turn.
 			terminal.input("Hello there");
@@ -299,7 +301,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			terminal.input("Busy turn");
 			terminal.input("\r");
 			await until(() => called("Busy turn") === 1);
-			await until(() => terminal.text().includes("medium  busy"));
+			await until(() => terminal.text().includes("◉ busy"));
 			terminal.input("Steer it");
 			terminal.input("\r");
 			terminal.input("Then this");
@@ -316,7 +318,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(called("Steer it")).toBe(1);
 
 			// Esc on an idle child sends nothing.
-			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
+			await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
 			terminal.input("\u001b");
 			expect(sent()).toHaveLength(4);
 
@@ -328,7 +330,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			terminal.input("\u001b");
 			await until(() => sent().at(-1)?.type === "abort");
 			expect(sent().filter((r) => r.type === "abort")).toHaveLength(1);
-			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
+			await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
 			expect((await cli(["status", handle])).stdout).toBe(`viewed (${handle}): idle (faux/faux-1, medium)\n`);
 
 			// Ctrl+C exits and leaves the child running.
@@ -362,6 +364,32 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(await exited).toBe(0);
 		expect(again.text()).toContain(`viewed (${handle}) was stopped\n`);
 		expect(logLines(herdr.log)).toEqual(reports);
+	});
+
+	it("shows Pi's tool cards, the working indicator and the queue, and gives the queue back on Esc", async () => {
+		const handle = handleOf(await cli(["spawn", "--name", "carded", "--prompt", "Use a tool"]));
+		const terminal = new FakeTerminal();
+		const exited = attach(handle, { terminal, env: process.env });
+		await until(() => terminal.text().includes("$ while [ ! -f go ]; do sleep 0.05; done"));
+		await until(() => terminal.text().includes("Running bash... (esc to interrupt)"));
+
+		// A steer waits in the queue while the tool runs.
+		terminal.input("Wait for it");
+		terminal.input("\r");
+		await until(() => terminal.text().includes("Steer: Wait for it"));
+
+		// Esc aborts the turn, and the queued steer goes back to the editor.
+		terminal.input("\u001b");
+		await until(() => {
+			const text = terminal.text();
+			return text.lastIndexOf("Wait for it") > text.lastIndexOf("Steer: Wait for it") + "Steer: ".length;
+		});
+		await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
+		expect(called("Wait for it")).toBe(0);
+
+		terminal.input("\u0003");
+		expect(await exited).toBe(0);
+		expect(terminal.text()).toContain(`carded (${handle}) keeps running. Reattach: harness attach ${handle}\n`);
 	});
 
 	it("opens the viewer of a child in a Herdr tab", async () => {

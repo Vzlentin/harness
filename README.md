@@ -113,14 +113,26 @@ The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only th
 
 `harness attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. It starts the host when none runs. An unknown handle is an error before the viewer starts.
 
-The viewer shows the user messages, the assistant text and thinking, and one line for each tool call with its state: `pending`, `running`, `done`, or `error`. The status line shows `<name> (<handle>)  <provider>/<model>  <thinking>  <state>`. When the child is renamed, the status line shows the new name. The viewer uses Pi's default theme and keys, not your Pi settings.
+The viewer is full screen. It draws the conversation with Pi's own components (adapted from the attach view of [mavam/pi-agents](https://github.com/mavam/pi-agents)), from top to bottom:
+
+- The header: `harness │ <name> (<handle>) │ <working directory> │ <state>`, where the state is `◉ busy`, `● idle` or `⊗ error`. When the child is renamed, the header shows the new name.
+- The transcript: the user messages, the assistant text and thinking, and a Pi tool card for each call of `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls`, with its output while it runs. Other tools get Pi's generic card. A compaction shows `[compaction]` and its summary, and a reset shows `[new context]`. New output scrolls into view.
+- Pi's working indicator while the child works: `Working...`, `Running <tool>...`, `Compacting (<reason>)...` or `Retrying (attempt <n>): <error>`.
+- The queued messages, one line each: `Steer: <first line>` or `Follow-up: <first line>`.
+- The editor.
+- The footer: `<provider>/<model> · <thinking> │ <tokens> tok $<cost> │ ctrl+o expand │ ctrl+c exit`, where the tokens and the cost are the sum of the child's model requests.
+
+The viewer uses Pi's default theme and keys, not your Pi settings.
 
 | Key | Action |
 | --- | --- |
 | Enter | Send the message: a steer when the child is busy, a new turn when it is idle |
 | Alt+Enter | Send the message as a follow-up |
-| Esc | Abort the current turn and withdraw the queued messages. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
-| Ctrl+C | Exit. The child continues |
+| Esc | Abort the current turn and withdraw the queued messages, which go back to the editor, steers first. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
+| Ctrl+O | Show the tool output in full, or collapse it again |
+| Shift+↑, Shift+↓ | Scroll the transcript one line |
+| Shift+PgUp, Shift+PgDn | Scroll the transcript one page |
+| Ctrl+C | Exit and print `<name> (<handle>) keeps running. Reattach: harness attach <handle>`. The child continues |
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
