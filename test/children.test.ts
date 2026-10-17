@@ -153,4 +153,25 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await child.state(context)).toBe("closed");
 		expect(called("Revived")).toBe(0);
 	});
+
+	it("refuses an explicit thinking level that the model does not have", async () => {
+		await expect(
+			library.open(place, owner, "t:loud", { root: "test", ...faux, thinking: "xhigh" }, context),
+		).rejects.toThrow("faux/faux-1 has no thinking level xhigh");
+		expect(await library.find(place, owner, { key: "t:loud" }, context)).toBeUndefined();
+	});
+
+	it("gives an inherited thinking level that the model does not have as the nearest one", async () => {
+		const rootConversation = await harness.root(context);
+		await rootConversation.configure({ thinkingLevel: "xhigh" }, context);
+		try {
+			const child = await library.open(place, owner, "t:inherit", { root: "test", ...faux }, context);
+			expect((await child.conversation.agent(context)).thinkingLevel).toBe("high");
+			const fallback = { root: "test", ...faux, fallbackThinking: "xhigh" };
+			const caller = await library.open(place, owner, "t:caller", fallback, context);
+			expect((await caller.conversation.agent(context)).thinkingLevel).toBe("high");
+		} finally {
+			await rootConversation.configure({ thinkingLevel: null }, context);
+		}
+	});
 });

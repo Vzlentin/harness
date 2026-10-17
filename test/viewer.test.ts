@@ -5,6 +5,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,20 @@ import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
 import { type Request, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
-import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
+import {
+	CLI,
+	called,
+	cli,
+	gates,
+	handleOf,
+	models as hostModels,
+	root,
+	setUp,
+	startHost,
+	tearDown,
+	textOf,
+	until,
+} from "./helpers.ts";
 
 // The in-process client finds the host under the test's HOME, not the user's home, when XDG_STATE_HOME is not set.
 vi.mock("node:os", async (importOriginal) => ({
@@ -287,7 +301,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const exited = attach(handle, { terminal, env });
 			await until(() => terminal.text().includes("Answer to Task:"));
 			expect(terminal.text()).toContain("View me");
-			expect(terminal.text()).toContain(`viewed (${handle})  faux/faux-1  medium  idle`);
+			expect(terminal.text()).toContain(`viewed (${handle})`);
+			expect(terminal.text()).toContain("● idle");
+			expect(terminal.text()).toContain("faux/faux-1 · medium");
 
 			// Enter on an idle child starts a turn.
 			terminal.input("Hello there");
@@ -299,7 +315,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			terminal.input("Busy turn");
 			terminal.input("\r");
 			await until(() => called("Busy turn") === 1);
-			await until(() => terminal.text().includes("medium  busy"));
+			await until(() => terminal.text().includes("◉ busy"));
 			terminal.input("Steer it");
 			terminal.input("\r");
 			terminal.input("Then this");
@@ -316,7 +332,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(called("Steer it")).toBe(1);
 
 			// Esc on an idle child sends nothing.
-			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
+			await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
 			terminal.input("\u001b");
 			expect(sent()).toHaveLength(4);
 
@@ -328,7 +344,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			terminal.input("\u001b");
 			await until(() => sent().at(-1)?.type === "abort");
 			expect(sent().filter((r) => r.type === "abort")).toHaveLength(1);
-			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
+			await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
 			expect((await cli(["status", handle])).stdout).toBe(`viewed (${handle}): idle (faux/faux-1, medium)\n`);
 
 			// Ctrl+C exits and leaves the child running.
@@ -362,6 +378,97 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(await exited).toBe(0);
 		expect(again.text()).toContain(`viewed (${handle}) was stopped\n`);
 		expect(logLines(herdr.log)).toEqual(reports);
+	});
+
+	it("shows Pi's tool cards, the working indicator and the queue, and gives the queue back on Esc", async () => {
+		const handle = handleOf(await cli(["spawn", "--name", "carded", "--prompt", "Use a tool"]));
+		const terminal = new FakeTerminal();
+		const exited = attach(handle, { terminal, env: process.env });
+		await until(() => terminal.text().includes("$ while [ ! -f go ]; do sleep 0.05; done"));
+		await until(() => terminal.text().includes("Running bash... (esc to interrupt)"));
+
+		// A follow-up and then a steer wait in the queue while the tool runs, in the order they came.
+		terminal.input("Then that");
+		terminal.input("\u001b\r");
+		await until(() => terminal.text().includes("Follow-up: Then that"));
+		terminal.input("Wait for it");
+		terminal.input("\r");
+		await until(() => terminal.text().includes("Steer: Wait for it"));
+		const queue = terminal.text();
+		expect(queue.lastIndexOf("Follow-up: Then that")).toBeLessThan(queue.lastIndexOf("Steer: Wait for it"));
+
+		// Esc aborts the turn, and the queue goes back to the editor, steers first.
+		terminal.input("\u001b");
+		await until(() => {
+			const text = terminal.text();
+			return text.lastIndexOf("Then that") > text.lastIndexOf("Steer: Wait for it") + "Steer: ".length;
+		});
+		await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
+		const editor = terminal.text().slice(terminal.text().lastIndexOf("Steer: Wait for it"));
+		expect(editor).toMatch(/Wait for it\s+Then that\s*$/);
+		expect(called("Wait for it")).toBe(0);
+		expect(called("Then that")).toBe(0);
+
+		terminal.input("\u0003");
+		expect(await exited).toBe(0);
+		expect(terminal.text()).toContain(`carded (${handle}) keeps running. Reattach: harness attach ${handle}\n`);
+	});
+
+	it("changes the thinking level with Shift+Tab and the model with Ctrl+L", async () => {
+		const handle = handleOf(await cli(["spawn", "--name", "tuned", "--prompt", "Tune me"]));
+		await cli(["wait", handle]);
+		const models = (await request({ type: "models" }, { start: false })) ?? [];
+		expect(models.map((model) => `${model.provider}/${model.id}`)).toEqual(["faux/faux-1", "faux/faux-2"]);
+		const levels = models[0]?.thinkingLevels ?? [];
+		const next = levels[(levels.indexOf("medium") + 1) % levels.length];
+		const window = models[0]?.contextWindow ?? 0;
+		expect(window).toBeGreaterThan(0);
+
+		const terminal = new FakeTerminal();
+		const exited = attach(handle, { terminal, env: process.env });
+		await until(() => terminal.text().includes("Answer to Task:"));
+		expect(terminal.text()).toMatch(/\d+\.\d%\/\S+ ctx/);
+		// At 100 columns, the first hint does not fit.
+		expect(terminal.text()).toContain("ctrl+l model · ctrl+o expand · ctrl+c exit");
+
+		terminal.input("\u001b[Z");
+		await until(() => terminal.text().includes(`faux/faux-1 · ${next}`));
+		expect((await cli(["status", handle])).stdout).toBe(`tuned (${handle}): idle (faux/faux-1, ${next})\n`);
+
+		terminal.input("\u000c");
+		await until(() => terminal.text().includes("faux/faux-2"));
+		terminal.input("faux-2");
+		terminal.input("\r");
+		await until(() => terminal.text().includes(`faux/faux-2 · ${next}`));
+		expect((await cli(["status", handle])).stdout).toBe(`tuned (${handle}): idle (faux/faux-2, ${next})\n`);
+
+		// The host refuses a level that the model does not have, and a model that it does not know.
+		const client = await hostClient();
+		try {
+			await expect(client.request({ type: "configure", handle, thinking: "xhigh" })).rejects.toThrow(
+				"faux/faux-2 has no thinking level xhigh",
+			);
+			await expect(client.request({ type: "configure", handle, provider: "faux", model: "nope" })).rejects.toThrow(
+				"Unknown model: faux/nope",
+			);
+		} finally {
+			client.close();
+		}
+
+		// Ctrl+L asks the host for its models again, so a login after attach shows.
+		const added = fauxProvider({ provider: "faux-added", models: [{ id: "faux-3", reasoning: true }] });
+		hostModels.setProvider(added.provider);
+		try {
+			terminal.input("\u000c");
+			await until(() => terminal.text().includes("faux-added/faux-3"));
+			terminal.input("faux-3");
+			terminal.input("\r");
+			await until(() => terminal.text().includes("faux-added/faux-3 · "));
+		} finally {
+			hostModels.deleteProvider("faux-added");
+		}
+		terminal.input("\u0003");
+		expect(await exited).toBe(0);
 	});
 
 	it("opens the viewer of a child in a Herdr tab", async () => {

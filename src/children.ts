@@ -4,14 +4,16 @@
  */
 import { type Context, withCancel } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {
+	Agent,
 	Conversation,
 	ConversationId,
 	DocumentReader,
 	EntryId,
 	Extension,
+	ModelRef,
 	RegistrySnapshot,
 	Submission,
 	SubmissionId,
@@ -61,6 +63,8 @@ export type Spec = {
 	readonly provider?: string;
 	readonly model?: string;
 	readonly thinking?: string;
+	/** The caller's thinking level, used without `thinking`: the nearest level that the model has, not refused. */
+	readonly fallbackThinking?: string;
 	readonly cwd?: string;
 	/** The only tools the child gets, by name. */
 	readonly tools?: readonly string[];
@@ -371,15 +375,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const ownerConversation =
 				owner.kind === "task" ? await place.store.conversation(owner.conversation, context) : owner.root;
 			const agent = await ownerConversation?.agent(context);
-			const provider = spec.provider ?? agent?.model?.provider;
-			const modelId = spec.model ?? agent?.model?.modelId;
-			if (provider === undefined || modelId === undefined) {
-				throw new Error("No model: neither the spec nor the owner's agent names one");
-			}
-			if (place.models.getModel(provider, modelId) === undefined) {
-				throw new Error(`Unknown model: ${provider}/${modelId}`);
-			}
-			const thinking = spec.thinking ?? agent?.thinkingLevel;
+			const { model, thinkingLevel } = resolveModel(place.models, agent, spec);
 			const cwd = spec.cwd ?? agent?.cwd;
 			let tools: ToolRegistration[] | undefined;
 			if (spec.tools !== undefined) {
@@ -403,8 +399,8 @@ export function createChildren(durable: typeof Durable): Children {
 				if (known.conversation !== 0) return undefined;
 				const child = await tx.createConversation({ ownership: { kind: "task", taskId: ownerTask } });
 				await durable.configure(tx, child.id, {
-					model: { provider, modelId },
-					...(thinking === undefined ? {} : { thinkingLevel: thinking as ModelThinkingLevel }),
+					model,
+					thinkingLevel,
 					...(cwd === undefined ? {} : { cwd }),
 					...(tools === undefined ? {} : { tools }),
 					...(spec.instructions === undefined ? {} : { instructions: spec.instructions }),
@@ -441,6 +437,40 @@ export function createChildren(durable: typeof Durable): Children {
 			return opened;
 		},
 	};
+}
+
+/**
+ * The model and thinking level of `request`; a field left out comes from `fallback`. An explicit `thinking` that the
+ * model does not have is refused. Without it, the level is `fallbackThinking`, else the fallback's, clamped to the
+ * nearest level that the model has.
+ */
+export function resolveModel(
+	models: Models,
+	fallback: Pick<Agent, "model" | "thinkingLevel"> | undefined,
+	request: {
+		readonly provider?: string | undefined;
+		readonly model?: string | undefined;
+		readonly thinking?: string | undefined;
+		readonly fallbackThinking?: string | undefined;
+	},
+): { model: ModelRef; thinkingLevel: ModelThinkingLevel } {
+	const provider = request.provider ?? fallback?.model?.provider;
+	const modelId = request.model ?? fallback?.model?.modelId;
+	if (provider === undefined || modelId === undefined) {
+		throw new Error("No model: neither the spec nor the owner's agent names one");
+	}
+	const model = models.getModel(provider, modelId);
+	if (model === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
+	const levels: readonly string[] = getSupportedThinkingLevels(model);
+	if (request.thinking !== undefined) {
+		if (!levels.includes(request.thinking)) {
+			throw new Error(`${provider}/${modelId} has no thinking level ${request.thinking}`);
+		}
+		return { model: { provider, modelId }, thinkingLevel: request.thinking as ModelThinkingLevel };
+	}
+	// `clampThinkingLevel` gives the model's first level for a name that it does not know.
+	const inherited = (request.fallbackThinking ?? fallback?.thinkingLevel ?? "off") as ModelThinkingLevel;
+	return { model: { provider, modelId }, thinkingLevel: clampThinkingLevel(model, inherited) };
 }
 
 /** The conversation ID that `value` spells, as callers write it; nothing for another caller, such as a Pi session. */

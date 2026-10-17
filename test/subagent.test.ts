@@ -133,6 +133,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["spawn", "--tools", "read,web", "--prompt", "x"])).stderr).toBe("Unknown tool: web\n");
 		expect((await cli(["status", "abcdef"])).stderr).toBe("Unknown subagent: abcdef\n");
 		expect((await cli(["spawn", "--thinking", "huge", "--prompt", "x"])).stderr).toBe("Invalid thinking level: huge\n");
+		expect((await cli(["spawn", "--thinking", "xhigh", "--prompt", "x"])).stderr).toBe(
+			"faux/faux-1 has no thinking level xhigh\n",
+		);
 		expect((await cli(["spawn", "--name", "x"])).stderr).toBe("spawn requires at least one prompt or file\n");
 		expect((await cli(["status", "ABC"])).stderr).toBe("Invalid subagent handle: ABC\n");
 	});
@@ -414,7 +417,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				caller: "cli",
 				provider: "faux",
 				model: "faux-1",
-				thinking: "medium",
+				callerThinking: "medium",
 				cwd: root,
 				prompt: "Once",
 			} as const;
@@ -466,7 +469,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				caller,
 				provider: "faux",
 				model: "faux-1",
-				thinking: "medium",
+				callerThinking: "medium",
 				prompt: "Nowhere",
 			} as unknown as Parameters<typeof client.request<"spawn">>[0];
 			await expect(client.request(spawn)).rejects.toThrow("spawn requires a working directory");
@@ -492,7 +495,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			caller,
 			provider: "faux",
 			model: "faux-1",
-			thinking: "medium",
+			callerThinking: "medium",
 			cwd: root,
 			prompt: "First prompt",
 		} as const;

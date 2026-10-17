@@ -39,7 +39,7 @@ The `subagent` tool does what the CLI does, with one `action` and its arguments:
 
 `tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. A caller without a working directory cannot spawn. The text result is the output of the same CLI command. The structured result is `{ action, value }`, and the tool declares its schema, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`. A child is `{ handle, name, state, provider, model, thinking, cwd }`, where `cwd` is its working directory.
 
-A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
+A spawn without `provider`, `model`, or `thinking` uses the caller's. A spawn refuses a `thinking` that the model does not have with `<provider>/<model> has no thinking level <level>`. Without `thinking`, the child gets the caller's level, or the nearest level that the model has. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
 
 `subagent` calls in one message run one after another, in message order, so a `wait` after a `send` waits for the answer to that message. A round with a `subagent` call runs all of its tool calls in order, `bash` and `read` included.
 
@@ -105,7 +105,7 @@ harness attach a1b2c3
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
-The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller. The viewer sends text with an `input` request and stops a turn with an `abort` request. Neither request has a caller.
+The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller. The viewer sends text with an `input` request, stops a turn with an `abort` request, and changes the model or the thinking level with a `configure` request. None of these requests has a caller.
 
 `openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs `env <node> <cli> attach <handle>`: the viewer with this Node and this package's CLI (`src/cli.ts` in a checkout, `dist/cli.js` under `node_modules`), so it does not need `harness` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. When a `herdr` call fails, it rejects with the stderr of `herdr`, or with the reason that the call failed.
 
@@ -113,14 +113,28 @@ The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only th
 
 `harness attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. It starts the host when none runs. An unknown handle is an error before the viewer starts.
 
-The viewer shows the user messages, the assistant text and thinking, and one line for each tool call with its state: `pending`, `running`, `done`, or `error`. The status line shows `<name> (<handle>)  <provider>/<model>  <thinking>  <state>`. When the child is renamed, the status line shows the new name. The viewer uses Pi's default theme and keys, not your Pi settings.
+The viewer is full screen. It draws the conversation with Pi's own components (adapted from the attach view of [mavam/pi-agents](https://github.com/mavam/pi-agents)), from top to bottom:
+
+- The header: `harness │ <name> (<handle>) │ <working directory> │ <state>`, where the state is `◉ busy`, `● idle` or `⊗ error`. When the child is renamed, the header shows the new name.
+- The transcript: the user messages, the assistant text and thinking, and a Pi tool card for each call of `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls`, with its output while it runs. Other tools get Pi's generic card. A compaction shows `[compaction]` and its summary, and a reset shows `[new context]`. New output scrolls into view.
+- Pi's working indicator while the child works: `Working...`, `Running <tool>...`, `Compacting (<reason>)...` or `Retrying (attempt <n>): <error>`.
+- The queued messages, one line each: `Steer: <first line>` or `Follow-up: <first line>`.
+- The editor.
+- The footer: `<provider>/<model> · <thinking> │ <tokens> tok $<cost> │ <used>%/<window> ctx` on the left, and `shift+tab thinking · ctrl+l model · ctrl+o expand · ctrl+c exit` on the right. When the terminal is too narrow, the hints go from the first one. The tokens and the cost are the sum of the child's model requests. `<used>` is the prompt and output of the last answer, against the context window of the model; it shows when the host has a login for the model and the child has answered once.
+
+The viewer uses Pi's default theme and keys, not your Pi settings.
 
 | Key | Action |
 | --- | --- |
 | Enter | Send the message: a steer when the child is busy, a new turn when it is idle |
 | Alt+Enter | Send the message as a follow-up |
-| Esc | Abort the current turn and withdraw the queued messages. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
-| Ctrl+C | Exit. The child continues |
+| Esc | Abort the current turn and withdraw the queued messages, which go back to the editor, steers first. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
+| Shift+Tab | Change the child's thinking level to the next level of its model, after the last one `off` again. The change applies from the next model request |
+| Ctrl+L | Pick the child's model from the models with a login. Typing filters the list, as in Pi's model selector; Enter picks, Esc closes. The viewer asks the host for the models each time, so a login after attach shows. The new model keeps the thinking level when it has it, and takes the nearest level it has otherwise |
+| Ctrl+O | Show the tool output in full, or collapse it again |
+| Shift+↑, Shift+↓ | Scroll the transcript one line |
+| Shift+PgUp, Shift+PgDn | Scroll the transcript one page |
+| Ctrl+C | Exit and print `<name> (<handle>) keeps running. Reattach: harness attach <handle>`. The child continues |
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
@@ -134,7 +148,7 @@ The host keeps its state in `$XDG_STATE_HOME/harness/` (default `~/.local/state/
 
 - `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
 - `lock.sqlite`: one host at a time.
-- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 3. The `watch` reply is `{ view, child }`. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`harness host` process) and run the command again.
+- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 5. The `watch` reply is `{ view, child }`. The `models` reply lists the models with a login: `{ provider, id, name, contextWindow, thinkingLevels }`. A `configure` request `{ handle, provider?, model?, thinking? }` replies with the child, and refuses an unknown model and a thinking level that the model does not have. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`harness host` process) and run the command again.
 - `host.log`: the host's output.
 
 A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `harness stop` removes a child and the children it spawned permanently.

@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
+import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -31,11 +31,20 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type Answer, type Child, createChildren, type Owner, type Place, type Spec } from "./children.ts";
+import {
+	type Answer,
+	type Child,
+	createChildren,
+	type Owner,
+	type Place,
+	resolveModel,
+	type Spec,
+} from "./children.ts";
 import { ChildContext } from "./context.ts";
 import {
 	type ChildInfo,
 	type ChildState,
+	type ModelInfo,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -289,6 +298,10 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return childInfo(handler, request.handle);
 		case "abort":
 			return abortChild(request, handler);
+		case "configure":
+			return configureChild(request, handler);
+		case "models":
+			return modelInfos(handler.place.models);
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 			return serveWatch(handler, request.handle, handler.connection);
@@ -343,7 +356,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			...(parent === undefined ? { root: request.caller } : { parent }),
 			provider: request.provider,
 			model: request.model,
-			thinking: request.thinking,
+			...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+			fallbackThinking: request.callerThinking,
 			cwd: request.cwd,
 			...(request.tools === undefined ? {} : { tools: request.tools }),
 		};
@@ -412,6 +426,23 @@ async function abortChild(request: Extract<Request, { type: "abort" }>, handler:
 	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
 	await child.conversation.abort(context);
 	return childInfo(handler, request.handle);
+}
+
+async function configureChild(request: Extract<Request, { type: "configure" }>, handler: Handler): Promise<ChildInfo> {
+	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
+	const agent = await child.conversation.agent(context);
+	await child.conversation.configure(resolveModel(handler.place.models, agent, request), context);
+	return childInfo(handler, request.handle);
+}
+
+async function modelInfos(models: Models): Promise<ModelInfo[]> {
+	return (await models.getAvailable()).map((model) => ({
+		provider: model.provider,
+		id: model.id,
+		name: model.name,
+		contextWindow: model.contextWindow,
+		thinkingLevels: getSupportedThinkingLevels(model),
+	}));
 }
 
 async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
