@@ -1,6 +1,6 @@
 - Check: `npm run check` (Biome, TypeScript, Vitest).
 - README.md is the behaviour spec: CLI commands, arguments and output lines, the tool, and where state lives. Update it in the same change as the behaviour.
-- `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent` (remote `pi-subagent`), a fork of `badlogic/pi-subagent` (remote `badlogic`).
+- `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent`, now archived, a fork of `badlogic/pi-subagent` (remote `badlogic`).
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together.
 - The `@earendil-works/*` packages are `dependencies`.
 - The checkout runs from source: the `bin` runs `src/cli.ts`, so the source must run with Node type stripping. There is no build step.
