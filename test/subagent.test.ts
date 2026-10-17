@@ -26,6 +26,7 @@ import {
 	gates,
 	handleOf,
 	models,
+	type Result,
 	requests,
 	root,
 	setUp,
@@ -320,20 +321,36 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("runs its CLI from a copy under node_modules, where Node does not strip types", async () => {
+	it("runs its CLI and starts its host from a copy under node_modules, where Node does not strip types", async () => {
 		const installed = join(root, "consumer", "node_modules", "harness");
 		const source = join(dirname(CLI), "..");
 		await mkdir(installed, { recursive: true });
 		for (const path of ["bin", "src", "package.json"])
 			await cp(join(source, path), join(installed, path), { recursive: true });
 		await symlink(join(source, "node_modules"), join(installed, "node_modules"));
-		const result = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
-			execFile(process.execPath, [join(installed, "bin", "harness.mjs"), "list"], { cwd: root }, (error, stdout) =>
-				resolve({ code: error === null ? 0 : (error.code as number), stdout }),
-			);
-		});
-		expect(result.code).toBe(0);
-		expect(result.stdout).not.toBe("");
+		// Its own state, so `list` starts a host from the copy. No jiti file cache: each copy has a new path.
+		const env = { ...process.env, XDG_STATE_HOME: join(root, "copy-state"), JITI_FS_CACHE: "false" };
+		const run = (file: string) =>
+			new Promise<Result>((resolve) => {
+				execFile(process.execPath, [join(installed, file), "list"], { cwd: root, env }, (error, stdout, stderr) =>
+					resolve({ code: error === null ? 0 : (error.code as number), stdout, stderr }),
+				);
+			});
+		const plain = await run(join("src", "cli.ts"));
+		expect(plain.stderr).toContain("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING");
+		try {
+			expect(await run(join("bin", "harness.mjs"))).toEqual({ code: 0, stdout: "No subagents\n", stderr: "" });
+		} finally {
+			const saved = process.env.XDG_STATE_HOME;
+			process.env.XDG_STATE_HOME = env.XDG_STATE_HOME;
+			const client = await connect({ start: false }).finally(() => {
+				process.env.XDG_STATE_HOME = saved;
+			});
+			if (client !== undefined) {
+				process.kill(client.pid);
+				client.close();
+			}
+		}
 	});
 
 	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {

@@ -762,8 +762,8 @@ type Entry = { readonly extensions: readonly Extension[]; readonly tasks?: reado
 /**
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus, as one
  * entry whose `close()` closes each of them and passes its errors to `warn`. When an entry fails to load, the entries
- * loaded before it close. Missing packages are skipped, not installed. Node does not strip types under
- * `node_modules`, so entries of npm packages fail to load.
+ * loaded before it close. Missing packages are skipped, not installed. The host runs through `bin/harness.mjs`, so jiti
+ * loads the entries, also under `node_modules`.
  */
 async function loadEntries(
 	cwd: string,

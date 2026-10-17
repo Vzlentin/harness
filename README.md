@@ -211,7 +211,7 @@ A child's system prompt has what a Pi session in the child's working directory g
 
 ## Limits
 
-- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
+- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. The host runs through `bin/harness.mjs`, so jiti loads the entries, also those of packages installed with npm.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

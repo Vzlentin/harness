@@ -168,9 +168,14 @@ export function handleOf(result: Result): string {
 	return handle;
 }
 
-/** Runs the host of `project` in this process. */
-export function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
-	return runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+/**
+ * Runs the host of `project` in this process. It throws when another host has the lock, such as one that a CLI started
+ * while the test host was down, because the tests would then run against a host without the faux provider.
+ */
+export async function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
+	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+	return host;
 }
 
 /** Polls `check` for up to 10 s. */
@@ -207,6 +212,9 @@ export async function setUp(): Promise<void> {
 		"HERDR_ENV",
 		"HERDR_PANE_ID",
 		"HARNESS_PROJECT",
+		// Node warns on stderr when both are set, and the tests compare stderr.
+		"FORCE_COLOR",
+		"NO_COLOR",
 	]) {
 		delete process.env[name];
 	}
