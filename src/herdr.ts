@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ChildInfo, childLabel } from "./protocol.ts";
 
@@ -10,8 +9,7 @@ const HERDR_SOURCE = "custom:harness";
  * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
  */
 export function viewerCommand(handle: string): string[] {
-	const cli = fileURLToPath(new URL(`./cli${extname(import.meta.url)}`, import.meta.url));
-	return ["env", process.execPath, cli, "attach", handle];
+	return ["env", process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "attach", handle];
 }
 
 /**
