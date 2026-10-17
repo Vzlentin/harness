@@ -60,6 +60,8 @@ const toolSpawns = new Map([
 	["No cwd", "No cwd child"],
 	["Task:\nSend and wait", "Send and wait child"],
 ]);
+/** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
+export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 export const toolWaits = new Map<string, PromiseWithResolvers<string>>();
 
@@ -129,6 +131,14 @@ async function respond(
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
 	}
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
+	if (prompt === "Schema") {
+		return fauxAssistantMessage(fauxToolCall("respond", { answer: SCHEMA_ANSWER }), { stopReason: "toolUse" });
+	}
+	if (prompt === "Schema text") {
+		const args = { answer: JSON.stringify(SCHEMA_ANSWER) };
+		return fauxAssistantMessage(fauxToolCall("respond", args), { stopReason: "toolUse" });
+	}
+	if (prompt === "Cut") return fauxAssistantMessage("cut", { stopReason: "length" });
 	return fauxAssistantMessage(`Answer to ${prompt}`);
 }
 

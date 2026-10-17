@@ -2,8 +2,16 @@
  * The children library: creates and drives child conversations on whatever pi-durable store its caller hands it. Its
  * caller passes its pi-durable module, so a process never holds two copies.
  */
+import type { JsonValue } from "@earendil-works/chord";
 import { type Context, withCancel } from "@earendil-works/chord/context";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type Message,
+	type ModelThinkingLevel,
+	type TSchema,
+	Type,
+	validateToolArguments,
+} from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {
@@ -13,6 +21,8 @@ import type {
 	DocumentReader,
 	EntryId,
 	Extension,
+	HookApi,
+	JsonObject,
 	ModelRef,
 	RegistrySnapshot,
 	Submission,
@@ -25,6 +35,15 @@ import type {
 
 /** The deepest child by default: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
+
+/**
+ * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
+ * known by its exact text, so a user prompt with the same text counts as one.
+ */
+export const REMINDER = "Answer with the respond tool, as the schema in answer_schema says.";
+
+/** How many reminders one turn submission gets before its ask fails. */
+const MAX_REMINDERS = 2;
 
 /**
  * The store children live in: a Harness, or a running task's runtime with the Harness's `submission`. `commit`
@@ -91,7 +110,13 @@ export type ChildState = "busy" | "idle" | "error" | "closed";
  * with the request still queued after a failed turn.
  */
 export type Answer =
-	| { readonly status: "ok"; readonly text: string; readonly entry: EntryId }
+	| {
+			readonly status: "ok";
+			readonly text: string;
+			readonly entry: EntryId;
+			/** The answer that `respond` checked against the schema of a schema ask. */
+			readonly value?: JsonValue;
+	  }
 	| {
 			readonly status: "failed";
 			readonly reason: "cut";
@@ -114,8 +139,20 @@ export type Child = {
 	/**
 	 * Admits `input` and returns. A request ID admitted before is not admitted again, and a closed child refuses input.
 	 * A new request ID becomes the last request before the submit, so a crash between the two still finds it.
+	 * A send drops the `respond` answer of an earlier schema ask, and a send while a schema ask runs ends that ask with
+	 * `no-respond`.
 	 */
 	send(input: Input, context: Context): Promise<void>;
+	/**
+	 * Sends `input` as one turn and gives its answer. A request ID answered before gives its saved answer with no new
+	 * turn, but only the newest turn keeps its `respond` answer: after a later `send` or `ask`, an earlier schema request
+	 * is sent again. A request ID that was not answered, or whose answer does not count, is sent again as
+	 * `<requestId>#2`, `#3` and so on. With `schema`, the child must answer through its `respond` tool with a value that
+	 * matches the schema, which becomes `value`; else the answer is `no-respond`. A child opened with `Spec.tools` has no
+	 * `respond`, so its schema asks give `no-respond`. A closed child refuses input, and cancelling `context` stops only
+	 * the wait.
+	 */
+	ask(input: Input, context: Context, options?: { readonly schema?: JsonObject }): Promise<Answer>;
 	/**
 	 * Waits until `request` (default: the last one) settles, then gives its answer. Cancelling the wait through
 	 * `context` stops only the wait; the child runs until `close()`.
@@ -178,6 +215,13 @@ type ChildDocState = {
 	closed: boolean;
 };
 
+/**
+ * The JSON Schema of the current ask of a child, the request ID of the turn that sends it, and the answer that
+ * `respond` checked and saved in that turn. The schema is absent for an ask without one, and the answer until `respond`
+ * accepts one.
+ */
+type AnswerState = { schema?: JsonObject; requestId?: string; answer?: JsonValue };
+
 export function createChildren(durable: typeof Durable): Children {
 	const ChildDoc = durable.defineDoc<ChildDocState>({
 		kind: "pi-subagent.child",
@@ -219,6 +263,65 @@ export function createChildren(durable: typeof Durable): Children {
 		},
 		abort: (_anchor, runtime, taskContext) =>
 			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
+	});
+	const AnswerDoc = durable.defineDoc<AnswerState>({
+		kind: "harness.answer-schema",
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "current",
+		initial: () => ({}),
+	});
+	/** Saves a schema ask's answer, checked against the schema, and ends the turn. Only a schema ask offers it. */
+	const respond = durable.defineTool({
+		name: "respond",
+		description: "Give the answer of this turn in the structured form the prompt asks for. This ends the turn.",
+		parameters: Type.Object({
+			answer: Type.Unknown({
+				description: "The answer value itself, in the form the prompt asks for. Do not give its JSON text as a string.",
+			}),
+		}),
+		callers: ["model"],
+		deferred: true,
+		execute: async (args, api, context) => {
+			const schema = (await api.snapshot(AnswerDoc, api.conversationId, context))?.schema;
+			if (schema === undefined) {
+				return { isError: true, output: [{ type: "text", text: "This turn asks for no structured answer." }] };
+			}
+			let answer: JsonValue;
+			try {
+				answer = checkedAnswer(schema, args as JsonObject, api.callId) as JsonValue;
+			} catch (error) {
+				return {
+					isError: true,
+					output: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+				};
+			}
+			await api.commit(async (tx) => {
+				(await tx.doc(AnswerDoc, api.conversationId)).answer = answer;
+				return undefined;
+			}, context);
+			return { output: [{ type: "text", text: "Answer recorded." }], control: { terminate: true } };
+		},
+	});
+	/** A reminder to call `respond`, when a schema ask got a complete answer without one and has reminders left. */
+	const remind = async (answer: AssistantMessage, api: HookApi, context: Context) => {
+		const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
+		if (doc?.schema === undefined || "answer" in doc || !complete(answer.stopReason)) return undefined;
+		const count = (await api.memo<number>("reminders", context)) ?? 0;
+		return count < MAX_REMINDERS ? { continue: REMINDER } : undefined;
+	};
+	const extension = durable.defineExtension({
+		name: "pi-subagent-children",
+		tasks: [Anchor],
+		tools: [respond],
+		hooks: [durable.hook(durable.GenerationTask, { beforeRequest: countReminders, onYield: remind })],
+		sections: [
+			durable.section("answer_schema", async ({ read, conversationId }, context) => {
+				const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;
+				return schema && `The answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
+			}),
+		],
 	});
 
 	const ownerState = (owner: Owner): OwnerState =>
@@ -280,7 +383,7 @@ export function createChildren(durable: typeof Durable): Children {
 			.flatMap((part) => (part.type === "text" ? [part.text] : []))
 			.join("\n")
 			.trim();
-		if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+		if (!complete(message.stopReason)) {
 			return { status: "failed", reason: "cut", text, entry, stopReason: message.stopReason };
 		}
 		return { status: "ok", text, entry };
@@ -288,19 +391,60 @@ export function createChildren(durable: typeof Durable): Children {
 
 	function makeChild(place: Place, id: ConversationId, childLineage: Lineage, conversation: Conversation): Child {
 		const lastRequest = async (context: Context) => (await place.store.snapshot(ChildDoc, id, context))?.lastRequest;
-		return {
+		/** The body of `send`; `start` runs in the commit that checks `closed`, for a new request ID, before the submit. */
+		const admit = async (input: Input, context: Context, start?: (tx: Tx) => Promise<void>) => {
+			await place.store.commit(async (tx) => {
+				const doc = await tx.doc(ChildDoc, id);
+				if (doc.closed) throw new Error(`The child ${id} is closed`);
+				if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
+				await start?.(tx);
+				doc.lastRequest = input.requestId;
+				return undefined;
+			}, context);
+			await conversation.submit(input, context);
+		};
+		/** `answer` of the turn `attempt`, with the `respond` answer of a schema ask, or `no-respond` without one. */
+		const counted = async (answer: Answer, attempt: string, schema: JsonObject | undefined, context: Context) => {
+			if (schema === undefined || answer.status !== "ok") return answer;
+			const doc = await place.store.snapshot(AnswerDoc, id, context);
+			if (doc?.requestId !== attempt || !("answer" in doc)) {
+				return { status: "failed", reason: "no-respond", text: answer.text, entry: answer.entry } as const;
+			}
+			return { ...answer, value: doc.answer as JsonValue };
+		};
+		/** Writes the schema of the ask `requestId` to the answer doc and gives the child `respond` only with a schema. */
+		const prepare = async (tx: Tx, requestId: string, schema: JsonObject | undefined) => {
+			const doc = await tx.doc(AnswerDoc, id);
+			if (schema === undefined) delete doc.schema;
+			else doc.schema = schema;
+			doc.requestId = requestId;
+			delete doc.answer;
+			await durable.configure(tx, id, {
+				extensions: { add: [extension] },
+				modelTools: schema === undefined ? null : { add: [respond] },
+			});
+		};
+		const child: Child = {
 			id,
 			lineage: childLineage,
 			conversation,
-			async send(input, context) {
-				await place.store.commit(async (tx) => {
-					const doc = await tx.doc(ChildDoc, id);
-					if (doc.closed) throw new Error(`The child ${id} is closed`);
-					if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
-					doc.lastRequest = input.requestId;
-					return undefined;
-				}, context);
-				await conversation.submit(input, context);
+			send: (input, context) =>
+				admit(input, context, async (tx) => {
+					if ((await tx.doc(AnswerDoc, id)).schema !== undefined) await prepare(tx, input.requestId, undefined);
+				}),
+			async ask(input, context, options) {
+				const schema = options?.schema;
+				let attempt = input.requestId;
+				for (let n = 2; ; n++) {
+					const record = await read(place, (tx) => tx.submissionByRequest(id, attempt), context);
+					if (record?.status === "done") {
+						const answer = await counted(await answerOf(place, id, attempt, context), attempt, schema, context);
+						if (answer.status === "ok") return answer;
+					} else if (record?.status !== "unanswered") break;
+					attempt = `${input.requestId}#${n}`;
+				}
+				await admit({ ...input, requestId: attempt }, context, (tx) => prepare(tx, attempt, schema));
+				return counted(await child.settled(context, attempt), attempt, schema, context);
 			},
 			async settled(context, request) {
 				const requestId = request ?? (await lastRequest(context));
@@ -350,6 +494,7 @@ export function createChildren(durable: typeof Durable): Children {
 				return ids;
 			},
 		};
+		return child;
 	}
 
 	const find: Children["find"] = async (place, owner, which, context) => {
@@ -366,7 +511,7 @@ export function createChildren(durable: typeof Durable): Children {
 	};
 
 	return {
-		extension: durable.defineExtension({ name: "pi-subagent-children", tasks: [Anchor] }),
+		extension,
 		lineage,
 		find,
 		async open(place, owner, key, spec, context, setup) {
@@ -471,6 +616,63 @@ export function resolveModel(
 	// `clampThinkingLevel` gives the model's first level for a name that it does not know.
 	const inherited = (request.fallbackThinking ?? fallback?.thinkingLevel ?? "off") as ModelThinkingLevel;
 	return { model: { provider, modelId }, thinkingLevel: clampThinkingLevel(model, inherited) };
+}
+
+/** True when an answer with `stopReason` reached its end; any other answer is cut. */
+function complete(stopReason: string): boolean {
+	return stopReason === "stop" || stopReason === "toolUse";
+}
+
+/**
+ * Saves the number of reminders at the end of `messages` as the memo `reminders` of the generation. A continuation
+ * starts a new generation, so each generation counts the reminders of its turn again from its messages. A compaction
+ * in the turn can summarize reminders away and reset the count. Each reset needs a compaction, so the turn still ends.
+ */
+async function countReminders(
+	request: { readonly messages: readonly Message[] },
+	api: HookApi,
+	context: Context,
+): Promise<undefined> {
+	let count = 0;
+	for (const message of request.messages.toReversed()) {
+		if (message.role !== "user") continue;
+		const { content } = message;
+		const text =
+			typeof content === "string"
+				? content
+				: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+		if (text !== REMINDER) break;
+		count++;
+	}
+	await api.memo("reminders", count, context);
+	return undefined;
+}
+
+/**
+ * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
+ * match is parsed as JSON, and an object or array is checked again, because a model can send it as its JSON text. Any
+ * other string throws the first error.
+ */
+function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknown {
+	const parameters = { type: "object", properties: { answer: schema }, required: ["answer"] } as unknown as TSchema;
+	const check = (answer: unknown) =>
+		validateToolArguments(
+			{ name: "respond", description: "", parameters },
+			{ type: "toolCall", id, name: "respond", arguments: { answer } as JsonObject },
+		).answer;
+	try {
+		return check(args.answer);
+	} catch (error) {
+		if (typeof args.answer !== "string") throw error;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(args.answer);
+		} catch {
+			throw error;
+		}
+		if (typeof parsed !== "object" || parsed === null) throw error;
+		return check(parsed);
+	}
 }
 
 /** The conversation ID that `value` spells, as callers write it; nothing for another caller, such as a Pi session. */

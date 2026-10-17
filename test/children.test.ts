@@ -4,11 +4,16 @@ import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createChildren, type Owner, type Place } from "../src/children.ts";
-import { called, gates, models, root, setUp, tearDown, until } from "./helpers.ts";
+import { createChildren, type Owner, type Place, REMINDER } from "../src/children.ts";
+import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
 const faux = { provider: "faux", model: "faux-1" } as const;
+const schema = {
+	type: "object",
+	properties: { verdict: { type: "string" }, score: { type: "number" } },
+	required: ["verdict", "score"],
+};
 let harness: Harness;
 let place: Place;
 let owner: Owner;
@@ -173,5 +178,92 @@ describe("children library", { timeout: 30_000 }, () => {
 		} finally {
 			await rootConversation.configure({ thinkingLevel: null }, context);
 		}
+	});
+
+	it("asks a turn and gives its answer", async () => {
+		const child = await library.open(place, owner, "t:ask", { root: "test", ...faux, cwd: root }, context);
+		expect(await child.ask({ type: "input", content: "Plain", requestId: "r1" }, context)).toMatchObject({
+			status: "ok",
+			text: "Answer to Plain",
+		});
+	});
+
+	it("gives the respond answer of a schema ask as its value", async () => {
+		const child = await library.open(place, owner, "t:schema", { root: "test", ...faux, cwd: root }, context);
+		const answer = await child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
+		expect(answer).toMatchObject({ status: "ok", text: "", value: SCHEMA_ANSWER });
+	});
+
+	it("parses a respond answer that is JSON text", async () => {
+		const child = await library.open(place, owner, "t:text", { root: "test", ...faux, cwd: root }, context);
+		const input = { type: "input", content: "Schema text", requestId: "r1" } as const;
+		expect(await child.ask(input, context, { schema })).toMatchObject({ status: "ok", value: SCHEMA_ANSWER });
+	});
+
+	it("reminds a schema ask without respond twice, then gives no-respond", async () => {
+		const child = await library.open(place, owner, "t:remind", { root: "test", ...faux, cwd: root }, context);
+		const answer = await child.ask({ type: "input", content: "No respond", requestId: "r1" }, context, { schema });
+		expect(called(REMINDER)).toBe(2);
+		expect(answer).toMatchObject({ status: "failed", reason: "no-respond", text: `Answer to ${REMINDER}` });
+	});
+
+	it("a send after a schema ask gets no reminders", async () => {
+		const child = await library.open(place, owner, "t:send-after-ask", { root: "test", ...faux, cwd: root }, context);
+		await child.ask({ type: "input", content: "No respond", requestId: "r1" }, context, { schema });
+		const reminders = called(REMINDER);
+		await child.send({ type: "input", content: "Plain after", requestId: "r2" }, context);
+		const answer = await child.settled(context, "r2");
+		expect(called(REMINDER)).toBe(reminders);
+		expect(answer).toMatchObject({ status: "ok", text: "Answer to Plain after" });
+	});
+
+	it("a duplicate send keeps a running schema ask", async () => {
+		const child = await library.open(place, owner, "t:dup", { root: "test", ...faux, cwd: root }, context);
+		const gate = Promise.withResolvers<void>();
+		gates.set("Schema", gate);
+		const input = { type: "input", content: "Schema", requestId: "r1" } as const;
+		const before = called("Schema");
+		const asked = child.ask(input, context, { schema });
+		await until(() => called("Schema") === before + 1);
+		await child.send(input, context);
+		gate.resolve();
+		gates.delete("Schema");
+		expect(await asked).toMatchObject({ status: "ok", value: SCHEMA_ANSWER });
+	});
+
+	it("gives a cut answer as cut", async () => {
+		const child = await library.open(place, owner, "t:cut", { root: "test", ...faux, cwd: root }, context);
+		expect(await child.ask({ type: "input", content: "Cut", requestId: "r1" }, context)).toMatchObject({
+			status: "failed",
+			reason: "cut",
+			text: "cut",
+			stopReason: "length",
+		});
+	});
+
+	it("sends an unanswered request again under the next request ID", async () => {
+		const child = await library.open(place, owner, "t:retry", { root: "test", ...faux, cwd: root }, context);
+		gates.set("Retry", Promise.withResolvers());
+		const input = { type: "input", content: "Retry", requestId: "r1" } as const;
+		const first = child.ask(input, context);
+		await until(() => called("Retry") === 1);
+		await child.conversation.abort(context);
+		expect(await first).toMatchObject({ status: "failed", reason: "unanswered", cause: "aborted" });
+		gates.delete("Retry");
+		expect(await child.ask(input, context)).toMatchObject({ status: "ok", text: "Answer to Retry" });
+		expect(await harness.commit((tx) => tx.submissionByRequest(child.id, "r1#2"), context)).toMatchObject({
+			status: "done",
+		});
+	});
+
+	it("gives the saved answer of a request answered before, with no new turn", async () => {
+		const opened = await library.open(place, owner, "t:saved", { root: "test", ...faux, cwd: root }, context);
+		const input = { type: "input", content: "Schema", requestId: "r1" } as const;
+		const first = await opened.ask(input, context, { schema });
+		expect(first).toMatchObject({ status: "ok", value: SCHEMA_ANSWER });
+		const child = await library.find(place, owner, { key: "t:saved" }, context);
+		const before = called("Schema");
+		expect(await child?.ask(input, context, { schema })).toEqual(first);
+		expect(called("Schema")).toBe(before);
 	});
 });
