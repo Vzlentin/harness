@@ -1,5 +1,6 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -25,6 +26,7 @@ import {
 	gates,
 	handleOf,
 	models,
+	type Result,
 	requests,
 	root,
 	setUp,
@@ -302,7 +304,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("gives children the host's own tool when harness is also an installed package", async () => {
 		const linked = join(root, "linked-package");
-		await symlink(dirname(CLI), linked);
+		await symlink(join(dirname(CLI), ".."), linked);
 		const settings = join(root, "agent", "settings.json");
 		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [linked] }));
 		try {
@@ -316,6 +318,38 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
 			await host?.close();
 			host = await startHost();
+		}
+	});
+
+	it("runs its CLI and starts its host from a copy under node_modules, where Node does not strip types", async () => {
+		const installed = join(root, "consumer", "node_modules", "harness");
+		const source = join(dirname(CLI), "..");
+		await mkdir(installed, { recursive: true });
+		for (const path of ["bin", "src", "package.json"])
+			await cp(join(source, path), join(installed, path), { recursive: true });
+		await symlink(join(source, "node_modules"), join(installed, "node_modules"));
+		// Its own state, so `list` starts a host from the copy. No jiti file cache: each copy has a new path.
+		const env = { ...process.env, XDG_STATE_HOME: join(root, "copy-state"), JITI_FS_CACHE: "false" };
+		const run = (file: string) =>
+			new Promise<Result>((resolve) => {
+				execFile(process.execPath, [join(installed, file), "list"], { cwd: root, env }, (error, stdout, stderr) =>
+					resolve({ code: error === null ? 0 : (error.code as number), stdout, stderr }),
+				);
+			});
+		const plain = await run(join("src", "cli.ts"));
+		expect(plain.stderr).toContain("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING");
+		try {
+			expect(await run(join("bin", "harness.mjs"))).toEqual({ code: 0, stdout: "No subagents\n", stderr: "" });
+		} finally {
+			const saved = process.env.XDG_STATE_HOME;
+			process.env.XDG_STATE_HOME = env.XDG_STATE_HOME;
+			const client = await connect({ start: false }).finally(() => {
+				process.env.XDG_STATE_HOME = saved;
+			});
+			if (client !== undefined) {
+				process.kill(client.pid);
+				client.close();
+			}
 		}
 	});
 

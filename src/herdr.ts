@@ -25,7 +25,7 @@ export function viewerTarget(
  * `env`.
  */
 export function viewerCommand(handle: string, project: string): string[] {
-	const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
+	const cli = fileURLToPath(new URL("../bin/harness.mjs", import.meta.url));
 	const target = viewerTarget(handle, project);
 	return ["env", process.execPath, cli, ...target.project, ...target.resume];
 }
