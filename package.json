@@ -5,8 +5,7 @@
 	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
 	"type": "module",
 	"bin": {
-		"harness": "./src/cli.ts",
-		"subagent": "./src/cli.ts"
+		"harness": "./src/cli.ts"
 	},
 	"exports": {
 		"./client": {
