@@ -93,14 +93,15 @@ export type Host = {
 };
 
 /**
- * Runs the host in this process: the store in `stateDir`, the children's models from `models`, and the socket. It is
- * undefined when another host holds the lock.
+ * Runs the host of `project` in this process: the store in `stateDir`, the children's models from `models`, and the
+ * socket. It is undefined when another host holds the lock.
  */
 export async function runHost(options: {
 	readonly stateDir: string;
+	readonly project: string;
 	readonly models: Models;
 }): Promise<Host | undefined> {
-	const { stateDir, models } = options;
+	const { stateDir, project, models } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 	if (lock === undefined) return undefined;
@@ -144,7 +145,7 @@ export async function runHost(options: {
 					const cached = envs.get(conversationId);
 					if (cached !== undefined) return cached;
 					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId) };
+					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId), HARNESS_PROJECT: project };
 					if (agent?.model !== undefined) {
 						shellEnv.PI_PROVIDER = agent.model.provider;
 						shellEnv.PI_MODEL = agent.model.modelId;

@@ -174,7 +174,7 @@ class Viewer {
 			hint === undefined ? [] : [`${this.keybindings.getKeys(id)[0]} ${hint}`],
 		);
 		this.tui.setFocus(this.editor);
-		this.reporter = agentReporter(options.env, childLabel(this.child), handle);
+		this.reporter = agentReporter(options.env, childLabel(this.child), handle, client.project);
 		const { promise, resolve } = Promise.withResolvers<number>();
 		this.exited = promise;
 		this.#exit = resolve;

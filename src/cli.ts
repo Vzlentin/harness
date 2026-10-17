@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { addProject, checkProject, MAIN_PROJECT, readProjects } from "./projects.ts";
 import { statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
@@ -18,7 +19,10 @@ function usage(): never {
   harness wait <handle> [--timeout <seconds>]
   harness stop <handle>
   harness list
-  harness attach <handle>`);
+  harness attach <handle>
+  harness create <name> --cwd <dir>
+  harness projects
+Any command takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -113,13 +117,45 @@ function toolArgs(command: string | undefined, args: string[]): ToolArgs {
 	}
 }
 
-/** Runs the host in this process with Pi's models. It exits at once when another host runs. */
-async function hostCommand(args: string[]): Promise<void> {
+/** The commands, which a project cannot have as its name. */
+const COMMANDS = new Set([
+	"spawn",
+	"status",
+	"rename",
+	"send",
+	"wait",
+	"stop",
+	"list",
+	"attach",
+	"host",
+	"create",
+	"projects",
+]);
+
+/** Adds the project `name` with the real path of `dir` to `projects.json`. */
+function createCommand(args: string[]): void {
+	const [name, option, dir] = args;
+	if (args.length !== 3 || name === undefined || option !== "--cwd" || dir === undefined) usage();
+	if (COMMANDS.has(name)) fail(`A project cannot have the name ${name}`);
+	process.stdout.write(`Created ${name} (${addProject(name, dir)})\n`);
+}
+
+function projectsCommand(args: string[]): void {
+	if (args.length !== 0) usage();
+	for (const [name, dir] of Object.entries(readProjects())) process.stdout.write(`${name}  ${dir}\n`);
+	process.stdout.write(`${MAIN_PROJECT}\n`);
+}
+
+/**
+ * Runs the host of `project` in this process with Pi's models. It exits at once when another host runs. The project
+ * comes only from `--project`, not from the env: a host can start from a child's shell of another project.
+ */
+async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
 	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
 	const { runHost } = await import("./host.ts");
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
-	const host = await runHost({ stateDir: statePaths().dir, models: modelRuntime });
+	const host = await runHost({ stateDir: statePaths(project).dir, project, models: modelRuntime });
 	if (host === undefined) {
 		process.stderr.write(`Another harness host runs (pid ${process.pid} exits)\n`);
 		process.exit(0);
@@ -143,8 +179,19 @@ async function attachCommand(args: string[]): Promise<void> {
  * of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
  */
 async function main(): Promise<void> {
-	const [command, ...args] = process.argv.slice(2);
-	if (command === "host") return hostCommand(args);
+	const all = process.argv.slice(2);
+	// Only before the command, so a message or a prompt can contain the word.
+	let project: string | undefined;
+	if (all[0] === "--project") {
+		project = valueAfter(all, 0, "--project");
+		all.splice(0, 2);
+	}
+	const [command, ...args] = all;
+	if (command === "create") return createCommand(args);
+	if (command === "projects") return projectsCommand(args);
+	if (command === "host") return hostCommand(args, checkProject(project ?? MAIN_PROJECT));
+	// Every connection resolves the project from the env, so --project goes there.
+	if (project !== undefined) process.env.HARNESS_PROJECT = checkProject(project);
 	if (command === "attach") return attachCommand(args);
 	const { text } = await runTool(toolArgs(command, args), {
 		caller: process.env.PI_SESSION_ID || "cli",

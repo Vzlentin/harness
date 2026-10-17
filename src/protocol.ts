@@ -121,9 +121,9 @@ export type WatchLine =
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
-/** The files of the host: `$XDG_STATE_HOME/harness/`, default `~/.local/state/harness/`. */
-export function statePaths(): { dir: string; socket: string; log: string } {
-	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness");
+/** The files of the host of `project`: `$XDG_STATE_HOME/harness/<project>/`, default `~/.local/state/harness/<project>/`. */
+export function statePaths(project: string): { dir: string; socket: string; log: string } {
+	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", project);
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 

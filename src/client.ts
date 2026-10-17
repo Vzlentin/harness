@@ -3,6 +3,7 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
 	onLines,
 	PROTOCOL_VERSION,
@@ -27,6 +28,8 @@ export class Client {
 	#lines: Readable | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
+	/** The project of the host. `connect` sets it. */
+	project = MAIN_PROJECT;
 
 	constructor(socket: Socket) {
 		this.#socket = socket;
@@ -82,16 +85,17 @@ export class Client {
 }
 
 /**
- * A connection to the host after its `hello`. When no host listens and `start` is true, it starts one, detached, with its
- * output in `host.log`, and tries to connect for 10 s, or until `signal` aborts. When no host listens and `start` is
- * false, it is undefined.
+ * A connection to the host of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`), after its `hello`.
+ * When no host listens and `start` is true, it starts one, detached, with its output in `host.log`, and tries to
+ * connect for 10 s, or until `signal` aborts. When no host listens and `start` is false, it is undefined.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
-	const paths = statePaths();
+	const project = resolveProject(process.env, process.cwd());
+	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
 	if (socket === undefined) {
 		if (!options.start) return undefined;
-		startHost(paths.dir, paths.log);
+		startHost(project, paths.dir, paths.log);
 		const deadline = Date.now() + START_TIMEOUT_MS;
 		while (socket === undefined) {
 			options.signal?.throwIfAborted();
@@ -109,6 +113,7 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 			);
 		}
 		client.pid = hello.pid;
+		client.project = project;
 		return client;
 	} catch (error) {
 		client.close();
@@ -165,12 +170,16 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 	});
 }
 
-function startHost(dir: string, log: string): void {
+function startHost(project: string, dir: string, log: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 	try {
 		const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-		spawn(process.execPath, [cli, "host"], { cwd: dir, detached: true, stdio: ["ignore", output, output] }).unref();
+		spawn(process.execPath, [cli, "--project", project, "host"], {
+			cwd: dir,
+			detached: true,
+			stdio: ["ignore", output, output],
+		}).unref();
 	} finally {
 		closeSync(output);
 	}
