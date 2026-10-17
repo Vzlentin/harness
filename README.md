@@ -130,7 +130,7 @@ The viewer uses Pi's default theme and keys, not your Pi settings.
 | Alt+Enter | Send the message as a follow-up |
 | Esc | Abort the current turn and withdraw the queued messages, which go back to the editor, steers first. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
 | Shift+Tab | Change the child's thinking level to the next level of its model, after the last one `off` again. The change applies from the next model request |
-| Ctrl+L | Pick the child's model from the models with a login. Typing filters the list, as in Pi's model selector; Enter picks, Esc closes. The new model keeps the thinking level when it has it, and takes the nearest level it has otherwise |
+| Ctrl+L | Pick the child's model from the models with a login. Typing filters the list, as in Pi's model selector; Enter picks, Esc closes. The viewer asks the host for the models each time, so a login after attach shows. The new model keeps the thinking level when it has it, and takes the nearest level it has otherwise |
 | Ctrl+O | Show the tool output in full, or collapse it again |
 | Shift+↑, Shift+↓ | Scroll the transcript one line |
 | Shift+PgUp, Shift+PgDn | Scroll the transcript one page |

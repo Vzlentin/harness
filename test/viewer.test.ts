@@ -5,6 +5,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { apply } from "@earendil-works/chord/delta";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,20 @@ import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
 import { type Request, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
-import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
+import {
+	CLI,
+	called,
+	cli,
+	gates,
+	handleOf,
+	models as hostModels,
+	root,
+	setUp,
+	startHost,
+	tearDown,
+	textOf,
+	until,
+} from "./helpers.ts";
 
 // The in-process client finds the host under the test's HOME, not the user's home, when XDG_STATE_HOME is not set.
 vi.mock("node:os", async (importOriginal) => ({
@@ -414,6 +428,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const exited = attach(handle, { terminal, env: process.env });
 		await until(() => terminal.text().includes("Answer to Task:"));
 		expect(terminal.text()).toMatch(/\d+\.\d%\/\S+ ctx/);
+		// At 100 columns, the first hint does not fit.
+		expect(terminal.text()).toContain("ctrl+l model · ctrl+o expand · ctrl+c exit");
 
 		terminal.input("\u001b[Z");
 		await until(() => terminal.text().includes(`faux/faux-1 · ${next}`));
@@ -437,6 +453,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 			);
 		} finally {
 			client.close();
+		}
+
+		// Ctrl+L asks the host for its models again, so a login after attach shows.
+		const added = fauxProvider({ provider: "faux-added", models: [{ id: "faux-3", reasoning: true }] });
+		hostModels.setProvider(added.provider);
+		try {
+			terminal.input("\u000c");
+			await until(() => terminal.text().includes("faux-added/faux-3"));
+			terminal.input("faux-3");
+			terminal.input("\r");
+			await until(() => terminal.text().includes("faux-added/faux-3 · "));
+		} finally {
+			hostModels.deleteProvider("faux-added");
 		}
 		terminal.input("\u0003");
 		expect(await exited).toBe(0);
