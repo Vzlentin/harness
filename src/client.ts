@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { extname } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
@@ -170,7 +169,7 @@ function startHost(dir: string, log: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 	try {
-		const cli = fileURLToPath(new URL(`./cli${extname(import.meta.url)}`, import.meta.url));
+		const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
 		spawn(process.execPath, [cli, "host"], { cwd: dir, detached: true, stdio: ["ignore", output, output] }).unref();
 	} finally {
 		closeSync(output);
