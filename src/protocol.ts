@@ -1,12 +1,13 @@
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { JsonValue } from "@earendil-works/chord";
 import type { Op } from "@earendil-works/chord/delta";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ConversationView } from "@earendil-works/pi-durable";
+import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
@@ -26,6 +27,16 @@ export type ChildInfo = {
 	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
+};
+
+/** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */
+export type TaskInfo = {
+	readonly key: string;
+	readonly id: TaskId<JsonValue>;
+	/** The name of the task definition. */
+	readonly kind: string;
+	readonly status: TaskState<JsonValue, JsonValue>["status"];
+	readonly outcome?: TaskOutcome<JsonValue>;
 };
 
 /** A model that the host can run, with what the viewer needs to show and change it. */
@@ -97,7 +108,20 @@ export type Request =
 			readonly handle: string;
 			readonly message: string;
 			readonly followUp: boolean;
-	  };
+	  }
+	/**
+	 * Starts a background task of the kind `kind`, a task of an installed `piDurable` entry, in the root conversation.
+	 * A repeated `key` gives the first task, and its new kind and input are ignored.
+	 */
+	| { readonly type: "start"; readonly kind: string; readonly input: JsonValue; readonly key: string }
+	| { readonly type: "task"; readonly key: string }
+	/**
+	 * The stream of the task: the reply, then one `{ event: TaskInfo }` line at each change of its status, and a last
+	 * line with its outcome, after which the connection ends. A connection carries one watch.
+	 */
+	| { readonly type: "watch-task"; readonly key: string }
+	/** Aborts the task and the work that it owns. */
+	| { readonly type: "abort-task"; readonly key: string };
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -114,6 +138,10 @@ export type Replies = {
 	readonly input: Replies["send"];
 	readonly models: readonly ModelInfo[];
 	readonly configure: ChildInfo;
+	readonly start: TaskInfo;
+	readonly task: TaskInfo;
+	readonly "watch-task": { readonly task: TaskInfo };
+	readonly "abort-task": TaskInfo;
 };
 
 /**

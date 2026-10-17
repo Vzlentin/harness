@@ -6,6 +6,7 @@ import { createServer, type Socket } from "node:net";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
@@ -20,6 +21,7 @@ import {
 import * as durable from "@earendil-works/pi-durable";
 import {
 	AgentDoc,
+	type AnyTask,
 	type Conversation,
 	type ConversationId,
 	createRegistry,
@@ -28,6 +30,8 @@ import {
 	type Extension,
 	Harness,
 	type HarnessSettings,
+	type Task,
+	type TaskId,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -52,6 +56,7 @@ import {
 	type Replies,
 	type Reply,
 	type Request,
+	type TaskInfo,
 	type WatchLine,
 } from "./protocol.ts";
 import { subagentTool } from "./tool.ts";
@@ -95,6 +100,14 @@ const AgentState = defineDoc<{ lastRequest: string | null }>({
 	initial: () => ({ lastRequest: null }),
 });
 
+/** The tasks that `start` created, by client key. */
+const StartedTasks = defineDoc<{ tasks: Record<string, TaskId<JsonValue>> }>({
+	kind: "harness.tasks",
+	version: 1,
+	scope: "session",
+	initial: () => ({ tasks: {} }),
+});
+
 /** The children library, on this process's pi-durable. */
 const library = createChildren(durable);
 
@@ -113,8 +126,10 @@ export async function runHost(options: {
 	readonly project: string;
 	readonly cwd: string;
 	readonly models: Models;
+	/** For tests: the idle time before the host exits. Default 5 minutes. */
+	readonly idleExitMs?: number;
 }): Promise<Host | undefined> {
-	const { stateDir, project, cwd, models } = options;
+	const { stateDir, project, cwd, models, idleExitMs = IDLE_EXIT_MS } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 	if (lock === undefined) return undefined;
@@ -128,12 +143,25 @@ export async function runHost(options: {
 	});
 	const warn = (error: unknown) =>
 		process.stderr.write(`warning: ${error instanceof Error ? error.message : String(error)}\n`);
-	const entries = await loadEntries(stateDir, agentDir, settings, warn).catch((error: unknown) => {
+	let harness: Harness;
+	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
+	let opened: Harness | undefined;
+	const place: Place = {
+		get store() {
+			if (opened === undefined) throw new Error("The host is not open yet");
+			return opened;
+		},
+		models,
+		get registry() {
+			return registry.snapshot();
+		},
+	};
+	const entries = await loadEntries(stateDir, agentDir, settings, place, warn).catch((error: unknown) => {
 		lock.close();
 		throw error;
 	});
 	const envs = new Map<ConversationId, NodeExecutionEnv>();
-	let harness: Harness;
+	const tasks = new Map(entries.tasks.map((task) => [task.definition.name, task]));
 	let base: Omit<Handler, "signal" | "connection">;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
 	let agentSetUp: Promise<Conversation> | undefined;
@@ -153,6 +181,8 @@ export async function runHost(options: {
 		for (const extension of selected) registry.install(extension);
 		registry.install(library.extension);
 		registry.install(library.answerExtension);
+		// The registry refuses a task name that two entries give.
+		registry.install(durable.defineExtension({ name: "harness-entry-tasks", tasks: entries.tasks }));
 		harness = await Harness.open(
 			await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
 			{
@@ -193,18 +223,12 @@ export async function runHost(options: {
 		lock.close();
 		throw error;
 	}
+	opened = harness;
 	harness.resume();
-	const place: Place = {
-		store: harness,
-		models,
-		get registry() {
-			return registry.snapshot();
-		},
-	};
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
 	const root = await harness.root(context);
-	base = { harness, place, owner: { kind: "detached", root }, root, project, agent };
+	base = { harness, place, owner: { kind: "detached", root }, root, project, agent, tasks };
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
@@ -275,13 +299,16 @@ export async function runHost(options: {
 		})();
 		return closing;
 	};
-	const timer = setInterval(() => {
-		if (connections.size > 0 || Date.now() - lastActivity < IDLE_EXIT_MS) return;
-		harness
-			.inspect(context)
-			.then(({ tasks }) => (tasks.length === 0 && connections.size === 0 ? close() : undefined))
-			.catch(warn);
-	}, IDLE_CHECK_MS);
+	const timer = setInterval(
+		() => {
+			if (connections.size > 0 || Date.now() - lastActivity < idleExitMs) return;
+			harness
+				.inspect(context)
+				.then(({ tasks }) => (tasks.length === 0 && connections.size === 0 ? close() : undefined))
+				.catch(warn);
+		},
+		Math.min(IDLE_CHECK_MS, idleExitMs),
+	);
 	timer.unref();
 	// A store failure closes the harness; the host then closes too.
 	const closed = harness.closed.then(() => close());
@@ -298,6 +325,8 @@ type Handler = {
 	readonly project: string;
 	/** The project agent: the root conversation, with a model and the project directory from its first use. */
 	readonly agent: () => Promise<Conversation>;
+	/** The tasks of the `piDurable` entries, by name, for `start`. */
+	readonly tasks: ReadonlyMap<string, AnyTask>;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
 	/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
@@ -336,6 +365,19 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 			return serveWatch(handler, request.handle, handler.connection);
+		case "start":
+			return startTask(request, handler);
+		case "task":
+			return taskInfo(handler.harness, request.key);
+		case "watch-task":
+			if (handler.connection === undefined) throw new Error("A watch needs a connection");
+			return serveTaskWatch(handler, request.key, handler.connection);
+		case "abort-task": {
+			const info = await taskInfo(handler.harness, request.key);
+			// The abort reaches the conversations that the task owns, and their turns.
+			await handler.harness.abortTask(info.id, context);
+			return taskInfo(handler.harness, request.key);
+		}
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -693,6 +735,86 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 	return { view: conversation.value, child: last };
 }
 
+/**
+ * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the project
+ * agent's turn does not reach it. The key is written in the commit that creates the task, so a start after a crash
+ * finds it.
+ */
+async function startTask(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<TaskInfo> {
+	await handler.root.commit(async (tx) => {
+		const state = await tx.doc(StartedTasks);
+		if (Object.hasOwn(state.tasks, request.key)) return;
+		const task = handler.tasks.get(request.kind);
+		if (task === undefined) throw new Error(`Unknown task kind: ${request.kind}`);
+		state.tasks[request.key] = await tx.createTask(
+			task as Task<JsonValue, { phase: string }, JsonValue, object>,
+			request.input,
+			{ ownership: { kind: "conversation" }, background: true },
+		);
+	}, context);
+	return taskInfo(handler.harness, request.key);
+}
+
+/** The info of the task that `start` created for `key`. */
+async function taskInfo(harness: Harness, key: string): Promise<TaskInfo> {
+	const state = await harness.snapshot(StartedTasks, context);
+	const id = state != null && Object.hasOwn(state.tasks, key) ? state.tasks[key] : undefined;
+	if (id === undefined) throw new Error(`Unknown task: ${key}`);
+	const record = await harness.getTask(id, context);
+	if (record === undefined) throw new Error(`Missing task ${id}`);
+	return {
+		key,
+		id,
+		kind: record.kind,
+		status: record.state.status,
+		...(record.state.status === "terminal" ? { outcome: record.state.outcome } : {}),
+	};
+}
+
+/**
+ * Opens a watch of the task of `key` on `connection` and returns the reply, with the task. After the reply, each change
+ * of the task's status gives one `{ event: TaskInfo }` line, and the end of the task gives a last line with its outcome.
+ * Then the connection ends. The watch stops when the socket closes or the task graph watch ends.
+ */
+async function serveTaskWatch(handler: Handler, key: string, connection: Connection): Promise<Replies["watch-task"]> {
+	const { harness } = handler;
+	const { socket } = connection;
+	const watching = new AbortController();
+	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
+	const end = () => {
+		watching.abort();
+		if (socket.writable) socket.end();
+	};
+	let graph: Awaited<ReturnType<Harness["watchTaskGraph"]>>;
+	let last: TaskInfo;
+	try {
+		// The graph watch opens before the info, so it gets each later change of the task.
+		graph = await harness.watchTaskGraph(watchContext);
+		last = await taskInfo(harness, key);
+	} catch (error) {
+		watching.abort();
+		throw error;
+	}
+	connection.afterReply(() => {
+		// The graph callbacks and the outcome write through one chain, so the outcome line is the last line.
+		let queue: Promise<void> = Promise.resolve();
+		const send = (terminal: boolean) => {
+			queue = queue.then(async () => {
+				const info = await taskInfo(harness, key).catch(() => undefined);
+				if (info === undefined || !socket.writable) return;
+				if (!terminal && (info.status === last.status || info.status === "terminal")) return;
+				last = info;
+				if (!socket.write(`${JSON.stringify({ event: info })}\n`)) await once(socket, "drain").catch(() => {});
+			});
+			return queue;
+		};
+		void graph.closed.then(end);
+		graph.start(() => send(false));
+		harness.waitForTask(last.id, watchContext).then(() => send(true).then(end), end);
+	});
+	return { task: last };
+}
+
 /** The record of `handle` in the `Children` value `state`. */
 function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
 	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
@@ -736,8 +858,8 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 	};
 }
 
-/** What the default export of a `piDurable` entry returns. */
-type Entry = { readonly extensions: readonly Extension[]; close(): Promise<void> };
+/** What the default export of a `piDurable` entry returns: its extensions, the tasks that `start` runs, and `close`. */
+type Entry = { readonly extensions: readonly Extension[]; readonly tasks?: readonly AnyTask[]; close(): Promise<void> };
 
 /**
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus, as one
@@ -749,8 +871,9 @@ async function loadEntries(
 	cwd: string,
 	agentDir: string,
 	settingsManager: SettingsManager,
+	place: Place,
 	warn: (error: unknown) => void,
-): Promise<Entry> {
+): Promise<Required<Entry>> {
 	const roots = new Set(
 		new DefaultPackageManager({ cwd, agentDir, settingsManager })
 			.listConfiguredPackages()
@@ -772,12 +895,16 @@ async function loadEntries(
 			if ((await realpath(root).catch(() => root)) === PACKAGE_DIR) continue;
 			for (const path of manifest.piDurable?.extensions ?? []) {
 				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
-				entries.push(await entry.default({ durable, ai, events }));
+				entries.push(await entry.default({ durable, ai, events, children: library, place }));
 			}
 		}
 	} catch (error) {
 		await close();
 		throw error;
 	}
-	return { extensions: entries.flatMap((entry) => entry.extensions), close };
+	return {
+		extensions: entries.flatMap((entry) => entry.extensions),
+		tasks: entries.flatMap((entry) => entry.tasks ?? []),
+		close,
+	};
 }

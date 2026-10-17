@@ -11,6 +11,7 @@ import {
 	type Reply,
 	type Request,
 	statePaths,
+	type TaskInfo,
 	type WatchLine,
 } from "./protocol.ts";
 
@@ -24,7 +25,7 @@ export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
-	/** The events of the watch. Only `watch` sets it; otherwise an event is dropped. */
+	/** The events of the watch. Only `watch` and `watchTask` set it; otherwise an event is dropped. */
 	#lines: Readable | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
@@ -34,7 +35,7 @@ export class Client {
 	constructor(socket: Socket) {
 		this.#socket = socket;
 		onLines(socket, (line) => {
-			const parsed = JSON.parse(line) as Reply | { event: WatchLine };
+			const parsed = JSON.parse(line) as Reply | { event: WatchLine | TaskInfo };
 			if ("event" in parsed) {
 				this.#lines?.push(parsed.event);
 				return;
@@ -64,6 +65,17 @@ export class Client {
 		const lines = new Readable({ objectMode: true, read() {} });
 		this.#lines = lines;
 		const reply = await this.request({ type: "watch", handle });
+		return { ...reply, lines };
+	}
+
+	/**
+	 * Sends the `watch-task` request of `key`. Its `lines` are the changes of the task's status, the last one with its
+	 * outcome, and end when the connection closes. Call it once, and instead of `watch`.
+	 */
+	async watchTask(key: string): Promise<Replies["watch-task"] & { lines: AsyncIterable<TaskInfo> }> {
+		const lines = new Readable({ objectMode: true, read() {} });
+		this.#lines = lines;
+		const reply = await this.request({ type: "watch-task", key });
 		return { ...reply, lines };
 	}
 

@@ -32,6 +32,8 @@ export const calls: Call[] = [];
 export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
 /** Requests that wait for a test to release them, by prompt. */
 export const gates = new Map<string, PromiseWithResolvers<void>>();
+/** The prompts of gated requests that were aborted. */
+export const aborted = new Set<string>();
 
 export const models = createModels();
 const environment = { ...process.env };
@@ -112,7 +114,12 @@ async function respond(
 	if (gate !== undefined) {
 		await Promise.race([
 			gate.promise,
-			new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+			new Promise((_, reject) =>
+				options?.signal?.addEventListener("abort", () => {
+					aborted.add(prompt);
+					reject(new Error("aborted"));
+				}),
+			),
 		]);
 	}
 	if (child !== undefined) {
