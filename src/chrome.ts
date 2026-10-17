@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
 import { type ConversationView, type EntryRecord, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type ChildInfo, runDisplayName } from "./protocol.ts";
+import type { ChildInfo } from "./protocol.ts";
 import { bold, color } from "./theme.ts";
 
 /** One line, cut to the width, with `hints` at the right end: the first hints go when they do not all fit. */
@@ -21,20 +21,17 @@ export class Line implements Component {
 	invalidate(): void {}
 }
 
-/** `harness │ <name> │ <cwd> │ <state>`. */
-export function headerText(child: ChildInfo): string {
+/** `harness │ <title> │ <cwd> │ <state>`. */
+export function headerText(child: ChildInfo, title: string): string {
 	const state =
 		child.state === "busy"
 			? color("warning", "◉ busy")
 			: child.state === "idle"
 				? color("success", "● idle")
 				: color("error", "⊗ error");
-	return ` ${[
-		bold(color("accent", "harness")),
-		runDisplayName(child),
-		color("muted", tildePath(child.cwd)),
-		state,
-	].join(color("borderMuted", "  │  "))}`;
+	return ` ${[bold(color("accent", "harness")), title, color("muted", tildePath(child.cwd)), state].join(
+		color("borderMuted", "  │  "),
+	)}`;
 }
 
 /**

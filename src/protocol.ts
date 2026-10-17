@@ -8,6 +8,12 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
 export const PROTOCOL_VERSION = 5;
 
+/**
+ * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
+ * hex, so no child has it.
+ */
+export const AGENT_HANDLE = "agent";
+
 export type ChildState = "busy" | "idle" | "error";
 
 /** One child as the host reports it. Provider, model and thinking level come from the child's agent. */

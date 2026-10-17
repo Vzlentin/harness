@@ -1,17 +1,21 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
-import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
+import { AssistantEntry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request } from "../src/client.ts";
+import { createChildren } from "../src/children.ts";
+import { type Client, connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
+import { projectDir } from "../src/projects.ts";
+import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
 	CLI,
@@ -26,6 +30,7 @@ import {
 	setUp,
 	startHost,
 	tearDown,
+	textOf,
 	toolWaits,
 	until,
 } from "./helpers.ts";
@@ -69,6 +74,12 @@ async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harne
 }
 
 let host: Host | undefined;
+
+// The host gives the `main` agent the test's HOME, not the user's home.
+vi.mock("node:os", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:os")>()),
+	homedir: () => process.env.HOME ?? "",
+}));
 
 beforeAll(async () => {
 	await setUp();
@@ -552,16 +563,167 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ stateDir, project: "a", models })).rejects.toThrow(
+		await expect(runHost({ stateDir, project: "a", cwd: stateDir, models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
 		const stateDir = await childrenStore("new-state", 3);
-		const refusal = runHost({ stateDir, project: "a", models });
+		const refusal = runHost({ stateDir, project: "a", cwd: stateDir, models });
 		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
+	});
+
+	it("runs the project agent, which keeps its history after a restart", async () => {
+		const { client, lines } = await watchAgent();
+		try {
+			expect(lines.first.child).toMatchObject({
+				handle: AGENT_HANDLE,
+				name: "main agent",
+				state: "idle",
+				provider: "faux",
+				model: "faux-1",
+				thinking: "medium",
+				cwd: join(root, "home"),
+			});
+			expect(await inputAgent(client, "Agent hello")).toBe("Prompted");
+			await untilIdleAfterBusy(lines.events);
+		} finally {
+			client.close();
+		}
+		expect((await cli(["status", AGENT_HANDLE])).stderr).toBe(`Unknown subagent: ${AGENT_HANDLE}\n`);
+		await host?.close();
+		host = await startHost();
+		const watched = await request({ type: "watch", handle: AGENT_HANDLE }, { start: false });
+		expect(textsOf(watched?.view)).toEqual(["Agent hello", "Answer to Agent hello"]);
+	});
+
+	it("gives the agent of a project its directory, instructions and tools", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "web-")));
+		await writeFile(join(dir, "AGENTS.md"), "Web rules.");
+		expect((await cli(["create", "web", "--cwd", dir])).code).toBe(0);
+		const web = await startHost("web");
+		process.env.HARNESS_PROJECT = "web";
+		try {
+			const client = await connect({ start: false });
+			if (client === undefined) throw new Error("no host");
+			try {
+				await inputAgent(client, "Agent context");
+				await until(() => requests.has("Agent context"));
+			} finally {
+				client.close();
+			}
+		} finally {
+			delete process.env.HARNESS_PROJECT;
+			await web?.close();
+		}
+		const seen = requests.get("Agent context");
+		expect(seen?.system).toContain("Web rules.");
+		expect(seen?.system).toContain(`<cwd>\n${dir}\n</cwd>`);
+		expect(seen?.tools).toEqual(expect.arrayContaining(["read", "bash", "subagent"]));
+	});
+
+	it("sets up the agent with Pi's default model, or fails without a model", async () => {
+		const settings = join(root, "agent", "settings.json");
+		await writeFile(
+			settings,
+			JSON.stringify({
+				retry: { enabled: false },
+				defaultProvider: "faux",
+				defaultModel: "faux-2",
+				defaultThinkingLevel: "low",
+			}),
+		);
+		process.env.XDG_STATE_HOME = join(root, "state-defaults");
+		try {
+			const defaults = await startHost();
+			try {
+				const watched = await request({ type: "watch", handle: AGENT_HANDLE }, { start: false });
+				expect(watched?.child).toMatchObject({ provider: "faux", model: "faux-2", thinking: "low" });
+			} finally {
+				await defaults?.close();
+			}
+			process.env.XDG_STATE_HOME = join(root, "state-empty");
+			const empty = await runHost({
+				stateDir: statePaths("main").dir,
+				project: "main",
+				cwd: projectDir("main"),
+				models: createModels(),
+			});
+			try {
+				await expect(request({ type: "watch", handle: AGENT_HANDLE }, { start: false })).rejects.toThrow(
+					"No model for the main agent",
+				);
+			} finally {
+				await empty?.close();
+			}
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+		}
+	});
+
+	it("makes the agent the parent of the children it spawns", async () => {
+		const caller = String(ROOT_CONVERSATION_ID);
+		const { client, lines } = await watchAgent();
+		try {
+			await inputAgent(client, "Agent spawn");
+			await untilIdleAfterBusy(lines.events);
+		} finally {
+			client.close();
+		}
+		const listed = await cli(["list"], { PI_SESSION_ID: caller });
+		const handle = /^nested \(([a-z0-9]+)\) {2}idle/m.exec(listed.stdout)?.[1];
+		expect(handle).toBeDefined();
+		await host?.close();
+		const store = await Harness.open(
+			await openNodeSqliteStorage(join(statePaths("main").dir, "durable.sqlite")),
+			{ models, registry: durable.createRegistry() },
+			BACKGROUND_CONTEXT,
+		);
+		try {
+			const state = await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT);
+			const id = String(state?.children[handle ?? ""]?.conversationId);
+			expect(await createChildren(durable).lineage(store, id, BACKGROUND_CONTEXT)).toMatchObject({
+				root: caller,
+				parent: caller,
+				depth: 1,
+			});
+		} finally {
+			await store.close(BACKGROUND_CONTEXT);
+			host = await startHost();
+		}
+	});
+
+	it("aborts the agent's turn, but not the children it spawned", async () => {
+		gates.set("Task:\nAgent gated", Promise.withResolvers());
+		const waiting = Promise.withResolvers<string>();
+		toolWaits.set("Agent waits", waiting);
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error("no host");
+		try {
+			await inputAgent(client, "Agent waits");
+			const handle = await waiting.promise;
+			expect((await client.request({ type: "abort", handle: AGENT_HANDLE })).state).toBe("idle");
+			expect((await cli(["status", handle])).stdout).toBe(`nested (${handle}): busy (faux/faux-1, medium)\n`);
+			gates.get("Task:\nAgent gated")?.resolve();
+			expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nAgent gated\n`);
+		} finally {
+			client.close();
+		}
+	});
+
+	it("prints the usage for a word that is not a project, and refuses --project with a project", async () => {
+		const unknown = await cli(["lsit"]);
+		expect(unknown.code).toBe(1);
+		expect(unknown.stdout).toBe("");
+		expect(unknown.stderr).toMatch(/^Usage:/);
+		expect(await cli(["--project", "main", "main"])).toEqual({
+			code: 1,
+			stdout: "",
+			stderr: "harness main takes no --project\n",
+		});
 	});
 
 	it("starts one host for two clients", async () => {
@@ -606,6 +768,57 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 });
+
+/** The `subagent.children` document of the host, to read a child's conversation ID. */
+const ChildrenDoc = durable.defineDoc<{ children: Record<string, { conversationId: number }> }>({
+	kind: "subagent.children",
+	version: 2,
+	scope: "session",
+	initial: () => ({ children: {} }),
+});
+
+/** The text of each user and assistant message of `view`. */
+function textsOf(view: Awaited<ReturnType<Client["watch"]>>["view"] | undefined): string[] {
+	return (view?.entries ?? []).flatMap((entry) => {
+		const message = entry.model?.[0];
+		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
+	});
+}
+
+/** A watch of the project agent of the running host, with its first reply and its events. */
+async function watchAgent(): Promise<{
+	client: Client;
+	lines: { first: { child: ChildInfo }; events: WatchLine[] };
+}> {
+	const client = await connect({ start: false });
+	if (client === undefined) throw new Error("no host");
+	const first = await client.watch(AGENT_HANDLE);
+	const events: WatchLine[] = [];
+	void (async () => {
+		for await (const line of first.lines) events.push(line);
+	})();
+	return { client, lines: { first, events } };
+}
+
+/** Sends `message` to the project agent and gives the verb. */
+async function inputAgent(client: Client, message: string): Promise<string> {
+	const reply = await client.request({
+		type: "input",
+		requestId: `input-${message}`,
+		handle: AGENT_HANDLE,
+		message,
+		followUp: false,
+	});
+	return reply.verb;
+}
+
+/** Waits for an idle event after a busy one. */
+async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
+	const busy = () => events.findIndex((line) => !line.stopped && line.child.state === "busy");
+	await until(
+		() => busy() !== -1 && events.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"),
+	);
+}
 
 /** A state directory whose store has a `subagent.children` document at `version`, as another pi-subagent writes it. */
 async function childrenStore(name: string, version: number): Promise<string> {

@@ -12,7 +12,7 @@ import {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { type Host, runHost } from "../src/host.ts";
-import { MAIN_PROJECT } from "../src/projects.ts";
+import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
@@ -60,6 +60,8 @@ const toolSpawns = new Map([
 	["Task:\nNest tool", "Nest tool"],
 	["No cwd", "No cwd child"],
 	["Task:\nSend and wait", "Send and wait child"],
+	["Agent spawn", "Agent child"],
+	["Agent waits", "Agent gated"],
 ]);
 /** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
 export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
@@ -77,11 +79,9 @@ async function respond(
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const prompt = lastUser === undefined ? "" : textOf(lastUser);
 	const child = toolSpawns.get(prompt);
-	if (
-		child !== undefined &&
-		last?.role === "toolResult" &&
-		messages.filter((m) => m.role === "toolResult").length === 1
-	) {
+	// Only the tool results of this turn count: the project agent keeps the turns before.
+	const turn = lastUser === undefined ? messages : messages.slice(messages.indexOf(lastUser) + 1);
+	if (child !== undefined && last?.role === "toolResult" && turn.filter((m) => m.role === "toolResult").length === 1) {
 		const handle = /\(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
 		if (handle !== undefined) {
 			toolWaits.get(prompt)?.resolve(handle);
@@ -163,7 +163,7 @@ export function handleOf(result: Result): string {
 
 /** Runs the host of `project` in this process. */
 export function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
-	return runHost({ stateDir: statePaths(project).dir, project, models });
+	return runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
 }
 
 /** Polls `check` for up to 10 s. */

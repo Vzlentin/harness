@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
 import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { type Request, statePaths, type WatchLine } from "../src/protocol.ts";
+import { AGENT_HANDLE, type Request, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import {
 	CLI,
@@ -412,6 +412,21 @@ describe("subagent", { timeout: 30_000 }, () => {
 		terminal.input("\u0003");
 		expect(await exited).toBe(0);
 		expect(terminal.text()).toContain(`carded (${handle}) keeps running. Reattach: harness attach ${handle}\n`);
+	});
+
+	it("shows the project agent in the viewer, with its Herdr label and resume command", async () => {
+		const herdr = await fakeHerdr();
+		const terminal = new FakeTerminal();
+		const exited = attach(AGENT_HANDLE, { terminal, env: { ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-9" } });
+		await until(() => terminal.text().includes("● idle"));
+		expect(terminal.text()).toMatch(/harness\s+│\s+main agent\s+│\s+~\s+│\s+● idle/);
+		terminal.input("\u0003");
+		expect(await exited).toBe(0);
+		expect(terminal.text()).toContain("main agent keeps running. Reattach: harness main\n");
+		const reports = logLines(herdr.log);
+		expect(reports[0]).toBe(
+			`pane report-agent --source custom:harness --agent main agent --state idle --seq ${seqOf(reports[0])} pane-9 -- env ${process.execPath} ${CLI} main`,
+		);
 	});
 
 	it("changes the thinking level with Shift+Tab and the model with Ctrl+L", async () => {
