@@ -3,7 +3,7 @@
  *
  * Adapted from `ChatView` in mavam/pi-agents, src/ui/attach.ts. MIT License, Copyright (c) 2026 Matthias Vallentin.
  */
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import {
 	AssistantMessageComponent,
 	createBashToolDefinition,
@@ -18,15 +18,9 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import {
-	type ConversationView,
-	type EntryRecord,
-	InboxDoc,
-	type InboxState,
-	LiveDoc,
-	type LiveState,
-} from "@earendil-works/pi-durable";
+import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { liveOf, userText } from "./view-state.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: Pi's tool definitions differ in their schemas.
 type AnyDefinition = ToolDefinition<any, any>;
@@ -41,22 +35,6 @@ const RENDERERS: Record<string, (cwd: string) => AnyDefinition> = {
 	find: createFindToolDefinition,
 	ls: createLsToolDefinition,
 };
-
-export function liveOf(view: ConversationView): LiveState {
-	return (view.docs[LiveDoc.definition.kind] as LiveState | undefined) ?? {};
-}
-
-export function inboxOf(view: ConversationView): InboxState {
-	return (view.docs[InboxDoc.definition.kind] as InboxState | undefined) ?? { items: [] };
-}
-
-function userText(content: UserMessage["content"]): string {
-	if (typeof content === "string") return content;
-	return content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("");
-}
 
 const DIAGNOSTICS = /^<harness>\n([\s\S]*)\n<\/harness>$/;
 
@@ -76,43 +54,6 @@ export function displayedResult(result: ToolResultMessage): ToolResultMessage {
 	return changed ? { ...result, content } : result;
 }
 
-/** The queued texts that Esc gives back to the editor, steers first, as Pi restores them. */
-export function queuedTexts(inbox: InboxState): string[] {
-	const steer: string[] = [];
-	const followUp: string[] = [];
-	for (const item of inbox.items) {
-		if (item.mode === "write") continue;
-		(item.mode === "steer" ? steer : followUp).push(userText(item.content as UserMessage["content"]));
-	}
-	return [...steer, ...followUp];
-}
-
-/** The queued inputs in inbox order, as Pi shows them: `Steer: …` or `Follow-up: …`, first line only. */
-export function queuedLines(inbox: InboxState): string[] {
-	return inbox.items.flatMap((item) => {
-		if (item.mode === "write") return [];
-		const text = userText(item.content as UserMessage["content"]).split("\n")[0] ?? "";
-		return [`${item.mode === "steer" ? "Steer" : "Follow-up"}: ${text}`];
-	});
-}
-
-/** What the conversation does now, as Pi's working indicator says it; empty when it does nothing. */
-export function statusText(live: LiveState): string {
-	const generation = live.generation;
-	const compaction = live.compactions?.[0];
-	const runningTool = live.tools?.find((slot) => slot.status === "running");
-	if (generation?.retry !== undefined) return `Retrying (attempt ${generation.attempt + 1}): ${generation.retry.error}`;
-	if (generation?.deferred !== undefined) return "Waiting for deferred response...";
-	if (compaction !== undefined) {
-		return compaction.retry
-			? `Retrying ${compaction.reason} compaction (attempt ${compaction.attempt + 1})...`
-			: `Compacting (${compaction.reason})...`;
-	}
-	if (runningTool !== undefined) return `Running ${runningTool.name}... (esc to interrupt)`;
-	if (live.run !== undefined) return "Working... (esc to interrupt)";
-	return "";
-}
-
 /** The transcript of one conversation view, updated in place as the view changes. */
 export class ChatView {
 	readonly transcript = new Container();
@@ -120,6 +61,8 @@ export class ChatView {
 	private readonly tools = new Map<string, ToolExecutionComponent>();
 	/** Every card shown, also the older ones whose call ID a later turn used again. */
 	private readonly cards: ToolExecutionComponent[] = [];
+	/** The cards that have no final result yet. */
+	private readonly running = new Set<ToolExecutionComponent>();
 	/** The call IDs whose cards the streamed answer made; its entry takes them over. */
 	private readonly streamingCalls = new Set<string>();
 	private readonly renderers = new Map<string, AnyDefinition>();
@@ -146,7 +89,7 @@ export class ChatView {
 		if (message !== undefined) this.syncStreaming(message);
 		for (const slot of live.tools ?? []) {
 			if (slot.status === "pending") continue;
-			const component = this.tool(slot.name, slot.callId);
+			const component = this.card(slot.name, slot.callId);
 			component.setArgsComplete();
 			if (slot.status !== "running") continue;
 			component.markExecutionStarted();
@@ -167,12 +110,10 @@ export class ChatView {
 		this.transcript.invalidate();
 	}
 
-	/** Finishes every card: a running bash card keeps a timer until it gets a final result. */
-	dispose(): void {
-		for (const component of this.cards) component.updateResult({ content: [], isError: false }, false);
-		this.cards.length = 0;
-		this.tools.clear();
-		this.streamingCalls.clear();
+	/** Finishes the running cards: a running bash card keeps a timer until it gets a final result. */
+	stopTimers(): void {
+		for (const component of this.running) component.updateResult({ content: [], isError: false }, false);
+		this.running.clear();
 	}
 
 	private syncTranscript(entries: readonly EntryRecord[]): void {
@@ -185,8 +126,11 @@ export class ChatView {
 	}
 
 	private rebuild(entries: readonly EntryRecord[]): void {
+		this.stopTimers();
 		this.transcript.clear();
-		this.dispose();
+		this.cards.length = 0;
+		this.tools.clear();
+		this.streamingCalls.clear();
 		this.renderedEntryIds = [];
 		this.streaming = undefined;
 		for (const entry of entries) {
@@ -211,16 +155,21 @@ export class ChatView {
 				if (content.type !== "toolCall") continue;
 				const streamed = this.streamingCalls.has(content.id);
 				if (!ran && !streamed) continue;
-				const card = this.tool(content.name, content.id, content.arguments, !streamed);
+				const card = streamed
+					? this.card(content.name, content.id, content.arguments)
+					: this.newCard(content.name, content.id, content.arguments);
 				card.setArgsComplete();
 				if (!ran) {
 					const text = "Not run: the answer was interrupted.";
 					card.updateResult({ content: [{ type: "text", text }], isError: true }, false);
+					this.running.delete(card);
 				}
 			}
 			this.streamingCalls.clear();
 		} else if (entry.kind === "pi.tool-result" && message?.role === "toolResult") {
-			this.tool(message.toolName, message.toolCallId).updateResult(displayedResult(message));
+			const card = this.card(message.toolName, message.toolCallId);
+			card.updateResult(displayedResult(message));
+			this.running.delete(card);
 		} else if (entry.kind === "pi.compaction") {
 			this.addText(this.muted("[compaction]"));
 			if (message?.role === "user") this.addText(userText(message.content));
@@ -237,7 +186,8 @@ export class ChatView {
 		this.streaming.updateContent(message, true);
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
-			this.tool(content.name, content.id, content.arguments, !this.streamingCalls.has(content.id));
+			if (this.streamingCalls.has(content.id)) this.card(content.name, content.id, content.arguments);
+			else this.newCard(content.name, content.id, content.arguments);
 			this.streamingCalls.add(content.id);
 		}
 	}
@@ -253,17 +203,20 @@ export class ChatView {
 		return definition;
 	}
 
-	/** The card of a call; `fresh` starts a new card for a call ID that an earlier turn used. */
-	private tool(toolName: string, toolCallId: string, args?: unknown, fresh = false): ToolExecutionComponent {
-		const existing = fresh ? undefined : this.tools.get(toolCallId);
-		if (existing !== undefined) {
-			if (args !== undefined) existing.updateArgs(args);
-			return existing;
-		}
+	/** The newest card of a call, or a new card when the call has none. */
+	private card(toolName: string, toolCallId: string, args?: unknown): ToolExecutionComponent {
+		const existing = this.tools.get(toolCallId);
+		if (existing === undefined) return this.newCard(toolName, toolCallId, args ?? {});
+		if (args !== undefined) existing.updateArgs(args);
+		return existing;
+	}
+
+	/** A new card of a call, also for a call ID that an earlier turn used. */
+	private newCard(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent {
 		const component = new ToolExecutionComponent(
 			toolName,
 			toolCallId,
-			args ?? {},
+			args,
 			{},
 			this.renderer(toolName),
 			this.ui,
@@ -272,6 +225,7 @@ export class ChatView {
 		component.setExpanded(this.expanded);
 		this.transcript.addChild(component);
 		this.cards.push(component);
+		this.running.add(component);
 		this.tools.set(toolCallId, component);
 		return component;
 	}

@@ -373,19 +373,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await until(() => terminal.text().includes("$ while [ ! -f go ]; do sleep 0.05; done"));
 		await until(() => terminal.text().includes("Running bash... (esc to interrupt)"));
 
-		// A steer waits in the queue while the tool runs.
+		// A follow-up and then a steer wait in the queue while the tool runs, in the order they came.
+		terminal.input("Then that");
+		terminal.input("\u001b\r");
+		await until(() => terminal.text().includes("Follow-up: Then that"));
 		terminal.input("Wait for it");
 		terminal.input("\r");
 		await until(() => terminal.text().includes("Steer: Wait for it"));
+		const queue = terminal.text();
+		expect(queue.lastIndexOf("Follow-up: Then that")).toBeLessThan(queue.lastIndexOf("Steer: Wait for it"));
 
-		// Esc aborts the turn, and the queued steer goes back to the editor.
+		// Esc aborts the turn, and the queue goes back to the editor, steers first.
 		terminal.input("\u001b");
 		await until(() => {
 			const text = terminal.text();
-			return text.lastIndexOf("Wait for it") > text.lastIndexOf("Steer: Wait for it") + "Steer: ".length;
+			return text.lastIndexOf("Then that") > text.lastIndexOf("Steer: Wait for it") + "Steer: ".length;
 		});
 		await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
+		const editor = terminal.text().slice(terminal.text().lastIndexOf("Steer: Wait for it"));
+		expect(editor).toMatch(/Wait for it\s+Then that\s*$/);
 		expect(called("Wait for it")).toBe(0);
+		expect(called("Then that")).toBe(0);
 
 		terminal.input("\u0003");
 		expect(await exited).toBe(0);

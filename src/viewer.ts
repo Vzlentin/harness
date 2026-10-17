@@ -27,10 +27,11 @@ import {
 	VStack,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { ChatView, inboxOf, liveOf, queuedLines, queuedTexts, statusText } from "./chat.ts";
+import { ChatView } from "./chat.ts";
 import { type Client, connect } from "./client.ts";
 import { agentReporter } from "./herdr.ts";
 import { type ChildInfo, childLabel, type ModelInfo, runDisplayName, type WatchLine } from "./protocol.ts";
+import { inboxOf, liveOf, queued, statusText } from "./view-state.ts";
 
 // Pi gives its theme object only to extensions. Pi's cards color with the theme that `initTheme()` sets in this module,
 // so the viewer loads the same module by its path to color its own lines the same way.
@@ -189,8 +190,10 @@ class Viewer {
 		].join(separator)}`;
 		this.syncLoader(statusText(liveOf(this.view)));
 		this.queued.setText(
-			queuedLines(inboxOf(this.view))
-				.map((line) => this.color("dim", line))
+			queued(inboxOf(this.view))
+				.map(({ mode, text }) =>
+					this.color("dim", `${mode === "steer" ? "Steer" : "Follow-up"}: ${text.split("\n")[0] ?? ""}`),
+				)
 				.join("\n"),
 		);
 		const usage = totalUsage(this.view.docs[UsageDoc.definition.kind] as UsageState | undefined);
@@ -352,10 +355,14 @@ class Viewer {
 
 	/** Aborts the turn. The host withdraws the queued messages, so they go back to the editor, steers first. */
 	private abort(): void {
-		const queued = queuedTexts(inboxOf(this.view));
+		const inputs = queued(inboxOf(this.view));
+		const texts = [
+			...inputs.filter((input) => input.mode === "steer"),
+			...inputs.filter((input) => input.mode === "followUp"),
+		].map((input) => input.text);
 		this.client.request({ type: "abort", handle: this.handle }).then(() => {
 			this.notice.setText("");
-			const text = [...queued, this.editor.getText()].filter((part) => part.trim() !== "").join("\n\n");
+			const text = [...texts, this.editor.getText()].filter((part) => part.trim() !== "").join("\n\n");
 			if (text !== this.editor.getText()) this.editor.setText(text);
 			this.tui.requestRender();
 		}, this.showError);
@@ -396,7 +403,7 @@ class Viewer {
 		if (this.done) return;
 		this.done = true;
 		this.loader?.stop();
-		this.chat.dispose();
+		this.chat.stopTimers();
 		this.tui.stop();
 		if (message !== undefined) this.terminal.write(`${message}\n`);
 		this.client.close();
