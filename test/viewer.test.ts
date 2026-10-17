@@ -356,7 +356,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		const reports = logLines(herdr.log);
-		const resume = `-- env ${process.execPath} ${CLI} attach ${handle} --project main`;
+		const resume = `-- env ${process.execPath} ${CLI} --project main attach ${handle}`;
 		expect(reports[0]).toBe(
 			`pane report-agent --source custom:harness --agent viewed --state idle --seq ${seqOf(reports[0])} pane-7 ${resume}`,
 		);
@@ -481,7 +481,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const config = herdr.env.XDG_CONFIG_HOME;
 		expect(state).toBeTruthy();
 		expect(config).toBeTruthy();
-		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' 'attach' '${handle}' '--project' 'main'`;
+		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '${handle}'`;
 		await openViewerTab(child, herdr.env);
 		expect(logLines(herdr.log)).toEqual([
 			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state} --env XDG_CONFIG_HOME=${config}`,

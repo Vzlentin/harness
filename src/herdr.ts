@@ -11,7 +11,7 @@ const HERDR_SOURCE = "custom:harness";
  */
 export function viewerCommand(handle: string, project: string): string[] {
 	const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-	return ["env", process.execPath, cli, "attach", handle, "--project", project];
+	return ["env", process.execPath, cli, "--project", project, "attach", handle];
 }
 
 /**

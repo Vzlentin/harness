@@ -175,7 +175,7 @@ function startHost(project: string, dir: string, log: string): void {
 	const output = openSync(log, "a", 0o600);
 	try {
 		const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-		spawn(process.execPath, [cli, "host", "--project", project], {
+		spawn(process.execPath, [cli, "--project", project, "host"], {
 			cwd: dir,
 			detached: true,
 			stdio: ["ignore", output, output],

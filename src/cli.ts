@@ -22,7 +22,7 @@ function usage(): never {
   harness attach <handle>
   harness create <name> --cwd <dir>
   harness projects
-Any command takes --project <name>; without it, the project is HARNESS_PROJECT, then the cwd.`);
+Any command takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -180,11 +180,11 @@ async function attachCommand(args: string[]): Promise<void> {
  */
 async function main(): Promise<void> {
 	const all = process.argv.slice(2);
-	const at = all.indexOf("--project");
+	// Only before the command, so a message or a prompt can contain the word.
 	let project: string | undefined;
-	if (at !== -1) {
-		project = valueAfter(all, at, "--project");
-		all.splice(at, 2);
+	if (all[0] === "--project") {
+		project = valueAfter(all, 0, "--project");
+		all.splice(0, 2);
 	}
 	const [command, ...args] = all;
 	if (command === "create") return createCommand(args);

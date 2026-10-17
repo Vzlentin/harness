@@ -87,7 +87,9 @@ describe("projects", { timeout: 30_000 }, () => {
 			expect(listB).not.toContain(childA);
 			// --project wins over HARNESS_PROJECT, which wins over the cwd.
 			expect((await cli(["list"], { HARNESS_PROJECT: "b" }, dirA)).stdout).toBe(listB);
-			expect((await cli(["list", "--project", "a"], { HARNESS_PROJECT: "b" }, dirB)).stdout).toBe(listA);
+			expect((await cli(["--project", "a", "list"], { HARNESS_PROJECT: "b" }, dirB)).stdout).toBe(listA);
+			// After the command, --project is an argument of that command, not the project.
+			expect((await cli(["list", "--project", "a"], {}, dirB)).code).toBe(1);
 			const unknown = await cli(["--project", "nope", "list"]);
 			expect(unknown.code).toBe(1);
 			expect(unknown.stderr).toBe("Unknown harness project: nope\n");
