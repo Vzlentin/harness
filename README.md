@@ -13,14 +13,14 @@ Pi gets the `subagent` tool and the `/subagent` command from a Pi extension that
 
 ## Install
 
-Install harness as a Pi package, and put the CLI `harness` of that install on `PATH`:
+[workflows](https://github.com/Vzlentin/workflows) installs harness as a dependency, with the `harness` command and the Pi extension. To install harness alone, add it as a Pi package and put the CLI of that install on `PATH`:
 
 ```sh
 pi install https://github.com/Vzlentin/harness
-ln -sf ~/.pi/agent/git/github.com/Vzlentin/harness/src/cli.ts ~/.local/bin/harness
+ln -sf ~/.pi/agent/git/github.com/Vzlentin/harness/bin/harness.mjs ~/.local/bin/harness
 ```
 
-The install runs from its TypeScript source, with Node type stripping. There is no build step. `pi update` updates it. A checkout for development runs only when you run its `src/cli.ts`, or load it in Pi.
+The install runs from its TypeScript source. There is no build step. The CLI `bin/harness.mjs` loads `src/cli.ts` through jiti, because Node does not strip types under `node_modules`, where harness is as a dependency. `pi update` updates it. A checkout for development runs only when you run its `bin/harness.mjs`, or load it in Pi.
 
 To try a checkout in Pi without the install, use another Pi agent directory that lists the checkout as a local package, and another state directory, so that its hosts do not share sockets and stores with the installed ones:
 
@@ -30,7 +30,7 @@ PI_CODING_AGENT_DIR=~/.pi/agent-dev XDG_STATE_HOME=~/.local/state/dev pi
 
 ## Pi
 
-The package gives Pi the extension `extensions/subagent.ts`: the `subagent` tool, the `/subagent` command and the subagents widget. The extension imports `src/client.ts`, `src/tool.ts`, `src/protocol.ts`, `src/herdr.ts` and `src/trust.ts` of the same install, so Pi and the CLI run the same code and start the same host, from `src/cli.ts`. The `subagent` skill is in [Vzlentin/dotfiles](https://github.com/Vzlentin/dotfiles).
+The package gives Pi the extension `extensions/subagent.ts`: the `subagent` tool, the `/subagent` command and the subagents widget. The extension imports `src/client.ts`, `src/tool.ts`, `src/protocol.ts`, `src/herdr.ts` and `src/trust.ts` of the same install, so Pi and the CLI run the same code and start the same host, from `bin/harness.mjs`. The `subagent` skill is in [Vzlentin/dotfiles](https://github.com/Vzlentin/dotfiles).
 
 ## Tool
 
@@ -148,7 +148,7 @@ A command goes to the project of `--project <name>`, which must come before the 
 
 The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller. The viewer sends text with an `input` request, stops a turn with an `abort` request, and changes the model or the thinking level with a `configure` request. None of these requests has a caller.
 
-`openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs `env <node> <checkout>/src/cli.ts --project <project> attach <handle>`: the viewer with this Node and this checkout's CLI, so it does not need `harness` on `PATH`, on the project of the caller. When `XDG_STATE_HOME` or `XDG_CONFIG_HOME` is set, the tab gets it too. When a `herdr` call fails, it rejects with the stderr of `herdr`, or with the reason that the call failed.
+`openViewerTab` of `harness/herdr` opens the viewer of a child in a new Herdr tab with the label `<name>` (or the handle), in the child's working directory. The tab runs `env <node> <checkout>/bin/harness.mjs --project <project> attach <handle>`: the viewer with this Node and this checkout's CLI, so it does not need `harness` on `PATH`, on the project of the caller. When `XDG_STATE_HOME` or `XDG_CONFIG_HOME` is set, the tab gets it too. When a `herdr` call fails, it rejects with the stderr of `herdr`, or with the reason that the call failed.
 
 ## Viewer
 
@@ -179,7 +179,7 @@ The viewer uses Pi's default theme and keys, not your Pi settings.
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
-In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <checkout>/src/cli.ts --project <project> attach <handle>`. The resume command is the same command that `openViewerTab` runs. For the project agent, the label is `<project> agent` and the resume command is `env <node> <checkout>/src/cli.ts <project>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <checkout>/bin/harness.mjs --project <project> attach <handle>`. The resume command is the same command that `openViewerTab` runs. For the project agent, the label is `<project> agent` and the resume command is `env <node> <checkout>/bin/harness.mjs <project>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
 
 ## Host
 

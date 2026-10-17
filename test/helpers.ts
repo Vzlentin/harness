@@ -15,7 +15,7 @@ import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
 
-export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
+export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "harness.mjs");
 
 export let root: string;
 

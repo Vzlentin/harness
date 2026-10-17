@@ -1,5 +1,6 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -302,7 +303,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("gives children the host's own tool when harness is also an installed package", async () => {
 		const linked = join(root, "linked-package");
-		await symlink(dirname(CLI), linked);
+		await symlink(join(dirname(CLI), ".."), linked);
 		const settings = join(root, "agent", "settings.json");
 		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [linked] }));
 		try {
@@ -317,6 +318,22 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await host?.close();
 			host = await startHost();
 		}
+	});
+
+	it("runs its CLI from a copy under node_modules, where Node does not strip types", async () => {
+		const installed = join(root, "consumer", "node_modules", "harness");
+		const source = join(dirname(CLI), "..");
+		await mkdir(installed, { recursive: true });
+		for (const path of ["bin", "src", "package.json"])
+			await cp(join(source, path), join(installed, path), { recursive: true });
+		await symlink(join(source, "node_modules"), join(installed, "node_modules"));
+		const result = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+			execFile(process.execPath, [join(installed, "bin", "harness.mjs"), "list"], { cwd: root }, (error, stdout) =>
+				resolve({ code: error === null ? 0 : (error.code as number), stdout }),
+			);
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).not.toBe("");
 	});
 
 	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {
