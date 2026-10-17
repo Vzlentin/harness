@@ -347,7 +347,18 @@ export function createChildren(durable: typeof Durable): Children {
 			context.abortSignal?.throwIfAborted();
 			return read(place, (tx) => answerIn(tx, id, requestId), context);
 		};
-		const ask = async (input: Input, context: Context, options?: { readonly schema?: JsonObject }) => {
+		function ask(
+			input: Input,
+			context: Context,
+			options: { readonly schema: JsonObject },
+		): Promise<(Ok & { readonly value: JsonValue }) | Failure>;
+		function ask(input: Input, context: Context, options?: { readonly schema?: undefined }): Promise<Ok | Failure>;
+		function ask(input: Input, context: Context, options?: { readonly schema?: JsonObject }): Promise<Answer>;
+		async function ask(
+			input: Input,
+			context: Context,
+			options?: { readonly schema?: JsonObject | undefined },
+		): Promise<Answer> {
 			const schema = options?.schema;
 			let attempt = input.requestId;
 			let saved: Answer | undefined;
@@ -376,8 +387,8 @@ export function createChildren(durable: typeof Durable): Children {
 			if (saved !== undefined) return saved;
 			await conversation.submit({ ...input, requestId: attempt }, context);
 			return withRespond(await settled(context, attempt), attempt, schema, context);
-		};
-		const child: Child = {
+		}
+		return {
 			id,
 			lineage: childLineage,
 			conversation,
@@ -392,7 +403,7 @@ export function createChildren(durable: typeof Durable): Children {
 				}, context);
 				await conversation.submit(input, context);
 			},
-			ask: ask as Child["ask"],
+			ask,
 			settled,
 			async state(context) {
 				if ((await place.store.snapshot(ChildDoc, id, context))?.closed === true) return "closed";
@@ -423,7 +434,6 @@ export function createChildren(durable: typeof Durable): Children {
 				return ids;
 			},
 		};
-		return child;
 	}
 
 	const find: Children["find"] = async (place, owner, which, context) => {

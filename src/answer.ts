@@ -80,6 +80,21 @@ export function createAnswers(durable: typeof Durable): Answers {
 			return { output: [{ type: "text", text: "Answer recorded." }], control: { terminate: true } };
 		},
 	});
+	/**
+	 * Saves the number of reminders at the end of the request as the memo `reminders` of the generation, for a schema
+	 * ask only. A continuation starts a new generation, so each generation counts the reminders of its turn again from
+	 * its messages. A compaction in the turn can summarize reminders away and reset the count. Each reset needs a
+	 * compaction, so the turn still ends.
+	 */
+	const countReminders = async (
+		request: { readonly messages: readonly Message[] },
+		api: HookApi,
+		context: Context,
+	): Promise<undefined> => {
+		const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
+		if (doc?.schema !== undefined) await api.memo("reminders", remindersAtEnd(request.messages), context);
+		return undefined;
+	};
 	/** A reminder to call `respond`, when a schema ask got a complete answer without one and has reminders left. */
 	const remind = async (answer: AssistantMessage, api: HookApi, context: Context) => {
 		const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
@@ -135,18 +150,10 @@ export function complete(stopReason: string): boolean {
 	return stopReason === "stop" || stopReason === "toolUse";
 }
 
-/**
- * Saves the number of reminders at the end of `messages` as the memo `reminders` of the generation. A continuation
- * starts a new generation, so each generation counts the reminders of its turn again from its messages. A compaction
- * in the turn can summarize reminders away and reset the count. Each reset needs a compaction, so the turn still ends.
- */
-async function countReminders(
-	request: { readonly messages: readonly Message[] },
-	api: HookApi,
-	context: Context,
-): Promise<undefined> {
+/** The number of reminders at the end of `messages`, counting back to the first other user message. */
+function remindersAtEnd(messages: readonly Message[]): number {
 	let count = 0;
-	for (const message of request.messages.toReversed()) {
+	for (const message of messages.toReversed()) {
 		if (message.role !== "user") continue;
 		const { content } = message;
 		const text =
@@ -156,8 +163,7 @@ async function countReminders(
 		if (text !== REMINDER) break;
 		count++;
 	}
-	await api.memo("reminders", count, context);
-	return undefined;
+	return count;
 }
 
 /**
