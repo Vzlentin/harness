@@ -1,10 +1,12 @@
 import { join } from "node:path";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createChildren, type Owner, type Place, REMINDER } from "../src/children.ts";
+import { REMINDER } from "../src/answer.ts";
+import { createChildren, type Owner, type Place } from "../src/children.ts";
 import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
@@ -37,6 +39,7 @@ beforeAll(async () => {
 	await setUp();
 	const registry = durable.createRegistry();
 	registry.install(library.extension);
+	registry.install(library.answerExtension);
 	registry.install(durable.defineExtension({ name: "test-holder", tasks: [Holder] }));
 	harness = await Harness.open(
 		await openNodeSqliteStorage(join(root, "children.sqlite")),
@@ -265,5 +268,76 @@ describe("children library", { timeout: 30_000 }, () => {
 		const before = called("Schema");
 		expect(await child?.ask(input, context, { schema })).toEqual(first);
 		expect(called("Schema")).toBe(before);
+	});
+
+	it("keeps the extensions and model tools of the owner's agent", async () => {
+		const rootConversation = await harness.root(context);
+		await harness.commit(async (tx) => {
+			const agent = await tx.doc(durable.AgentDoc, rootConversation.id);
+			agent.extensions = { add: ["test-holder"] };
+			agent.modelTools = { add: ["other"] };
+		}, context);
+		try {
+			const child = await library.open(place, owner, "t:agent", { root: "test", ...faux, cwd: root }, context);
+			await child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
+			await child.send({ type: "input", content: "Plain", requestId: "r2" }, context);
+			await child.settled(context, "r2");
+			const agent = await harness.snapshot(durable.AgentDoc, child.id, context);
+			expect(agent?.extensions).toEqual({ add: ["test-holder", "harness-answer"] });
+			expect(agent?.modelTools).toEqual({ add: ["other"] });
+		} finally {
+			await rootConversation.configure({ extensions: null, modelTools: null }, context);
+		}
+	});
+
+	it("turns off a respond copied from the owner's agent for a plain ask", async () => {
+		const rootConversation = await harness.root(context);
+		await harness.commit(async (tx) => {
+			const agent = await tx.doc(durable.AgentDoc, rootConversation.id);
+			agent.modelTools = { add: ["respond"] };
+		}, context);
+		try {
+			const child = await library.open(place, owner, "t:copied", { root: "test", ...faux, cwd: root }, context);
+			await child.ask({ type: "input", content: "Plain", requestId: "r1" }, context);
+			const agent = await harness.snapshot(durable.AgentDoc, child.id, context);
+			expect(agent?.modelTools).toEqual({ add: [] });
+		} finally {
+			await rootConversation.configure({ extensions: null, modelTools: null }, context);
+		}
+	});
+
+	it("keeps a saved respond answer after a later turn", async () => {
+		const child = await library.open(place, owner, "t:later", { root: "test", ...faux, cwd: root }, context);
+		const input = { type: "input", content: "Schema", requestId: "r1" } as const;
+		const first = await child.ask(input, context, { schema });
+		await child.send({ type: "input", content: "Plain", requestId: "r2" }, context);
+		await child.settled(context, "r2");
+		const before = called("Schema");
+		const again = await child.ask(input, context, { schema });
+		expect(again).toEqual(first);
+		if (again.status !== "ok") throw new Error(`The ask failed: ${again.reason}`);
+		const value: JsonValue = again.value;
+		expect(value).toEqual(SCHEMA_ANSWER);
+		expect(called("Schema")).toBe(before);
+	});
+
+	it("gives no-respond to a schema ask of a child opened with Spec.tools", async () => {
+		const spec = { root: "test", ...faux, cwd: root, tools: [] };
+		const child = await library.open(place, owner, "t:tools", spec, context);
+		const answer = await child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
+		expect(answer).toMatchObject({ status: "failed", reason: "no-respond" });
+	});
+
+	it("a send stops a running schema ask", async () => {
+		const child = await library.open(place, owner, "t:stop", { root: "test", ...faux, cwd: root }, context);
+		const gate = Promise.withResolvers<void>();
+		gates.set("Schema", gate);
+		const before = called("Schema");
+		const asked = child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
+		await until(() => called("Schema") === before + 1);
+		await child.send({ type: "input", content: "Plain", whenBusy: "followUp", requestId: "r2" }, context);
+		gate.resolve();
+		gates.delete("Schema");
+		expect(await asked).toMatchObject({ status: "failed", reason: "no-respond" });
 	});
 });
