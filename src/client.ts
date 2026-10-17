@@ -1,19 +1,16 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
-	MAIN_PROJECT,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Reply,
 	type Request,
-	resolveProject,
 	statePaths,
-	stateRoot,
 	type WatchLine,
 } from "./protocol.ts";
 
@@ -31,6 +28,8 @@ export class Client {
 	#lines: Readable | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
+	/** The project of the host. `connect` sets it. */
+	project = MAIN_PROJECT;
 
 	constructor(socket: Socket) {
 		this.#socket = socket;
@@ -96,7 +95,6 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 	let socket = await tryConnect(paths.socket);
 	if (socket === undefined) {
 		if (!options.start) return undefined;
-		if (project === MAIN_PROJECT) await refuseOldHost();
 		startHost(project, paths.dir, paths.log);
 		const deadline = Date.now() + START_TIMEOUT_MS;
 		while (socket === undefined) {
@@ -114,12 +112,8 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}; stop it and try again`,
 			);
 		}
-		if (hello.project !== project) {
-			throw new Error(
-				`The harness host (pid ${hello.pid}) at ${paths.socket} runs project ${hello.project}, not ${project}`,
-			);
-		}
 		client.pid = hello.pid;
+		client.project = project;
 		return client;
 	} catch (error) {
 		client.close();
@@ -174,15 +168,6 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 			else reject(error);
 		});
 	});
-}
-
-/** Throws when a host from before the projects listens on `host.sock` in the state root. */
-async function refuseOldHost(): Promise<void> {
-	const path = join(stateRoot(), "host.sock");
-	const socket = await tryConnect(path);
-	if (socket === undefined) return;
-	socket.destroy();
-	throw new Error(`An older harness host listens on ${path}; stop it and run the command again`);
 }
 
 function startHost(project: string, dir: string, log: string): void {

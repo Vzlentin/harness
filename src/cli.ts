@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { MAIN_PROJECT, projectsPath, readProjects, resolveProject, statePaths } from "./protocol.ts";
+import { addProject, checkProject, MAIN_PROJECT, readProjects } from "./projects.ts";
+import { statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -118,9 +117,8 @@ function toolArgs(command: string | undefined, args: string[]): ToolArgs {
 	}
 }
 
-/** The names that a project cannot have: `main` and the commands. */
-const RESERVED_NAMES = new Set([
-	MAIN_PROJECT,
+/** The commands, which a project cannot have as its name. */
+const COMMANDS = new Set([
 	"spawn",
 	"status",
 	"rename",
@@ -138,26 +136,8 @@ const RESERVED_NAMES = new Set([
 function createCommand(args: string[]): void {
 	const [name, option, dir] = args;
 	if (args.length !== 3 || name === undefined || option !== "--cwd" || dir === undefined) usage();
-	if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) {
-		fail(`A project name has 1 to 32 characters: a-z first, then a-z, 0-9 or -: ${name}`);
-	}
-	if (RESERVED_NAMES.has(name)) fail(`A project cannot have the name ${name}`);
-	let real: string;
-	try {
-		real = realpathSync(resolve(dir));
-	} catch {
-		fail(`No such directory: ${dir}`);
-	}
-	if (!statSync(real).isDirectory()) fail(`Not a directory: ${dir}`);
-	const projects = readProjects();
-	if (Object.hasOwn(projects, name)) fail(`The project ${name} exists (${projects[name]})`);
-	const path = projectsPath();
-	mkdirSync(dirname(path), { recursive: true });
-	// A temporary file, then a rename, so a stop in between does not truncate the projects.
-	const temporary = `${path}.${process.pid}.tmp`;
-	writeFileSync(temporary, `${JSON.stringify({ ...projects, [name]: real }, null, "\t")}\n`);
-	renameSync(temporary, path);
-	process.stdout.write(`Created ${name} (${real})\n`);
+	if (COMMANDS.has(name)) fail(`A project cannot have the name ${name}`);
+	process.stdout.write(`Created ${name} (${addProject(name, dir)})\n`);
 }
 
 function projectsCommand(args: string[]): void {
@@ -209,9 +189,9 @@ async function main(): Promise<void> {
 	const [command, ...args] = all;
 	if (command === "create") return createCommand(args);
 	if (command === "projects") return projectsCommand(args);
-	if (command === "host") return hostCommand(args, resolveProject({ HARNESS_PROJECT: project ?? MAIN_PROJECT }, "/"));
+	if (command === "host") return hostCommand(args, checkProject(project ?? MAIN_PROJECT));
 	// Every connection resolves the project from the env, so --project goes there.
-	if (project !== undefined) process.env.HARNESS_PROJECT = resolveProject({ HARNESS_PROJECT: project }, "/");
+	if (project !== undefined) process.env.HARNESS_PROJECT = checkProject(project);
 	if (command === "attach") return attachCommand(args);
 	const { text } = await runTool(toolArgs(command, args), {
 		caller: process.env.PI_SESSION_ID || "cli",

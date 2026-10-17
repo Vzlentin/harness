@@ -1,13 +1,11 @@
-import { once } from "node:events";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
-import { createConnection, createServer } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Client, connect } from "../src/client.ts";
-import { runHost } from "../src/host.ts";
-import { projectsPath, resolveProject, statePaths, stateRoot } from "../src/protocol.ts";
-import { cli, handleOf, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { connect } from "../src/client.ts";
+import { projectsPath, resolveProject } from "../src/projects.ts";
+import { statePaths } from "../src/protocol.ts";
+import { cli, handleOf, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 let dirA: string;
 let dirB: string;
@@ -122,60 +120,17 @@ describe("projects", { timeout: 30_000 }, () => {
 		await until(() => !existsSync(statePaths("a").socket) && !existsSync(statePaths("b").socket));
 	});
 
-	it("refuses a host of another project", async () => {
-		process.env.XDG_STATE_HOME = join(root, "state2");
-		const host = await runHost({ stateDir: statePaths("main").dir, project: "a", models });
+	it("refuses a projects file with an invalid project", async () => {
+		const valid = readFileSync(projectsPath(), "utf8");
 		try {
-			await expect(connect({ start: false })).rejects.toThrow(
-				`The harness host (pid ${process.pid}) at ${statePaths("main").socket} runs project a, not main`,
-			);
+			for (const projects of [{ "../up": realpathSync(dirA) }, { c: "relative" }, { c: 1 }]) {
+				writeFileSync(projectsPath(), JSON.stringify(projects));
+				const result = await cli(["projects"]);
+				expect(result.code).toBe(1);
+				expect(result.stderr).toContain(`${projectsPath()} has an invalid project:`);
+			}
 		} finally {
-			await host?.close();
-			process.env.XDG_STATE_HOME = join(root, "state");
-		}
-	});
-
-	it("moves the store of an old host into main", async () => {
-		// An old host keeps its store in the state root.
-		const old = await runHost({ stateDir: stateRoot(), project: "old", models });
-		const socket = createConnection(join(stateRoot(), "host.sock"));
-		await once(socket, "connect");
-		const client = new Client(socket);
-		const child = await client.request({
-			type: "spawn",
-			requestId: "old-spawn",
-			caller: "cli",
-			provider: "faux",
-			model: "faux-1",
-			callerThinking: "medium",
-			cwd: dirA,
-			prompt: "Old child",
-		});
-		client.close();
-
-		// While the old host holds its lock, the new main host does not take its store.
-		await expect(startHost()).rejects.toThrow(`An older harness host runs on ${join(stateRoot(), "durable.sqlite")}`);
-		await old?.close();
-
-		const host = await startHost();
-		try {
-			expect(existsSync(join(stateRoot(), "durable.sqlite"))).toBe(false);
-			expect((await cli(["list"])).stdout).toContain(child.handle);
-		} finally {
-			await host?.close();
-		}
-	});
-
-	it("refuses to start main while an old host listens on the old socket", async () => {
-		const path = join(stateRoot(), "host.sock");
-		const server = createServer((connection) => connection.destroy());
-		await new Promise<void>((resolveListen) => server.listen(path, resolveListen));
-		try {
-			await expect(connect({ start: true })).rejects.toThrow(
-				`An older harness host listens on ${path}; stop it and run the command again`,
-			);
-		} finally {
-			server.close();
+			writeFileSync(projectsPath(), valid);
 		}
 	});
 });

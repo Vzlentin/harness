@@ -1,13 +1,12 @@
-import { readFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import type { Op } from "@earendil-works/chord/delta";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 5;
 
 export type ChildState = "busy" | "idle" | "error";
 
@@ -96,7 +95,7 @@ export type Request =
 
 /** The value of the reply to each request type. */
 export type Replies = {
-	readonly hello: { readonly version: number; readonly pid: number; readonly project: string };
+	readonly hello: { readonly version: number; readonly pid: number };
 	readonly spawn: ChildInfo;
 	readonly send: { readonly verb: string; readonly child: ChildInfo };
 	readonly wait: { readonly answer: string };
@@ -122,60 +121,9 @@ export type WatchLine =
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
-/** The project that has no directory. A cwd outside every project goes to it. */
-export const MAIN_PROJECT = "main";
-
-/** `$XDG_STATE_HOME/harness/`, default `~/.local/state/harness/`. Each project has its directory in it. */
-export function stateRoot(): string {
-	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness");
-}
-
-/** The file of the projects: `$XDG_CONFIG_HOME/harness/projects.json`, default `~/.config/harness/projects.json`. */
-export function projectsPath(): string {
-	return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "harness", "projects.json");
-}
-
-/** The projects, name to real directory, in creation order. It is empty when the file does not exist. */
-export function readProjects(): Record<string, string> {
-	let text: string;
-	try {
-		text = readFileSync(projectsPath(), "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-		throw error;
-	}
-	return JSON.parse(text) as Record<string, string>;
-}
-
-/**
- * The project of a command: `HARNESS_PROJECT` in `env`, then the project with the longest directory that is `cwd` or
- * contains it, then `main`. An unknown `HARNESS_PROJECT` is an error.
- */
-export function resolveProject(
-	env: NodeJS.ProcessEnv,
-	cwd: string,
-	projects: Readonly<Record<string, string>> = readProjects(),
-): string {
-	const named = env.HARNESS_PROJECT;
-	if (named) {
-		if (named !== MAIN_PROJECT && !Object.hasOwn(projects, named)) throw new Error(`Unknown harness project: ${named}`);
-		return named;
-	}
-	let found = MAIN_PROJECT;
-	let length = -1;
-	for (const [name, dir] of Object.entries(projects)) {
-		// The first project wins over a later one with the same directory.
-		if (dir.length > length && (cwd === dir || cwd.startsWith(dir.endsWith(sep) ? dir : dir + sep))) {
-			found = name;
-			length = dir.length;
-		}
-	}
-	return found;
-}
-
-/** The files of the host of `project`: `<stateRoot()>/<project>/`. */
+/** The files of the host of `project`: `$XDG_STATE_HOME/harness/<project>/`, default `~/.local/state/harness/<project>/`. */
 export function statePaths(project: string): { dir: string; socket: string; log: string } {
-	const dir = join(stateRoot(), project);
+	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", project);
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 

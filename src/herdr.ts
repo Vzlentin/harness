@@ -1,17 +1,17 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { type ChildInfo, childLabel, resolveProject } from "./protocol.ts";
+import { resolveProject } from "./projects.ts";
+import { type ChildInfo, childLabel } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
 /**
  * The words of the command that runs the viewer of `handle`, with this Node and this package's CLI, so it does not
  * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
- * It names the project of `env` and this process's cwd, the host that this process connects to.
  */
-export function viewerCommand(handle: string, env: NodeJS.ProcessEnv): string[] {
+export function viewerCommand(handle: string, project: string): string[] {
 	const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-	return ["env", process.execPath, cli, "attach", handle, "--project", resolveProject(env, process.cwd())];
+	return ["env", process.execPath, cli, "attach", handle, "--project", project];
 }
 
 /**
@@ -27,9 +27,13 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
 	});
 }
 
-/** Opens a Herdr tab that runs the viewer of `child`. It rejects when a `herdr` call fails or gives no pane ID. */
+/**
+ * Opens a Herdr tab that runs the viewer of `child`, on the project of `env` and this process's cwd. It rejects when a
+ * `herdr` call fails or gives no pane ID.
+ */
 export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
-	// The tab must find the same host and projects as `statePaths()` and `projectsPath()` in protocol.ts.
+	const project = resolveProject(env, process.cwd());
+	// The tab must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in projects.ts.
 	const state = env.XDG_STATE_HOME;
 	const config = env.XDG_CONFIG_HOME;
 	const created = await herdr(
@@ -53,23 +57,25 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 		pane = undefined;
 	}
 	if (typeof pane !== "string") throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
-	const viewer = viewerCommand(child.handle, env)
+	const viewer = viewerCommand(child.handle, project)
 		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
 		.join(" ");
 	await herdr(["pane", "run", pane, viewer], env);
 }
 
 /**
- * Reports the state of the agent `label` to the Herdr pane of this process. Both methods do nothing outside Herdr.
+ * Reports the state of the agent `label` to the Herdr pane of this process, with the viewer of `handle` on `project` as
+ * the resume command. Both methods do nothing outside Herdr.
  * The calls run one after another, so `--seq` reaches Herdr in order.
  */
 export function agentReporter(
 	env: NodeJS.ProcessEnv,
 	label: string,
 	handle: string,
+	project: string,
 ): { report(busy: boolean): void; release(): Promise<void> } {
 	const pane = env.HERDR_ENV ? env.HERDR_PANE_ID : undefined;
-	const resume = pane === undefined ? [] : ["--", ...viewerCommand(handle, env)];
+	const resume = pane === undefined ? [] : ["--", ...viewerCommand(handle, project)];
 	let calls: Promise<unknown> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;

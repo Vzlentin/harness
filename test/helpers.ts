@@ -12,6 +12,7 @@ import {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { type Host, runHost } from "../src/host.ts";
+import { MAIN_PROJECT } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
@@ -161,7 +162,7 @@ export function handleOf(result: Result): string {
 }
 
 /** Runs the host of `project` in this process. */
-export function startHost(project = "main"): Promise<Host | undefined> {
+export function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
 	return runHost({ stateDir: statePaths(project).dir, project, models });
 }
 
