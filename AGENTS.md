@@ -2,7 +2,7 @@
 - README.md is the behaviour spec: CLI commands, arguments and output lines, the tool, and where state lives. Update it in the same change as the behaviour.
 - `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent`, now archived, a fork of `badlogic/pi-subagent`.
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together.
-- The `@earendil-works/*` packages are `dependencies`.
+- Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui` to the extension, so they are `peerDependencies` at `"*"`. The CLI and the host run outside Pi and need their own copies, so they are also `optionalDependencies`, which Pi's git install keeps. Do not put them in `dependencies`. `chord` and `pi-durable` are `dependencies`.
 - The checkout runs from source: the `bin` runs `src/cli.ts`, so the source must run with Node type stripping. There is no build step.
-- The Pi extension `subagent.ts` in `Vzlentin/dotfiles` imports `src/client.ts`, `src/tool.ts`, `src/protocol.ts`, `src/herdr.ts` and `src/trust.ts` from the checkout, inside Pi. Pi's loader maps `pi-ai`, `pi-coding-agent` and `pi-tui` to Pi's own copies. These modules must not import `chord` or `pi-durable` at runtime (types only), so Pi does not load them. A change to their exports or to the protocol needs a change in the extension too.
+- The Pi extension `extensions/subagent.ts` imports `src/client.ts`, `src/tool.ts`, `src/protocol.ts`, `src/herdr.ts` and `src/trust.ts`, inside Pi. Pi's loader maps `pi-ai`, `pi-coding-agent` and `pi-tui` to Pi's own copies. These modules must not import `chord` or `pi-durable` at runtime (types only), so Pi does not load them.
 - Tests must not call a real model, start tmux, or use the user's Pi or Git configuration. Use a temporary `PI_CODING_AGENT_DIR` and pi-ai's faux provider.
