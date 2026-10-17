@@ -13,13 +13,12 @@ Pi gets the `subagent` tool, the `/subagent` command and the skill from [pi-suba
 
 ## Install
 
-Clone the repository, install, and put the CLI on `PATH`. The CLI is `harness`; `subagent` is the same CLI:
+Clone the repository, install, and put the CLI `harness` on `PATH`:
 
 ```sh
 git clone https://github.com/Vzlentin/harness ~/Dev/perso/harness
 cd ~/Dev/perso/harness && npm ci
 ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/harness
-ln -s ~/Dev/perso/harness/src/cli.ts ~/.local/bin/subagent
 ```
 
 The checkout runs from its TypeScript source. `npm ci` and an install as a dependency also build `dist/` (the `prepare` script), because Node does not strip types under `node_modules`. Other packages import the modules of `dist/` through the `exports` of `package.json`: `harness/client`, `harness/protocol`, `harness/tool`, `harness/herdr`, `harness/trust` and `harness/host`. A process that a module of `dist/` starts, such as the host or a Herdr viewer tab, runs `dist/cli.js`.
