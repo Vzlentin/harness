@@ -167,7 +167,21 @@ describe("children library", { timeout: 30_000 }, () => {
 				`The child ${child.id} belongs to another owner`,
 			);
 		}
+		// An abort of the later task does not reach the turns it sent to the child of the earlier task.
+		gates.set("Late", Promise.withResolvers());
+		await found?.send({ type: "input", content: "Late", requestId: "r3" }, context);
+		await until(() => called("Late") === 1);
 		await harness.abortTask(second, context);
+		expect(await found?.state(context)).toBe("busy");
+		gates.get("Late")?.resolve();
+		expect(await found?.settled(context, "r3")).toMatchObject({ status: "ok", text: "Answer to Late" });
+		// A child saved without a group refuses a grouped owner, also of its own task.
+		const third = await holder();
+		const plain = await library.open(place, ownerOf(third), "t:plain", { root: "test", ...faux }, context);
+		await expect(library.find(place, ownerOf(third, "run-1"), { key: "t:plain" }, context)).rejects.toThrow(
+			`The child ${plain.id} belongs to another owner`,
+		);
+		await harness.abortTask(third, context);
 	});
 
 	it("closes only the subtree under a child with below, and the child stays open", async () => {

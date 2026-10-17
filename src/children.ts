@@ -152,8 +152,9 @@ export type Child = {
 	usage(context: Context): Promise<UsageState>;
 	/**
 	 * Withdraws the queued input of the child and its subtree, aborts them, background work included, and marks them
-	 * closed. Gives the conversations it closed, the child first. With `below`, it does this only for the subtree under
-	 * the child, and the child stays open.
+	 * closed. Gives the conversations it closed, parents first. With `below`, it does this only for the subtree under
+	 * the child, and the child stays open. A turn of the child's conversation that a task outside the child's owner
+	 * sent, such as a later task of its group, is aborted only through `conversation.abort`.
 	 */
 	close(context: Context, options?: { readonly below?: boolean }): Promise<ConversationId[]>;
 };
