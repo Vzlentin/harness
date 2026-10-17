@@ -7,6 +7,11 @@
 	"bin": {
 		"harness": "./src/cli.ts"
 	},
+	"pi": {
+		"extensions": [
+			"./extensions/subagent.ts"
+		]
+	},
 	"piDurable": {
 		"extensions": [
 			"./src/durable-entry.ts"
@@ -21,10 +26,17 @@
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
+		"@earendil-works/pi-durable": "1.3.0"
+	},
+	"optionalDependencies": {
 		"@earendil-works/pi-ai": "1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
-		"@earendil-works/pi-durable": "1.3.0",
 		"@earendil-works/pi-tui": "1.3.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

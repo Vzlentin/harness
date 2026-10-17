@@ -107,9 +107,15 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 	const client = new Client(socket);
 	try {
 		const hello = await client.request({ type: "hello", version: PROTOCOL_VERSION });
+		// A stopped host restarts from the installed code, which is the newer side here, so only the client can catch up.
+		if (hello.version > PROTOCOL_VERSION) {
+			throw new Error(
+				`This client uses harness protocol ${PROTOCOL_VERSION} and the host (pid ${hello.pid}) uses ${hello.version}. Reload Pi with /reload, or use the harness CLI of the host's install`,
+			);
+		}
 		if (hello.version !== PROTOCOL_VERSION) {
 			throw new Error(
-				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}; stop it and try again`,
+				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}. The host is older: stop it with kill ${hello.pid} and run the command again`,
 			);
 		}
 		client.pid = hello.pid;
