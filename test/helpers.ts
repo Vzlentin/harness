@@ -60,6 +60,8 @@ const toolSpawns = new Map([
 	["Task:\nNest tool", "Nest tool"],
 	["No cwd", "No cwd child"],
 	["Task:\nSend and wait", "Send and wait child"],
+	["Agent spawn", "Agent child"],
+	["Agent waits", "Agent gated"],
 ]);
 /** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
 export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
@@ -77,11 +79,9 @@ async function respond(
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const prompt = lastUser === undefined ? "" : textOf(lastUser);
 	const child = toolSpawns.get(prompt);
-	if (
-		child !== undefined &&
-		last?.role === "toolResult" &&
-		messages.filter((m) => m.role === "toolResult").length === 1
-	) {
+	// Only the tool results of this turn count: the project agent keeps the turns before.
+	const turn = lastUser === undefined ? messages : messages.slice(messages.indexOf(lastUser) + 1);
+	if (child !== undefined && last?.role === "toolResult" && turn.filter((m) => m.role === "toolResult").length === 1) {
 		const handle = /\(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
 		if (handle !== undefined) {
 			toolWaits.get(prompt)?.resolve(handle);

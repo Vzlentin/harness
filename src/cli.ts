@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { addProject, checkProject, MAIN_PROJECT, readProjects } from "./projects.ts";
-import { statePaths } from "./protocol.ts";
+import { AGENT_HANDLE, statePaths } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -11,6 +11,7 @@ function fail(message: string): never {
 
 function usage(): never {
 	fail(`Usage:
+  harness <project>
   harness spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]
     [--cwd <dir>] [--tools <names>] (--prompt <text> | --file <path>)...
   harness status <handle>
@@ -169,6 +170,18 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 async function attachCommand(args: string[]): Promise<void> {
 	const [handle] = args;
 	if (args.length !== 1 || handle === undefined) usage();
+	await openViewer(handle);
+}
+
+/** Opens the viewer of the agent of the project `name` in this terminal. */
+async function agentCommand(name: string, project: string | undefined): Promise<void> {
+	if (project !== undefined && project !== name) fail(`--project ${project} does not match the project ${name}`);
+	// The viewer's connection resolves the project from the env.
+	process.env.HARNESS_PROJECT = checkProject(name);
+	await openViewer(AGENT_HANDLE);
+}
+
+async function openViewer(handle: string): Promise<void> {
 	const { ProcessTerminal } = await import("@earendil-works/pi-tui");
 	const { attach } = await import("./viewer.ts");
 	process.exitCode = await attach(handle, { terminal: new ProcessTerminal(), env: process.env });
@@ -190,6 +203,10 @@ async function main(): Promise<void> {
 	if (command === "create") return createCommand(args);
 	if (command === "projects") return projectsCommand(args);
 	if (command === "host") return hostCommand(args, checkProject(project ?? MAIN_PROJECT));
+	// Any other word alone is a project, whose agent opens.
+	if (command !== undefined && !command.startsWith("-") && !COMMANDS.has(command) && args.length === 0) {
+		return agentCommand(command, project);
+	}
 	// Every connection resolves the project from the env, so --project goes there.
 	if (project !== undefined) process.env.HARNESS_PROJECT = checkProject(project);
 	if (command === "attach") return attachCommand(args);

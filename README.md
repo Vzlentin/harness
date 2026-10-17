@@ -108,6 +108,23 @@ harness attach a1b2c3
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
+### Project agent
+
+Each project has an agent, a conversation in its host that you talk to directly:
+
+```sh
+harness web
+harness main
+```
+
+`harness <project>` opens the viewer of the agent of the project (see [Viewer](#viewer)). It starts the host when none runs. An unknown project is an error: `Unknown harness project: <name>`. A `--project` before it must name the same project.
+
+- The agent works in the project directory, or in the home directory for `main`. Its system prompt, tools and bash env are the same as a child's in that directory (see [Host](#host)). Its bash commands get `PI_SESSION_ID`, the agent's conversation ID.
+- When it is first opened, the agent gets Pi's default model (`defaultProvider` and `defaultModel` in Pi's `settings.json`) when it has a login, else the first model with a login, and Pi's `defaultThinkingLevel` (default `medium`), or the nearest level that the model has. Without a model with a login, the viewer does not start and prints `No model for the <project> agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`. The viewer changes its model and thinking level as for a child.
+- The children that the agent spawns have the agent as their parent: `harness list` with `PI_SESSION_ID` set to the agent's conversation ID shows them, and a child of such a child is the deepest level.
+- Esc stops only the agent's turn. The children that it spawned keep running.
+- The agent keeps its conversation across host restarts. `status`, `send`, `wait`, `rename`, `stop` and `list` do not know the agent: it is not a subagent, and it cannot be stopped.
+
 ### Projects
 
 Each project has its own host, store and children. A project is a name and a directory:
@@ -130,11 +147,11 @@ The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only th
 
 ## Viewer
 
-`harness attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. It starts the host when none runs. An unknown handle is an error before the viewer starts.
+`harness attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. `harness <project>` shows the project agent in the same viewer. It starts the host when none runs. An unknown handle is an error before the viewer starts.
 
 The viewer is full screen. It draws the conversation with Pi's own components (adapted from the attach view of [mavam/pi-agents](https://github.com/mavam/pi-agents)), from top to bottom:
 
-- The header: `harness │ <name> (<handle>) │ <working directory> │ <state>`, where the state is `◉ busy`, `● idle` or `⊗ error`. When the child is renamed, the header shows the new name.
+- The header: `harness │ <name> (<handle>) │ <working directory> │ <state>`, where the state is `◉ busy`, `● idle` or `⊗ error`. When the child is renamed, the header shows the new name. For the project agent, it is `harness │ <project> agent │ <working directory> │ <state>`.
 - The transcript: the user messages, the assistant text and thinking, and a Pi tool card for each call of `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls`, with its output while it runs. Other tools get Pi's generic card. A compaction shows `[compaction]` and its summary, and a reset shows `[new context]`. New output scrolls into view.
 - Pi's working indicator while the child works: `Working...`, `Running <tool>...`, `Compacting (<reason>)...` or `Retrying (attempt <n>): <error>`.
 - The queued messages, one line each: `Steer: <first line>` or `Follow-up: <first line>`.
@@ -153,11 +170,11 @@ The viewer uses Pi's default theme and keys, not your Pi settings.
 | Ctrl+O | Show the tool output in full, or collapse it again |
 | Shift+↑, Shift+↓ | Scroll the transcript one line |
 | Shift+PgUp, Shift+PgDn | Scroll the transcript one page |
-| Ctrl+C | Exit and print `<name> (<handle>) keeps running. Reattach: harness attach <handle>`. The child continues |
+| Ctrl+C | Exit and print `<name> (<handle>) keeps running. Reattach: harness attach <handle>`, or `<project> agent keeps running. Reattach: harness <project>` for the project agent. The child continues |
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
-In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <checkout>/src/cli.ts --project <project> attach <handle>`. The resume command is the same command that `openViewerTab` runs. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:harness --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <checkout>/src/cli.ts --project <project> attach <handle>`. The resume command is the same command that `openViewerTab` runs. For the project agent, the label is `<project> agent` and the resume command is `env <node> <checkout>/src/cli.ts <project>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
 
 ## Host
 
@@ -165,9 +182,9 @@ The children of a project run in one host process, `harness --project <name> hos
 
 The host keeps its state in `$XDG_STATE_HOME/harness/<project>/` (default `~/.local/state/harness/<project>/`):
 
-- `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
+- `durable.sqlite`: the children's conversations and records, and the project agent, which is the store's root conversation. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
 - `lock.sqlite`: one host at a time.
-- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 5. The `watch` reply is `{ view, child }`. The `models` reply lists the models with a login: `{ provider, id, name, contextWindow, thinkingLevels }`. A `configure` request `{ handle, provider?, model?, thinking? }` replies with the child, and refuses an unknown model and a thinking level that the model does not have. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`harness host` process) and run the command again.
+- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 5. The `watch` reply is `{ view, child }`. The `models` reply lists the models with a login: `{ provider, id, name, contextWindow, thinkingLevels }`. A `configure` request `{ handle, provider?, model?, thinking? }` replies with the child, and refuses an unknown model and a thinking level that the model does not have. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`harness host` process) and run the command again. The `watch`, `input`, `abort` and `configure` requests take the handle `agent` for the project agent; its info is a child with the handle `agent` and the name `<project> agent`, and its watch never sends `stopped`. Other requests refuse it as an unknown subagent.
 - `host.log`: the host's output.
 
 A host from before the projects kept its state in `$XDG_STATE_HOME/harness/`. To keep its children, stop that host, then move `durable.sqlite` and its `-wal` and `-shm` files into `main/` before the `main` host starts.

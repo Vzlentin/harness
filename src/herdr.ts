@@ -1,16 +1,18 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveProject } from "./projects.ts";
-import { type ChildInfo, childLabel } from "./protocol.ts";
+import { AGENT_HANDLE, type ChildInfo, childLabel } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
 /**
  * The words of the command that runs the viewer of `handle`, with this Node and this package's CLI, so it does not
- * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
+ * need the CLI on PATH: `harness <project>` for the project agent. Herdr wants a plain command name as the first word
+ * of a resume command, so it starts with `env`.
  */
 export function viewerCommand(handle: string, project: string): string[] {
 	const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
+	if (handle === AGENT_HANDLE) return ["env", process.execPath, cli, project];
 	return ["env", process.execPath, cli, "--project", project, "attach", handle];
 }
 
