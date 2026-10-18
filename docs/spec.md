@@ -194,9 +194,9 @@ Setup registers the extension in Pi. It acts only for a top-level global install
 
 1. For each Pi package of the `retiredPiPackages` field of the package's `package.json` (`npm:@vzlentin/pi-subagent`, the old extension, which makes Pi exit with `Tool "subagent" conflicts` next to this one) that the `packages` of Pi's global settings list (`$PI_CODING_AGENT_DIR/settings.json`, default `~/.pi/agent/settings.json`), with or without a version, it writes `harness: removing <source> from Pi, which @vzlentin/harness replaces` and runs `pi remove <source>`.
 2. It runs `pi install <package>/pi`. A second install keeps one entry in Pi's settings.
-3. It writes the stamp `$XDG_STATE_HOME/harness/.setup/<hash>` (default `~/.local/state/harness/.setup/`), where `<hash>` is the SHA-256 of the real path and the version of the package.
+3. Unless a `pi` command failed, it writes the stamp `$XDG_STATE_HOME/harness/.setup/<hash>` (default `~/.local/state/harness/.setup/`), where `<hash>` is the SHA-256 of the real path and the version of the package.
 
-Setup runs `pi` from `PATH`, without the `node_modules/.bin` folders that npm adds, so the `pi` of the package's own dependencies is not used. When `pi` is not on `PATH`, it writes `harness: pi is not on PATH. To add the Pi extension of harness, run: pi install <path>` (`pi remove <source>` for step 1). When `pi` fails, it writes `harness: pi <install|remove> failed (<reason>). ...` with the same command. A Pi failure does not fail setup, and the stamp is written all the same.
+Setup runs `pi` from `PATH`, without the `node_modules/.bin` folders that npm adds, so the `pi` of the package's own dependencies is not used. When `pi` is not on `PATH`, it writes `harness: pi is not on PATH. To add the Pi extension of harness, run: pi install <path>` (`pi remove <source>` for step 1). When `pi` fails, it writes `harness: pi <install|remove> failed (<reason>). ...` with the same command. A Pi failure does not fail setup, but it writes no stamp, so the next `harness` command tries again. When `pi` is not on `PATH`, the stamp is written, so a user without Pi gets the hint once per version; after installing Pi, run the `pi install` command of the hint.
 
 Two things run setup:
 

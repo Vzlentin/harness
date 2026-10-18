@@ -105,7 +105,7 @@ describe("setup", () => {
 		expect(stamps()).toHaveLength(1);
 	});
 
-	it("warns when pi install fails", async () => {
+	it("warns when pi install fails, and writes no stamp, so the next run tries again", async () => {
 		const dir = await installAt("prefix/lib/node_modules");
 		await writeFile(join(root, "bin", "pi"), "#!/bin/sh\nexit 3\n");
 		const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
@@ -114,6 +114,7 @@ describe("setup", () => {
 		expect(stderr).toHaveBeenCalledWith(
 			`harness: pi install failed (exit 3). To add the Pi extension of harness, run: pi install ${join(dir, "pi")}\n`,
 		);
+		expect(stamps()).toEqual([]);
 	});
 });
 

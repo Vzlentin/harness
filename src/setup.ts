@@ -29,14 +29,15 @@ type Installed = { readonly dir: string; readonly json: PackageJson };
  * Registers `<packageDir>/pi` in Pi when `packageDir` is a top-level global npm install. First it runs `pi remove` for
  * each Pi package of the `retiredPiPackages` field of the package's `package.json` that Pi's settings list. It writes
  * its messages to stderr, and it does not throw for a Pi failure: it writes a warning with the command to run.
- * At the end it writes the stamp that `setupOnce` reads.
+ * It writes the stamp that `setupOnce` reads unless a `pi` command failed, so the next run tries again. Without `pi`
+ * on PATH it writes the stamp, so a user without Pi gets the hint once per version.
  */
 export function setup(packageDir: string): void {
 	const installed = readInstalled(packageDir);
 
 	if (installed === undefined || !isTopLevelGlobal(installed)) return;
-	registerExtension(installed);
-	writeStamp(installed);
+
+	if (registerExtension(installed)) writeStamp(installed);
 }
 
 /**
@@ -48,8 +49,8 @@ export function setupOnce(packageDir: string): void {
 		const installed = readInstalled(packageDir);
 
 		if (installed === undefined || !isTopLevelGlobal(installed) || existsSync(stampPath(installed))) return;
-		registerExtension(installed);
-		writeStamp(installed);
+
+		if (registerExtension(installed)) writeStamp(installed);
 	} catch (error) {
 		process.stderr.write(`harness: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	}
@@ -92,7 +93,8 @@ function writeStamp(installed: Installed): void {
 	writeFileSync(path, `${installed.dir}\n${installed.json.version}\n`);
 }
 
-function registerExtension({ dir, json }: Installed): void {
+/** False when a `pi` command failed. */
+function registerExtension({ dir, json }: Installed): boolean {
 	const label = basename(json.name);
 	const extension = join(dir, "pi");
 	const later = `To add the Pi extension of ${label}, run: pi install ${extension}`;
@@ -102,15 +104,15 @@ function registerExtension({ dir, json }: Installed): void {
 		for (const source of listed.filter((item) => item === retired || item.startsWith(`${retired}@`))) {
 			process.stderr.write(`${label}: removing ${source} from Pi, which ${json.name} replaces\n`);
 
-			runPi(label, ["remove", source], `To remove it, run: pi remove ${source}`);
+			if (!runPi(label, ["remove", source], `To remove it, run: pi remove ${source}`)) return false;
 		}
 	}
 
-	runPi(label, ["install", extension], later);
+	return runPi(label, ["install", extension], later);
 }
 
-/** Runs `pi`, with a warning when it is missing or fails. */
-function runPi(label: string, args: readonly string[], later: string): void {
+/** Runs `pi`, with a warning when it is missing or fails. False when it failed; true when it worked or is missing. */
+function runPi(label: string, args: readonly string[], later: string): boolean {
 	const result = spawnSync("pi", args, {
 		env: { ...process.env, PATH: userPath() },
 		stdio: ["ignore", 2, 2],
@@ -120,13 +122,17 @@ function runPi(label: string, args: readonly string[], later: string): void {
 	if (result.error !== undefined && "code" in result.error && result.error.code === "ENOENT") {
 		process.stderr.write(`${label}: pi is not on PATH. ${later}\n`);
 
-		return;
+		return true;
 	}
 
 	if (result.error !== undefined || result.status !== 0) {
 		const reason = result.error?.message ?? `exit ${result.status ?? result.signal}`;
 		process.stderr.write(`${label}: pi ${args[0]} failed (${reason}). ${later}\n`);
+
+		return false;
 	}
+
+	return true;
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
