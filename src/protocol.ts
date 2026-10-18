@@ -7,7 +7,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
@@ -116,9 +116,16 @@ export type Request =
 	  }
 	/**
 	 * Starts a background task of the kind `kind`, a task of an installed `piDurable` entry, in the root conversation.
-	 * A repeated `key` gives the first task, and its new kind and input are ignored.
+	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
+	 * whose definition of `kind` has another version refuses before it creates anything.
 	 */
-	| { readonly type: "start"; readonly kind: string; readonly input: JsonValue; readonly key: string }
+	| {
+			readonly type: "start";
+			readonly kind: string;
+			readonly input: JsonValue;
+			readonly key: string;
+			readonly version?: number;
+	  }
 	| { readonly type: "task"; readonly key: string }
 	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
 	| { readonly type: "wait-task"; readonly key: string }
