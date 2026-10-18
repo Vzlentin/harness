@@ -5,6 +5,7 @@
  * session that Pi starts with.
  */
 
+import { homedir } from "node:os";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -15,24 +16,18 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import * as coding from "@earendil-works/pi-coding-agent";
+import type { ConversationView } from "@earendil-works/pi-durable";
 import type { AutocompleteItem, Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import { type ChatKit, ChatView } from "../dist/chat.js";
 import { type AgentReporter, agentReporter } from "../dist/herdr.js";
 import { isMirrorTarget, MIRROR_ENTRY, Mirror, type MirrorConfigure, type MirrorTarget } from "../dist/mirror.js";
 import { checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "../dist/projects.js";
-import { AGENT_HANDLE, type ChildInfo, childLabel, childTitle, runDisplayName } from "../dist/protocol.js";
-import { inboxOf, liveOf, queued, statusText } from "../dist/view-state.js";
-import { type FooterState, MirrorFooter, tildePath } from "./footer.ts";
+import { AGENT_HANDLE, type ChildInfo, childLabel, childTitle } from "../dist/protocol.js";
+import { inboxOf, lastAnswerUsage, liveOf, queued, statusText, usageTotals } from "../dist/view-state.js";
+import { ChatView } from "./chat.ts";
 
 /** The key of the status widget above the editor. */
 const WIDGET = "harness-mirror";
-
-/** The waits before the tries to connect again after the host closed the connection. */
-const RECONNECT_DELAYS_MS = [0, 2000, 5000];
-
-/** A connection that was opened again and ends sooner than this is not opened again. */
-const SHORT_CONNECTION_MS = 10_000;
 
 /** The mirror entry of a session: its ID and its target. */
 type MirrorEntry = { readonly id: string; readonly target: MirrorTarget };
@@ -103,7 +98,7 @@ export function registerMirror(pi: ExtensionAPI): void {
 		attached = undefined;
 	});
 
-	// The agent of the host answers in a mirror session, so the input goes there and Pi's own agent never runs.
+	// The agent of the host answers in a mirror session, so the input goes there and not to Pi's own agent.
 	pi.on("input", (event, ctx) => {
 		if (attached === undefined) return undefined;
 
@@ -126,7 +121,8 @@ export function registerMirror(pi: ExtensionAPI): void {
 
 /**
  * The mirror of one Pi session: the frame of its entry in Pi's chat, which holds the transcript, the status above the
- * editor, an editor whose interrupt and follow-up keys act on the agent while it works, and the connection to the host.
+ * editor, and an editor whose interrupt and follow-up keys act on the agent while it works. The connection to the host
+ * is the `Mirror`.
  */
 class Attachment {
 	readonly entryId: string;
@@ -135,24 +131,18 @@ class Attachment {
 	readonly #pi: ExtensionAPI;
 	readonly #ctx: ExtensionContext;
 	#theme: Theme;
-	readonly #target: MirrorTarget;
 	readonly #frame: tui.Container;
 	readonly #status = new StatusArea();
-	/** Messages that the user sent before the connection was open. They go out once it is. */
-	readonly #pending: { readonly text: string; readonly followUp: boolean }[] = [];
-	/** Stops the wait for a host that starts when the attachment closes. */
-	readonly #abort = new AbortController();
+	readonly #mirror: Mirror;
 	#ui: TUI | undefined;
-	#mirror: Mirror | undefined;
 	#chat: ChatView | undefined;
-	/** The agent and its conversation for the footer, from the last connection, also while there is none. */
-	#shown: FooterState | undefined;
-	/** The state of the agent for Herdr, made at the first connection. */
+	/** The state of the agent for Herdr, made when the agent is first known. */
 	#reporter: AgentReporter | undefined;
-	/** Why the mirror has no connection, after a failed open or the end of the watch. */
-	#failure: string | undefined;
 	/** True while Pi sets the agent's model: `setModel` is async, and the view changes often while the agent works. */
 	#settingModel = false;
+	/** Whether the connection was open at the last update, so that the running tool cards stop once when it ends. */
+	#open = false;
+	#failureShown = false;
 	#expanded = false;
 	#closed = false;
 
@@ -161,10 +151,9 @@ class Attachment {
 		this.#pi = pi;
 		this.#ctx = ctx;
 		this.#theme = ctx.ui.theme;
-		this.#target = entry.target;
 		this.#frame = frame;
 		this.#frame.clear();
-		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${this.#title()}...`));
+		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${targetTitle(entry.target)}...`));
 		// Pi calls the factory at once, which gives the TUI that the tool cards need.
 		ctx.ui.setWidget(
 			WIDGET,
@@ -177,47 +166,34 @@ class Attachment {
 			{ placement: "aboveEditor" },
 		);
 		ctx.ui.setEditorComponent((ui, theme, keybindings) => new MirrorEditor(ui, theme, keybindings, this));
-		void this.#run();
+		this.#mirror = new Mirror(entry.target, () => this.#update());
 	}
 
 	get busy(): boolean {
-		return this.#mirror?.busy ?? false;
+		return this.#mirror.busy;
 	}
 
-	/** Sends `text` to the agent: a new turn when it is idle, else a steer, or a follow-up with `followUp`. */
+	/**
+	 * Sends `text` to the agent: a new turn when it is idle, else a steer, or a follow-up with `followUp`. A text that
+	 * does not reach the agent goes back to the editor, after the text there, so it is not lost.
+	 */
 	send(text: string, followUp: boolean): void {
-		const mirror = this.#mirror;
-
-		if (mirror !== undefined) {
-			mirror.send(text, followUp).then(
-				() => this.#update(),
-				(cause: unknown) => this.#notify(cause),
-			);
-
-			return;
-		}
-
-		if (this.#failure === undefined) {
-			this.#pending.push({ text, followUp });
-
-			return;
-		}
-
-		if (this.#closed) return;
-		// The text goes back to the editor, so it is not lost.
-		this.#ctx.ui.setEditorText(text);
-		this.#ctx.ui.notify(`harness: not sent: ${this.#failure}`, "error");
+		this.#mirror.send(text, followUp).catch((cause: unknown) => {
+			if (this.#closed) return;
+			const editor = this.#ctx.ui.getEditorText();
+			this.#ctx.ui.setEditorText([editor, text].filter((part) => part.trim() !== "").join("\n\n"));
+			this.#ctx.ui.notify(`harness: not sent: ${errorText(cause)}`, "error");
+		});
 	}
 
 	/** Aborts the agent's turn. The queued messages that the host withdraws go back to `editor`, steers first. */
 	abort(editor: Pick<tui.Editor, "getText" | "setText">): void {
-		this.#mirror?.abort().then(
+		this.#mirror.abort().then(
 			(texts) => {
 				if (this.#closed) return;
 				const text = [...texts, editor.getText()].filter((part) => part.trim() !== "").join("\n\n");
 
 				if (text !== editor.getText()) editor.setText(text);
-				this.#update();
 			},
 			(cause: unknown) => this.#notify(cause),
 		);
@@ -225,7 +201,7 @@ class Attachment {
 
 	/** Gives the agent the model that the user selected in Pi. */
 	selectModel(provider: string, model: string): void {
-		const child = this.#mirror?.child;
+		const child = this.#mirror.child;
 
 		if (child === undefined || (child.provider === provider && child.model === model)) return;
 		this.#configure({ provider, model });
@@ -233,7 +209,7 @@ class Attachment {
 
 	/** Gives the agent the thinking level that the user selected in Pi, once Pi has the agent's model. */
 	selectThinking(thinking: ChildInfo["thinking"]): void {
-		const child = this.#mirror?.child;
+		const child = this.#mirror.child;
 
 		if (child === undefined || child.thinking === thinking || !this.#hasAgentModel(child)) return;
 		this.#configure({ thinking });
@@ -252,148 +228,93 @@ class Attachment {
 		if (!this.#closed) this.#chat?.setHideThinking(this.#pi.getSettings().hideThinkingBlock ?? false);
 	}
 
-	/** Closes the connection and gives Pi back its editor and footer. The agent keeps running in the host. */
+	/** Closes the connection and gives Pi back its editor. The agent keeps running in the host. */
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
-		this.#abort.abort();
-		this.#mirror?.close();
+		this.#mirror.close();
 		this.#chat?.stopTimers();
 		this.#status.dispose();
 		this.#ctx.ui.setWidget(WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
-		this.#ctx.ui.setFooter(undefined);
 		void this.#reporter?.release();
 	}
 
 	/**
-	 * Opens the connection, and opens it again when the host closes it, which starts a new host. When the host closes a
-	 * connection that was opened again within `SHORT_CONNECTION_MS`, the mirror fails, so a host that fails soon after
-	 * each start does not start again and again.
+	 * Shows the mirror: the transcript, the status above the editor and a failure. Gives Herdr the state of the agent,
+	 * and Pi the agent's title, model and thinking level.
 	 */
-	async #run(): Promise<void> {
-		let mirror = await this.#connect([0], "");
-		let again = false;
-
-		while (mirror !== undefined) {
-			const opened = Date.now();
-
-			if (!this.#attach(mirror)) return;
-			const end = await mirror.ended;
-
-			if (this.#closed) return;
-			this.#mirror = undefined;
-			this.#chat?.stopTimers();
-
-			if (end === "stopped") {
-				this.#fail(`${runDisplayName(mirror.child)} was stopped`);
-
-				return;
-			}
-
-			if (again && Date.now() - opened < SHORT_CONNECTION_MS) {
-				this.#fail("The harness host closed the connection. Run /reload to attach again");
-
-				return;
-			}
-
-			again = true;
-			this.#status.show(this.#ui, this.#theme, "Connecting again to the harness host...", []);
-			this.#ui?.requestRender();
-			mirror = await this.#connect(
-				RECONNECT_DELAYS_MS,
-				"The harness host closed the connection. Connecting again failed: ",
-			);
-		}
-	}
-
-	/**
-	 * A connection to the host, after one try at each delay of `delays`. It is undefined after `close()`, and when all
-	 * tries fail; the mirror then fails with `context` and the error of the last try.
-	 */
-	async #connect(delays: readonly number[], context: string): Promise<Mirror | undefined> {
-		let failure = "";
-
-		for (const delay of delays) {
-			if (delay > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
-
-			if (this.#closed) return undefined;
-
-			try {
-				const mirror = await Mirror.open(this.#target, () => this.#update(), this.#abort.signal);
-
-				if (!this.#closed) return mirror;
-				mirror.close();
-
-				return undefined;
-			} catch (error) {
-				failure = errorText(error);
-			}
-		}
-
-		this.#fail(`${context}${failure}`);
-
-		return undefined;
-	}
-
-	/**
-	 * Shows `mirror`: the first connection makes the transcript and the footer, a later one updates them. It is false
-	 * when Pi gave no terminal UI; the mirror then fails.
-	 */
-	#attach(mirror: Mirror): boolean {
-		const ui = this.#ui;
-
-		if (ui === undefined) {
-			mirror.close();
-			this.#fail("Pi gave no terminal UI");
-
-			return false;
-		}
-
-		this.#mirror = mirror;
-
-		if (this.#chat === undefined) {
-			this.#chat = new ChatView(this.#kit(), ui, mirror.child.cwd);
-			this.#chat.setExpanded(this.#expanded);
-			this.showThinkingSetting();
-			this.#frame.clear();
-			this.#frame.addChild(this.#line("muted", () => this.#header(this.#shown?.child ?? mirror.child)));
-			this.#frame.addChild(this.#chat.transcript);
-			const { project, handle } = this.#target;
-			this.#reporter = agentReporter(process.env, childLabel(mirror.child), handle, project);
-			const ctx = this.#ctx;
-			const shown = () => this.#shown ?? { child: mirror.child, view: mirror.view };
-			ctx.ui.setFooter((_ui, theme, data) => new MirrorFooter(theme, data, ctx.modelRegistry, ctx.cwd, shown));
-		}
-
-		this.#update();
-
-		for (const { text, followUp } of this.#pending.splice(0)) this.send(text, followUp);
-
-		return true;
-	}
-
-	/** Shows the view and the state of the agent, and gives Pi the agent's model and thinking level. */
 	#update(): void {
-		const mirror = this.#mirror;
 		const ui = this.#ui;
 
-		if (mirror === undefined || ui === undefined || this.#closed) return;
-		this.#shown = { child: mirror.child, view: mirror.view };
-		this.#chat?.apply(mirror.view);
+		if (ui === undefined || this.#closed) return;
+		const { status, view, child } = this.#mirror;
+		const open = status.kind === "open";
+		const lines: string[] = [];
 
-		const queue = queued(inboxOf(mirror.view)).map(
-			({ mode, text }) => `${mode === "steer" ? "Steer" : "Follow-up"}: ${text.split("\n")[0] ?? ""}`,
-		);
+		if (view !== undefined && child !== undefined) {
+			const chat = this.#chat ?? this.#showTranscript(ui, child);
 
-		const status = mirror.busy ? statusText(liveOf(mirror.view)) || "Working..." : "";
-		this.#status.show(ui, this.#theme, status, queue);
-		this.#syncModel(mirror.child);
-		this.#reporter?.report(mirror.busy);
-		const title = childTitle(mirror.child);
+			if (open) chat.apply(view);
+			// A running bash card keeps its timer until it gets a final result, and no connection gives one now.
+			else if (this.#open) chat.stopTimers();
 
-		if (this.#pi.getSessionName() !== title) this.#pi.setSessionName(title);
+			if (open) {
+				for (const { mode, text } of queued(inboxOf(view))) {
+					lines.push(
+						this.#theme.fg("dim", `${mode === "steer" ? "Steer" : "Follow-up"}: ${text.split("\n")[0] ?? ""}`),
+					);
+				}
+			}
+
+			lines.push(usageLine(this.#theme, this.#ctx.modelRegistry, child, view));
+		}
+
+		this.#open = open;
+
+		const working =
+			status.kind === "reconnecting"
+				? "Connecting again to the harness host..."
+				: this.#mirror.busy && view !== undefined
+					? statusText(liveOf(view)) || "Working..."
+					: "";
+
+		this.#status.show(ui, this.#theme, working, lines);
+
+		if (status.kind === "failed" && !this.#failureShown) {
+			this.#failureShown = true;
+
+			// Without a transcript, the error takes the place of the connecting line.
+			if (this.#chat === undefined) this.#frame.clear();
+			this.#frame.addChild(this.#line("error", () => status.reason));
+			this.#ctx.ui.notify(`harness: ${status.reason}`, "error");
+		}
+
+		this.#reporter?.report(this.#mirror.busy);
+
+		if (child !== undefined) {
+			if (open) this.#syncModel(child);
+			const title = childTitle(child);
+
+			if (this.#pi.getSessionName() !== title) this.#pi.setSessionName(title);
+		}
+
 		ui.requestRender();
+	}
+
+	/** Shows the transcript under its header, and makes the Herdr reporter, with the agent `first` of the first connection. */
+	#showTranscript(ui: TUI, first: ChildInfo): ChatView {
+		const chat = new ChatView(ui, first.cwd, (name, text) => this.#theme.fg(name, text));
+		this.#chat = chat;
+		chat.setExpanded(this.#expanded);
+		this.showThinkingSetting();
+		this.#frame.clear();
+		this.#frame.addChild(this.#line("muted", () => this.#header(this.#mirror.child ?? first)));
+		this.#frame.addChild(chat.transcript);
+		const { project, handle } = this.#mirror.target;
+		this.#reporter = agentReporter(process.env, childLabel(first), handle, project);
+
+		return chat;
 	}
 
 	/** Gives the Pi session the model and the thinking level of the agent, so Pi's footer and `/model` show them. */
@@ -419,46 +340,17 @@ class Attachment {
 	}
 
 	#configure(change: MirrorConfigure): void {
-		this.#mirror?.configure(change).then(
-			() => this.#update(),
-			(cause: unknown) => {
-				this.#notify(cause);
+		this.#mirror.configure(change).catch((cause: unknown) => {
+			this.#notify(cause);
+			const child = this.#mirror.child;
 
-				// Pi goes back to the agent's model and level.
-				if (this.#mirror !== undefined && !this.#closed) this.#syncModel(this.#mirror.child);
-			},
-		);
-	}
-
-	#fail(reason: string): void {
-		if (this.#closed) return;
-		this.#failure = reason;
-		// The messages that waited for the connection go back to the editor, so they are not lost.
-		const texts = this.#pending.splice(0).map(({ text }) => text);
-
-		if (texts.length > 0) {
-			const editor = this.#ctx.ui.getEditorText();
-			this.#ctx.ui.setEditorText([...texts, editor].filter((part) => part.trim() !== "").join("\n\n"));
-		}
-
-		this.#status.show(this.#ui, this.#theme, "", []);
-		this.#reporter?.report(false);
-
-		// Without a transcript, the error takes the place of the connecting line.
-		if (this.#chat === undefined) this.#frame.clear();
-		this.#frame.addChild(this.#line("error", () => reason));
-		this.#ctx.ui.notify(`harness: ${reason}`, "error");
-		this.#ui?.requestRender();
+			// Pi goes back to the agent's model and level.
+			if (child !== undefined && !this.#closed) this.#syncModel(child);
+		});
 	}
 
 	#notify(cause: unknown): void {
 		if (!this.#closed) this.#ctx.ui.notify(`harness: ${errorText(cause)}`, "error");
-	}
-
-	#title(): string {
-		const { project, handle } = this.#target;
-
-		return handle === AGENT_HANDLE ? `${project} agent` : handle;
 	}
 
 	#header(child: ChildInfo): string {
@@ -473,10 +365,6 @@ class Attachment {
 			render: (width) => [tui.truncateToWidth(` ${this.#theme.fg(name, text())}`, width)],
 			invalidate: () => {},
 		};
-	}
-
-	#kit(): ChatKit {
-		return { coding, tui, color: (name, text) => this.#theme.fg(name, text) };
 	}
 }
 
@@ -520,13 +408,13 @@ class MirrorEditor extends coding.CustomEditor {
 	}
 }
 
-/** The status of the agent above the editor: Pi's working indicator while it works, then its queued messages. */
+/** The status of the agent above the editor: Pi's working indicator while it works, then some lines. */
 class StatusArea extends tui.Container {
 	#loader: tui.Loader | undefined;
 
-	/** Shows `status` with a spinner, or nothing when it is empty, then one line for each item of `queue`. */
-	show(ui: TUI | undefined, theme: Theme, status: string, queue: readonly string[]): void {
-		if (status === "" || ui === undefined) {
+	/** Shows `status` with a spinner, or nothing when it is empty, then each of `lines`, cut to the width. */
+	show(ui: TUI, theme: Theme, status: string, lines: readonly string[]): void {
+		if (status === "") {
 			this.dispose();
 		} else if (this.#loader === undefined) {
 			const spinner = (text: string) => theme.fg("accent", text);
@@ -539,13 +427,71 @@ class StatusArea extends tui.Container {
 
 		if (this.#loader !== undefined) this.addChild(this.#loader);
 
-		for (const line of queue) this.addChild(new tui.Text(theme.fg("dim", line), 1, 0));
+		for (const line of lines) this.addChild(new tui.TruncatedText(line, 1, 0));
 	}
 
 	dispose(): void {
 		this.#loader?.stop();
 		this.#loader = undefined;
 	}
+}
+
+/**
+ * The title of the agent, the tokens and the cost of its model requests and tool results, and the context of its last
+ * answer that did not abort or fail, against the context window of its model, as Pi's footer shows them for its own
+ * session.
+ */
+function usageLine(
+	theme: Theme,
+	models: ExtensionContext["modelRegistry"],
+	child: ChildInfo,
+	view: ConversationView,
+): string {
+	const totals = usageTotals(view);
+	const last = lastAnswerUsage(view);
+	const model = models.find(child.provider, child.model);
+	const subscription = model !== undefined && models.isUsingOAuth(model);
+	const usage: string[] = [];
+
+	if (totals.input) usage.push(`↑${formatTokens(totals.input)}`);
+
+	if (totals.output) usage.push(`↓${formatTokens(totals.output)}`);
+
+	if (totals.cacheRead) usage.push(`R${formatTokens(totals.cacheRead)}`);
+
+	if (totals.cacheWrite) usage.push(`W${formatTokens(totals.cacheWrite)}`);
+
+	if (totals.cost || subscription) usage.push(`$${totals.cost.toFixed(3)}${subscription ? " (sub)" : ""}`);
+	const parts = [childTitle(child)];
+
+	if (usage.length > 0) parts.push(usage.join(" "));
+	const contextWindow = model?.contextWindow ?? 0;
+
+	if (contextWindow > 0) {
+		const percent = last === undefined ? 0 : (coding.calculateContextTokens(last) / contextWindow) * 100;
+		const context = `${percent.toFixed(1)}%/${formatTokens(contextWindow)}`;
+		parts.push(percent > 90 ? theme.fg("error", context) : percent > 70 ? theme.fg("warning", context) : context);
+	}
+
+	return theme.fg("dim", parts.join(" • "));
+}
+
+/** A token count as Pi's footer shows it: `950`, `1.2k`, `45k`, `1.5M`. */
+function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+
+	if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
+
+	if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+
+	if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+
+	return `${Math.round(count / 1_000_000)}M`;
+}
+
+/** The title of the agent of `target` before the host gives its name. */
+function targetTitle(target: MirrorTarget): string {
+	return target.handle === AGENT_HANDLE ? `${target.project} agent` : target.handle;
 }
 
 /** The newest mirror entry of `entries` with a valid target. */
@@ -615,6 +561,13 @@ async function pickProject(ctx: ExtensionCommandContext): Promise<string | undef
 	const label = await ctx.ui.select("Harness project", labels);
 
 	return label === undefined ? undefined : names[labels.indexOf(label)];
+}
+
+/** `path` with the home directory as `~`. */
+function tildePath(path: string): string {
+	const home = homedir();
+
+	return home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
 }
 
 /** The projects whose names start with `prefix`, for the argument of `/harness`. */

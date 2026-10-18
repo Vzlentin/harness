@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { Container, Spacer, Text, TuiMainScreen } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type ChatKit, ChatView } from "../src/chat.ts";
+import { ChatView } from "../pi/chat.ts";
 import type { Host } from "../src/host.ts";
-import { Mirror } from "../src/mirror.ts";
+import { Mirror, type MirrorOptions, type MirrorTarget } from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
 import { AGENT_HANDLE } from "../src/protocol.ts";
 import { inboxOf } from "../src/view-state.ts";
@@ -26,19 +26,44 @@ import {
 	until,
 } from "./helpers.ts";
 
-/** The chat draws with the Pi modules of this package, as a Pi that loads the extension gives its own. */
-const KIT: ChatKit = { coding, tui: { Container, Spacer, Text }, color: (_name, text) => text };
+const AGENT: MirrorTarget = { project: "main", handle: AGENT_HANDLE };
+
+const HOST_CLOSED = "The harness host closed the connection";
 
 /** The text of each user and assistant message in `view`. */
-function textsOf(view: ConversationView): string[] {
-	return view.entries.flatMap((entry) => {
+function textsOf(view: ConversationView | undefined): string[] {
+	return (view?.entries ?? []).flatMap((entry) => {
 		const message = entry.model?.[0];
 
 		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
 	});
 }
 
+/** The number of messages in the inbox of the conversation of `mirror`. */
+function inboxSize(mirror: Mirror): number {
+	return mirror.view === undefined ? 0 : inboxOf(mirror.view).items.length;
+}
+
+/**
+ * A mirror of `target`, connected. It starts no host, so it connects only to the hosts of the tests, which have the
+ * faux provider.
+ */
+async function opened(target: MirrorTarget, options: MirrorOptions = {}): Promise<Mirror> {
+	const mirror = new Mirror(target, () => {}, { start: false, ...options });
+	await until(() => mirror.status.kind !== "connecting");
+
+	if (mirror.status.kind === "failed") throw new Error(mirror.status.reason);
+
+	return mirror;
+}
+
 let host: Host | undefined;
+
+/** Closes the host of `main`. A test that does it starts the host again before it ends. */
+async function closeHost(): Promise<void> {
+	await host?.close();
+	host = undefined;
+}
 
 beforeAll(async () => {
 	await setUp();
@@ -53,14 +78,15 @@ afterAll(async () => {
 describe("mirror", { timeout: 30_000 }, () => {
 	it("shows the project agent and its answer to a message", async () => {
 		let changes = 0;
-		const mirror = await Mirror.open({ project: "main", handle: AGENT_HANDLE }, () => changes++);
+		const mirror = new Mirror(AGENT, () => changes++, { start: false });
 
 		try {
+			await until(() => mirror.status.kind === "open");
 			expect(mirror.child).toMatchObject({ handle: AGENT_HANDLE, name: "main agent", state: "idle" });
 			await mirror.send("Mirror hello", false);
 			await until(() => textsOf(mirror.view).includes("Answer to Mirror hello"));
 			expect(textsOf(mirror.view).slice(-2)).toEqual(["Mirror hello", "Answer to Mirror hello"]);
-			await until(() => mirror.child.state === "idle");
+			await until(() => mirror.child?.state === "idle");
 			expect(changes).toBeGreaterThan(0);
 		} finally {
 			mirror.close();
@@ -68,7 +94,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 	});
 
 	it("queues messages while the agent works, and an abort gives them back, steers first", async () => {
-		const mirror = await Mirror.open({ project: "main", handle: AGENT_HANDLE }, () => {});
+		const mirror = await opened(AGENT);
 
 		try {
 			gates.set("Mirror long turn", Promise.withResolvers());
@@ -76,9 +102,9 @@ describe("mirror", { timeout: 30_000 }, () => {
 			await until(() => called("Mirror long turn") === 1 && mirror.busy);
 			await mirror.send("Mirror later", true);
 			await mirror.send("Mirror steer", false);
-			await until(() => inboxOf(mirror.view).items.length === 2);
+			await until(() => inboxSize(mirror) === 2);
 			expect(await mirror.abort()).toEqual(["Mirror steer", "Mirror later"]);
-			await until(() => mirror.child.state === "idle" && inboxOf(mirror.view).items.length === 0);
+			await until(() => mirror.child?.state === "idle" && inboxSize(mirror) === 0);
 			expect(called("Mirror steer")).toBe(0);
 			expect(called("Mirror later")).toBe(0);
 		} finally {
@@ -87,7 +113,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 	});
 
 	it("changes the model and the thinking level of the agent", async () => {
-		const mirror = await Mirror.open({ project: "main", handle: AGENT_HANDLE }, () => {});
+		const mirror = await opened(AGENT);
 
 		try {
 			await mirror.configure({ thinking: "high" });
@@ -107,7 +133,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 		const web = await startHost("web");
 
 		try {
-			const mirror = await Mirror.open({ project: "web", handle: AGENT_HANDLE }, () => {});
+			const mirror = await opened({ project: "web", handle: AGENT_HANDLE });
 
 			try {
 				expect(mirror.child).toMatchObject({ name: "web agent", cwd: dir });
@@ -119,21 +145,92 @@ describe("mirror", { timeout: 30_000 }, () => {
 		} finally {
 			await web?.close();
 		}
+	});
 
-		await expect(Mirror.open({ project: "nope", handle: AGENT_HANDLE }, () => {})).rejects.toThrow(
-			"Unknown harness project: nope",
-		);
+	it("fails at once for an unknown project or child", async () => {
+		const project = new Mirror({ project: "nope", handle: AGENT_HANDLE }, () => {}, { start: false });
+		const child = new Mirror({ project: "main", handle: "abcdef" }, () => {}, { start: false });
+		await until(() => project.status.kind === "failed" && child.status.kind === "failed");
+		expect(project.status).toEqual({ kind: "failed", reason: "Unknown harness project: nope" });
+		expect(child.status).toEqual({ kind: "failed", reason: "Unknown subagent: abcdef" });
+		await expect(child.send("Too late", false)).rejects.toThrow("Unknown subagent: abcdef");
+	});
+
+	it("fails when the child is stopped", async () => {
+		const handle = handleOf(await cli(["spawn", "--name", "doomed", "--prompt", "Doomed"]));
+		await cli(["wait", handle]);
+		const mirror = await opened({ project: "main", handle });
+
+		try {
+			expect((await cli(["stop", handle])).code).toBe(0);
+			await until(() => mirror.status.kind === "failed");
+			expect(mirror.status).toEqual({ kind: "failed", reason: `doomed (${handle}) was stopped` });
+		} finally {
+			mirror.close();
+		}
+	});
+
+	it("connects again when the host restarts, and then sends the message that waited, once", async () => {
+		const mirror = await opened(AGENT, { retryDelaysMs: [0, 500, 2000] });
+
+		try {
+			await closeHost();
+			await until(() => mirror.status.kind === "reconnecting");
+			// The send waits for the connection, so the host starts while it waits.
+			[host] = await Promise.all([startHost(), mirror.send("After restart", false)]);
+			expect(mirror.status.kind).toBe("open");
+			await until(() => textsOf(mirror.view).includes("Answer to After restart"));
+			expect(called("After restart")).toBe(1);
+		} finally {
+			mirror.close();
+			host ??= await startHost();
+		}
+	});
+
+	it("fails when the host closes a connection that it opened again less than 10 s before", async () => {
+		const mirror = await opened(AGENT, { retryDelaysMs: [0, 500, 2000] });
+
+		try {
+			await closeHost();
+			await until(() => mirror.status.kind === "reconnecting");
+			host = await startHost();
+			await until(() => mirror.status.kind === "open");
+			await closeHost();
+			await until(() => mirror.status.kind === "failed");
+			expect(mirror.status).toEqual({ kind: "failed", reason: `${HOST_CLOSED}. Run /reload to attach again` });
+		} finally {
+			mirror.close();
+			host ??= await startHost();
+		}
+	});
+
+	it("fails when all the tries to connect again fail, and rejects the messages that waited", async () => {
+		const mirror = await opened(AGENT, { retryDelaysMs: [0, 300] });
+		const reason = `${HOST_CLOSED}. Connecting again failed: Could not connect to the harness host`;
+
+		try {
+			await closeHost();
+			await until(() => mirror.status.kind === "reconnecting");
+			await expect(mirror.send("Never sent", false)).rejects.toThrow(reason);
+			expect(mirror.status).toEqual({ kind: "failed", reason });
+			await expect(mirror.send("After the failure", false)).rejects.toThrow(reason);
+		} finally {
+			mirror.close();
+			host ??= await startHost();
+		}
+
+		expect(called("Never sent")).toBe(0);
 	});
 
 	it("draws the transcript of a child with Pi's message and tool components", async () => {
 		coding.initTheme();
 		const cwd = await mkdtemp(join(root, "drawn-"));
 		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
-		const mirror = await Mirror.open({ project: "main", handle }, () => {});
-		const chat = new ChatView(KIT, new TuiMainScreen(new FakeTerminal()), cwd);
+		const mirror = await opened({ project: "main", handle });
+		const chat = new ChatView(new TuiMainScreen(new FakeTerminal()), cwd, (_name, text) => text);
 
 		const drawn = () => {
-			chat.apply(mirror.view);
+			if (mirror.view !== undefined) chat.apply(mirror.view);
 
 			return stripVTControlCharacters(chat.transcript.render(100).join("\n"));
 		};
@@ -148,11 +245,5 @@ describe("mirror", { timeout: 30_000 }, () => {
 			chat.stopTimers();
 			mirror.close();
 		}
-	});
-
-	it("ends as closed when the host closes", async () => {
-		const mirror = await Mirror.open({ project: "main", handle: AGENT_HANDLE }, () => {});
-		await host?.close();
-		expect(await mirror.ended).toBe("closed");
 	});
 });

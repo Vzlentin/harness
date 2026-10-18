@@ -67,6 +67,11 @@ export class Client {
 		socket.on("close", () => this.#end());
 	}
 
+	/** Whether the connection closed. A request that failed then may have reached the host or not. */
+	get ended(): boolean {
+		return this.#ended;
+	}
+
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
 		if (this.#ended) return Promise.reject(new Error("The harness host closed the connection"));
 
