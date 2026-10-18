@@ -79,6 +79,10 @@ type ChildRecord = {
 	caller: string;
 	createdAt: string;
 	conversationId: ConversationId;
+	/** The request IDs of the spawn and of each `send` of the caller, in order. */
+	sent?: string[];
+	/** How many requests of `sent` a `wait` gave the answer of. */
+	read?: number;
 };
 
 type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
@@ -371,11 +375,14 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			return { version: PROTOCOL_VERSION, pid: process.pid };
 		case "spawn":
 			return spawnChild(request, handler);
-		case "send":
-			return sendTo(
-				request,
-				await childTarget(handler, request.handle, await ownRecord(handler.harness, request.handle, request.caller)),
-			);
+		case "send": {
+			const record = await ownRecord(handler.harness, request.handle, request.caller);
+			const sent = await sendTo(request, await childTarget(handler, request.handle, record));
+			await markSent(handler.harness, request.handle, request.requestId);
+
+			return sent;
+		}
+
 		case "input":
 			return sendTo(request, await target(handler, request.handle));
 		case "wait":
@@ -522,6 +529,7 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
 		context,
 	);
+	await markSent(harness, handle, `spawn:${request.requestId}`);
 
 	return childInfo(handler, handle, record);
 }
@@ -550,7 +558,9 @@ async function waitChild(
 	request: Extract<RequestLine, { type: "wait" }>,
 	handler: Handler,
 ): Promise<{ answer: string }> {
-	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
+	const record = await childRecord(handler.harness, request.handle);
+	const child = await childOf(handler, record);
+	const sent = record.sent ?? [];
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
 	let answer: Answer;
 
@@ -561,11 +571,61 @@ async function waitChild(
 		throw error;
 	}
 
-	// A cut answer still gives its text.
-	if (answer.status === "ok" || answer.reason !== "unanswered") return { answer: answer.text };
+	const unread = sent.slice(record.read ?? 0);
+	const earlier: string[] = [];
 
-	if (answer.cause === "queued") throw new Error(`${request.handle} stopped with queued messages after a failed turn`);
-	throw new Error(failureText(request.handle, answer.cause, answer.detail));
+	for (const [index, requestId] of unread.entries()) {
+		const before = await child.settled(context, requestId);
+
+		// A steer goes into the turn that was running, so its request can share that turn's answer.
+		if ("entry" in before && "entry" in answer && before.entry === answer.entry) continue;
+
+		// The newest request of the caller is usually the last request, and its failure is the failure of the wait.
+		if (index === unread.length - 1 && !("entry" in before) && !("entry" in answer)) continue;
+		const text = answerText(request.handle, before);
+		earlier.push(text.failed ? `(no answer: ${text.text})` : text.text);
+	}
+
+	await handler.harness.commit(async (tx) => {
+		const current = (await tx.doc(Children)).children[request.handle];
+
+		if (current !== undefined) current.read = Math.max(current.read ?? 0, sent.length);
+	}, context);
+
+	const last = answerText(request.handle, answer);
+	const all = [...earlier, last.text];
+	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
+
+	const text =
+		earlier.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
+
+	// A failed last turn is an error that still gives the earlier answers.
+	if (last.failed) throw new Error(text);
+
+	return { answer: text };
+}
+
+/** The text of `answer`, or the failure of a turn with no answer. A cut answer still gives its text. */
+function answerText(handle: string, answer: Answer) {
+	if (answer.status === "ok" || answer.reason !== "unanswered") return { text: answer.text, failed: false };
+
+	if (answer.cause === "queued") {
+		return { text: `${handle} stopped with queued messages after a failed turn`, failed: true };
+	}
+
+	return { text: failureText(handle, answer.cause, answer.detail), failed: true };
+}
+
+/** Adds `requestId` to the requests of `handle` that a `wait` gives the answers of. A repeated request is not added. */
+async function markSent(harness: Harness, handle: string, requestId: string): Promise<void> {
+	await harness.commit(async (tx) => {
+		const record = (await tx.doc(Children)).children[handle];
+
+		if (record === undefined) return;
+		const sent = record.sent ?? [];
+
+		if (!sent.includes(requestId)) record.sent = [...sent, requestId];
+	}, context);
 }
 
 async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {

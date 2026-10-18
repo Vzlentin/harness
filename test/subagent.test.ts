@@ -239,11 +239,43 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 		expect((await cli(["status", handle])).stdout).toBe(`${handle}: busy (faux/faux-1, medium)\n`);
 		gates.get("Task:\nHold on")?.resolve();
-		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Then summarize\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				"--- Answer 1 of 2 ---\nAnswer to Task:\nHold on\n\n--- Answer 2 of 2 ---\nAnswer to Then summarize\n",
+		);
 
 		expect((await cli(["rename", handle, "summary"])).stdout).toBe(`Renamed summary (${handle})\n`);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped summary (${handle})\n`);
 		expect((await cli(["status", handle])).stderr).toBe(`Unknown subagent: ${handle}\n`);
+	});
+
+	it("gives an answer that no wait read with the answer to the next message", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "First"]));
+
+		while ((await cli(["status", handle])).stdout !== `${handle}: idle (faux/faux-1, medium)\n`) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		expect((await cli(["send", handle, "Second"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				"--- Answer 1 of 2 ---\nAnswer to Task:\nFirst\n\n--- Answer 2 of 2 ---\nAnswer to Second\n",
+		);
+		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Second\n`);
+	});
+
+	it("gives an earlier failed turn as an unread answer", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Fail"]));
+
+		while ((await cli(["status", handle])).stdout !== `${handle}: error (faux/faux-1, medium)\n`) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		expect((await cli(["send", handle, "Again"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				`--- Answer 1 of 2 ---\n(no answer: ${handle} failed: overloaded)\n\n--- Answer 2 of 2 ---\nAnswer to Again\n`,
+		);
 	});
 
 	it("stops a busy child", async () => {

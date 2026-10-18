@@ -52,7 +52,7 @@ harness attach a1b2c3
 
 - `status` prints `<name> (<handle>): <state> (<provider>/<model>, <thinking>)`. The state is `busy`, `idle`, or `error` when the last turn failed. After an abort from the viewer, the state is `idle`.
 - `send` prints `Prompted`, `Steered`, or `Queued follow-up for`, then the child. A steer goes in after the current tool round. A follow-up starts after the current answer.
-- `wait` waits until the child answers its last message, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
+- `wait` waits until the child answers its last message, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the answer. When the spawn or an earlier `send` has an answer that no `wait` gave, it prints `<n> unread answers, oldest first.`, a blank line, and each answer after a line `--- Answer <i> of <n> ---`, the last one last. An earlier turn that failed gives `(no answer: <error>)`. A steer shares the answer of the turn it went into, so that answer comes once. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`. The error gives the earlier unread answers in the same form, and does not give the failed turn twice. Each `wait` marks all these answers read.
 - `stop` stops the work of the child and of the children it spawned, and removes them.
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
