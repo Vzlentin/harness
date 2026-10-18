@@ -14,6 +14,8 @@ export function savedTrust(cwd: string): boolean {
 	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	const agentDir = getAgentDir();
 	const decision = new ProjectTrustStore(agentDir).get(cwd);
+
 	if (decision !== null) return decision;
+
 	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
 }

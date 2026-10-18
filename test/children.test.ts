@@ -11,11 +11,13 @@ import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } fr
 
 const library = createChildren(durable);
 const faux = { provider: "faux", model: "faux-1" } as const;
+
 const schema = {
 	type: "object",
 	properties: { verdict: { type: "string" }, score: { type: "number" } },
 	required: ["verdict", "score"],
 };
+
 let harness: Harness;
 let place: Place;
 let owner: Owner;
@@ -83,6 +85,7 @@ describe("children library", { timeout: 30_000 }, () => {
 
 	it("answers a request, sums the spend of the subtree and closes the subtree", async () => {
 		const parent = await library.open(place, owner, "t:parent", { root: "test", ...faux, cwd: root }, context);
+
 		const child = await library.open(
 			place,
 			owner,
@@ -90,13 +93,16 @@ describe("children library", { timeout: 30_000 }, () => {
 			{ parent: String(parent.id), ...faux, cwd: root },
 			context,
 		);
+
 		await parent.send({ type: "input", content: "Hello", requestId: "r1" }, context);
 		await child.send({ type: "input", content: "Hi", requestId: "r1" }, context);
 		expect(await parent.settled(context)).toMatchObject({ status: "ok", text: "Answer to Hello" });
 		expect(await child.settled(context, "r1")).toMatchObject({ status: "ok", text: "Answer to Hi" });
 		expect(await parent.state(context)).toBe("idle");
+
 		const tokens = async (id: typeof parent.id) =>
 			(await harness.snapshot(durable.UsageDoc, id, context))?.models["faux/faux-1"]?.totalTokens ?? 0;
+
 		const [parentTokens, childTokens] = [await tokens(parent.id), await tokens(child.id)];
 		expect(parentTokens).toBeGreaterThan(0);
 		expect(childTokens).toBeGreaterThan(0);
@@ -105,8 +111,32 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await child.state(context)).toBe("closed");
 	});
 
+	it("sums the usage of a tool named __proto__ as an own key", async () => {
+		const child = await library.open(place, owner, "t:proto", { root: "test", ...faux }, context);
+		const key = "__proto__";
+
+		const usage = {
+			input: 1,
+			output: 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 3,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		await harness.commit(async (tx) => {
+			(await tx.doc(durable.UsageDoc, child.id)).tools[key] = usage;
+		}, context);
+
+		const { tools } = await child.usage(context);
+		expect(Object.getPrototypeOf(tools)).toBe(Object.prototype);
+		expect(Object.hasOwn(tools, key)).toBe(true);
+		expect(Object.getOwnPropertyDescriptor(tools, key)?.value).toEqual(usage);
+	});
+
 	it("refuses a child of another owner", async () => {
 		const child = await library.open(place, owner, "t:mine", { root: "test", ...faux }, context);
+		// SAFETY: a task ID is a number, and the owner check compares it without looking up the task.
 		const other: Owner = { kind: "task", taskId: 999_999 as TaskId, conversation: child.id };
 		await expect(library.find(place, other, { id: String(child.id) }, context)).rejects.toThrow(
 			`The child ${child.id} belongs to another owner`,
@@ -115,10 +145,12 @@ describe("children library", { timeout: 30_000 }, () => {
 
 	it("aborts the turn of a child when its owner task aborts", async () => {
 		const rootConversation = await harness.root(context);
+
 		const taskId = await rootConversation.commit(
 			(tx) => tx.createTask(Holder, null, { ownership: { kind: "conversation" } }),
 			context,
 		);
+
 		const taskOwner: Owner = { kind: "task", taskId, conversation: rootConversation.id };
 		const child = await library.open(place, taskOwner, "t:owned", { root: "test", ...faux, cwd: root }, context);
 		gates.set("Owned", Promise.withResolvers());
@@ -134,15 +166,17 @@ describe("children library", { timeout: 30_000 }, () => {
 
 	it("finds the children of an ended task from a new task of its group, and only from that group", async () => {
 		const rootConversation = await harness.root(context);
+
 		const holder = () =>
 			rootConversation.commit((tx) => tx.createTask(Holder, null, { ownership: { kind: "conversation" } }), context);
+
 		const first = await holder();
-		const ownerOf = (taskId: TaskId, group?: string): Owner => ({
-			kind: "task",
-			taskId,
-			conversation: rootConversation.id,
-			...(group === undefined ? {} : { group }),
-		});
+
+		const ownerOf = (taskId: TaskId, group?: string): Owner =>
+			group === undefined
+				? { kind: "task", taskId, conversation: rootConversation.id }
+				: { kind: "task", taskId, conversation: rootConversation.id, group };
+
 		const child = await library.open(
 			place,
 			ownerOf(first, "run-1"),
@@ -150,6 +184,7 @@ describe("children library", { timeout: 30_000 }, () => {
 			{ root: "test", ...faux, cwd: root },
 			context,
 		);
+
 		expect(await child.ask({ type: "input", content: "Grouped", requestId: "r1" }, context)).toMatchObject({
 			status: "ok",
 			text: "Answer to Grouped",
@@ -162,11 +197,13 @@ describe("children library", { timeout: 30_000 }, () => {
 			status: "ok",
 			text: "Answer to Again",
 		});
+
 		for (const other of [ownerOf(second, "run-2"), ownerOf(first)]) {
 			await expect(library.find(place, other, { key: "t:group" }, context)).rejects.toThrow(
 				`The child ${child.id} belongs to another owner`,
 			);
 		}
+
 		// An abort of the later task does not reach the turns it sent to the child of the earlier task.
 		gates.set("Late", Promise.withResolvers());
 		await found?.send({ type: "input", content: "Late", requestId: "r3" }, context);
@@ -236,6 +273,7 @@ describe("children library", { timeout: 30_000 }, () => {
 	it("gives an inherited thinking level that the model does not have as the nearest one", async () => {
 		const rootConversation = await harness.root(context);
 		await rootConversation.configure({ thinkingLevel: "xhigh" }, context);
+
 		try {
 			const child = await library.open(place, owner, "t:inherit", { root: "test", ...faux }, context);
 			expect((await child.conversation.agent(context)).thinkingLevel).toBe("high");
@@ -341,6 +379,7 @@ describe("children library", { timeout: 30_000 }, () => {
 			agent.extensions = { add: ["test-holder"] };
 			agent.modelTools = { add: ["other"] };
 		}, context);
+
 		try {
 			const child = await library.open(place, owner, "t:agent", { root: "test", ...faux, cwd: root }, context);
 			await child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
@@ -360,6 +399,7 @@ describe("children library", { timeout: 30_000 }, () => {
 			const agent = await tx.doc(durable.AgentDoc, rootConversation.id);
 			agent.modelTools = { add: ["respond"] };
 		}, context);
+
 		try {
 			const child = await library.open(place, owner, "t:copied", { root: "test", ...faux, cwd: root }, context);
 			await child.ask({ type: "input", content: "Plain", requestId: "r1" }, context);
@@ -379,6 +419,7 @@ describe("children library", { timeout: 30_000 }, () => {
 		const before = called("Schema");
 		const again = await child.ask(input, context, { schema });
 		expect(again).toEqual(first);
+
 		if (again.status !== "ok") throw new Error(`The ask failed: ${again.reason}`);
 		const value: JsonValue = again.value;
 		expect(value).toEqual(SCHEMA_ANSWER);

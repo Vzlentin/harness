@@ -5,6 +5,10 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
+const Entries = Type.Record(Type.String(), Type.String());
 
 /** The file of the entries: `$XDG_CONFIG_HOME/harness/entries.json`, default `~/.config/harness/entries.json`. */
 export function entriesPath(): string {
@@ -15,22 +19,21 @@ export function entriesPath(): string {
 export function readEntries(): Record<string, string> {
 	const path = entriesPath();
 	let text: string;
+
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
 		throw error;
 	}
+
 	const entries: unknown = JSON.parse(text);
-	if (
-		typeof entries !== "object" ||
-		entries === null ||
-		Array.isArray(entries) ||
-		!Object.values(entries).every((module) => typeof module === "string" && isAbsolute(module))
-	) {
+
+	if (!Value.Check(Entries, entries) || !Object.values(entries).every((module) => isAbsolute(module))) {
 		throw new Error(`${path} is not an object of entry names to absolute module paths`);
 	}
-	return entries as Record<string, string>;
+
+	return entries;
 }
 
 /**
@@ -40,6 +43,7 @@ export function readEntries(): Record<string, string> {
 export function setEntry(name: string, module: string): boolean {
 	if (!isAbsolute(module)) throw new Error(`An entry module must be an absolute path: ${module}`);
 	const entries = readEntries();
+
 	if (entries[name] === module) return false;
 	const path = entriesPath();
 	mkdirSync(dirname(path), { recursive: true });
@@ -47,5 +51,6 @@ export function setEntry(name: string, module: string): boolean {
 	const temporary = `${path}.${process.pid}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify({ ...entries, [name]: module }, null, "\t")}\n`);
 	renameSync(temporary, path);
+
 	return true;
 }

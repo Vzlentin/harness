@@ -7,7 +7,7 @@
 	},
 	"files": {
 		"ignoreUnknown": false,
-		"includes": ["**"]
+		"includes": ["**", "!tools/oxlint/anti-slop"]
 	},
 	"formatter": {
 		"enabled": true,
@@ -15,10 +15,7 @@
 		"lineWidth": 120
 	},
 	"linter": {
-		"enabled": true,
-		"rules": {
-			"preset": "recommended"
-		}
+		"enabled": false
 	},
 	"javascript": {
 		"formatter": {

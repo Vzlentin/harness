@@ -1,20 +1,27 @@
 import { execFile } from "node:child_process";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { resolveProject } from "./projects.ts";
 import { AGENT_HANDLE, type ChildInfo, childLabel, cliPath, runDisplayName } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
+
+/** The part of the output of `herdr tab create` that has the pane of the tab. */
+const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
+
+export type ViewerTarget = { title(child: ChildInfo): string; project: string[]; resume: string[] };
+
+export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
 
 /**
  * How the viewer of `handle` on `project` shows and resumes it: the title of its child, the `--project` words, and the
  * words after them that open it again. The project agent is `harness <project>`, with no `--project`; a child is
  * `harness --project <project> attach <handle>`.
  */
-export function viewerTarget(
-	handle: string,
-	project: string,
-): { title(child: ChildInfo): string; project: string[]; resume: string[] } {
+export function viewerTarget(handle: string, project: string): ViewerTarget {
 	// The agent's name already says what it is; a child's shows its handle too.
 	if (handle === AGENT_HANDLE) return { title: childLabel, project: [], resume: [project] };
+
 	return { title: runDisplayName, project: ["--project", project], resume: ["attach", handle] };
 }
 
@@ -26,6 +33,7 @@ export function viewerTarget(
 export function viewerCommand(handle: string, project: string): string[] {
 	const cli = cliPath();
 	const target = viewerTarget(handle, project);
+
 	return ["env", process.execPath, cli, ...target.project, ...target.resume];
 }
 
@@ -51,6 +59,7 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 	// The tab must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in projects.ts.
 	const state = env.XDG_STATE_HOME;
 	const config = env.XDG_CONFIG_HOME;
+
 	const created = await herdr(
 		[
 			"tab",
@@ -65,16 +74,22 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 		],
 		env,
 	);
-	let pane: unknown;
+
+	let output: unknown;
+
 	try {
-		pane = (JSON.parse(created) as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane?.pane_id;
+		output = JSON.parse(created);
 	} catch {
-		pane = undefined;
+		output = undefined;
 	}
-	if (typeof pane !== "string") throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
+
+	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
+	const pane = output.result.root_pane.pane_id;
+
 	const viewer = viewerCommand(child.handle, project)
 		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
 		.join(" ");
+
 	await herdr(["pane", "run", pane, viewer], env);
 }
 
@@ -83,17 +98,13 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
  * the resume command. Both methods do nothing outside Herdr.
  * The calls run one after another, so `--seq` reaches Herdr in order.
  */
-export function agentReporter(
-	env: NodeJS.ProcessEnv,
-	label: string,
-	handle: string,
-	project: string,
-): { report(busy: boolean): void; release(): Promise<void> } {
+export function agentReporter(env: NodeJS.ProcessEnv, label: string, handle: string, project: string): AgentReporter {
 	const pane = env.HERDR_ENV ? env.HERDR_PANE_ID : undefined;
 	const resume = pane === undefined ? [] : ["--", ...viewerCommand(handle, project)];
 	let calls: Promise<unknown> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;
+
 	const call = (command: string, options: readonly string[], resume: readonly string[]) => {
 		if (pane === undefined) return;
 		seq = Math.max(Date.now(), seq + 1);
@@ -101,9 +112,11 @@ export function agentReporter(
 		// A failed report never stops the caller.
 		calls = calls.then(() => herdr([...args, ...resume], env)).catch(() => {});
 	};
+
 	return {
 		report(busy) {
 			const state = busy ? "working" : "idle";
+
 			if (state === reported) return;
 			reported = state;
 			call("report-agent", ["--state", state], resume);

@@ -25,6 +25,7 @@ afterAll(async () => {
 describe("projects", { timeout: 30_000 }, () => {
 	it("resolves the project from HARNESS_PROJECT, then the longest directory, then main", () => {
 		const projects = { foo: "/a/foo", "foo-bar": "/a/foo-bar", inner: "/a/foo/inner", same: "/a/foo" };
+
 		const cases: [NodeJS.ProcessEnv, string, string][] = [
 			[{}, "/a/foo", "foo"],
 			[{}, "/a/foo/src", "foo"],
@@ -35,6 +36,7 @@ describe("projects", { timeout: 30_000 }, () => {
 			[{ HARNESS_PROJECT: "foo-bar" }, "/a/foo/inner", "foo-bar"],
 			[{ HARNESS_PROJECT: "main" }, "/a/foo", "main"],
 		];
+
 		for (const [env, cwd, project] of cases) expect(resolveProject(env, cwd, projects)).toBe(project);
 		expect(() => resolveProject({ HARNESS_PROJECT: "nope" }, "/a/foo", projects)).toThrow(
 			"Unknown harness project: nope",
@@ -48,11 +50,13 @@ describe("projects", { timeout: 30_000 }, () => {
 			[["create", "spawn", "--cwd", dirA], "A project cannot have the name spawn"],
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];
+
 		for (const [args, error] of failures) {
 			const result = await cli(args);
 			expect(result.code).toBe(1);
 			expect(result.stderr).toContain(error);
 		}
+
 		expect(existsSync(projectsPath())).toBe(false);
 
 		// A relative --cwd through a symbolic link is stored as its real path.
@@ -74,6 +78,7 @@ describe("projects", { timeout: 30_000 }, () => {
 	it("routes each command to the host of its project", async () => {
 		const hostA = await startHost("a");
 		const hostB = await startHost("b");
+
 		try {
 			const childA = handleOf(await cli(["spawn", "--prompt", "In a"], {}, dirA));
 			await cli(["wait", childA], {}, dirA);
@@ -101,10 +106,12 @@ describe("projects", { timeout: 30_000 }, () => {
 
 	it("starts one host process for each project", async () => {
 		const pids: number[] = [];
+
 		try {
 			for (const dir of [dirA, dirB]) {
 				expect((await cli(["list"], {}, dir)).code).toBe(0);
 			}
+
 			for (const project of ["a", "b"]) {
 				process.env.HARNESS_PROJECT = project;
 				const client = await connect({ start: false });
@@ -112,18 +119,22 @@ describe("projects", { timeout: 30_000 }, () => {
 				pids.push(client?.pid ?? 0);
 				expect(existsSync(join(statePaths(project).dir, "durable.sqlite"))).toBe(true);
 			}
+
 			expect(pids[0]).toBeGreaterThan(0);
 			expect(pids[1]).toBeGreaterThan(0);
 			expect(pids[0]).not.toBe(pids[1]);
 		} finally {
 			delete process.env.HARNESS_PROJECT;
+
 			for (const pid of pids) if (pid > 0) process.kill(pid, "SIGTERM");
 		}
+
 		await until(() => !existsSync(statePaths("a").socket) && !existsSync(statePaths("b").socket));
 	});
 
 	it("refuses a projects file with an invalid project", async () => {
 		const valid = readFileSync(projectsPath(), "utf8");
+
 		try {
 			for (const projects of [{ "../up": realpathSync(dirA) }, { c: "relative" }, { c: 1 }]) {
 				writeFileSync(projectsPath(), JSON.stringify(projects));

@@ -41,7 +41,9 @@ export class ModelPicker implements Component {
 				label: `${model.provider}/${model.id}`,
 				description: model.name,
 			};
+
 			this.modelOf.set(item, model);
+
 			return item;
 		});
 		this.border = border;
@@ -55,18 +57,23 @@ export class ModelPicker implements Component {
 	/** A frame with full-width lines, so the transcript does not show through. */
 	render(width: number): string[] {
 		const inner = Math.max(1, width - 2);
+
 		const body = [" Model", ...this.input.render(inner), ...this.list.render(inner)].map((line) => {
 			const cut = truncateToWidth(line, inner);
+
 			return `${this.border("│")}${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))}${this.border("│")}`;
 		});
+
 		return [this.border(`╭${"─".repeat(inner)}╮`), ...body, this.border(`╰${"─".repeat(inner)}╯`)];
 	}
 
 	handleInput(data: string): void {
 		if (LIST_KEYS.some((key) => matchesKey(data, key))) {
 			this.list.handleInput(data);
+
 			return;
 		}
+
 		this.input.handleInput(data);
 		const selected = this.list.getSelectedItem();
 		const query = this.input.getValue();
@@ -84,9 +91,12 @@ export class ModelPicker implements Component {
 		const list = new SelectList(items, 10, getSelectListTheme());
 		list.onSelect = (item) => {
 			const model = this.modelOf.get(item);
+
 			if (model !== undefined) this.onSelect(model);
 		};
+
 		list.onCancel = this.onCancel;
+
 		return list;
 	}
 }

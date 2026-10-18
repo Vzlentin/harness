@@ -40,13 +40,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				send: tool.sendToHost,
 				signal,
 			});
+
 			// Children follow only the saved trust, so a session that trusts its project for itself says what the child misses.
 			const sessionOnly =
 				args.action === "spawn" &&
 				ctx.isProjectTrusted() &&
 				!savedTrust(ctx.cwd) &&
 				!savedTrust(resolve(ctx.cwd, args.cwd ?? "."));
+
 			const hint = sessionOnly ? `\n${SESSION_TRUST_HINT}\n` : "";
+
 			return { content: [{ type: "text", text: text + hint }], details: undefined, structuredContent: data };
 		},
 	});
@@ -55,11 +58,15 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		description: "Open the viewer of a subagent spawned by this session",
 		handler: async (_args, ctx) => {
 			const children = await request({ type: "list", caller: ctx.sessionManager.getSessionId() }, { start: true });
+
 			if (children.length === 0) {
 				ctx.ui.notify("No subagents spawned by this session", "info");
+
 				return;
 			}
+
 			const chosen = await ctx.ui.select("Attach to subagent", children.map(childLine));
+
 			// A name can start with the display name of another child, so the longest match is the chosen child.
 			const child = children
 				.filter((c: { handle: string; name?: string }) => chosen?.startsWith(`${runDisplayName(c)}  `))
@@ -67,12 +74,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
 					(a: { handle: string; name?: string }, b: { handle: string; name?: string }) =>
 						runDisplayName(b).length - runDisplayName(a).length,
 				)[0];
+
 			if (child === undefined) return;
 			const command = `harness attach ${child.handle}`;
+
 			if (!process.env.HERDR_ENV) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
+
 				return;
 			}
+
 			try {
 				await openViewerTab(child, process.env);
 			} catch (error) {
@@ -90,24 +101,33 @@ export default function subagentExtension(pi: ExtensionAPI) {
 	const refreshWidget = async (): Promise<void> => {
 		if (!widgetContext || refreshing) return;
 		refreshing = true;
+
 		try {
 			const context = widgetContext;
+
 			const children = await request(
 				{ type: "list", caller: context.sessionManager.getSessionId() },
 				{ start: false },
 			).catch(() => undefined);
+
 			if (context !== widgetContext) return;
+
 			if (children === undefined || children.length === 0) {
 				context.ui.setWidget("subagents", undefined);
+
 				return;
 			}
+
 			const theme = context.ui.theme;
+
 			const visible = children
 				.slice(0, 5)
 				.map(({ name, handle, state }: { name?: string; handle: string; state: string }) => {
 					const color = state === "busy" ? "warning" : state === "idle" ? "success" : "error";
+
 					return theme.fg(color, `${name ?? handle}:${state}`);
 				});
+
 			if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
 			context.ui.setWidget("subagents", [theme.fg("dim", "subagents: ") + visible.join(theme.fg("dim", " | "))], {
 				placement: "belowEditor",
@@ -141,6 +161,8 @@ function savedTrust(cwd: string): boolean {
 	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	const agentDir = getAgentDir();
 	const decision = new ProjectTrustStore(agentDir).get(cwd);
+
 	if (decision !== null) return decision;
+
 	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
 }

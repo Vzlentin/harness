@@ -1,6 +1,8 @@
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
@@ -19,22 +21,29 @@ export function projectsPath(): string {
 export function readProjects(): Record<string, string> {
 	const path = projectsPath();
 	let text: string;
+
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
 		throw error;
 	}
+
 	const projects: unknown = JSON.parse(text);
-	if (typeof projects !== "object" || projects === null || Array.isArray(projects)) {
+
+	if (!Value.Check(Type.Record(Type.String(), Type.Unknown()), projects)) {
 		throw new Error(`${path} is not an object of project names to directories`);
 	}
-	for (const [name, dir] of Object.entries(projects)) {
-		if (!NAME.test(name) || name === MAIN_PROJECT || typeof dir !== "string" || !isAbsolute(dir)) {
-			throw new Error(`${path} has an invalid project: ${name}`);
-		}
-	}
-	return projects as Record<string, string>;
+
+	return Object.fromEntries(
+		Object.entries(projects).map(([name, dir]) => {
+			if (!NAME.test(name) || name === MAIN_PROJECT || !Value.Check(Type.String(), dir) || !isAbsolute(dir)) {
+				throw new Error(`${path} has an invalid project: ${name}`);
+			}
+
+			return [name, dir] as const;
+		}),
+	);
 }
 
 /**
@@ -44,15 +53,19 @@ export function readProjects(): Record<string, string> {
 export function addProject(name: string, dir: string): string {
 	if (!NAME.test(name))
 		throw new Error(`A project name has 1 to 32 characters: a-z first, then a-z, 0-9 or -: ${name}`);
+
 	if (name === MAIN_PROJECT) throw new Error(`A project cannot have the name ${name}`);
 	let real: string;
+
 	try {
 		real = realpathSync(resolve(dir));
 	} catch {
 		throw new Error(`No such directory: ${dir}`);
 	}
+
 	if (!statSync(real).isDirectory()) throw new Error(`Not a directory: ${dir}`);
 	const projects = readProjects();
+
 	if (Object.hasOwn(projects, name)) throw new Error(`The project ${name} exists (${projects[name]})`);
 	const path = projectsPath();
 	mkdirSync(dirname(path), { recursive: true });
@@ -60,18 +73,21 @@ export function addProject(name: string, dir: string): string {
 	const temporary = `${path}.${process.pid}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify({ ...projects, [name]: real }, null, "\t")}\n`);
 	renameSync(temporary, path);
+
 	return real;
 }
 
 /** `name` when it is `main` or a project. Otherwise it throws. */
 export function checkProject(name: string, projects: Readonly<Record<string, string>> = readProjects()): string {
 	if (name !== MAIN_PROJECT && !Object.hasOwn(projects, name)) throw new Error(`Unknown harness project: ${name}`);
+
 	return name;
 }
 
 /** The directory of the project `name`: the home directory for `main`. It throws for an unknown project. */
 export function projectDir(name: string, projects: Readonly<Record<string, string>> = readProjects()): string {
-	return checkProject(name, projects) === MAIN_PROJECT ? homedir() : (projects[name] as string);
+	// `checkProject` passes only `main`, which `projects` never has, and the names in `projects`.
+	return projects[checkProject(name, projects)] ?? homedir();
 }
 
 /**
@@ -86,6 +102,7 @@ export function resolveProject(
 	if (env.HARNESS_PROJECT) return checkProject(env.HARNESS_PROJECT, projects);
 	let found = MAIN_PROJECT;
 	let length = -1;
+
 	for (const [name, dir] of Object.entries(projects)) {
 		// The first project wins over a later one with the same directory.
 		if (dir.length > length && (cwd === dir || cwd.startsWith(dir.endsWith(sep) ? dir : dir + sep))) {
@@ -93,5 +110,6 @@ export function resolveProject(
 			length = dir.length;
 		}
 	}
+
 	return found;
 }

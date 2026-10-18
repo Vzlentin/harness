@@ -2,12 +2,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect, request } from "../src/client.ts";
 import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, type Request, statePaths, type TaskInfo } from "../src/protocol.ts";
+import { AGENT_HANDLE, statePaths, type TaskInfo } from "../src/protocol.ts";
 import { aborted, called, cli, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
@@ -16,28 +16,26 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks
 function setFixtureEntry(): void {
 	setEntry("fixture", join(FIXTURE, "ask.ts"));
 }
+
 const KIND = "fixture.ask";
 
 let host: Host | undefined;
-
-// The host gives the `main` agent the test's HOME, not the user's home.
-vi.mock("node:os", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:os")>()),
-	homedir: () => process.env.HOME ?? "",
-}));
 
 /** Starts the task of `key` with `prompt`, through the socket. */
 function start(key: string, prompt: string, kind = KIND): Promise<TaskInfo> {
 	return request({ type: "start", kind, key, input: { cwd: root, prompt } }, { start: false }).then((reply) => {
 		if (reply === undefined) throw new Error("no host");
+
 		return reply;
 	});
 }
 
 /** Sends the request `type` of the task of `key`, through the socket. */
-async function taskRequest<T extends "task" | "wait-task" | "abort-task">(type: T, key: string): Promise<TaskInfo> {
-	const reply = await request({ type, key } as Extract<Request, { type: T }>, { start: false });
+async function taskRequest(type: "task" | "wait-task" | "abort-task", key: string): Promise<TaskInfo> {
+	const reply = await request({ type, key }, { start: false });
+
 	if (reply === undefined) throw new Error("no host");
+
 	return reply;
 }
 
@@ -69,6 +67,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			},
 			{ start: false },
 		);
+
 		expect(reply).toMatchObject({ key: "agent-model" });
 		expect(await taskRequest("wait-task", "agent-model")).toMatchObject({
 			outcome: { status: "completed", result: "Answer to Fixture agent" },
@@ -96,11 +95,13 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect((await start("one", "Other input", "fixture.nope")).id).toBe(started.id);
 		expect(await taskRequest("task", "one")).toMatchObject({ status: "terminal" });
 		await expect(start("two", "Fixture two", "fixture.nope")).rejects.toThrow("Unknown task kind: fixture.nope");
+
 		const versioned = (version: number) =>
 			request(
 				{ type: "start", kind: KIND, key: "versioned", input: { cwd: root, prompt: "Fixture versioned" }, version },
 				{ start: false },
 			);
+
 		await expect(versioned(2)).rejects.toThrow(
 			"This host has version 1 of fixture.ask, not 2: stop the host so it starts again with the installed version",
 		);
@@ -145,6 +146,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 	it("keeps the host running while a started task is live", async () => {
 		await host?.close();
 		const { dir } = statePaths(MAIN_PROJECT);
+
 		const idle = await runHost({
 			stateDir: dir,
 			project: MAIN_PROJECT,
@@ -152,6 +154,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			models,
 			idleExitMs: 100,
 		});
+
 		if (idle === undefined) throw new Error("no host");
 		host = idle;
 		let closed = false;
@@ -180,6 +183,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		gates.delete("Fixture blocked");
 		await writeFile(entriesPath(), "{}");
 		const { dir } = statePaths(MAIN_PROJECT);
+
 		const idle = await runHost({
 			stateDir: dir,
 			project: MAIN_PROJECT,
@@ -187,17 +191,20 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			models,
 			idleExitMs: 100,
 		});
+
 		if (idle === undefined) throw new Error("no host");
 		let closed = false;
 		void idle.closed.then(() => {
 			closed = true;
 		});
+
 		try {
 			await until(() => closed);
 		} finally {
 			await idle.close();
 			setFixtureEntry();
 		}
+
 		host = await startHost();
 		expect(await taskRequest("abort-task", "blocked")).toMatchObject({ key: "blocked" });
 	});
@@ -229,6 +236,7 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 		const saved = process.env.XDG_STATE_HOME;
 		process.env.XDG_STATE_HOME = join(root, "typed-state");
 		let pid: number | undefined;
+
 		try {
 			expect(await cli(["list"])).toMatchObject({ code: 0, stdout: "No subagents\n" });
 			const client = await connect({ start: false });
@@ -246,15 +254,18 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 
 	it("starts a task when the project agent gets no model", async () => {
 		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
+
 		const bare = await runHost({
 			stateDir: statePaths("bare").dir,
 			project: "bare",
 			cwd: root,
 			models: createModels(),
 		});
+
 		if (bare === undefined) throw new Error("no host");
 		const saved = process.env.HARNESS_PROJECT;
 		process.env.HARNESS_PROJECT = "bare";
+
 		try {
 			expect(await start("bare", "Fixture bare")).toMatchObject({ key: "bare", kind: KIND });
 			expect(await taskRequest("wait-task", "bare")).toMatchObject({ status: "terminal" });
