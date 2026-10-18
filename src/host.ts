@@ -28,6 +28,7 @@ import {
 	defineDoc,
 	type Extension,
 	Harness,
+	type HarnessInspection,
 	type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -172,6 +173,7 @@ export async function runHost(options: {
 		registry.install(startable);
 		harness = await Harness.open(
 			// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
+			// node:sqlite waits synchronously, so such a wait stops the event loop for as long as it lasts.
 			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: 60_000 }),
 			{
 				models,
@@ -293,11 +295,7 @@ export async function runHost(options: {
 			if (connections.size > 0 || Date.now() - lastActivity < idleExitMs) return;
 			harness
 				.inspect(context)
-				// A blocked task, such as one of an entry that is no longer installed, never runs, so it keeps no host alive.
-				.then(({ tasks }) => {
-					const live = tasks.filter((task) => task.state.kind !== "blocked");
-					return live.length === 0 && connections.size === 0 ? close() : undefined;
-				})
+				.then(({ tasks }) => (liveTasks(tasks) === 0 && connections.size === 0 ? close() : undefined))
 				.catch(warn);
 		},
 		Math.min(IDLE_CHECK_MS, idleExitMs),
@@ -771,6 +769,24 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 			return settings.getCompactionSettings();
 		},
 	};
+}
+
+/**
+ * The tasks that keep the host running. A blocked task, such as one of an entry that is no longer installed, never runs
+ * again in this host, and neither does a task that waits only on such tasks.
+ */
+function liveTasks(tasks: HarnessInspection["tasks"]): number {
+	const dead = new Set<number>(tasks.filter((task) => task.state.kind === "blocked").map((task) => task.record.id));
+	for (let grown = true; grown; ) {
+		grown = false;
+		for (const task of tasks) {
+			const { state } = task;
+			if (dead.has(task.record.id) || state.kind !== "waiting" || !state.on.every((id) => dead.has(id))) continue;
+			dead.add(task.record.id);
+			grown = true;
+		}
+	}
+	return tasks.length - dead.size;
 }
 
 /** What the default export of a `piDurable` entry returns: its extensions, the tasks that `start` runs, and `close`. */

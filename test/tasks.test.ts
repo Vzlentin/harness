@@ -168,8 +168,12 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		void idle.closed.then(() => {
 			closed = true;
 		});
-		await until(() => closed);
-		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [FIXTURE] }));
+		try {
+			await until(() => closed);
+		} finally {
+			await idle.close();
+			await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [FIXTURE] }));
+		}
 		host = await startHost();
 		expect(await taskRequest("abort-task", "blocked")).toMatchObject({ key: "blocked" });
 	});

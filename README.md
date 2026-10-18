@@ -183,7 +183,7 @@ In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `
 
 ## Host
 
-The children of a project run in one host process, `harness --project <name> host` (default `main`). The host takes its project only from `--project`, not from `HARNESS_PROJECT`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. An open viewer is a connection, and a live started task is running work, so each keeps the host running. A task that no installed entry can run, such as one of an entry that was removed, is not running work. The host waits up to 60 s for the lock of `durable.sqlite`, so a client that reads the file, such as the workflows CLI, does not make it fail.
+The children of a project run in one host process, `harness --project <name> host` (default `main`). The host takes its project only from `--project`, not from `HARNESS_PROJECT`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. An open viewer is a connection, and a live started task is running work, so each keeps the host running. A task that no installed entry can run, such as one of an entry that was removed, is not running work, and neither is a task that waits only on such tasks. The host waits up to 60 s for the lock of `durable.sqlite`, so a client that reads the file, such as the workflows CLI, does not make it fail. The wait is synchronous: while it lasts, the host answers no request.
 
 The host keeps its state in `$XDG_STATE_HOME/harness/<project>/` (default `~/.local/state/harness/<project>/`):
 
