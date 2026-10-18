@@ -8,7 +8,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import * as coding from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Mirror } from "../dist/mirror.js";
-import type { ChildInfo } from "../dist/protocol.js";
+import { type ChildInfo, childTitle } from "../dist/protocol.js";
 import { lastAnswerUsage, usageTotals } from "../dist/view-state.js";
 
 /** What the footer shows: the agent and its conversation. */
@@ -58,12 +58,12 @@ export class MirrorFooter implements Component {
 
 	invalidate(): void {}
 
-	/** `<cwd> (<branch>) • <name>`. The branch shows when the agent works in the directory of Pi. */
+	/** `<cwd> (<branch>) • <title>`. The branch shows when the agent works in the directory of Pi. */
 	#place(child: ChildInfo): string {
 		const branch = child.cwd === this.#cwd ? this.#data.getGitBranch() : null;
 		const cwd = branch ? `${tildePath(child.cwd)} (${branch})` : tildePath(child.cwd);
 
-		return `${cwd} • ${child.name ?? child.handle}`;
+		return `${cwd} • ${childTitle(child)}`;
 	}
 
 	/** The tokens, the cost and the context on the left, and the model and the thinking level on the right. */

@@ -166,7 +166,7 @@ function expandHome(path: string): string {
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
-function userPath(): string {
+export function userPath(): string {
 	return (process.env.PATH ?? "")
 		.split(delimiter)
 		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))

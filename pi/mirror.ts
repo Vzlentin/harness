@@ -1,7 +1,8 @@
 /**
- * Mirror sessions: a Pi session that shows the agent of a harness project in Pi's own chat, and sends what the user
- * types to it. The agent runs in the host of the project; the session keeps only its target, in one custom entry.
- * `/harness [project]` opens one in a new session, and `pi --harness <project>` in the session that Pi starts with.
+ * Mirror sessions: a Pi session that shows a child or the agent of a harness project in Pi's own chat, and sends what
+ * the user types to it. The agent runs in the host of the project; the session keeps only its target, in one custom
+ * entry. `/harness [project]` opens one in a new session, and `pi --harness <project> [--harness-child <handle>]` in the
+ * session that Pi starts with.
  */
 
 import type {
@@ -17,9 +18,10 @@ import * as coding from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import { type ChatKit, ChatView } from "../dist/chat.js";
+import { type AgentReporter, agentReporter } from "../dist/herdr.js";
 import { isMirrorTarget, MIRROR_ENTRY, Mirror, type MirrorConfigure, type MirrorTarget } from "../dist/mirror.js";
 import { checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "../dist/projects.js";
-import { AGENT_HANDLE, type ChildInfo, runDisplayName } from "../dist/protocol.js";
+import { AGENT_HANDLE, type ChildInfo, childLabel, childTitle, runDisplayName } from "../dist/protocol.js";
 import { inboxOf, liveOf, queued, statusText } from "../dist/view-state.js";
 import { type FooterState, MirrorFooter, tildePath } from "./footer.ts";
 
@@ -53,6 +55,11 @@ export function registerMirror(pi: ExtensionAPI): void {
 		description: "Show the agent of this harness project (main or a project name) in the new session",
 	});
 
+	pi.registerFlag("harness-child", {
+		type: "string",
+		description: "Show this subagent of the harness project in the new session, in place of the project agent",
+	});
+
 	pi.registerEntryRenderer(MIRROR_ENTRY, (entry, options, theme) => {
 		if (attached?.entryId === entry.id) attached.restyle(theme, options.expanded);
 
@@ -78,7 +85,6 @@ export function registerMirror(pi: ExtensionAPI): void {
 			await ctx.newSession({
 				setup: async (sessionManager) => {
 					sessionManager.appendCustomEntry(MIRROR_ENTRY, target);
-					sessionManager.appendSessionInfo(`${project} agent`);
 				},
 			});
 		},
@@ -141,6 +147,8 @@ class Attachment {
 	#chat: ChatView | undefined;
 	/** The agent and its conversation for the footer, from the last connection, also while there is none. */
 	#shown: FooterState | undefined;
+	/** The state of the agent for Herdr, made at the first connection. */
+	#reporter: AgentReporter | undefined;
 	/** Why the mirror has no connection, after a failed open or the end of the watch. */
 	#failure: string | undefined;
 	/** True while Pi sets the agent's model: `setModel` is async, and the view changes often while the agent works. */
@@ -255,6 +263,7 @@ class Attachment {
 		this.#ctx.ui.setWidget(WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
 		this.#ctx.ui.setFooter(undefined);
+		void this.#reporter?.release();
 	}
 
 	/**
@@ -350,6 +359,8 @@ class Attachment {
 			this.#frame.clear();
 			this.#frame.addChild(this.#line("muted", () => this.#header(this.#shown?.child ?? mirror.child)));
 			this.#frame.addChild(this.#chat.transcript);
+			const { project, handle } = this.#target;
+			this.#reporter = agentReporter(process.env, childLabel(mirror.child), handle, project);
 			const ctx = this.#ctx;
 			const shown = () => this.#shown ?? { child: mirror.child, view: mirror.view };
 			ctx.ui.setFooter((_ui, theme, data) => new MirrorFooter(theme, data, ctx.modelRegistry, ctx.cwd, shown));
@@ -378,6 +389,10 @@ class Attachment {
 		const status = mirror.busy ? statusText(liveOf(mirror.view)) || "Working..." : "";
 		this.#status.show(ui, this.#theme, status, queue);
 		this.#syncModel(mirror.child);
+		this.#reporter?.report(mirror.busy);
+		const title = childTitle(mirror.child);
+
+		if (this.#pi.getSessionName() !== title) this.#pi.setSessionName(title);
 		ui.requestRender();
 	}
 
@@ -427,6 +442,7 @@ class Attachment {
 		}
 
 		this.#status.show(this.#ui, this.#theme, "", []);
+		this.#reporter?.report(false);
 
 		// Without a transcript, the error takes the place of the connecting line.
 		if (this.#chat === undefined) this.#frame.clear();
@@ -440,15 +456,15 @@ class Attachment {
 	}
 
 	#title(): string {
-		return this.#mirror?.child.name ?? `${this.#target.project} agent`;
+		const { project, handle } = this.#target;
+
+		return handle === AGENT_HANDLE ? `${project} agent` : handle;
 	}
 
 	#header(child: ChildInfo): string {
 		const theme = this.#theme;
 
-		return [theme.bold(theme.fg("accent", "harness")), theme.fg("text", child.name ?? child.handle), child.cwd].join(
-			" │ ",
-		);
+		return [theme.bold(theme.fg("accent", "harness")), theme.fg("text", childTitle(child)), child.cwd].join(" │ ");
 	}
 
 	/** One line in the theme color `name`, colored at each render so that it follows a change of theme. */
@@ -544,13 +560,15 @@ function mirrorEntry(entries: readonly SessionEntry[]): MirrorEntry | undefined 
 }
 
 /**
- * The mirror entry for `--harness <project>`, written in the session that Pi starts with. It refuses a session with
- * messages, such as one of `--continue`, because Pi's own agent answered there.
+ * The mirror entry for `--harness <project>` and `--harness-child <handle>`, written in the session that Pi starts
+ * with. Without a project, it is the project of `HARNESS_PROJECT` and Pi's working directory; without a child, the
+ * project agent. It refuses a session with messages, such as one of `--continue`, because Pi's own agent answered there.
  */
 function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undefined {
-	const flag = pi.getFlag("harness");
+	const project = stringFlag(pi, "harness");
+	const child = stringFlag(pi, "harness-child");
 
-	if (flag === undefined || flag === true || flag === false) return undefined;
+	if (project === undefined && child === undefined) return undefined;
 
 	if (ctx.sessionManager.getBranch().some((entry) => entry.type === "message")) {
 		ctx.ui.notify("harness: --harness needs a new session, not one with messages", "error");
@@ -558,20 +576,29 @@ function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undef
 		return undefined;
 	}
 
-	let project: string;
+	let target: MirrorTarget;
 
 	try {
-		project = flag === "" ? resolveProject(process.env, ctx.cwd) : checkProject(flag);
+		target = {
+			project: project ? checkProject(project) : resolveProject(process.env, ctx.cwd),
+			handle: child || AGENT_HANDLE,
+		};
 	} catch (error) {
 		ctx.ui.notify(`harness: ${errorText(error)}`, "error");
 
 		return undefined;
 	}
 
-	pi.appendEntry(MIRROR_ENTRY, { project, handle: AGENT_HANDLE });
-	pi.setSessionName(`${project} agent`);
+	pi.appendEntry(MIRROR_ENTRY, target);
 
 	return mirrorEntry(ctx.sessionManager.getBranch());
+}
+
+/** The value of the string flag `name`, or undefined when it is not given. */
+function stringFlag(pi: ExtensionAPI, name: string): string | undefined {
+	const flag = pi.getFlag(name);
+
+	return flag === undefined || flag === true || flag === false ? undefined : flag;
 }
 
 /**

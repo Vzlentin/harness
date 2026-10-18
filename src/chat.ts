@@ -17,8 +17,8 @@ import type { Container, TUI } from "@earendil-works/pi-tui";
 import { liveOf, userText } from "./view-state.ts";
 
 /**
- * The Pi modules that a `ChatView` draws with, and the color of its own lines. The viewer gives the copies of this
- * package. The Pi extension gives the copies of the Pi that loads it, so the cards follow the theme of that Pi.
+ * The Pi modules that a `ChatView` draws with, and the color of its own lines. The Pi extension gives the copies of the
+ * Pi that loads it, so the cards follow the theme of that Pi, and this module imports no Pi package at runtime.
  */
 export type ChatKit = {
 	readonly coding: Pick<

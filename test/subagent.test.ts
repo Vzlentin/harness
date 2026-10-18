@@ -335,11 +335,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["stop", handle])).stderr).toBe(`Subagent ${handle} belongs to another session\n`);
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
-		// The viewer may send to the child of any caller.
-		const viewer = { type: "input", requestId: "viewer-input", handle, message: "From viewer" } as const;
-		const sent = await request({ ...viewer, followUp: false }, { start: false });
+		// A mirror session may send to the child of any caller.
+		const mirror = { type: "input", requestId: "mirror-input", handle, message: "From mirror" } as const;
+		const sent = await request({ ...mirror, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
-		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From viewer\n`);
+		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From mirror\n`);
 	});
 
 	it("lets a child spawn a child, but not a third level", async () => {

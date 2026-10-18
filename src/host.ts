@@ -10,7 +10,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
+import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -55,7 +55,6 @@ import {
 	AGENT_HANDLE,
 	type ChildInfo,
 	type ChildState,
-	type ModelInfo,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -402,8 +401,6 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			return abortChild(request, handler);
 		case "configure":
 			return configureChild(request, handler);
-		case "models":
-			return modelInfos(handler.place.models);
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 
@@ -624,7 +621,7 @@ type Unread = { readonly ids: readonly string[]; readonly read: number };
 /**
  * The requests of `sent` from `read` on that a wait for `main` gives before the answer to `main`, and the new `read`.
  * When `main` is a request of the caller, they are the ones before it, and `main` counts as read; a send after it
- * stays unread. Otherwise, such as for viewer input, they are the caller's requests known when the wait started.
+ * stays unread. Otherwise, such as for the input of a mirror session, they are the caller's requests known when the wait started.
  */
 function unreadBefore(sent: readonly string[], read: number, main: string | null, atStart: readonly string[]): Unread {
 	const index = main === null ? -1 : sent.indexOf(main);
@@ -727,16 +724,6 @@ async function childTarget(handler: Handler, handle: string, record: ChildRecord
 		send: (input: Input) => child.send(input, context),
 		record,
 	};
-}
-
-async function modelInfos(models: Models): Promise<ModelInfo[]> {
-	return (await models.getAvailable()).map((model) => ({
-		provider: model.provider,
-		id: model.id,
-		name: model.name,
-		contextWindow: model.contextWindow,
-		thinkingLevels: getSupportedThinkingLevels(model),
-	}));
 }
 
 async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
@@ -851,7 +838,7 @@ async function setUpAgent(
  * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
  * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
  * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
- * `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a `stopped` event and the connection ends; when the conversation
+ * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets a `stopped` event and the connection ends; when the conversation
  * watch ends for another reason, the connection ends.
  */
 async function serveWatch(handler: Handler, handle: string, connection: Connection): Promise<Replies["watch"]> {

@@ -53,16 +53,6 @@ export type TaskInfo = {
 	readonly outcome?: TaskOutcome<JsonValue>;
 };
 
-/** A model that the host can run, with what the viewer needs to show and change it. */
-export type ModelInfo = {
-	readonly provider: string;
-	readonly id: string;
-	readonly name: string;
-	readonly contextWindow: number;
-	/** The thinking levels of the model, from `off`. */
-	readonly thinkingLevels: readonly ModelThinkingLevel[];
-};
-
 /** Any JSON value. A request line is JSON, so `start` takes any input. */
 export const Json = Type.Cyclic(
 	{
@@ -110,17 +100,15 @@ export type Request =
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
 	/**
-	 * The stream of the child for the viewer and the Pi extension: the reply, then one `{ event: WatchLine }` line after
-	 * each commit to the child's conversation and after each rename. Every other line on the connection stays a reply, in
-	 * request order. A connection carries one watch.
+	 * The stream of the child for a mirror session of the Pi extension: the reply, then one `{ event: WatchLine }` line
+	 * after each commit to the child's conversation and after each rename. Every other line on the connection stays a
+	 * reply, in request order. A connection carries one watch.
 	 */
 	| { readonly type: "watch"; readonly handle: string }
-	/** Stops the child's current turn. The viewer sends it. */
+	/** Stops the child's current turn. A mirror session sends it. */
 	| { readonly type: "abort"; readonly handle: string }
-	/** The models that have a login, for the viewer's model picker and context window. */
-	| { readonly type: "models" }
 	/**
-	 * The viewer's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
+	 * A mirror session's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
 	 * when the model has it, and takes the nearest level that it has otherwise. The host refuses a level that the model
 	 * does not have.
 	 */
@@ -131,7 +119,7 @@ export type Request =
 			readonly model?: string;
 			readonly thinking?: ModelThinkingLevel;
 	  }
-	/** The viewer's message to the child. It has no caller. */
+	/** A mirror session's message to the child. It has no caller. */
 	| {
 			readonly type: "input";
 			readonly requestId: string;
@@ -191,7 +179,6 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("watch"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("abort"), handle: Type.String() }),
-	Type.Object({ type: Type.Literal("models") }),
 	Type.Object({
 		type: Type.Literal("configure"),
 		handle: Type.String(),
@@ -233,7 +220,6 @@ export type Replies = {
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
 	readonly input: Replies["send"];
-	readonly models: readonly ModelInfo[];
 	readonly configure: ChildInfo;
 	readonly start: TaskInfo;
 	readonly task: TaskInfo;
@@ -323,6 +309,11 @@ export function childLabel(child: { readonly handle: string; readonly name?: str
 
 export function runDisplayName(metadata: { readonly handle: string; readonly name?: string | undefined }): string {
 	return metadata.name ? `${metadata.name} (${metadata.handle})` : metadata.handle;
+}
+
+/** The title of a child in a client: `<name> (<handle>)`, or only the name for the project agent, which says what it is. */
+export function childTitle(child: { readonly handle: string; readonly name?: string | undefined }): string {
+	return child.handle === AGENT_HANDLE ? childLabel(child) : runDisplayName(child);
 }
 
 /** The line of one child in a list. */

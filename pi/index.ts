@@ -13,7 +13,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { request } from "../dist/client.js";
-import { openViewerTab } from "../dist/herdr.js";
+import { inHerdr, openChildTab } from "../dist/herdr.js";
 import { childLine, runDisplayName } from "../dist/protocol.js";
 import * as tool from "../dist/tool.js";
 import { registerMirror } from "./mirror.ts";
@@ -57,7 +57,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("subagent", {
-		description: "Open the viewer of a subagent spawned by this session",
+		description: "Open a subagent spawned by this session in Pi, in a new Herdr tab",
 		handler: async (_args, ctx) => {
 			const children = await request({ type: "list", caller: ctx.sessionManager.getSessionId() }, { start: true });
 
@@ -80,14 +80,14 @@ export default function subagentExtension(pi: ExtensionAPI) {
 			if (child === undefined) return;
 			const command = `harness attach ${child.handle}`;
 
-			if (!process.env.HERDR_ENV) {
+			if (!inHerdr(process.env)) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 
 				return;
 			}
 
 			try {
-				await openViewerTab(child, process.env);
+				await openChildTab(child, process.env);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				ctx.ui.notify(`Could not open a Herdr tab: ${message}. Run in another terminal: ${command}`, "error");

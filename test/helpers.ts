@@ -16,6 +16,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { Terminal } from "@earendil-works/pi-tui";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
@@ -256,6 +257,7 @@ export async function setUp(): Promise<void> {
 		"PI_SESSION_FILE",
 		"HERDR_ENV",
 		"HERDR_PANE_ID",
+		"HARNESS_HERDR_PANE",
 		"HARNESS_PROJECT",
 		// Node warns on stderr when both are set, and the tests compare stderr.
 		"FORCE_COLOR",
@@ -290,4 +292,30 @@ function replaceEnvironment(values: NodeJS.ProcessEnv): void {
 export async function tearDown(): Promise<void> {
 	replaceEnvironment(environment);
 	await rm(root, { recursive: true, force: true });
+}
+
+/** A terminal for a TUI that is not started: it keeps nothing and gives no input. */
+export class FakeTerminal implements Terminal {
+	start(): void {}
+	stop(): void {}
+	async drainInput(): Promise<void> {}
+	write(): void {}
+	get columns(): number {
+		return 100;
+	}
+	get rows(): number {
+		return 40;
+	}
+	get kittyProtocolActive(): boolean {
+		return false;
+	}
+	moveBy(): void {}
+	hideCursor(): void {}
+	showCursor(): void {}
+	clearLine(): void {}
+	clearFromCursor(): void {}
+	clearScreen(): void {}
+	setTitle(): void {}
+	setProgress(): void {}
+	setProgramStatus(): void {}
 }

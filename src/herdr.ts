@@ -2,39 +2,43 @@ import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveProject } from "./projects.ts";
-import { AGENT_HANDLE, type ChildInfo, childLabel, cliPath, runDisplayName } from "./protocol.ts";
+import { AGENT_HANDLE, type ChildInfo, childLabel, cliPath } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
+
+/**
+ * The variable that gives the Herdr pane to the Pi that the CLI starts there, in place of `HERDR_ENV`. Without
+ * `HERDR_ENV`, Herdr's own Pi integration does not report, so the pane shows the state of the mirrored agent, which the
+ * extension reports, and not the state of Pi's own agent, which does not run.
+ */
+const PANE_VARIABLE = "HARNESS_HERDR_PANE";
 
 /** The part of the output of `herdr tab create` that has the pane of the tab. */
 const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
 
-export type ViewerTarget = { title(child: ChildInfo): string; project: string[]; resume: string[] };
-
 export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
 
 /**
- * How the viewer of `handle` on `project` shows and resumes it: the title of its child, the `--project` words, and the
- * words after them that open it again. The project agent is `harness <project>`, with no `--project`; a child is
- * `harness --project <project> attach <handle>`.
+ * The words of the command that opens `handle` on `project` in Pi, with this Node and this package's CLI, so it does
+ * not need the CLI on PATH: `harness <project>` for the project agent, `harness --project <project> attach <handle>`
+ * for a child. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
  */
-export function viewerTarget(handle: string, project: string): ViewerTarget {
-	// The agent's name already says what it is; a child's shows its handle too.
-	if (handle === AGENT_HANDLE) return { title: childLabel, project: [], resume: [project] };
+export function openCommand(handle: string, project: string): string[] {
+	const words = handle === AGENT_HANDLE ? [project] : ["--project", project, "attach", handle];
 
-	return { title: runDisplayName, project: ["--project", project], resume: ["attach", handle] };
+	return ["env", process.execPath, cliPath(), ...words];
 }
 
-/**
- * The words of the command that runs the viewer of `handle`, with this Node and this package's CLI, so it does not
- * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with
- * `env`.
- */
-export function viewerCommand(handle: string, project: string): string[] {
-	const cli = cliPath();
-	const target = viewerTarget(handle, project);
+/** Whether this process runs in a Herdr pane, also as the Pi that the CLI starts there. */
+export function inHerdr(env: NodeJS.ProcessEnv): boolean {
+	return Boolean(env.HERDR_ENV || env[PANE_VARIABLE]);
+}
 
-	return ["env", process.execPath, cli, ...target.project, ...target.resume];
+/** The environment of the Pi that the CLI starts: in a Herdr pane, `HARNESS_HERDR_PANE` in place of `HERDR_ENV`. */
+export function piEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const { HERDR_ENV, ...rest } = env;
+
+	return HERDR_ENV && env.HERDR_PANE_ID ? { ...rest, [PANE_VARIABLE]: env.HERDR_PANE_ID } : env;
 }
 
 /**
@@ -51,10 +55,10 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
 }
 
 /**
- * Opens a Herdr tab that runs the viewer of `child`, on the project of `env` and this process's cwd. It rejects when a
+ * Opens a Herdr tab that opens `child` in Pi, on the project of `env` and this process's cwd. It rejects when a
  * `herdr` call fails or gives no pane ID.
  */
-export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
+export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
 	const project = resolveProject(env, process.cwd());
 	// The tab must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in projects.ts.
 	const state = env.XDG_STATE_HOME;
@@ -86,21 +90,21 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 	const pane = output.result.root_pane.pane_id;
 
-	const viewer = viewerCommand(child.handle, project)
+	const command = openCommand(child.handle, project)
 		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
 		.join(" ");
 
-	await herdr(["pane", "run", pane, viewer], env);
+	await herdr(["pane", "run", pane, command], env);
 }
 
 /**
- * Reports the state of the agent `label` to the Herdr pane of this process, with the viewer of `handle` on `project` as
- * the resume command. Both methods do nothing outside Herdr.
- * The calls run one after another, so `--seq` reaches Herdr in order.
+ * Reports the state of the agent `label` to the Herdr pane of `HARNESS_HERDR_PANE`, with the command that opens
+ * `handle` on `project` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
+ * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order.
  */
 export function agentReporter(env: NodeJS.ProcessEnv, label: string, handle: string, project: string): AgentReporter {
-	const pane = env.HERDR_ENV ? env.HERDR_PANE_ID : undefined;
-	const resume = pane === undefined ? [] : ["--", ...viewerCommand(handle, project)];
+	const pane = env[PANE_VARIABLE] || undefined;
+	const resume = pane === undefined ? [] : ["--", ...openCommand(handle, project)];
 	let calls: Promise<unknown> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;

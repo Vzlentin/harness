@@ -1,5 +1,5 @@
 /**
- * What the viewer and the Pi extension read from a durable conversation view: its live state, its inbox, its usage and
+ * What the Pi extension reads from a durable conversation view: its live state, its inbox, its usage and
  * the texts of its user messages. It imports only types, so the Pi extension can load it.
  */
 import type { JsonRepresentation } from "@earendil-works/chord";
