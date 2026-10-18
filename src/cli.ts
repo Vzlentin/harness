@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects } from "./projects.ts";
 import { AGENT_HANDLE, statePaths } from "./protocol.ts";
+import { setupOnce } from "./setup.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -231,6 +233,10 @@ async function main(): Promise<void> {
 	}
 
 	const [command, ...args] = all;
+
+	// npm 12 runs no install script by default, so an installed CLI finishes the setup. A checkout runs `cli.ts`, and
+	// the host starts from a command that already did it.
+	if (import.meta.url.endsWith(".js") && command !== "host") setupOnce(fileURLToPath(new URL("..", import.meta.url)));
 
 	if (command === "create") return createCommand(args);
 

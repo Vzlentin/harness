@@ -12,8 +12,7 @@
 		"allowImportingTsExtensions": true,
 		"rewriteRelativeImportExtensions": true,
 		"skipLibCheck": true,
-		"noEmit": true,
-		"rootDirs": ["./src", "./dist"]
+		"noEmit": true
 	},
 	"include": ["src", "test", "pi"]
 }

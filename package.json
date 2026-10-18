@@ -29,7 +29,7 @@
 		"build": "rm -rf dist && tsc -p tsconfig.build.json",
 		"prepack": "npm run build",
 		"postinstall": "node scripts/postinstall.js",
-		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && vitest --run --passWithNoTests",
+		"check": "biome check . && oxlint --deny-warnings && npm run build && tsc -p tsconfig.json && vitest --run --passWithNoTests",
 		"test": "vitest --run --passWithNoTests"
 	},
 	"dependencies": {
@@ -49,6 +49,9 @@
 		"typescript": "7.0.2",
 		"vitest": "5.0.3"
 	},
+	"retiredPiPackages": [
+		"npm:@vzlentin/pi-subagent"
+	],
 	"publishConfig": {
 		"access": "public"
 	}

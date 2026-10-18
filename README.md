@@ -13,10 +13,10 @@ with `/login` in `pi`, or set the API key of the provider, such as `ANTHROPIC_AP
 npm install -g @vzlentin/harness
 ```
 
-This gives you the `harness` command. When `pi` is on your `PATH`, the install also runs `pi install` on the `pi/`
+This works with npm 11 and npm 12. It gives you the `harness` command, and a setup runs `pi install` on the `pi/`
 folder of the package, which adds the `subagent` tool, the `/subagent` command and the subagents widget to Pi. Pi and
-the `harness` command use the same host. npm hides the output of this step; to see it, add `--foreground-scripts`. When
-you install Pi later, or the step fails, run it yourself:
+the `harness` command use the same host. npm 12 runs no install script by default, so there the first `harness` command
+does the setup. When `pi` is not on your `PATH`, or the step fails, the setup prints the command to run later:
 
 ```sh
 pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
@@ -24,19 +24,17 @@ pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
 
 When you install with `--prefix`, give the same `--prefix` to `npm root -g`.
 
+### Move from 0.1.0
+
+0.1.0 had the extension in the separate Pi package `@vzlentin/pi-subagent`. Update as below: the setup removes that
+package from Pi (`pi remove npm:@vzlentin/pi-subagent`), since it conflicts with the new extension.
+
 ### Update and remove
 
 ```sh
 npm install -g @vzlentin/harness@latest
 pi remove "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"    # first: npm runs no script on uninstall
 npm uninstall -g @vzlentin/harness
-```
-
-From 0.1.0, remove the old Pi package first, then install again:
-
-```sh
-pi remove npm:@vzlentin/pi-subagent
-npm install -g @vzlentin/harness@latest
 ```
 
 ## Use
@@ -65,5 +63,5 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 stores with the hosts of the installed `harness`.
 
 The checkout runs from its TypeScript source. `npm publish` builds `dist/` first, and the package contains `dist/`,
-the Pi extension in `pi/` and its `postinstall` script. The extension imports `../dist/`, so to try the checkout's
+the Pi extension in `pi/` and its `postinstall` script. `npm run check` builds `dist/` too, before the type check. The extension imports `../dist/`, so to try the checkout's
 extension in Pi, run `npm run build`, then `pi install ./pi`, and build again after each change in `src/`.
