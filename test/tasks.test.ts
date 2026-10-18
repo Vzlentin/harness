@@ -93,7 +93,10 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			"This host has version 1 of fixture.ask, not 2: stop the host so it starts again with the installed version",
 		);
 		await expect(taskRequest("task", "versioned")).rejects.toThrow("Unknown task: versioned");
-		expect(await versioned(1)).toMatchObject({ key: "versioned", version: 1 });
+		const first = await versioned(1);
+		expect(first).toMatchObject({ key: "versioned", version: 1 });
+		// A known key gives its first task, whatever version the repeat names.
+		expect((await versioned(2))?.id).toBe(first?.id);
 		await expect(taskRequest("task", "nope")).rejects.toThrow("Unknown task: nope");
 		await expect(taskRequest("wait-task", "nope")).rejects.toThrow("Unknown task: nope");
 	});

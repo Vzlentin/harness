@@ -7,7 +7,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
