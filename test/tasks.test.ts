@@ -149,7 +149,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		gates.set("Fixture blocked", Promise.withResolvers());
 		await start("blocked", "Fixture blocked");
 		await until(() => called("Fixture blocked") === 1);
-		await host.close();
+		await host?.close();
 		// The child's turn resumes in the next host; it must end, so only the blocked task is left.
 		gates.delete("Fixture blocked");
 		const settings = join(root, "agent", "settings.json");
