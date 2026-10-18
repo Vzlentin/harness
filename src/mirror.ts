@@ -9,7 +9,15 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { type Client, connect } from "./client.ts";
-import { applyChange, type ChildInfo, type Request, runDisplayName, type WatchLine } from "./protocol.ts";
+import {
+	AGENT_HANDLE,
+	type ChildInfo,
+	errorMessage,
+	type Request,
+	runDisplayName,
+	type WatchLine,
+} from "./protocol.ts";
+import { applyChange } from "./view-change.ts";
 import { inboxOf, withdrawnTexts } from "./view-state.ts";
 
 /** The `customType` of the session entry that holds the target of a mirror session. */
@@ -23,6 +31,29 @@ export type MirrorTarget = Static<typeof MirrorTarget>;
 /** Whether the data of a session entry is a mirror target. */
 export function isMirrorTarget(data: unknown): data is MirrorTarget {
 	return Value.Check(MirrorTarget, data);
+}
+
+/** The Pi flags that open a mirror session of a target: the project, and the child in place of the project agent. */
+export const PI_FLAGS = { project: "harness", child: "harness-child" } as const;
+
+/** The arguments of `pi` that open a mirror session of `target`. */
+export function piArgs(target: MirrorTarget): string[] {
+	const child = target.handle === AGENT_HANDLE ? [] : [`--${PI_FLAGS.child}`, target.handle];
+
+	return [`--${PI_FLAGS.project}`, target.project, ...child];
+}
+
+/**
+ * The arguments of the `harness` CLI that open `target` in Pi: `<project>` for the project agent, `--project <project>
+ * attach <handle>` for a child.
+ */
+export function harnessArgs(target: MirrorTarget): string[] {
+	return target.handle === AGENT_HANDLE ? [target.project] : ["--project", target.project, "attach", target.handle];
+}
+
+/** The title of the agent of `target` before the host gives its name. */
+export function targetTitle(target: MirrorTarget): string {
+	return target.handle === AGENT_HANDLE ? `${target.project} agent` : target.handle;
 }
 
 /** A change of the model or the thinking level of the mirrored conversation. */
@@ -65,11 +96,12 @@ type Watched = Awaited<ReturnType<Client["watch"]>> & { readonly client: Client 
  * the host when none runs, and connects again when the host closes the connection, with one try after each of
  * `retryDelaysMs`. It fails for good when the first connection fails, when all the tries fail, when the child is
  * stopped, and when the host closes a connection that was opened again less than 10 s before, so that a host that fails
- * at each start does not start again and again. `onChange` runs after each change of `status`, `view` and `child`.
+ * at each start does not start again and again. `onChange` runs after each change of `status`, `view` and `child`, with
+ * the status before the change.
  */
 export class Mirror {
 	readonly target: MirrorTarget;
-	readonly #onChange: () => void;
+	readonly #onChange: (previous: MirrorStatus) => void;
 	readonly #retryDelaysMs: readonly number[];
 	readonly #start: boolean;
 	/** Stops the wait for a host that starts, and the waits between the tries, when the mirror closes. */
@@ -82,7 +114,7 @@ export class Mirror {
 	#client: Client | undefined;
 	#sending = false;
 
-	constructor(target: MirrorTarget, onChange: () => void, options: MirrorOptions = {}) {
+	constructor(target: MirrorTarget, onChange: (previous: MirrorStatus) => void, options: MirrorOptions = {}) {
 		this.target = target;
 		this.#onChange = onChange;
 		this.#retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
@@ -150,24 +182,24 @@ export class Mirror {
 
 	/** Connects, follows the watch, and connects again after the host closed the connection, until a failure or `close()`. */
 	async #run(): Promise<void> {
-		let watched = await this.#connect([0], (error) => error);
+		let attempt = await this.#connect([0]);
 		let again = false;
 
-		while (watched !== undefined) {
+		while (!(attempt instanceof Error)) {
 			const opened = Date.now();
-			this.#client = watched.client;
-			this.#view = watched.view;
-			this.#child = watched.child;
+			this.#client = attempt.client;
+			this.#view = attempt.view;
+			this.#child = attempt.child;
 			this.#setStatus({ kind: "open" });
 			void this.#flush();
-			const end = await this.#follow(watched.view, watched.lines);
+			const end = await this.#follow(attempt.view, attempt.lines);
 			this.#client = undefined;
-			watched.client.close();
+			attempt.client.close();
 
 			if (this.#closing.signal.aborted) return;
 
 			if (end === "stopped") {
-				this.#fail(`${runDisplayName(this.#child ?? watched.child)} was stopped`);
+				this.#fail(`${runDisplayName(this.#child ?? attempt.child)} was stopped`);
 
 				return;
 			}
@@ -180,25 +212,25 @@ export class Mirror {
 
 			again = true;
 			this.#setStatus({ kind: "reconnecting" });
-			watched = await this.#connect(
-				this.#retryDelaysMs,
-				(error) => `${HOST_CLOSED}. Connecting again failed: ${error}`,
-			);
+			attempt = await this.#connect(this.#retryDelaysMs);
 		}
+
+		if (this.#closing.signal.aborted) return;
+		this.#fail(again ? `${HOST_CLOSED}. Connecting again failed: ${attempt.message}` : attempt.message);
 	}
 
 	/**
-	 * A connection with the watch of the target, after one try at each delay of `delays`. When all the tries fail, the
-	 * mirror fails with the reason that `failure` makes of the last error. It is undefined then, and after `close()`.
+	 * A connection with the watch of the target, after one try at each delay of `delays`. It is the error of the last try
+	 * when all the tries fail, and an error after `close()`.
 	 */
-	async #connect(delays: readonly number[], failure: (error: string) => string): Promise<Watched | undefined> {
+	async #connect(delays: readonly number[]): Promise<Watched | Error> {
 		const { signal } = this.#closing;
-		let error = "";
+		let error = new Error("Could not connect to the harness host");
 
 		for (const delay of delays) {
 			if (delay > 0) await sleep(delay, undefined, { signal }).catch(() => {});
 
-			if (signal.aborted) return undefined;
+			if (signal.aborted) break;
 			let client: Client | undefined;
 
 			try {
@@ -209,20 +241,17 @@ export class Mirror {
 
 				if (signal.aborted) {
 					client.close();
-
-					return undefined;
+					break;
 				}
 
 				return { ...watched, client };
 			} catch (cause) {
 				client?.close();
-				error = cause instanceof Error ? cause.message : String(cause);
+				error = new Error(errorMessage(cause));
 			}
 		}
 
-		if (!signal.aborted) this.#fail(failure(error));
-
-		return undefined;
+		return signal.aborted ? new Error("The mirror is closed") : error;
 	}
 
 	/** Applies each change of the watch until it ends: `stopped` when the child was stopped, else `closed`. */
@@ -234,7 +263,7 @@ export class Mirror {
 			current = applyChange(current, line.change);
 			this.#view = current;
 			this.#child = line.child;
-			this.#onChange();
+			this.#onChange(this.#status);
 		}
 
 		return "closed";
@@ -289,9 +318,8 @@ export class Mirror {
 	}
 
 	#fail(reason: string): void {
-		this.#status = { kind: "failed", reason };
 		this.#reject(new Error(reason));
-		this.#onChange();
+		this.#setStatus({ kind: "failed", reason });
 	}
 
 	/** Rejects the waiting messages with `error`. */
@@ -300,12 +328,13 @@ export class Mirror {
 	}
 
 	#setStatus(status: MirrorStatus): void {
+		const previous = this.#status;
 		this.#status = status;
-		this.#onChange();
+		this.#onChange(previous);
 	}
 
 	#setChild(child: ChildInfo): void {
 		this.#child = child;
-		this.#onChange();
+		this.#onChange(this.#status);
 	}
 }

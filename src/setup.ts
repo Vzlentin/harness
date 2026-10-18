@@ -10,6 +10,7 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { errorMessage } from "./protocol.ts";
 
 const PackageJson = Type.Object({ name: Type.String(), version: Type.String() });
 
@@ -51,7 +52,7 @@ export function setupOnce(packageDir: string): void {
 
 		if (registerExtension(installed)) writeStamp(installed);
 	} catch (error) {
-		process.stderr.write(`harness: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+		process.stderr.write(`harness: setup failed: ${errorMessage(error)}\n`);
 	}
 }
 

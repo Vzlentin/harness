@@ -24,6 +24,7 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { errorMessage } from "./protocol.ts";
 import { savedTrust } from "./trust.ts";
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
@@ -85,9 +86,7 @@ async function resourcesOf(cwd: string): Promise<Resources> {
 
 		return await found;
 	} catch (error) {
-		process.stderr.write(
-			`warning: ${cwd}: ${error instanceof Error ? error.message : String(error)}; no project instructions or skills\n`,
-		);
+		process.stderr.write(`warning: ${cwd}: ${errorMessage(error)}; no project instructions or skills\n`);
 
 		return { context: [], skills: [] };
 	}

@@ -9,7 +9,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
 import { agentReporter, openChildTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, applyChange, statePaths, type WatchLine } from "../src/protocol.ts";
+import { AGENT_HANDLE, statePaths, type WatchLine } from "../src/protocol.ts";
+import { applyChange } from "../src/view-change.ts";
 import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
 
 /** The text of each user and assistant message in `view`. */
@@ -279,7 +280,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("reports the state of a mirrored agent to the Herdr pane of a Pi that the CLI started", async () => {
 		const herdr = await fakeHerdr();
-		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-7" }, "viewed", "abc123", "main");
+
+		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-7" }, "viewed", {
+			project: "main",
+			handle: "abc123",
+		});
+
 		reporter.report(false);
 		reporter.report(true);
 		reporter.report(true);
@@ -302,7 +308,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(new Set(seqs).size).toBe(seqs.length);
 
 		// The project agent resumes with `harness <project>`.
-		const agent = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-9" }, "main agent", AGENT_HANDLE, "main");
+		const agent = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-9" }, "main agent", {
+			project: "main",
+			handle: AGENT_HANDLE,
+		});
+
 		agent.report(false);
 		await agent.release();
 		expect(logLines(herdr.log)[4]).toBe(
@@ -310,7 +320,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 
 		// A Pi that the user started in Herdr has HERDR_ENV and no HARNESS_HERDR_PANE: Herdr's Pi integration reports there.
-		const silent = agentReporter({ ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-8" }, "x", "abc123", "main");
+		const silent = agentReporter({ ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-8" }, "x", {
+			project: "main",
+			handle: "abc123",
+		});
+
 		silent.report(true);
 		await silent.release();
 		expect(logLines(herdr.log)).toHaveLength(6);

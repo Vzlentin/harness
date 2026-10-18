@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { harnessArgs, type MirrorTarget } from "./mirror.ts";
 import { resolveProject } from "./projects.ts";
-import { AGENT_HANDLE, type ChildInfo, childLabel, cliPath } from "./protocol.ts";
+import { type ChildInfo, childLabel, cliPath } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
@@ -19,14 +20,11 @@ const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ 
 export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
 
 /**
- * The words of the command that opens `handle` on `project` in Pi, with this Node and this package's CLI, so it does
- * not need the CLI on PATH: `harness <project>` for the project agent, `harness --project <project> attach <handle>`
- * for a child. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
+ * The words of the command that opens `target` in Pi, with this Node and this package's CLI, so it does not need the
+ * CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
  */
-export function openCommand(handle: string, project: string): string[] {
-	const words = handle === AGENT_HANDLE ? [project] : ["--project", project, "attach", handle];
-
-	return ["env", process.execPath, cliPath(), ...words];
+function openCommand(target: MirrorTarget): string[] {
+	return ["env", process.execPath, cliPath(), ...harnessArgs(target)];
 }
 
 /** Whether this process runs in a Herdr pane, also as the Pi that the CLI starts there. */
@@ -90,7 +88,7 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 	const pane = output.result.root_pane.pane_id;
 
-	const command = openCommand(child.handle, project)
+	const command = openCommand({ project, handle: child.handle })
 		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
 		.join(" ");
 
@@ -99,12 +97,12 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
 
 /**
  * Reports the state of the agent `label` to the Herdr pane of `HARNESS_HERDR_PANE`, with the command that opens
- * `handle` on `project` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
+ * `target` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
  * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order.
  */
-export function agentReporter(env: NodeJS.ProcessEnv, label: string, handle: string, project: string): AgentReporter {
+export function agentReporter(env: NodeJS.ProcessEnv, label: string, target: MirrorTarget): AgentReporter {
 	const pane = env[PANE_VARIABLE] || undefined;
-	const resume = pane === undefined ? [] : ["--", ...openCommand(handle, project)];
+	const resume = pane === undefined ? [] : ["--", ...openCommand(target)];
 	let calls: Promise<unknown> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;

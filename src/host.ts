@@ -1,32 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { join, resolve as resolvePath, sep } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import {
-	createEventBus,
-	DefaultPackageManager,
-	type EventBus,
-	getAgentDir,
-	ProjectTrustStore,
-	SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
 	AgentDoc,
-	type AnyTask,
 	type Conversation,
 	type ConversationId,
-	type ConversationView,
 	createRegistry,
 	type DocumentWatch,
 	defineDoc,
@@ -34,7 +22,6 @@ import {
 	Harness,
 	type HarnessInspection,
 	type HarnessSettings,
-	type JsonObject,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -52,23 +39,23 @@ import {
 	type Spec,
 } from "./children.ts";
 import { ChildContext } from "./context.ts";
-import { readEntries } from "./entries.ts";
+import { loadEntries } from "./load-entries.ts";
 import {
 	AGENT_HANDLE,
 	type ChildInfo,
 	type ChildState,
+	errorMessage,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Reply,
 	type Request,
 	RequestLine,
-	type ViewChange,
-	type ViewParts,
 	type WatchLine,
 } from "./protocol.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
+import { type ViewChange, viewChange } from "./view-change.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -149,8 +136,7 @@ export async function runHost(options: {
 		projectTrusted: new ProjectTrustStore(agentDir).get(stateDir) === true,
 	});
 
-	const warn = (cause: unknown) =>
-		process.stderr.write(`warning: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
 
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
 	let harness: Harness | undefined;
@@ -167,7 +153,7 @@ export async function runHost(options: {
 		},
 	};
 
-	const entries = await loadEntries(stateDir, agentDir, settings, place, warn).catch((cause: unknown) => {
+	const entries = await loadEntries(stateDir, agentDir, settings, place, library, warn).catch((cause: unknown) => {
 		lock.close();
 		throw cause;
 	});
@@ -238,7 +224,7 @@ export async function runHost(options: {
 			await harness.snapshot(Children, context);
 		} catch (error) {
 			await harness.close(context);
-			const message = error instanceof Error ? error.message : String(error);
+			const message = errorMessage(error);
 
 			if (!message.includes("(subagent.children) requires migration from version")) throw error;
 			throw new Error(
@@ -284,7 +270,7 @@ export async function runHost(options: {
 						value: await handleRequest(request, { ...base, signal: abort.signal, connection }),
 					};
 				} catch (error) {
-					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
+					reply = { ok: false, error: errorMessage(error) };
 				}
 
 				if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`);
@@ -929,49 +915,6 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 	return { view: conversation.value, child: last };
 }
 
-/**
- * What `ops` changed in a watched view, as whole values of `view`, the view after them: the entries from the first one
- * that an op reached, each document that an op reached, and the conversation record. An op on the root, or on a part
- * that this does not know, gives the whole view.
- */
-function viewChange(view: ConversationView, ops: readonly Op[]): ViewChange {
-	let from: number | undefined;
-	const kinds = new Set<string>();
-	let conversation = false;
-
-	for (const op of ops) {
-		if (op[0] === "r") return { view };
-		const [part, next] = op[1];
-
-		if (part === "entries") {
-			// No op moves the entries before the index where it starts: a splice starts at its index, a change in an entry at
-			// that entry, and a reorder or a new array at the first entry.
-			const index = next !== undefined ? Number(next) : op[0] === "p" ? op[2] : 0;
-			from = Math.min(from ?? index, index);
-		} else if (part === "docs" && next !== undefined) {
-			kinds.add(String(next));
-		} else if (part === "conversation") {
-			conversation = true;
-		} else {
-			return { view };
-		}
-	}
-
-	const parts: { -readonly [Part in keyof ViewParts]: ViewParts[Part] } = {};
-
-	if (from !== undefined) parts.entries = { from, items: view.entries.slice(from) };
-
-	if (kinds.size > 0) {
-		parts.docs = Object.fromEntries(
-			[...kinds].map((kind): [string, JsonObject | null] => [kind, view.docs[kind] ?? null]),
-		);
-	}
-
-	if (conversation) parts.conversation = view.conversation;
-
-	return parts;
-}
-
 /** The record of `handle` in the `Children` value `state`. */
 function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
 	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
@@ -1040,101 +983,4 @@ function liveTasks(tasks: HarnessInspection["tasks"]): number {
 	}
 
 	return tasks.length - dead.size;
-}
-
-/** What the default export of an entry returns: its extensions, the tasks that `start` runs, and `close`. */
-type Entry = { readonly extensions: readonly Extension[]; readonly tasks?: readonly AnyTask[]; close(): Promise<void> };
-
-/** What the host gives the default export of an entry. */
-type EntryOptions = {
-	readonly durable: typeof durable;
-	readonly ai: typeof ai;
-	readonly events: EventBus;
-	readonly children: typeof library;
-	readonly place: Place;
-};
-
-/** A `package.json`, which is a JSON object. */
-const PackageJson = Type.Object({});
-
-/** The part of a package's `package.json` that names its entries. */
-const Manifest = Type.Object({
-	piDurable: Type.Optional(Type.Object({ extensions: Type.Optional(Type.Array(Type.String())) })),
-});
-
-/**
- * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
- * `entries.json` (see `readEntries`), in one shared event bus, as one entry whose `close()` closes each of them and
- * passes its errors to `warn`. When an entry fails to load, the entries loaded before it close. Missing packages are
- * skipped, not installed, and so is an entry module that does not exist, such as one of an uninstalled package.
- */
-async function loadEntries(
-	cwd: string,
-	agentDir: string,
-	settingsManager: SettingsManager,
-	place: Place,
-	warn: (cause: unknown) => void,
-): Promise<Required<Entry>> {
-	const modules = new Set<string>();
-
-	const roots = new DefaultPackageManager({ cwd, agentDir, settingsManager })
-		.listConfiguredPackages()
-		.flatMap((found) => found.installedPath ?? []);
-
-	for (const root of new Set(roots)) {
-		const path = join(root, "package.json");
-		const manifest: unknown = JSON.parse(await readFile(path, "utf8").catch(() => "{}"));
-
-		if (!Value.Check(PackageJson, manifest)) {
-			warn(new Error(`${path} is not a valid package.json`));
-			continue;
-		}
-
-		if (!Value.Check(Manifest, manifest)) {
-			warn(new Error(`${path} has an invalid piDurable field`));
-			continue;
-		}
-
-		for (const path of manifest.piDurable?.extensions ?? []) modules.add(resolvePath(root, path));
-	}
-
-	for (const module of Object.values(readEntries())) if (existsSync(module)) modules.add(module);
-	const events = createEventBus();
-	const entries: Entry[] = [];
-
-	const close = async () => {
-		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
-			if (result.status === "rejected") warn(result.reason);
-		}
-	};
-
-	try {
-		for (const module of modules) {
-			const entry = await importEntry(module);
-			entries.push(await entry.default({ durable, ai, events, children: library, place }));
-		}
-	} catch (error) {
-		await close();
-		throw error;
-	}
-
-	return {
-		extensions: entries.flatMap((entry) => entry.extensions),
-		tasks: entries.flatMap((entry) => entry.tasks ?? []),
-		close,
-	};
-}
-
-/**
- * Imports the entry `module`. Node does not strip types under `node_modules`, where Pi installs npm packages, so jiti
- * loads a TypeScript entry there.
- */
-async function importEntry(module: string): Promise<{ default: (options: EntryOptions) => Entry | Promise<Entry> }> {
-	if (module.endsWith(".ts") && module.split(sep).includes("node_modules")) {
-		const { createJiti } = await import("jiti");
-
-		return createJiti(import.meta.url).import(module);
-	}
-
-	return import(pathToFileURL(module).href);
 }

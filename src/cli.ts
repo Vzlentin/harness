@@ -5,8 +5,9 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { request } from "./client.ts";
 import { piEnv } from "./herdr.ts";
+import { type MirrorTarget, piArgs } from "./mirror.ts";
 import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "./projects.ts";
-import { AGENT_HANDLE, statePaths } from "./protocol.ts";
+import { AGENT_HANDLE, errorMessage, statePaths } from "./protocol.ts";
 import { setupOnce, userPath } from "./setup.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
@@ -204,25 +205,24 @@ async function attachCommand(args: string[]): Promise<void> {
 	const [handle] = args;
 
 	if (args.length !== 1 || handle === undefined) usage();
-	await openInPi(resolveProject(process.env, process.cwd()), handle);
+	await openInPi({ project: resolveProject(process.env, process.cwd()), handle });
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	await openInPi(name, AGENT_HANDLE);
+	await openInPi({ project: name, handle: AGENT_HANDLE });
 }
 
 /**
- * Runs Pi in this terminal with a mirror session of `handle` on `project` (see the Pi extension), and exits with its
- * code. It starts the host when none runs, and fails before Pi starts for an unknown child and for a project agent
- * without a model.
+ * Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. It starts
+ * the host when none runs. A first watch fails before Pi starts for an unknown child and for a project agent without a
+ * model.
  */
-async function openInPi(project: string, handle: string): Promise<void> {
-	await request({ type: "watch", handle }, { start: true, project });
-	const child = handle === AGENT_HANDLE ? [] : ["--harness-child", handle];
+async function openInPi(target: MirrorTarget): Promise<void> {
+	await request({ type: "watch", handle: target.handle }, { start: true, project: target.project });
 
-	const result = spawnSync("pi", ["--harness", project, ...child], {
+	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",
 		env: { ...piEnv(process.env), PATH: userPath() },
 	});
@@ -291,6 +291,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((cause: unknown) => {
-	process.stderr.write(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+	process.stderr.write(`${errorMessage(cause)}\n`);
 	process.exitCode = 1;
 });

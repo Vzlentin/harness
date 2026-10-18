@@ -2,15 +2,17 @@ import { realpathSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { TuiMainScreen } from "@earendil-works/pi-tui";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../pi/chat.ts";
+import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
 import type { Host } from "../src/host.ts";
-import { Mirror, type MirrorOptions, type MirrorTarget } from "../src/mirror.ts";
+import { Mirror, type MirrorConfigure, type MirrorOptions, type MirrorTarget } from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
-import { AGENT_HANDLE } from "../src/protocol.ts";
+import { AGENT_HANDLE, errorMessage } from "../src/protocol.ts";
 import { inboxOf } from "../src/view-state.ts";
 import {
 	called,
@@ -18,6 +20,7 @@ import {
 	FakeTerminal,
 	gates,
 	handleOf,
+	models,
 	root,
 	setUp,
 	startHost,
@@ -55,6 +58,41 @@ async function opened(target: MirrorTarget, options: MirrorOptions = {}): Promis
 	if (mirror.status.kind === "failed") throw new Error(mirror.status.reason);
 
 	return mirror;
+}
+
+type ThinkingLevel = ReturnType<PiModels["getThinkingLevel"]>;
+
+/** The model and the thinking level of a Pi session. Like Pi, it takes its own level when it takes a model. */
+class FakePi implements PiModels, PiSession {
+	model: Model<Api> | undefined;
+	thinking: ThinkingLevel = "off";
+	readonly modelRegistry = { find: (provider: string, id: string) => models.getModel(provider, id) };
+
+	async setModel(model: Model<Api>): Promise<boolean> {
+		// Pi checks the model's login before it takes the model.
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		this.model = model;
+		this.thinking = "xhigh";
+
+		return true;
+	}
+
+	getThinkingLevel(): ThinkingLevel {
+		return this.thinking;
+	}
+
+	setThinkingLevel(level: ThinkingLevel): void {
+		this.thinking = level;
+	}
+}
+
+/** The model `faux/<id>` of the test host. */
+function fauxModel(id: string): Model<Api> {
+	const model = models.getModel("faux", id);
+
+	if (model === undefined) throw new Error(`no model faux/${id}`);
+
+	return model;
 }
 
 let host: Host | undefined;
@@ -243,6 +281,84 @@ describe("mirror", { timeout: 30_000 }, () => {
 			expect(drawn().indexOf("$ while")).toBeLessThan(drawn().indexOf("Tool said:"));
 		} finally {
 			chat.stopTimers();
+			mirror.close();
+		}
+	});
+});
+
+describe("model sync", { timeout: 30_000 }, () => {
+	it("gives Pi the agent's model, then the agent's level and not the level that Pi takes with the model", async () => {
+		const mirror = await opened(AGENT);
+		const pi = new FakePi();
+		const sync = new ModelSync(pi, pi, mirror, () => {});
+
+		try {
+			await mirror.configure({ provider: "faux", model: "faux-2", thinking: "low" });
+			const child = mirror.child;
+
+			if (child === undefined) throw new Error("no agent");
+			sync.fromAgent(child);
+			await until(() => pi.model?.id === "faux-2" && pi.thinking === "low");
+		} finally {
+			sync.close();
+			await mirror.configure({ provider: "faux", model: "faux-1", thinking: "medium" });
+			mirror.close();
+		}
+	});
+
+	it("asks the host for the model that the user selects in Pi, and Pi goes back when the host refuses it", async () => {
+		const mirror = await opened(AGENT);
+		const pi = new FakePi();
+		const errors: string[] = [];
+		const sync = new ModelSync(pi, pi, mirror, (cause) => errors.push(errorMessage(cause)));
+
+		try {
+			sync.piSelected("faux", "faux-2");
+			await until(() => mirror.child?.model === "faux-2");
+			// Pi has the model that the user selected before it tells the extension.
+			pi.model = { ...fauxModel("faux-2"), id: "missing" };
+			sync.piSelected("faux", "missing");
+			await until(() => errors.length === 1 && pi.model?.id === "faux-2");
+			expect(mirror.child?.model).toBe("faux-2");
+		} finally {
+			sync.close();
+			await mirror.configure({ provider: "faux", model: "faux-1", thinking: "medium" });
+			mirror.close();
+		}
+	});
+
+	it("asks the host for a cycled level once Pi has the agent's model, and Pi goes back when the host refuses it", async () => {
+		const mirror = await opened(AGENT);
+		const configure = vi.fn((change: MirrorConfigure) => mirror.configure(change));
+
+		const agent = {
+			get child() {
+				return mirror.child;
+			},
+			configure,
+		};
+
+		const pi = new FakePi();
+		const errors: string[] = [];
+		const sync = new ModelSync(pi, pi, agent, (cause) => errors.push(errorMessage(cause)));
+
+		try {
+			pi.thinking = "high";
+			sync.piCycled();
+			expect(configure).not.toHaveBeenCalled();
+			pi.model = fauxModel("faux-1");
+			sync.piCycled();
+			await until(() => mirror.child?.thinking === "high");
+			await mirror.configure({ provider: "faux", model: "faux-2" });
+			pi.model = fauxModel("faux-2");
+			// faux-2 has no level xhigh.
+			pi.thinking = "xhigh";
+			sync.piCycled();
+			await until(() => errors.length === 1 && pi.thinking === "high");
+			expect(mirror.child?.thinking).toBe("high");
+		} finally {
+			sync.close();
+			await mirror.configure({ provider: "faux", model: "faux-1", thinking: "medium" });
 			mirror.close();
 		}
 	});

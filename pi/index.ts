@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { request } from "../dist/client.js";
 import { inHerdr, openChildTab } from "../dist/herdr.js";
-import { childLine, runDisplayName } from "../dist/protocol.js";
+import { childLine, errorMessage, runDisplayName } from "../dist/protocol.js";
 import * as tool from "../dist/tool.js";
 import { registerMirror } from "./mirror.ts";
 
@@ -89,7 +89,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 			try {
 				await openChildTab(child, process.env);
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = errorMessage(error);
 				ctx.ui.notify(`Could not open a Herdr tab: ${message}. Run in another terminal: ${command}`, "error");
 			}
 		},
