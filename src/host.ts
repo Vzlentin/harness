@@ -171,7 +171,8 @@ export async function runHost(options: {
 		registry.install(library.answerExtension);
 		registry.install(startable);
 		harness = await Harness.open(
-			await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+			// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
+			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: 60_000 }),
 			{
 				models,
 				registry,
@@ -292,7 +293,11 @@ export async function runHost(options: {
 			if (connections.size > 0 || Date.now() - lastActivity < idleExitMs) return;
 			harness
 				.inspect(context)
-				.then(({ tasks }) => (tasks.length === 0 && connections.size === 0 ? close() : undefined))
+				// A blocked task, such as one of an entry that is no longer installed, never runs, so it keeps no host alive.
+				.then(({ tasks }) => {
+					const live = tasks.filter((task) => task.state.kind !== "blocked");
+					return live.length === 0 && connections.size === 0 ? close() : undefined;
+				})
 				.catch(warn);
 		},
 		Math.min(IDLE_CHECK_MS, idleExitMs),

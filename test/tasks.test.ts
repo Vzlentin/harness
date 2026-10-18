@@ -1,12 +1,13 @@
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { request } from "../src/client.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { AGENT_HANDLE, type Request, statePaths, type TaskInfo } from "../src/protocol.ts";
-import { aborted, called, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { aborted, called, cli, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
 const KIND = "fixture.ask";
@@ -141,5 +142,55 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		gate.resolve();
 		await idle.closed;
 		gates.delete("Fixture idle");
+	});
+
+	it("exits on idle when the only live task is blocked, such as one of an entry that is no longer installed", async () => {
+		host = await startHost();
+		gates.set("Fixture blocked", Promise.withResolvers());
+		await start("blocked", "Fixture blocked");
+		await until(() => called("Fixture blocked") === 1);
+		await host.close();
+		// The child's turn resumes in the next host; it must end, so only the blocked task is left.
+		gates.delete("Fixture blocked");
+		const settings = join(root, "agent", "settings.json");
+		await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+		const { dir } = statePaths(MAIN_PROJECT);
+		const idle = await runHost({
+			stateDir: dir,
+			project: MAIN_PROJECT,
+			cwd: projectDir(MAIN_PROJECT),
+			models,
+			idleExitMs: 100,
+		});
+		if (idle === undefined) throw new Error("no host");
+		let closed = false;
+		void idle.closed.then(() => {
+			closed = true;
+		});
+		await until(() => closed);
+		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [FIXTURE] }));
+		host = await startHost();
+		expect(await taskRequest("abort-task", "blocked")).toMatchObject({ key: "blocked" });
+	});
+
+	it("starts a task when the project agent gets no model", async () => {
+		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
+		const bare = await runHost({
+			stateDir: statePaths("bare").dir,
+			project: "bare",
+			cwd: root,
+			models: createModels(),
+		});
+		if (bare === undefined) throw new Error("no host");
+		const saved = process.env.HARNESS_PROJECT;
+		process.env.HARNESS_PROJECT = "bare";
+		try {
+			expect(await start("bare", "Fixture bare")).toMatchObject({ key: "bare", kind: KIND });
+			expect(await taskRequest("wait-task", "bare")).toMatchObject({ status: "terminal" });
+		} finally {
+			if (saved === undefined) delete process.env.HARNESS_PROJECT;
+			else process.env.HARNESS_PROJECT = saved;
+			await bare.close();
+		}
 	});
 });
