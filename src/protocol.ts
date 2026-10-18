@@ -35,6 +35,11 @@ export type TaskInfo = {
 	readonly id: TaskId<JsonValue>;
 	/** The name of the task definition. */
 	readonly kind: string;
+	/**
+	 * The version on the task's record: the version of the definition that last ran or migrated it, so a client can tell
+	 * which version of an entry the host used for this task. A task that no loaded definition can run keeps its version.
+	 */
+	readonly version: number;
 	readonly status: TaskState<JsonValue, JsonValue>["status"];
 	readonly outcome?: TaskOutcome<JsonValue>;
 };
