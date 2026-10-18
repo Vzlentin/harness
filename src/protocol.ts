@@ -1,6 +1,7 @@
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Op } from "@earendil-works/chord/delta";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -115,7 +116,7 @@ export type Request =
 			readonly followUp: boolean;
 	  }
 	/**
-	 * Starts a background task of the kind `kind`, a task of an installed `piDurable` entry, in the root conversation.
+	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
 	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
 	 * whose definition of `kind` has another version refuses before it creates anything.
 	 */
@@ -165,6 +166,14 @@ export type WatchLine =
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
 /** The files of the host of `project`: `$XDG_STATE_HOME/harness/<project>/`, default `~/.local/state/harness/<project>/`. */
+/**
+ * The CLI of this install, which the host start and the Herdr tabs run with this Node: `cli.js` next to the built
+ * modules, or `cli.ts` in a checkout, which Node runs with type stripping.
+ */
+export function cliPath(): string {
+	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
+}
+
 export function statePaths(project: string): { dir: string; socket: string; log: string } {
 	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", project);
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };

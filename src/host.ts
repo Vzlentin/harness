@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
@@ -44,6 +44,7 @@ import {
 	type Spec,
 } from "./children.ts";
 import { ChildContext } from "./context.ts";
+import { readEntries } from "./entries.ts";
 import {
 	AGENT_HANDLE,
 	type ChildInfo,
@@ -58,9 +59,6 @@ import {
 } from "./protocol.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
-
-/** The root of this package, whose `piDurable` entry the host does not load. */
-const PACKAGE_DIR = realpathSync(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -789,14 +787,14 @@ function liveTasks(tasks: HarnessInspection["tasks"]): number {
 	return tasks.length - dead.size;
 }
 
-/** What the default export of a `piDurable` entry returns: its extensions, the tasks that `start` runs, and `close`. */
+/** What the default export of an entry returns: its extensions, the tasks that `start` runs, and `close`. */
 type Entry = { readonly extensions: readonly Extension[]; readonly tasks?: readonly AnyTask[]; close(): Promise<void> };
 
 /**
- * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus, as one
- * entry whose `close()` closes each of them and passes its errors to `warn`. When an entry fails to load, the entries
- * loaded before it close. Missing packages are skipped, not installed. The host runs through `bin/harness.mjs`, so jiti
- * loads the entries, also under `node_modules`.
+ * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
+ * `entries.json` (see `readEntries`), in one shared event bus, as one entry whose `close()` closes each of them and
+ * passes its errors to `warn`. When an entry fails to load, the entries loaded before it close. Missing packages are
+ * skipped, not installed, and so is an entry module that does not exist, such as one of an uninstalled package.
  */
 async function loadEntries(
 	cwd: string,
@@ -805,11 +803,17 @@ async function loadEntries(
 	place: Place,
 	warn: (error: unknown) => void,
 ): Promise<Required<Entry>> {
-	const roots = new Set(
-		new DefaultPackageManager({ cwd, agentDir, settingsManager })
-			.listConfiguredPackages()
-			.flatMap((found) => found.installedPath ?? []),
-	);
+	const modules = new Set<string>();
+	const roots = new DefaultPackageManager({ cwd, agentDir, settingsManager })
+		.listConfiguredPackages()
+		.flatMap((found) => found.installedPath ?? []);
+	for (const root of new Set(roots)) {
+		const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
+			readonly piDurable?: { readonly extensions?: readonly string[] };
+		};
+		for (const path of manifest.piDurable?.extensions ?? []) modules.add(resolvePath(root, path));
+	}
+	for (const module of Object.values(readEntries())) if (existsSync(module)) modules.add(module);
 	const events = createEventBus();
 	const entries: Entry[] = [];
 	const close = async () => {
@@ -818,16 +822,9 @@ async function loadEntries(
 		}
 	};
 	try {
-		for (const root of roots) {
-			const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
-				readonly piDurable?: { readonly extensions?: readonly string[] };
-			};
-			// The host installs its own tool, with its own caller.
-			if ((await realpath(root).catch(() => root)) === PACKAGE_DIR) continue;
-			for (const path of manifest.piDurable?.extensions ?? []) {
-				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
-				entries.push(await entry.default({ durable, ai, events, children: library, place }));
-			}
+		for (const module of modules) {
+			const entry = await importEntry(module);
+			entries.push(await entry.default({ durable, ai, events, children: library, place }));
 		}
 	} catch (error) {
 		await close();
@@ -838,4 +835,16 @@ async function loadEntries(
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
 		close,
 	};
+}
+
+/**
+ * Imports the entry `module`. Node does not strip types under `node_modules`, where Pi installs npm packages, so jiti
+ * loads a TypeScript entry there.
+ */
+async function importEntry(module: string): Promise<{ default: (options: object) => Entry | Promise<Entry> }> {
+	if (module.endsWith(".ts") && module.split(sep).includes("node_modules")) {
+		const { createJiti } = await import("jiti");
+		return createJiti(import.meta.url).import(module);
+	}
+	return import(pathToFileURL(module).href);
 }

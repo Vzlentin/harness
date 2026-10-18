@@ -1,48 +1,49 @@
 {
-	"name": "harness",
+	"name": "@vzlentin/harness",
 	"version": "0.1.0",
-	"private": true,
 	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Vzlentin/harness.git"
+	},
 	"type": "module",
 	"bin": {
-		"harness": "./bin/harness.mjs"
+		"harness": "dist/cli.js"
 	},
-	"pi": {
-		"extensions": [
-			"./extensions/subagent.ts"
-		]
+	"exports": {
+		"./*": {
+			"types": "./dist/*.d.ts",
+			"default": "./dist/*.js"
+		},
+		"./package.json": "./package.json"
 	},
-	"piDurable": {
-		"extensions": [
-			"./src/durable-entry.ts"
-		]
-	},
+	"files": [
+		"dist"
+	],
 	"engines": {
 		"node": ">=22.19.0"
 	},
 	"scripts": {
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"prepack": "npm run build",
 		"check": "biome check . && tsc -p tsconfig.json && vitest --run --passWithNoTests",
 		"test": "vitest --run --passWithNoTests"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
-		"@earendil-works/pi-durable": "1.3.0",
-		"jiti": "2.7.0"
-	},
-	"optionalDependencies": {
 		"@earendil-works/pi-ai": "1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
-		"@earendil-works/pi-tui": "1.3.0"
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
+		"@earendil-works/pi-durable": "1.3.0",
+		"@earendil-works/pi-tui": "1.3.0",
+		"jiti": "2.7.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",
 		"@types/node": "26.6.4",
 		"typescript": "7.0.2",
 		"vitest": "5.0.3"
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }

@@ -4,7 +4,6 @@
 	"type": "module",
 	"piDurable": {
 		"extensions": [
-			"./ask.ts",
 			"./old.ts"
 		]
 	}
