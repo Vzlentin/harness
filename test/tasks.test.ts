@@ -75,6 +75,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			key: "one",
 			id: started.id,
 			kind: KIND,
+			version: 1,
 			status: "terminal",
 			outcome: { status: "completed", result: "Answer to Fixture one" },
 		});

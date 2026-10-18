@@ -35,6 +35,8 @@ export type TaskInfo = {
 	readonly id: TaskId<JsonValue>;
 	/** The name of the task definition. */
 	readonly kind: string;
+	/** The version of the task definition that created the task, so a client can tell an older host. */
+	readonly version: number;
 	readonly status: TaskState<JsonValue, JsonValue>["status"];
 	readonly outcome?: TaskOutcome<JsonValue>;
 };

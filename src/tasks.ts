@@ -63,6 +63,7 @@ export async function taskInfo(harness: Harness, key: string): Promise<TaskInfo>
 		key,
 		id,
 		kind: record.kind,
+		version: record.version,
 		status: record.state.status,
 		...(record.state.status === "terminal" ? { outcome: record.state.outcome } : {}),
 	};
