@@ -52,7 +52,7 @@ harness main                # talk to the agent of the main project
 
 ```sh
 npm ci
-npm run check               # Biome, TypeScript, Vitest
+npm run check               # Biome, oxlint, TypeScript, Vitest
 XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 ```
 

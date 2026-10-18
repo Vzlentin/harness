@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
 import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, type Request, statePaths, type WatchLine } from "../src/protocol.ts";
+import { AGENT_HANDLE, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import {
 	CLI,
@@ -29,16 +29,11 @@ import {
 	until,
 } from "./helpers.ts";
 
-// The in-process client finds the host under the test's HOME, not the user's home, when XDG_STATE_HOME is not set.
-vi.mock("node:os", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:os")>()),
-	homedir: () => process.env.HOME ?? "",
-}));
-
 /** The text of each user and assistant message in `view`. */
 function textsOf(view: ConversationView | undefined): string[] {
 	return (view?.entries ?? []).flatMap((entry) => {
 		const message = entry.model?.[0];
+
 		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
 	});
 }
@@ -51,7 +46,9 @@ async function collect(lines: AsyncIterable<WatchLine>, into: WatchLine[]): Prom
 /** A client of the running host. */
 async function hostClient(): Promise<Client> {
 	const client = await connect({ start: false });
+
 	if (client === undefined) throw new Error("no host");
+
 	return client;
 }
 
@@ -108,16 +105,20 @@ class FakeTerminal implements Terminal {
 async function fakeHerdr(failTabCreate?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
+
 	const tabCreate =
 		failTabCreate === undefined
 			? `echo '{"result":{"root_pane":{"pane_id":"p1"}}}'`
 			: `echo '${failTabCreate}' >&2; exit 1`;
+
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
 if [ "$1 $2" = "tab create" ]; then ${tabCreate}; fi
 `;
+
 	await writeFile(join(bin, "herdr"), script);
 	await chmod(join(bin, "herdr"), 0o755);
+
 	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
 }
 
@@ -146,16 +147,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const first = await client.watch(handle);
 		const lines: WatchLine[] = [];
 		void collect(first.lines, lines);
+
 		try {
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
 			gates.get("Task:\nWatched")?.resolve();
 			let view = first.view;
 			await until(() => lines.some((line) => !line.stopped && line.child.state === "idle"));
+
 			for (const line of lines) if (!line.stopped) view = apply(view, line.ops);
 			expect(textsOf(view)).toEqual(["Task:\nWatched", "Answer to Task:\nWatched"]);
 
 			const second = await connect({ start: false });
+
 			try {
 				const fresh = await second?.request({ type: "watch", handle });
 				expect(fresh?.child.state).toBe("idle");
@@ -175,6 +179,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const watched = await client.watch(handle);
 		const lines: WatchLine[] = [];
 		void collect(watched.lines, lines);
+
 		try {
 			expect(watched.child.state).toBe("idle");
 			expect((await cli(["rename", handle, "renamed"])).code).toBe(0);
@@ -192,6 +197,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const watched = await client.watch(handle);
 		const lines: WatchLine[] = [];
 		void collect(watched.lines, lines);
+
 		try {
 			expect(watched.child.state).toBe("busy");
 			expect((await cli(["rename", handle, "busy name"])).code).toBe(0);
@@ -213,6 +219,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed watch"]));
 		await cli(["wait", handle]);
 		const stderr = vi.spyOn(process.stderr, "write");
+
 		try {
 			const socket = createConnection(statePaths("main").socket);
 			socket.write(`${JSON.stringify({ type: "watch", handle })}\n`, () => socket.destroy());
@@ -221,12 +228,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const watched = await client.watch(handle);
 			const lines: WatchLine[] = [];
 			void collect(watched.lines, lines);
+
 			try {
 				expect((await cli(["rename", handle, "renamed after close"])).code).toBe(0);
 				await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed after close"));
 			} finally {
 				client.close();
 			}
+
 			expect(stderr.mock.calls.filter(([text]) => String(text).includes("warning:"))).toEqual([]);
 		} finally {
 			stderr.mockRestore();
@@ -237,11 +246,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Idle"]));
 		await cli(["wait", handle]);
 		const client = await hostClient();
+
 		try {
 			const watched = await client.watch(handle);
 			expect(watched.child.state).toBe("idle");
 			const lines: WatchLine[] = [];
 			void collect(watched.lines, lines);
+
 			const sent = await client.request({
 				type: "input",
 				requestId: "watch-connection-send",
@@ -249,6 +260,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				message: "On the watch connection",
 				followUp: false,
 			});
+
 			expect(sent.verb).toBe("Prompted");
 			const busy = () => lines.findIndex((line) => !line.stopped && line.child.state === "busy");
 			await until(() => busy() !== -1);
@@ -264,7 +276,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Abort me"]));
 		await until(() => called("Task:\nAbort me") === 1);
 		const client = await connect({ start: false });
+
 		if (client === undefined) throw new Error("no host");
+
 		try {
 			expect((await client.request({ type: "abort", handle })).state).toBe("idle");
 			expect(await client.request({ type: "abort", handle })).toMatchObject({ handle, state: "idle" });
@@ -291,12 +305,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--name", "viewed", "--prompt", "View me"]));
 		await cli(["wait", handle]);
 		const requests = vi.spyOn(Client.prototype, "request");
+
 		const sent = () =>
 			requests.mock.calls.flatMap(([sentRequest]) =>
-				sentRequest.type === "input" || sentRequest.type === "abort" ? [sentRequest as Request] : [],
+				sentRequest.type === "input" || sentRequest.type === "abort" ? [sentRequest] : [],
 			);
+
 		const terminal = new FakeTerminal();
 		const env = { ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-7" };
+
 		try {
 			const exited = attach(handle, { terminal, env });
 			await until(() => terminal.text().includes("Answer to Task:"));
@@ -401,6 +418,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		terminal.input("\u001b");
 		await until(() => {
 			const text = terminal.text();
+
 			return text.lastIndexOf("Then that") > text.lastIndexOf("Steer: Wait for it") + "Steer: ".length;
 		});
 		await until(() => terminal.text().lastIndexOf("● idle") > terminal.text().lastIndexOf("◉ busy"));
@@ -459,6 +477,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		// The host refuses a level that the model does not have, and a model that it does not know.
 		const client = await hostClient();
+
 		try {
 			await expect(client.request({ type: "configure", handle, thinking: "xhigh" })).rejects.toThrow(
 				"faux/faux-2 has no thinking level xhigh",
@@ -473,6 +492,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// Ctrl+L asks the host for its models again, so a login after attach shows.
 		const added = fauxProvider({ provider: "faux-added", models: [{ id: "faux-3", reasoning: true }] });
 		hostModels.setProvider(added.provider);
+
 		try {
 			terminal.input("\u000c");
 			await until(() => terminal.text().includes("faux-added/faux-3"));
@@ -482,6 +502,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		} finally {
 			hostModels.deleteProvider("faux-added");
 		}
+
 		terminal.input("\u0003");
 		expect(await exited).toBe(0);
 	});
@@ -491,6 +512,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));
 		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
 		const child = children.find((found) => found.handle === handle);
+
 		if (child === undefined) throw new Error("no child");
 		const state = herdr.env.XDG_STATE_HOME;
 		const config = herdr.env.XDG_CONFIG_HOME;
@@ -515,6 +537,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--name", "untabbed", "--prompt", "No tab"]));
 		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
 		const child = children.find((found) => found.handle === handle);
+
 		if (child === undefined) throw new Error("no child");
 		await expect(openViewerTab(child, herdr.env)).rejects.toThrow("no such session");
 		expect(logLines(herdr.log)).toHaveLength(1);

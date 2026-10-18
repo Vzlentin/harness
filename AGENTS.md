@@ -1,4 +1,5 @@
-- Check: `npm run check` (Biome, TypeScript, Vitest).
+- Check: `npm run check` (Biome, oxlint, TypeScript, Vitest).
+- Lint: oxlint with the anti-slop plugin, vendored in `tools/oxlint/anti-slop/` (see its `UPSTREAM.md`). Biome only formats and sorts imports. Outside data is checked with TypeBox schemas, not `typeof`.
 - `docs/spec.md` is the behaviour spec: CLI commands, arguments and output lines, the tool, the host, and where state lives. Update it in the same change as the behaviour. `README.md` has only the install, a short usage and development; keep it short.
 - `origin` is `Vzlentin/harness`. It continues the history of `Vzlentin/pi-subagent`, now archived, a fork of `badlogic/pi-subagent`.
 - Two npm packages come from this repository: `@vzlentin/harness` (the root, with the `harness` command) and `@vzlentin/pi-subagent` (`pi-subagent/`, the optional Pi extension). Give them the same version, and pin `pi-subagent`'s dependency on `@vzlentin/harness` to it.

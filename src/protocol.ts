@@ -6,6 +6,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { Op } from "@earendil-works/chord/delta";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
+import { type Static, Type } from "typebox";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
 export const PROTOCOL_VERSION = 7;
@@ -55,6 +56,21 @@ export type ModelInfo = {
 	readonly thinkingLevels: readonly ModelThinkingLevel[];
 };
 
+/** Any JSON value. A request line is JSON, so `start` takes any input. */
+export const Json = Type.Cyclic(
+	{
+		Json: Type.Union([
+			Type.Null(),
+			Type.Boolean(),
+			Type.Number(),
+			Type.String(),
+			Type.Array(Type.Ref("Json")),
+			Type.Record(Type.String(), Type.Ref("Json")),
+		]),
+	},
+	"Json",
+);
+
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
 export type Request =
 	| { readonly type: "hello"; readonly version: number }
@@ -98,7 +114,8 @@ export type Request =
 	| { readonly type: "models" }
 	/**
 	 * The viewer's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
-	 * when the model has it, and takes the nearest level that it has otherwise.
+	 * when the model has it, and takes the nearest level that it has otherwise. The host refuses a level that the model
+	 * does not have.
 	 */
 	| {
 			readonly type: "configure";
@@ -132,6 +149,69 @@ export type Request =
 	| { readonly type: "wait-task"; readonly key: string }
 	/** Aborts the task and the work that it owns. */
 	| { readonly type: "abort-task"; readonly key: string };
+
+/**
+ * The check of a request line on the host. It is looser than `Request`, so the host answers a spawn without `cwd` and an
+ * unknown thinking level with its own errors.
+ */
+export const RequestLine = Type.Union([
+	Type.Object({ type: Type.Literal("hello"), version: Type.Number() }),
+	Type.Object({
+		type: Type.Literal("spawn"),
+		requestId: Type.String(),
+		caller: Type.String(),
+		name: Type.Optional(Type.String()),
+		provider: Type.String(),
+		model: Type.String(),
+		thinking: Type.Optional(Type.String()),
+		callerThinking: Type.String(),
+		cwd: Type.Optional(Type.String()),
+		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
+		prompt: Type.String(),
+	}),
+	Type.Object({
+		type: Type.Literal("send"),
+		requestId: Type.String(),
+		caller: Type.String(),
+		handle: Type.String(),
+		message: Type.String(),
+		followUp: Type.Boolean(),
+	}),
+	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
+	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
+	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
+	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
+	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
+	Type.Object({ type: Type.Literal("watch"), handle: Type.String() }),
+	Type.Object({ type: Type.Literal("abort"), handle: Type.String() }),
+	Type.Object({ type: Type.Literal("models") }),
+	Type.Object({
+		type: Type.Literal("configure"),
+		handle: Type.String(),
+		provider: Type.Optional(Type.String()),
+		model: Type.Optional(Type.String()),
+		thinking: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		type: Type.Literal("input"),
+		requestId: Type.String(),
+		handle: Type.String(),
+		message: Type.String(),
+		followUp: Type.Boolean(),
+	}),
+	Type.Object({
+		type: Type.Literal("start"),
+		kind: Type.String(),
+		input: Json,
+		key: Type.String(),
+		version: Type.Optional(Type.Number()),
+	}),
+	Type.Object({ type: Type.Literal("task"), key: Type.String() }),
+	Type.Object({ type: Type.Literal("wait-task"), key: Type.String() }),
+	Type.Object({ type: Type.Literal("abort-task"), key: Type.String() }),
+]);
+
+export type RequestLine = Static<typeof RequestLine>;
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -174,20 +254,25 @@ export function cliPath(): string {
 	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
 }
 
-export function statePaths(project: string): { dir: string; socket: string; log: string } {
+export type StatePaths = { dir: string; socket: string; log: string };
+
+export function statePaths(project: string): StatePaths {
 	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", project);
+
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 
-export function isValidRunName(value: unknown): value is string {
+export function isValidRunName(value: string): boolean {
 	return (
-		typeof value === "string" &&
-		value.length > 0 &&
-		value.length <= 64 &&
-		value.trim() === value &&
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: a name must not contain control characters.
-		!/[\u0000-\u001f\u007f]/.test(value)
+		value.length > 0 && value.length <= 64 && value.trim() === value && !Array.from(value).some(isControlCharacter)
 	);
+}
+
+/** U+0000 to U+001F and U+007F. */
+function isControlCharacter(character: string): boolean {
+	const code = character.charCodeAt(0);
+
+	return code <= 0x1f || code === 0x7f;
 }
 
 /** The label of a child: its name, or its handle when it has no name. */
@@ -210,6 +295,7 @@ export function onLines(socket: Socket, onLine: (line: string) => void): void {
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {
 		buffer += chunk;
+
 		for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
 			const line = buffer.slice(0, end);
 			buffer = buffer.slice(end + 1);

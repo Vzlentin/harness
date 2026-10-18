@@ -37,5 +37,6 @@ export default function askEntry({
 		abort: (_task, runtime, context) =>
 			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 	});
+
 	return { extensions: [], tasks: [Ask], close: async () => {} };
 }

@@ -6,6 +6,7 @@ import { createServer, type Socket } from "node:net";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
@@ -13,6 +14,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 import {
 	createEventBus,
 	DefaultPackageManager,
+	type EventBus,
 	getAgentDir,
 	ProjectTrustStore,
 	SettingsManager,
@@ -33,6 +35,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import {
 	type Answer,
 	type Child,
@@ -55,6 +59,7 @@ import {
 	type Replies,
 	type Reply,
 	type Request,
+	RequestLine,
 	type WatchLine,
 } from "./protocol.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
@@ -64,6 +69,9 @@ import { subagentTool } from "./tool.ts";
 const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
 const context = BACKGROUND_CONTEXT;
+
+/** The `detail` of a failed turn that is an error object. */
+const ErrorDetail = Type.Object({ message: Type.String() });
 
 type ChildRecord = {
 	name?: string;
@@ -120,22 +128,28 @@ export async function runHost(options: {
 	const { stateDir, project, cwd, models, idleExitMs = IDLE_EXIT_MS } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
+
 	if (lock === undefined) return undefined;
 	const socketPath = join(stateDir, "host.sock");
 	rmSync(socketPath, { force: true });
 
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
+
 	const settings = SettingsManager.create(stateDir, agentDir, {
 		projectTrusted: new ProjectTrustStore(agentDir).get(stateDir) === true,
 	});
-	const warn = (error: unknown) =>
-		process.stderr.write(`warning: ${error instanceof Error ? error.message : String(error)}\n`);
+
+	const warn = (cause: unknown) =>
+		process.stderr.write(`warning: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
 	let harness: Harness | undefined;
+
 	const place: Place = {
 		get store() {
 			if (harness === undefined) throw new Error("The host is not open yet");
+
 			return harness;
 		},
 		models,
@@ -143,27 +157,33 @@ export async function runHost(options: {
 			return registry.snapshot();
 		},
 	};
-	const entries = await loadEntries(stateDir, agentDir, settings, place, warn).catch((error: unknown) => {
+
+	const entries = await loadEntries(stateDir, agentDir, settings, place, warn).catch((cause: unknown) => {
 		lock.close();
-		throw error;
+		throw cause;
 	});
+
 	const envs = new Map<ConversationId, NodeExecutionEnv>();
 	const startable = startableTasks(entries.tasks);
 	let base: Omit<Handler, "signal" | "connection">;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
 	let agentSetUp: Promise<Conversation> | undefined;
+
 	const agent = () =>
-		(agentSetUp ??= setUpAgent(base.root, models, settings, project, cwd).catch((error: unknown) => {
+		(agentSetUp ??= setUpAgent(base.root, models, settings, project, cwd).catch((cause: unknown) => {
 			agentSetUp = undefined;
-			throw error;
+			throw cause;
 		}));
+
 	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
 		send: (request, signal) => handleRequest(request, { ...base, signal }),
 	});
+
 	const selected = [ChildContext, tool, ...entries.extensions];
+
 	try {
 		for (const extension of selected) registry.install(extension);
 		registry.install(library.extension);
@@ -180,22 +200,27 @@ export async function runHost(options: {
 				env: async ({ conversationId, cwd, read }, envContext) => {
 					if (cwd === undefined) return undefined;
 					const cached = envs.get(conversationId);
+
 					if (cached !== undefined) return cached;
 					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
 					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId), HARNESS_PROJECT: project };
+
 					if (agent?.model !== undefined) {
 						shellEnv.PI_PROVIDER = agent.model.provider;
 						shellEnv.PI_MODEL = agent.model.modelId;
 					}
+
 					if (agent?.thinkingLevel !== undefined) shellEnv.PI_REASONING_LEVEL = agent.thinkingLevel;
 					const env = new NodeExecutionEnv({ cwd, shellEnv });
 					envs.set(conversationId, env);
+
 					return env;
 				},
 				onReport: warn,
 			},
 			context,
 		);
+
 		// A store from before the children library would mix children that it does not know with those it does.
 		// pi-durable refuses a stored version below the definition's with this message; any other error is not an old store.
 		try {
@@ -203,6 +228,7 @@ export async function runHost(options: {
 		} catch (error) {
 			await harness.close(context);
 			const message = error instanceof Error ? error.message : String(error);
+
 			if (!message.includes("(subagent.children) requires migration from version")) throw error;
 			throw new Error(
 				`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent (${message}). Stop the host, remove the file and run the command again.`,
@@ -213,6 +239,7 @@ export async function runHost(options: {
 		lock.close();
 		throw error;
 	}
+
 	harness.resume();
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
@@ -233,11 +260,14 @@ export async function runHost(options: {
 				let reply: Reply;
 				let start: (() => void) | undefined;
 				const connection = { socket, afterReply: (afterReply: () => void) => (start = afterReply) };
+
 				try {
-					const request = JSON.parse(line) as Request;
+					const request = parseRequest(line);
+
 					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
 						lastActivity = Date.now();
 					}
+
 					reply = {
 						ok: true,
 						value: await handleRequest(request, { ...base, signal: abort.signal, connection }),
@@ -245,6 +275,7 @@ export async function runHost(options: {
 				} catch (error) {
 					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
 				}
+
 				if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`);
 				start?.();
 			});
@@ -256,38 +287,46 @@ export async function runHost(options: {
 			abort.abort();
 		});
 	});
+
 	await new Promise<void>((resolveListen, rejectListen) => {
 		server.once("error", rejectListen);
 		server.listen(socketPath, () => {
 			server.off("error", rejectListen);
 			resolveListen();
 		});
-	}).catch(async (error: unknown) => {
+	}).catch(async (cause: unknown) => {
 		await entries.close();
 		await harness.close(context);
 		lock.close();
-		throw error;
+		throw cause;
 	});
 
 	let closing: Promise<void> | undefined;
+
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
 			server.close();
+
 			for (const socket of connections) socket.destroy();
+
 			for (const abort of aborts) abort.abort();
+
 			try {
 				// Entries close first: an entry may still need the open harness.
 				await entries.close();
 				await harness.close(context);
+
 				for (const env of envs.values()) await env.cleanup(context);
 			} finally {
 				rmSync(socketPath, { force: true });
 				lock.close();
 			}
 		})();
+
 		return closing;
 	};
+
 	const timer = setInterval(
 		() => {
 			if (connections.size > 0 || Date.now() - lastActivity < idleExitMs) return;
@@ -298,9 +337,11 @@ export async function runHost(options: {
 		},
 		Math.min(IDLE_CHECK_MS, idleExitMs),
 	);
+
 	timer.unref();
 	// A store failure closes the harness; the host then closes too.
 	const closed = harness.closed.then(() => close());
+
 	return { closed, close };
 }
 
@@ -323,7 +364,8 @@ function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
 	handler: Handler,
 ): Promise<Replies[T]>;
-async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
+function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]>;
+async function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]> {
 	switch (request.type) {
 		case "hello":
 			return { version: PROTOCOL_VERSION, pid: process.pid };
@@ -348,11 +390,13 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return modelInfos(handler.place.models);
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
+
 			return serveWatch(handler, request.handle, handler.connection);
 		case "start":
 			// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without
 			// a model for the agent, the task still starts: its children may name their own.
 			await handler.agent().catch(() => undefined);
+
 			return startTask(handler, request);
 		case "task":
 			return taskInfo(handler.harness, request.key);
@@ -362,9 +406,11 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return abortTask(handler.harness, request.key);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
+
 			const own = Object.entries(state?.children ?? {})
 				.filter(([, record]) => record.caller === request.caller)
 				.sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
+
 			// A child that the library closed outside `stop`, such as a subagent of a workflow session when its run ends,
 			// keeps its record until a `stop`, and is not listed.
 			const infos = await Promise.all(
@@ -374,45 +420,67 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 						: childInfo(handler, handle, record),
 				),
 			);
+
 			return infos.filter((info) => info !== undefined);
 		}
+
 		case "rename": {
 			await ownRecord(handler.harness, request.handle, request.caller);
 			await handler.harness.commit(async (tx) => {
 				const record = (await tx.doc(Children)).children[request.handle];
+
 				if (record !== undefined) record.name = request.name;
 			}, context);
+
 			return childInfo(handler, request.handle);
 		}
+
 		case "stop": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
 			// Stopping a child stops the children it spawned, and removes them all.
 			const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
 			await handler.harness.commit(async (tx) => {
 				const state = await tx.doc(Children);
+
 				const removed = new Set(
 					Object.keys(state.children).filter((handle) => {
 						const child = state.children[handle];
+
 						return child !== undefined && closed.has(String(child.conversationId));
 					}),
 				);
+
 				for (const handle of removed) delete state.children[handle];
+
 				for (const [requestId, handle] of Object.entries(state.requests)) {
 					if (removed.has(handle)) delete state.requests[requestId];
 				}
 			}, context);
-			return { handle: request.handle, ...(record.name === undefined ? {} : { name: record.name }) };
+
+			return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
 		}
-		default:
-			throw new Error(`Unknown request: ${(request as { type?: unknown }).type}`);
 	}
 }
 
-async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+/** The request of a line from a client, checked against the protocol. */
+function parseRequest(line: string): RequestLine {
+	const request: unknown = JSON.parse(line);
+
+	if (Value.Check(RequestLine, request)) return request;
+
+	throw new Error(
+		Value.Check(Type.Object({ type: Type.String() }), request)
+			? `Unknown or invalid request: ${request.type}`
+			: "Invalid request",
+	);
+}
+
+async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	if (!request.cwd) throw new Error("spawn requires a working directory");
 	const { harness, place } = handler;
 	const state = await harness.snapshot(Children, context);
 	let handle = state?.requests[request.requestId];
+
 	if (handle === undefined) {
 		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
 		const parent =
@@ -420,43 +488,47 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			request.caller === String(handler.root.id)
 				? request.caller
 				: undefined;
-		const spec: Spec = {
+
+		let spec: Spec = {
 			...(parent === undefined ? { root: request.caller } : { parent }),
 			provider: request.provider,
 			model: request.model,
-			...(request.thinking === undefined ? {} : { thinking: request.thinking }),
 			fallbackThinking: request.callerThinking,
 			cwd: request.cwd,
-			...(request.tools === undefined ? {} : { tools: request.tools }),
 		};
+
+		if (request.thinking !== undefined) spec = { ...spec, thinking: request.thinking };
+
+		if (request.tools !== undefined) spec = { ...spec, tools: request.tools };
+
 		// The record is written in the commit that creates the child.
 		await library.open(place, handler.owner, `sub:${request.requestId}`, spec, context, async (tx, id) => {
 			const current = await tx.doc(Children);
 			let fresh = randomBytes(3).toString("hex");
+
 			while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
-			current.children[fresh] = {
-				...(request.name === undefined ? {} : { name: request.name }),
-				caller: request.caller,
-				createdAt: new Date().toISOString(),
-				conversationId: id,
-			};
+			const record: ChildRecord = { caller: request.caller, createdAt: new Date().toISOString(), conversationId: id };
+			current.children[fresh] = request.name === undefined ? record : { name: request.name, ...record };
 			current.requests[request.requestId] = fresh;
 		});
 		handle = (await harness.snapshot(Children, context))?.requests[request.requestId];
+
 		if (handle === undefined) throw new Error(`Missing subagent of ${request.requestId}`);
 	}
+
 	const record = await childRecord(harness, handle);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it.
 	await (await childOf(handler, record)).send(
 		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
 		context,
 	);
+
 	return childInfo(handler, handle, record);
 }
 
 /** Sends the input of `request` to `found`. */
 async function sendTo(
-	request: Extract<Request, { type: "send" | "input" }>,
+	request: Extract<RequestLine, { type: "send" | "input" }>,
 	found: Pick<Target, "info" | "send">,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const busy = (await found.info()).state === "busy";
@@ -466,6 +538,7 @@ async function sendTo(
 		whenBusy: request.followUp ? "followUp" : "steer",
 		requestId: request.requestId,
 	});
+
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
 }
 
@@ -473,33 +546,44 @@ function sendVerb(busy: boolean, followUp: boolean): string {
 	return !busy ? "Prompted" : followUp ? "Queued follow-up for" : "Steered";
 }
 
-async function waitChild(request: Extract<Request, { type: "wait" }>, handler: Handler): Promise<{ answer: string }> {
+async function waitChild(
+	request: Extract<RequestLine, { type: "wait" }>,
+	handler: Handler,
+): Promise<{ answer: string }> {
 	const child = await childOf(handler, await childRecord(handler.harness, request.handle));
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
 	let answer: Answer;
+
 	try {
 		answer = await child.settled(withAbortSignal(AbortSignal.any([timeout, handler.signal]), context));
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);
 		throw error;
 	}
+
 	// A cut answer still gives its text.
 	if (answer.status === "ok" || answer.reason !== "unanswered") return { answer: answer.text };
+
 	if (answer.cause === "queued") throw new Error(`${request.handle} stopped with queued messages after a failed turn`);
 	throw new Error(failureText(request.handle, answer.cause, answer.detail));
 }
 
-async function abortChild(request: Extract<Request, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
+async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
 	const found = await target(handler, request.handle);
 	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
 	await found.conversation.abort(context);
+
 	return found.info();
 }
 
-async function configureChild(request: Extract<Request, { type: "configure" }>, handler: Handler): Promise<ChildInfo> {
+async function configureChild(
+	request: Extract<RequestLine, { type: "configure" }>,
+	handler: Handler,
+): Promise<ChildInfo> {
 	const found = await target(handler, request.handle);
 	const agent = await found.conversation.agent(context);
 	await found.conversation.configure(resolveModel(handler.place.models, agent, request), context);
+
 	return found.info();
 }
 
@@ -510,6 +594,7 @@ async function target(handler: Handler, handle: string) {
 	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
 	const root = await handler.agent();
 	const { harness, place, project } = handler;
+
 	const turn = library.turn(
 		place,
 		root.id,
@@ -519,6 +604,7 @@ async function target(handler: Handler, handle: string) {
 			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
 		},
 	);
+
 	return {
 		conversation: root,
 		info: async (): Promise<ChildInfo> => ({
@@ -528,7 +614,7 @@ async function target(handler: Handler, handle: string) {
 			state: await turn.state(context),
 		}),
 		send: (input: Input) => turn.send(input, context),
-		record: undefined as ChildRecord | undefined,
+		record: undefined,
 	};
 }
 
@@ -537,6 +623,7 @@ type Target = Awaited<ReturnType<typeof target>>;
 /** The target of the child `handle`, whose record is `record`. */
 async function childTarget(handler: Handler, handle: string, record: ChildRecord) {
 	const child = await childOf(handler, record);
+
 	return {
 		conversation: child.conversation,
 		info: () => childInfo(handler, handle, record),
@@ -558,31 +645,38 @@ async function modelInfos(models: Models): Promise<ModelInfo[]> {
 async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
 	const state = await harness.snapshot(Children, context);
 	const record = recordOf(state, handle);
+
 	if (record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+
 	return record;
 }
 
 /** The record of `handle`, which must belong to `caller`. */
 async function ownRecord(harness: Harness, handle: string, caller: string): Promise<ChildRecord> {
 	const record = await childRecord(harness, handle);
+
 	if (record.caller !== caller) throw new Error(`Subagent ${handle} belongs to another session`);
+
 	return record;
 }
 
 async function childOf(handler: Pick<Handler, "place" | "owner">, record: ChildRecord): Promise<Child> {
 	const child = await library.find(handler.place, handler.owner, { id: String(record.conversationId) }, context);
+
 	if (child === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
+
 	return child;
 }
 
-function failureText(handle: string, reason: string, detail: unknown): string {
+function failureText(handle: string, reason: string, detail: JsonValue | undefined): string {
 	if (reason === "aborted") return `${handle} was aborted`;
-	const text =
-		typeof detail === "string"
-			? detail
-			: typeof (detail as { message?: unknown } | undefined)?.message === "string"
-				? (detail as { message: string }).message
-				: undefined;
+
+	const text = Value.Check(Type.String(), detail)
+		? detail
+		: Value.Check(ErrorDetail, detail)
+			? detail.message
+			: undefined;
+
 	return text === undefined ? `${handle} failed: ${reason}` : `${handle} failed: ${text}`;
 }
 
@@ -597,12 +691,10 @@ async function childInfo(
 	const childState = await child.state(context);
 	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
 	const state: ChildState = childState === "closed" ? "idle" : childState;
-	return {
-		handle,
-		...(record.name === undefined ? {} : { name: record.name }),
-		state,
-		...(await agentFields(child.conversation)),
-	};
+
+	const fields = await agentFields(child.conversation);
+
+	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 }
 
 /** The model, thinking level and directory of the agent of `conversation`, for its info. */
@@ -610,6 +702,7 @@ async function agentFields(
 	conversation: Conversation,
 ): Promise<Pick<ChildInfo, "provider" | "model" | "thinking" | "cwd">> {
 	const agent = await conversation.agent(context);
+
 	return {
 		provider: agent.model?.provider ?? "",
 		model: agent.model?.modelId ?? "",
@@ -638,17 +731,21 @@ async function setUpAgent(
 	const provider = settings.getDefaultProvider();
 	const modelId = settings.getDefaultModel();
 	const model = available.find((found) => found.provider === provider && found.id === modelId) ?? available[0];
+
 	if (model === undefined) {
 		throw new Error(
 			`No model for the ${project} agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`,
 		);
 	}
+
 	const resolved = resolveModel(models, undefined, {
 		provider: model.provider,
 		model: model.id,
 		fallbackThinking: settings.getDefaultThinkingLevel() ?? "medium",
 	});
+
 	await root.configure({ ...resolved, cwd }, context);
+
 	return root;
 }
 
@@ -667,30 +764,38 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 	// pi-durable stops both watches when `signal` aborts: on socket close, or when `watching` aborts.
 	const watching = new AbortController();
 	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
+
 	const end = () => {
 		watching.abort();
+
 		if (socket.writable) socket.end();
 	};
+
 	let found: Target;
 	let children: DocumentWatch<ChildrenState> | undefined;
 	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
 	let last: ChildInfo;
+
 	try {
 		found = await target(handler, handle);
+
 		// The project agent has no record, and no `Children` watch: it is never renamed or stopped.
 		if (found.record !== undefined) {
 			// The `Children` watch opens before the info, so it gets each later rename and stop of the child.
 			children = await harness.watchDoc(Children, watchContext);
 			const record = recordOf(children?.value, handle);
+
 			if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
 			found = { ...found, record, info: () => childInfo(handler, handle, record) };
 		}
+
 		last = await found.info();
 		conversation = await found.conversation.watch(watchContext);
 	} catch (error) {
 		watching.abort();
 		throw error;
 	}
+
 	const childrenWatch = children;
 	// pi-durable delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
 	connection.afterReply(() => {
@@ -700,19 +805,25 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 		// pi-durable runs the callbacks of one watch in order, but not those of two watches. Both watches write through
 		// this one chain, so a line never has older info than the line before it.
 		let queue: Promise<void> = Promise.resolve();
+
 		const send = (ops: readonly Op[]) => {
 			queue = queue.then(async () => {
 				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
 				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
 				const child = await found.info().catch(() => undefined);
+
 				if (child === undefined || !socket.writable) return;
+
 				if (!write({ ops, child })) await once(socket, "drain").catch(() => {});
 			});
+
 			return queue;
 		};
+
 		childrenWatch?.start(async (state) => {
 			if (!socket.writable) return;
 			const next = recordOf(state, handle);
+
 			if (next === undefined) {
 				write({ stopped: true });
 				end();
@@ -723,6 +834,7 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 		});
 		conversation.start((_view, ops) => send(ops));
 	});
+
 	return { view: conversation.value, child: last };
 }
 
@@ -738,11 +850,14 @@ function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: str
  */
 function takeLock(directory: string): DatabaseSync | undefined {
 	const database = new DatabaseSync(join(directory, "lock.sqlite"), { timeout: 0 });
+
 	try {
 		database.exec("BEGIN IMMEDIATE");
+
 		return database;
 	} catch {
 		database.close();
+
 		return undefined;
 	}
 }
@@ -754,11 +869,13 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 		get stream() {
 			const provider = settings.getProviderRetrySettings();
 			const idle = settings.getHttpIdleTimeoutMs();
-			return {
+
+			const stream = {
 				timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
 				maxRetryDelayMs: provider.maxRetryDelayMs,
-				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 			};
+
+			return provider.maxRetries === undefined ? stream : { ...stream, maxRetries: provider.maxRetries };
 		},
 		get retry() {
 			return settings.getRetrySettings();
@@ -775,20 +892,41 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
  */
 function liveTasks(tasks: HarnessInspection["tasks"]): number {
 	const dead = new Set<number>(tasks.filter((task) => task.state.kind === "blocked").map((task) => task.record.id));
+
 	for (let grown = true; grown; ) {
 		grown = false;
+
 		for (const task of tasks) {
 			const { state } = task;
+
 			if (dead.has(task.record.id) || state.kind !== "waiting" || !state.on.every((id) => dead.has(id))) continue;
 			dead.add(task.record.id);
 			grown = true;
 		}
 	}
+
 	return tasks.length - dead.size;
 }
 
 /** What the default export of an entry returns: its extensions, the tasks that `start` runs, and `close`. */
 type Entry = { readonly extensions: readonly Extension[]; readonly tasks?: readonly AnyTask[]; close(): Promise<void> };
+
+/** What the host gives the default export of an entry. */
+type EntryOptions = {
+	readonly durable: typeof durable;
+	readonly ai: typeof ai;
+	readonly events: EventBus;
+	readonly children: typeof library;
+	readonly place: Place;
+};
+
+/** A `package.json`, which is a JSON object. */
+const PackageJson = Type.Object({});
+
+/** The part of a package's `package.json` that names its entries. */
+const Manifest = Type.Object({
+	piDurable: Type.Optional(Type.Object({ extensions: Type.Optional(Type.Array(Type.String())) })),
+});
 
 /**
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
@@ -801,26 +939,41 @@ async function loadEntries(
 	agentDir: string,
 	settingsManager: SettingsManager,
 	place: Place,
-	warn: (error: unknown) => void,
+	warn: (cause: unknown) => void,
 ): Promise<Required<Entry>> {
 	const modules = new Set<string>();
+
 	const roots = new DefaultPackageManager({ cwd, agentDir, settingsManager })
 		.listConfiguredPackages()
 		.flatMap((found) => found.installedPath ?? []);
+
 	for (const root of new Set(roots)) {
-		const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
-			readonly piDurable?: { readonly extensions?: readonly string[] };
-		};
+		const path = join(root, "package.json");
+		const manifest: unknown = JSON.parse(await readFile(path, "utf8").catch(() => "{}"));
+
+		if (!Value.Check(PackageJson, manifest)) {
+			warn(new Error(`${path} is not a valid package.json`));
+			continue;
+		}
+
+		if (!Value.Check(Manifest, manifest)) {
+			warn(new Error(`${path} has an invalid piDurable field`));
+			continue;
+		}
+
 		for (const path of manifest.piDurable?.extensions ?? []) modules.add(resolvePath(root, path));
 	}
+
 	for (const module of Object.values(readEntries())) if (existsSync(module)) modules.add(module);
 	const events = createEventBus();
 	const entries: Entry[] = [];
+
 	const close = async () => {
 		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
 			if (result.status === "rejected") warn(result.reason);
 		}
 	};
+
 	try {
 		for (const module of modules) {
 			const entry = await importEntry(module);
@@ -830,6 +983,7 @@ async function loadEntries(
 		await close();
 		throw error;
 	}
+
 	return {
 		extensions: entries.flatMap((entry) => entry.extensions),
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
@@ -841,10 +995,12 @@ async function loadEntries(
  * Imports the entry `module`. Node does not strip types under `node_modules`, where Pi installs npm packages, so jiti
  * loads a TypeScript entry there.
  */
-async function importEntry(module: string): Promise<{ default: (options: object) => Entry | Promise<Entry> }> {
+async function importEntry(module: string): Promise<{ default: (options: EntryOptions) => Entry | Promise<Entry> }> {
 	if (module.endsWith(".ts") && module.split(sep).includes("node_modules")) {
 		const { createJiti } = await import("jiti");
+
 		return createJiti(import.meta.url).import(module);
 	}
+
 	return import(pathToFileURL(module).href);
 }

@@ -18,18 +18,24 @@ export default function subagentEntry({ durable, ai }: { readonly durable: typeo
 		scope: "session",
 		initial: () => ({ id: "" }),
 	});
+
 	// The store ID never changes, so the first call reads it and the next calls reuse it.
 	let storeId: string | undefined;
+
 	const extension = subagentTool(durable, ai, {
 		caller: async (api, context) => {
 			storeId ??= await api.commit(async (tx) => {
 				const store = await tx.doc(Store);
+
 				if (store.id === "") store.id = randomUUID();
+
 				return store.id;
 			}, context);
+
 			return `${storeId}:${api.conversationId}`;
 		},
 		send: sendToHost,
 	});
+
 	return { extensions: [extension], close: async () => {} };
 }

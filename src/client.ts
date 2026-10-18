@@ -2,13 +2,14 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
 	cliPath,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
-	type Reply,
 	type Request,
 	statePaths,
 	type WatchLine,
@@ -16,13 +17,20 @@ import {
 
 const START_TIMEOUT_MS = 10_000;
 
+/** A line from the host: a reply, or an event of the watch. The value of a reply and the event are not checked here. */
+const HostLine = Type.Union([
+	Type.Object({ ok: Type.Literal(true), value: Type.Optional(Type.Unknown()) }),
+	Type.Object({ ok: Type.Literal(false), error: Type.String() }),
+	Type.Object({ event: Type.Unknown() }),
+]);
+
 /**
  * A connection to the host. Requests are answered in order, one reply line for each request line. After `watch`, the
  * event lines of the watch come between the replies.
  */
 export class Client {
 	readonly #socket: Socket;
-	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
+	readonly #pending: PromiseWithResolvers<unknown>[] = [];
 	#ended = false;
 	/** The events of the watch. Only `watch` sets it; otherwise an event is dropped. */
 	#lines: Readable | undefined;
@@ -34,13 +42,24 @@ export class Client {
 	constructor(socket: Socket) {
 		this.#socket = socket;
 		onLines(socket, (line) => {
-			const parsed = JSON.parse(line) as Reply | { event: WatchLine };
-			if ("event" in parsed) {
-				this.#lines?.push(parsed.event);
+			const parsed: unknown = JSON.parse(line);
+
+			if (!Value.Check(HostLine, parsed)) {
+				this.#pending.shift()?.reject(new Error(`The harness host sent an invalid reply: ${line}`));
+
 				return;
 			}
+
+			if ("event" in parsed) {
+				this.#lines?.push(parsed.event);
+
+				return;
+			}
+
 			const waiter = this.#pending.shift();
+
 			if (waiter === undefined) return;
+
 			if (parsed.ok) waiter.resolve(parsed.value);
 			else waiter.reject(new Error(parsed.error));
 		});
@@ -50,10 +69,14 @@ export class Client {
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
 		if (this.#ended) return Promise.reject(new Error("The harness host closed the connection"));
-		return new Promise((resolve, reject) => {
-			this.#pending.push({ resolve: resolve as (value: unknown) => void, reject });
-			this.#socket.write(`${JSON.stringify(request)}\n`);
-		});
+
+		const reply = Promise.withResolvers<unknown>();
+		this.#pending.push(reply);
+		this.#socket.write(`${JSON.stringify(request)}\n`);
+
+		// SAFETY: the host answers each request line in order with the value of `Replies` for its type, and `connect`
+		// refuses a host of another protocol version.
+		return reply.promise as Promise<Replies[T]>;
 	}
 
 	/**
@@ -64,6 +87,7 @@ export class Client {
 		const lines = new Readable({ objectMode: true, read() {} });
 		this.#lines = lines;
 		const reply = await this.request({ type: "watch", handle });
+
 		return { ...reply, lines };
 	}
 
@@ -71,16 +95,17 @@ export class Client {
 		this.#socket.end();
 	}
 
-	/** Rejects the pending requests with `reason` and closes the connection. The host then stops them. */
-	abort(reason: unknown): void {
-		this.#end(reason);
+	/** Rejects the pending requests with `cause` and closes the connection. The host then stops them. */
+	abort(cause: unknown): void {
+		this.#end(cause);
 		this.#socket.destroy();
 	}
 
-	#end(reason: unknown = new Error("The harness host closed the connection")): void {
+	#end(cause: unknown = new Error("The harness host closed the connection")): void {
 		if (!this.#ended) this.#lines?.push(null);
 		this.#ended = true;
-		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
+
+		for (const waiter of this.#pending.splice(0)) waiter.reject(cause);
 	}
 }
 
@@ -93,33 +118,42 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 	const project = resolveProject(process.env, process.cwd());
 	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
+
 	if (socket === undefined) {
 		if (!options.start) return undefined;
 		startHost(project, paths.dir, paths.log);
 		const deadline = Date.now() + START_TIMEOUT_MS;
+
 		while (socket === undefined) {
 			options.signal?.throwIfAborted();
+
 			if (Date.now() > deadline) throw new Error(`Could not start the harness host; see ${paths.log}`);
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 			socket = await tryConnect(paths.socket);
 		}
 	}
+
 	const client = new Client(socket);
+
 	try {
 		const hello = await client.request({ type: "hello", version: PROTOCOL_VERSION });
+
 		// A stopped host restarts from the installed code, which is the newer side here, so only the client can catch up.
 		if (hello.version > PROTOCOL_VERSION) {
 			throw new Error(
 				`This client uses harness protocol ${PROTOCOL_VERSION} and the host (pid ${hello.pid}) uses ${hello.version}. Reload Pi with /reload, or use the harness CLI of the host's install`,
 			);
 		}
+
 		if (hello.version !== PROTOCOL_VERSION) {
 			throw new Error(
 				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}. The host is older: stop it with kill ${hello.pid} and run the command again`,
 			);
 		}
+
 		client.pid = hello.pid;
 		client.project = project;
+
 		return client;
 	} catch (error) {
 		client.close();
@@ -149,11 +183,14 @@ export async function request<T extends Request["type"]>(
 ): Promise<Replies[T] | undefined> {
 	const { signal } = options;
 	const client = await connect(options);
+
 	if (client === undefined) return undefined;
 	const abort = () => client.abort(signal?.reason);
 	signal?.addEventListener("abort", abort, { once: true });
+
 	try {
 		signal?.throwIfAborted();
+
 		return await client.request(request);
 	} finally {
 		signal?.removeEventListener("abort", abort);
@@ -179,6 +216,7 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 function startHost(project: string, dir: string, log: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
+
 	try {
 		const cli = cliPath();
 		spawn(process.execPath, [cli, "--project", project, "host"], {

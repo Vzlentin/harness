@@ -4,6 +4,7 @@ import { type ConversationView, type EntryRecord, UsageDoc, type UsageState } fr
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ChildInfo } from "./protocol.ts";
 import { bold, color } from "./theme.ts";
+import { docOf } from "./view-state.ts";
 
 /** One line, cut to the width, with `hints` at the right end: the first hints go when they do not all fit. */
 export class Line implements Component {
@@ -14,8 +15,10 @@ export class Line implements Component {
 		for (let first = 0; first < this.hints.length; first++) {
 			const right = `${this.hints.slice(first).join(" · ")} `;
 			const gap = width - visibleWidth(this.text) - visibleWidth(right);
+
 			if (gap >= 2) return [`${this.text}${" ".repeat(gap)}${this.style(right)}`];
 		}
+
 		return [truncateToWidth(this.text, width)];
 	}
 	invalidate(): void {}
@@ -29,6 +32,7 @@ export function headerText(child: ChildInfo, title: string): string {
 			: child.state === "idle"
 				? color("success", "● idle")
 				: color("error", "⊗ error");
+
 	return ` ${[bold(color("accent", "harness")), title, color("muted", tildePath(child.cwd)), state].join(
 		color("borderMuted", "  │  "),
 	)}`;
@@ -39,12 +43,14 @@ export function headerText(child: ChildInfo, title: string): string {
  * `contextWindow` is known and the child has answered once.
  */
 export function footerText(child: ChildInfo, view: ConversationView, contextWindow: number | undefined): string {
-	const usage = totalUsage(view.docs[UsageDoc.definition.kind] as UsageState | undefined);
+	const usage = totalUsage(docOf(view, UsageDoc));
 	const used = lastUsage(view.entries);
+
 	const context =
 		contextWindow === undefined || contextWindow === 0 || used === undefined
 			? []
 			: [`${((100 * used) / contextWindow).toFixed(1)}%/${compactCount(contextWindow)} ctx`];
+
 	return ` ${color(
 		"muted",
 		[
@@ -55,14 +61,18 @@ export function footerText(child: ChildInfo, view: ConversationView, contextWind
 	)}`;
 }
 
+type Totals = { tokens: number; cost: number };
+
 /** The tokens and the cost of every model request of the conversation. */
-function totalUsage(usage: UsageState | undefined): { tokens: number; cost: number } {
+function totalUsage(usage: UsageState | undefined): Totals {
 	let tokens = 0;
 	let cost = 0;
+
 	for (const model of Object.values(usage?.models ?? {})) {
 		tokens += model.totalTokens;
 		cost += model.cost.total;
 	}
+
 	return { tokens, cost };
 }
 
@@ -72,6 +82,7 @@ function compactCount(count: number): string {
 
 function tildePath(path: string): string {
 	const home = homedir();
+
 	return home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
 }
 
@@ -79,8 +90,11 @@ function tildePath(path: string): string {
 function lastUsage(entries: readonly EntryRecord[]): number | undefined {
 	for (const entry of entries.toReversed()) {
 		const message = entry.model?.[0];
+
 		if (entry.kind !== "pi.assistant" || message?.role !== "assistant") continue;
+
 		return calculateContextTokens(message.usage);
 	}
+
 	return undefined;
 }

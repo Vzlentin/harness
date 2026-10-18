@@ -45,18 +45,22 @@ export function startableTasks(tasks: readonly AnyTask[]): Extension {
 export async function startTask(host: TaskHost, request: Extract<Request, { type: "start" }>): Promise<TaskInfo> {
 	await host.root.commit(async (tx) => {
 		const state = await tx.doc(StartedTasks);
+
 		if (Object.hasOwn(state.tasks, request.key)) return;
 		const task = startableTask(host.startable, request.kind);
+
 		if (request.version !== undefined && task.definition.version !== request.version) {
 			throw new Error(
 				`This host has version ${task.definition.version} of ${request.kind}, not ${request.version}: stop the host so it starts again with the installed version`,
 			);
 		}
+
 		state.tasks[request.key] = await tx.createTask(task, request.input, {
 			ownership: { kind: "conversation" },
 			background: true,
 		});
 	}, context);
+
 	return taskInfo(host.harness, request.key);
 }
 
@@ -64,26 +68,25 @@ export async function startTask(host: TaskHost, request: Extract<Request, { type
 export async function taskInfo(harness: Harness, key: string): Promise<TaskInfo> {
 	const id = await taskId(harness, key);
 	const record = await harness.getTask(id, context);
+
 	if (record === undefined) throw new Error(`Missing task ${id}`);
-	return {
-		key,
-		id,
-		kind: record.kind,
-		version: record.version,
-		status: record.state.status,
-		...(record.state.status === "terminal" ? { outcome: record.state.outcome } : {}),
-	};
+
+	const info: TaskInfo = { key, id, kind: record.kind, version: record.version, status: record.state.status };
+
+	return record.state.status === "terminal" ? { ...info, outcome: record.state.outcome } : info;
 }
 
 /** Waits until the task of `key` is terminal, or the connection closes, and gives its info with the outcome. */
 export async function waitTask(host: TaskHost, key: string): Promise<TaskInfo> {
 	await host.harness.waitForTask(await taskId(host.harness, key), withAbortSignal(host.signal, context));
+
 	return taskInfo(host.harness, key);
 }
 
 /** Aborts the task of `key`. The abort reaches the conversations that the task owns, and their turns. */
 export async function abortTask(harness: Harness, key: string): Promise<TaskInfo> {
 	await harness.abortTask(await taskId(harness, key), context);
+
 	return taskInfo(harness, key);
 }
 
@@ -91,13 +94,19 @@ export async function abortTask(harness: Harness, key: string): Promise<TaskInfo
 async function taskId(harness: Harness, key: string): Promise<TaskId<JsonValue>> {
 	const state = await harness.snapshot(StartedTasks, context);
 	const id = state != null && Object.hasOwn(state.tasks, key) ? state.tasks[key] : undefined;
+
 	if (id === undefined) throw new Error(`Unknown task: ${key}`);
+
 	return id;
 }
 
 /** The task of `kind` in `startable`. The entries give erased tasks, so this is where they get the type of `createTask`. */
 function startableTask(startable: Extension, kind: string): Task<JsonValue, { phase: string }, JsonValue, object> {
 	const task = startable.tasks?.find((found) => found.definition.name === kind);
+
 	if (task === undefined) throw new Error(`Unknown task kind: ${kind}`);
+
+	// SAFETY: `AnyTask` is a `Task` with its types erased. The store keeps the input, the phase state and the result of
+	// every task as JSON.
 	return task as Task<JsonValue, { phase: string }, JsonValue, object>;
 }

@@ -41,6 +41,7 @@ type PiTool<T extends TSchema> = {
 /** A Pi coding agent tool as a durable tool that runs in the calling conversation's directory. */
 function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegistration {
 	const { name, description, parameters } = create(".");
+
 	return defineTool({
 		name,
 		description,
@@ -48,8 +49,10 @@ function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegi
 		replay: "safe",
 		execute: async (args, api, context) => {
 			const { cwd } = await api.agent(context);
+
 			if (cwd === undefined) throw new Error(`${name} needs a working directory`);
 			const result = await create(cwd).execute(api.callId, args, context.abortSignal);
+
 			return { output: result.content };
 		},
 	});
@@ -59,6 +62,7 @@ type Resources = {
 	readonly context: readonly { readonly path: string; readonly content: string }[];
 	readonly skills: ReturnType<typeof loadSkills>["skills"];
 };
+
 const resources = new Map<string, Promise<Resources>>();
 
 /**
@@ -72,16 +76,19 @@ async function resourcesOf(cwd: string): Promise<Resources> {
 		const trusted = savedTrust(cwd);
 		const key = `${trusted}:${cwd}`;
 		let found = resources.get(key);
+
 		if (found === undefined) {
 			found = loadResources(cwd, trusted);
 			resources.set(key, found);
 			found.catch(() => resources.delete(key));
 		}
+
 		return await found;
 	} catch (error) {
 		process.stderr.write(
 			`warning: ${cwd}: ${error instanceof Error ? error.message : String(error)}; no project instructions or skills\n`,
 		);
+
 		return { context: [], skills: [] };
 	}
 }
@@ -91,6 +98,7 @@ async function loadResources(cwd: string, trusted: boolean): Promise<Resources> 
 	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: trusted });
 	const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve(async () => "skip");
 	const skillPaths = resolved.skills.filter(({ enabled }) => enabled).map(skillPath);
+
 	return {
 		context: loadProjectContextFiles({ cwd, agentDir }),
 		skills: loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false }).skills,
@@ -104,6 +112,7 @@ function skillPath(resource: {
 }): string {
 	if (resource.metadata.source !== "auto" && resource.metadata.origin !== "package") return resource.path;
 	const file = join(resource.path, "SKILL.md");
+
 	try {
 		return statSync(resource.path).isDirectory() && existsSync(file) ? file : resource.path;
 	} catch {
@@ -116,6 +125,7 @@ const cwdOf = (input: PromptInput): string | undefined => input.env?.cwd ?? inpu
 /** The resources of the conversation's directory. */
 async function inputResources(input: PromptInput): Promise<Resources | undefined> {
 	const cwd = cwdOf(input);
+
 	return cwd === undefined ? undefined : resourcesOf(cwd);
 }
 
@@ -134,7 +144,9 @@ export const ChildContext = defineExtension({
 	sections: [
 		section("project_context", async (input) => {
 			const files = (await inputResources(input))?.context ?? [];
+
 			if (files.length === 0) return undefined;
+
 			return [
 				"Project-specific instructions and guidelines:",
 				...files.map(
@@ -146,11 +158,14 @@ export const ChildContext = defineExtension({
 			// As in Pi, skills need a tool that reads their files, and the hint names the first one offered.
 			const offered = input.agent.tools.map(({ name }) => name);
 			const callable = input.agent.callable.map(({ name }) => name);
+
 			const reader =
 				(["read", "bash"] as const).find((name) => offered.includes(name)) ??
 				(callable.includes("read") || callable.includes("bash") ? "indirect" : undefined);
+
 			if (reader === undefined) return undefined;
 			const skills = (await inputResources(input))?.skills ?? [];
+
 			return formatSkillsForPrompt(skills, reader).trim() || undefined;
 		}),
 		section("cwd", (input) => cwdOf(input)?.replace(/\\/g, "/")),

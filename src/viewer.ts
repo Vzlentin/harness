@@ -68,15 +68,18 @@ export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.
  */
 export async function attach(handle: string, options: AttachOptions): Promise<number> {
 	const client = await connect({ start: true });
+
 	if (client === undefined) throw new Error("Could not connect to the harness host");
 	let watched: Awaited<ReturnType<Client["watch"]>>;
 	let models: readonly ModelInfo[];
+
 	try {
 		[watched, models] = await Promise.all([client.watch(handle), client.request({ type: "models" })]);
 	} catch (error) {
 		client.close();
 		throw error;
 	}
+
 	return new Viewer(handle, options, client, watched, models).start();
 }
 
@@ -196,6 +199,7 @@ class Viewer {
 		this.render();
 		this.reporter.report(this.child.state === "busy");
 		void this.follow(this.lines);
+
 		return this.exited;
 	}
 
@@ -221,6 +225,7 @@ class Viewer {
 		this.loader?.stop();
 		this.loader = undefined;
 		this.working.clear();
+
 		if (text === "") return;
 		this.loader = new Loader(
 			this.tui,
@@ -235,8 +240,10 @@ class Viewer {
 		// The model picker gets every key while it shows.
 		if (this.picker !== undefined) return undefined;
 		const key = this.keys.find(({ id }) => this.keybindings.matches(data, id));
+
 		if (key === undefined) return undefined;
 		key.action();
+
 		return { consume: true };
 	}
 
@@ -269,10 +276,13 @@ class Viewer {
 	private cycleThinking(): void {
 		const levels = this.modelInfo()?.thinkingLevels ?? [];
 		const thinking = levels[(levels.indexOf(this.child.thinking) + 1) % levels.length];
+
 		if (levels.length < 2 || thinking === undefined) {
 			this.showNotice(`${this.child.provider}/${this.child.model} has no thinking levels`);
+
 			return;
 		}
+
 		this.configure({ thinking });
 	}
 
@@ -280,11 +290,15 @@ class Viewer {
 	private pickModel(): void {
 		this.client.request({ type: "models" }).then((models) => {
 			this.models = models;
+
 			if (this.picker !== undefined) return;
+
 			if (models.length === 0) {
 				this.showNotice("The host has no models with a login");
+
 				return;
 			}
+
 			const picker = new ModelPicker(
 				models,
 				this.modelInfo(),
@@ -295,6 +309,7 @@ class Viewer {
 				},
 				() => this.closePicker(),
 			);
+
 			this.picker = this.tui.showOverlay(picker, { width: "70%", minWidth: 40, maxHeight: "60%" });
 			this.tui.setFocus(picker);
 			this.tui.requestRender();
@@ -324,13 +339,16 @@ class Viewer {
 	/** Aborts the turn. The host withdraws the queued messages, so they go back to the editor, steers first. */
 	private abort(): void {
 		const inputs = queued(inboxOf(this.view));
+
 		const texts = [
 			...inputs.filter((input) => input.mode === "steer"),
 			...inputs.filter((input) => input.mode === "followUp"),
 		].map((input) => input.text);
+
 		this.client.request({ type: "abort", handle: this.handle }).then(() => {
 			this.notice.setText("");
 			const text = [...texts, this.editor.getText()].filter((part) => part.trim() !== "").join("\n\n");
+
 			if (text !== this.editor.getText()) this.editor.setText(text);
 			this.tui.requestRender();
 		}, this.showError);
@@ -339,6 +357,7 @@ class Viewer {
 	private send(message: string, followUp: boolean): void {
 		if (message.trim() === "") return;
 		this.editor.addToHistory(message);
+
 		const request = {
 			type: "input",
 			requestId: randomUUID(),
@@ -346,6 +365,7 @@ class Viewer {
 			message,
 			followUp,
 		} as const;
+
 		this.client.request(request).then(() => this.notice.setText(""), this.showError);
 	}
 
@@ -357,10 +377,13 @@ class Viewer {
 
 	private onLine(line: WatchLine): void {
 		if (this.done) return;
+
 		if (line.stopped) {
 			void this.finish(0, `${runDisplayName(this.child)} was stopped`);
+
 			return;
 		}
+
 		this.view = apply(this.view, line.ops);
 		this.child = line.child;
 		this.render();
@@ -373,14 +396,15 @@ class Viewer {
 		this.loader?.stop();
 		this.chat.stopTimers();
 		this.tui.stop();
+
 		if (message !== undefined) this.terminal.write(`${message}\n`);
 		this.client.close();
 		await this.reporter.release();
 		this.#exit(code);
 	}
 
-	private readonly showError = (error: unknown): void => {
-		this.notice.setText(color("error", `Error: ${error instanceof Error ? error.message : String(error)}`));
+	private readonly showError = (cause: unknown): void => {
+		this.notice.setText(color("error", `Error: ${cause instanceof Error ? cause.message : String(cause)}`));
 		this.tui.requestRender();
 	};
 }

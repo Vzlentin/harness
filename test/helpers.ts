@@ -10,7 +10,12 @@ import {
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+	type FauxProviderState,
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
@@ -28,10 +33,13 @@ type Call = {
 };
 
 export const calls: Call[] = [];
+
 /** The system prompt and the tools of the last request for each prompt. */
 export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
+
 /** Requests that wait for a test to release them, by prompt. */
 export const gates = new Map<string, PromiseWithResolvers<void>>();
+
 /** The prompts of gated requests that were aborted. */
 export const aborted = new Set<string>();
 
@@ -41,13 +49,16 @@ const environment = { ...process.env };
 export function textOf(message: Message): string {
 	if (message.role === "system") return "";
 	const { content } = message;
-	if (typeof content === "string") return content;
+
+	if (!Array.isArray(content)) return content;
+
 	return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
 /** The bash command a child runs for `Task:\nNest`: spawn a child with the same task, then wait for it. */
 function nestCommand(): string {
 	const cli = `"${process.execPath}" "${CLI}"`;
+
 	return [
 		`out=$(${cli} spawn --name nested --prompt Nest) || exit 1`,
 		`echo "$out"`,
@@ -65,15 +76,17 @@ const toolSpawns = new Map([
 	["Agent spawn", "Agent child"],
 	["Agent waits", "Agent gated"],
 ]);
+
 /** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
 export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
+
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 export const toolWaits = new Map<string, PromiseWithResolvers<string>>();
 
 async function respond(
 	context: TranscriptContext,
 	options: SimpleStreamOptions | undefined,
-	_state: unknown,
+	_state: FauxProviderState,
 	model: { readonly id: string; readonly provider: string },
 ): Promise<AssistantMessage> {
 	const messages = context.messages.filter((message) => message.role !== "system");
@@ -83,34 +96,46 @@ async function respond(
 	const child = toolSpawns.get(prompt);
 	// Only the tool results of this turn count: the project agent keeps the turns before.
 	const turn = lastUser === undefined ? messages : messages.slice(messages.indexOf(lastUser) + 1);
+
 	if (child !== undefined && last?.role === "toolResult" && turn.filter((m) => m.role === "toolResult").length === 1) {
 		const handle = /\(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
+
 		if (handle !== undefined) {
 			toolWaits.get(prompt)?.resolve(handle);
+
 			return fauxAssistantMessage(fauxToolCall("subagent", { action: "wait", handle }), { stopReason: "toolUse" });
 		}
 	}
+
 	// After its spawn and wait, `Task:\nSend and wait` sends to the child and waits for it in one message.
 	const results = messages.filter((m) => m.role === "toolResult");
+
 	if (prompt === "Task:\nSend and wait" && last?.role === "toolResult" && results.length === 2) {
 		const handle = /\(([a-z0-9]+)\)$/m.exec(results[0] === undefined ? "" : textOf(results[0]))?.[1];
+
 		if (handle === undefined) throw new Error("no handle in the spawn result");
+
 		const toolCalls = [
 			fauxToolCall("subagent", { action: "send", handle, message: "Sent message" }),
 			fauxToolCall("subagent", { action: "wait", handle }),
 		];
+
 		return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
 	}
+
 	if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
 	const [system] = context.messages;
+
 	if (system?.role === "system") {
 		requests.set(prompt, {
 			system: getSystemMessageText(system),
 			tools: (system.toolsAdded ?? []).map(({ name }) => name),
 		});
 	}
+
 	const gate = gates.get(prompt);
+
 	if (gate !== undefined) {
 		await Promise.race([
 			gate.promise,
@@ -122,31 +147,43 @@ async function respond(
 			),
 		]);
 	}
+
 	if (child !== undefined) {
 		const args = { action: "spawn", name: "nested", prompts: [child] };
+
 		return fauxAssistantMessage(fauxToolCall("subagent", args), { stopReason: "toolUse" });
 	}
+
 	if (prompt === "Task:\nUse a tool") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: `while [ ! -f go ]; do sleep 0.05; done` }), {
 			stopReason: "toolUse",
 		});
 	}
+
 	if (prompt === "Task:\nNest") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
+
 	if (prompt === "Task:\nEnvironment") {
 		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL $HARNESS_PROJECT"';
+
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
 	}
+
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
+
 	if (prompt === "Schema") {
 		return fauxAssistantMessage(fauxToolCall("respond", { answer: SCHEMA_ANSWER }), { stopReason: "toolUse" });
 	}
+
 	if (prompt === "Schema text") {
 		const args = { answer: JSON.stringify(SCHEMA_ANSWER) };
+
 		return fauxAssistantMessage(fauxToolCall("respond", args), { stopReason: "toolUse" });
 	}
+
 	if (prompt === "Cut") return fauxAssistantMessage("cut", { stopReason: "length" });
+
 	return fauxAssistantMessage(`Answer to ${prompt}`);
 }
 
@@ -156,7 +193,9 @@ export type Result = { readonly code: number; readonly stdout: string; readonly 
 export function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}, cwd = root): Promise<Result> {
 	return new Promise((resolve) => {
 		execFile(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, ...env } }, (error, stdout, stderr) => {
-			resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : 1, stdout, stderr });
+			// `code` is the exit code, or a string such as `ENOENT` when the process did not start.
+			const code = error === null ? 0 : Number.isInteger(error.code) ? Number(error.code) : 1;
+			resolve({ code, stdout, stderr });
 		});
 	});
 }
@@ -164,7 +203,9 @@ export function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}, cwd = 
 /** The handle in `Spawned <handle>` or `Spawned <name> (<handle>)`. */
 export function handleOf(result: Result): string {
 	const handle = /^Spawned (?:.* \()?([a-z0-9]+)\)?$/m.exec(result.stdout)?.[1];
+
 	if (handle === undefined) throw new Error(`no handle in ${JSON.stringify(result)}`);
+
 	return handle;
 }
 
@@ -174,13 +215,16 @@ export function handleOf(result: Result): string {
  */
 export async function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
 	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+
 	return host;
 }
 
 /** Polls `check` for up to 10 s. */
 export async function until(check: () => boolean): Promise<void> {
 	for (let tries = 0; tries < 200 && !check(); tries++) await new Promise((resolve) => setTimeout(resolve, 50));
+
 	if (!check()) throw new Error("timed out");
 }
 
@@ -196,7 +240,7 @@ export async function setUp(): Promise<void> {
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
-	process.env = {
+	replaceEnvironment({
 		...environment,
 		XDG_STATE_HOME: join(root, "state"),
 		XDG_CONFIG_HOME: join(root, "config"),
@@ -204,7 +248,8 @@ export async function setUp(): Promise<void> {
 		HOME: join(root, "home"),
 		PI_PROVIDER: "faux",
 		PI_MODEL: "faux-1",
-	};
+	});
+
 	for (const name of [
 		"PI_SESSION_ID",
 		"PI_REASONING_LEVEL",
@@ -218,6 +263,7 @@ export async function setUp(): Promise<void> {
 	]) {
 		delete process.env[name];
 	}
+
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [
@@ -225,12 +271,23 @@ export async function setUp(): Promise<void> {
 			{ id: "faux-2", reasoning: true },
 		],
 	});
+
 	faux.setResponses(Array.from({ length: 500 }, () => respond));
 	models.setProvider(faux.provider);
 }
 
+/**
+ * Makes `values` the environment of this process. It changes `process.env` in place, so `os.homedir()` also reads the
+ * new `HOME`.
+ */
+function replaceEnvironment(values: NodeJS.ProcessEnv): void {
+	for (const name of Object.keys(process.env)) if (!Object.hasOwn(values, name)) delete process.env[name];
+
+	for (const [name, value] of Object.entries(values)) if (value !== undefined) process.env[name] = value;
+}
+
 /** Restores `process.env` and removes the temporary root. */
 export async function tearDown(): Promise<void> {
-	process.env = environment;
+	replaceEnvironment(environment);
 	await rm(root, { recursive: true, force: true });
 }
