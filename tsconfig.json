@@ -12,8 +12,7 @@
 		"allowImportingTsExtensions": true,
 		"rewriteRelativeImportExtensions": true,
 		"skipLibCheck": true,
-		"noEmit": true,
-		"paths": { "@vzlentin/harness/*": ["./src/*.ts"] }
+		"noEmit": true
 	},
-	"include": ["src", "test", "pi-subagent"]
+	"include": ["src", "test", "pi"]
 }
