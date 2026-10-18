@@ -57,6 +57,6 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 `node src/cli.ts` runs the CLI of this checkout. Give it its own `XDG_STATE_HOME`, so its hosts do not share sockets and
 stores with the hosts of the installed `harness`.
 
-The checkout runs from its TypeScript source. `npm publish` builds `dist/` first, and the package contains `dist/`,
-the Pi extension in `pi/` and its `postinstall` script. `npm run check` builds `dist/` too, before the type check. The extension imports `../dist/`, so to try the checkout's
+The checkout runs from its TypeScript source. The package contains `dist/`, the Pi extension in `pi/` and its
+`postinstall` script. Change `version` in `package.json` and push to `main`: CI publishes it. `npm run check` builds `dist/` too, before the type check. The extension imports `../dist/`, so to try the checkout's
 extension in Pi, run `npm run build`, then `pi install ./pi`, and build again after each change in `src/`.
