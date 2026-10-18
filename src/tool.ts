@@ -44,7 +44,7 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		thinking: text("spawn: off, minimal, low, medium, high, xhigh or max; default yours"),
 		cwd: text("spawn: the child's working directory; default yours"),
 		tools: texts(
-			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash and the package tools",
+			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash, codemode and the package tools",
 		),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),

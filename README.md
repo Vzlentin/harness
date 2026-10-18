@@ -2,7 +2,7 @@
 
 Observable, persistent subagents on [Pi](https://github.com/earendil-works/pi)'s libraries and
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable). Each subagent is a conversation in a durable
-host process. You can spawn it, check its status, wait for its answer, steer it, and watch it live in a viewer.
+host process. You can spawn it, check its status, wait for its answer, steer it, and talk to it live in Pi.
 
 ## Install
 
@@ -14,9 +14,9 @@ npm install -g @vzlentin/harness
 ```
 
 This works with npm 11 and npm 12. It gives you the `harness` command, and a setup runs `pi install` on the `pi/`
-folder of the package, which adds the `subagent` tool, the `/subagent` command and the subagents widget to Pi. Pi and
-the `harness` command use the same host. npm 12 runs no install script by default, so there the first `harness` command
-does the setup. When `pi` is not on your `PATH`, or the step fails, the setup prints the command to run later:
+folder of the package, which adds the `subagent` tool, the `/subagent` and `/harness` commands and the subagents widget
+to Pi. Pi and the `harness` command use the same host. npm 12 runs no install script by default, so there the first
+`harness` command does the setup. When `pi` is not on your `PATH`, or the step fails, the setup prints the command to run later:
 
 ```sh
 pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
@@ -39,12 +39,15 @@ harness spawn --name review --prompt "Review the current diff"
 harness list
 harness wait <handle>
 harness send <handle> "Focus on error handling"
-harness attach <handle>     # live viewer
+harness attach <handle>     # open it in Pi
 harness stop <handle>
-harness main                # talk to the agent of the main project
+harness main                # open the agent of the main project in Pi
 ```
 
-[docs/spec.md](docs/spec.md) describes all the commands, the tool, the viewer, projects, the host and its state.
+In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
+type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
+
+[docs/spec.md](docs/spec.md) describes all the commands, the tool, the Pi extension, projects, the host and its state.
 
 ## Development
 

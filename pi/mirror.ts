@@ -1,0 +1,206 @@
+/**
+ * Mirror sessions: a Pi session that shows a child or the agent of a harness project in Pi's own chat, and sends what
+ * the user types to it. The agent runs in the host of the project; the session keeps only its target, in one custom
+ * entry. `/harness [project]` opens one in a new session, and `pi --harness <project> [--harness-child <handle>]` in the
+ * session that Pi starts with.
+ */
+
+import { homedir } from "node:os";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import * as tui from "@earendil-works/pi-tui";
+import { isMirrorTarget, MIRROR_ENTRY, type MirrorTarget, PI_FLAGS } from "../dist/mirror.js";
+import { checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "../dist/projects.js";
+import { AGENT_HANDLE, errorMessage } from "../dist/protocol.js";
+import { Attachment } from "./attachment.ts";
+
+/** The mirror entry of a session: its ID and its target. */
+type MirrorEntry = { readonly id: string; readonly target: MirrorTarget };
+
+/** Registers `/harness`, `--harness` and the handlers that turn a session with a mirror entry into a mirror session. */
+export function registerMirror(pi: ExtensionAPI): void {
+	// The frame of each mirror entry in Pi's chat. Pi can draw the entry before or after `session_start`.
+	const frames = new Map<string, tui.Container>();
+	let attached: Attachment | undefined;
+
+	const frameOf = (entryId: string): tui.Container => {
+		const frame = frames.get(entryId) ?? new tui.Container();
+		frames.set(entryId, frame);
+
+		return frame;
+	};
+
+	pi.registerFlag(PI_FLAGS.project, {
+		type: "string",
+		description: "Show the agent of this harness project (main or a project name) in the new session",
+	});
+
+	pi.registerFlag(PI_FLAGS.child, {
+		type: "string",
+		description: "Show this subagent of the harness project in the new session, in place of the project agent",
+	});
+
+	pi.registerEntryRenderer(MIRROR_ENTRY, (entry, options, theme) => {
+		if (attached?.entryId === entry.id) attached.restyle(theme, options.expanded);
+
+		return frameOf(entry.id);
+	});
+
+	pi.registerCommand("harness", {
+		description: "Show the agent of a harness project in a new session: /harness [project]",
+		getArgumentCompletions: projectItems,
+		handler: async (args, ctx) => {
+			let project: string | undefined;
+
+			try {
+				project = args.trim() === "" ? await pickProject(ctx) : checkProject(args.trim());
+			} catch (error) {
+				ctx.ui.notify(`harness: ${errorMessage(error)}`, "error");
+
+				return;
+			}
+
+			if (project === undefined) return;
+			const target: MirrorTarget = { project, handle: AGENT_HANDLE };
+			await ctx.newSession({
+				setup: async (sessionManager) => {
+					sessionManager.appendCustomEntry(MIRROR_ENTRY, target);
+				},
+			});
+		},
+	});
+
+	pi.on("session_start", (event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		const branch = ctx.sessionManager.getBranch();
+
+		// Pi draws only the entries of this branch from now on. A /reload keeps the session, and its frames.
+		for (const id of frames.keys()) {
+			if (!branch.some((entry) => entry.id === id)) frames.delete(id);
+		}
+
+		const entry = mirrorEntry(branch) ?? (event.reason === "startup" ? flagEntry(pi, ctx) : undefined);
+
+		if (entry !== undefined) attached = new Attachment(pi, ctx, entry.id, entry.target, frameOf(entry.id));
+	});
+
+	pi.on("session_shutdown", () => {
+		attached?.close();
+		attached = undefined;
+	});
+
+	// The agent of the host answers in a mirror session, so the input goes there and not to Pi's own agent.
+	pi.on("input", (event, ctx) => {
+		if (attached === undefined) return undefined;
+
+		if (event.images !== undefined && event.images.length > 0) {
+			ctx.ui.notify("harness: the images are not sent; the agent gets only the text", "warning");
+		}
+
+		attached.send(event.text, false);
+
+		return { action: "handled" };
+	});
+
+	// A restored model is the one of the Pi session, not a choice of the user.
+	pi.on("model_select", (event) => {
+		if (event.source !== "restore") attached?.models.piSelected(event.model.provider, event.model.id);
+	});
+}
+
+/** The newest mirror entry of `entries` with a valid target. */
+function mirrorEntry(entries: readonly SessionEntry[]): MirrorEntry | undefined {
+	for (const entry of entries.toReversed()) {
+		if (entry.type === "custom" && entry.customType === MIRROR_ENTRY && isMirrorTarget(entry.data)) {
+			return { id: entry.id, target: entry.data };
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * The mirror entry for `--harness <project>` and `--harness-child <handle>`, written in the session that Pi starts
+ * with. Without a project, it is the project of `HARNESS_PROJECT` and Pi's working directory; without a child, the
+ * project agent. It refuses a session with messages, such as one of `--continue`, because Pi's own agent answered there.
+ */
+function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undefined {
+	const project = stringFlag(pi, PI_FLAGS.project);
+	const child = stringFlag(pi, PI_FLAGS.child);
+
+	if (project === undefined && child === undefined) return undefined;
+
+	if (ctx.sessionManager.getBranch().some((entry) => entry.type === "message")) {
+		ctx.ui.notify("harness: --harness needs a new session, not one with messages", "error");
+
+		return undefined;
+	}
+
+	let target: MirrorTarget;
+
+	try {
+		target = {
+			project: project ? checkProject(project) : resolveProject(process.env, ctx.cwd),
+			handle: child || AGENT_HANDLE,
+		};
+	} catch (error) {
+		ctx.ui.notify(`harness: ${errorMessage(error)}`, "error");
+
+		return undefined;
+	}
+
+	// `appendEntry` gives no entry ID, so the entry comes back from the branch.
+	pi.appendEntry(MIRROR_ENTRY, target);
+
+	return mirrorEntry(ctx.sessionManager.getBranch());
+}
+
+/** The value of the string flag `name`, or undefined when it is not given. */
+function stringFlag(pi: ExtensionAPI, name: string): string | undefined {
+	const flag = pi.getFlag(name);
+
+	return flag === undefined || flag === true || flag === false ? undefined : flag;
+}
+
+/**
+ * The project that the user selects for `/harness` without a project: the project of Pi's working directory first,
+ * then the other projects and `main`. It is undefined when the user cancels.
+ */
+async function pickProject(ctx: ExtensionCommandContext): Promise<string | undefined> {
+	const projects = readProjects();
+	const current = resolveProject(process.env, ctx.cwd, projects);
+	const names = [current, ...[...Object.keys(projects), MAIN_PROJECT].filter((name) => name !== current)];
+
+	if (names.length === 1) return current;
+	const labels = names.map((name) => `${name}  ${tildePath(projectDir(name, projects))}`);
+	const label = await ctx.ui.select("Harness project", labels);
+
+	return label === undefined ? undefined : names[labels.indexOf(label)];
+}
+
+/** `path` with the home directory as `~`. */
+function tildePath(path: string): string {
+	const home = homedir();
+
+	return home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
+}
+
+/** The projects whose names start with `prefix`, for the argument of `/harness`. */
+function projectItems(prefix: string): AutocompleteItem[] | null {
+	let names: string[];
+
+	try {
+		names = [...Object.keys(readProjects()), MAIN_PROJECT];
+	} catch {
+		return null;
+	}
+
+	const items = names.flatMap((name) => (name.startsWith(prefix) ? [{ value: name, label: name }] : []));
+
+	return items.length > 0 ? items : null;
+}

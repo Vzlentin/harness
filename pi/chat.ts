@@ -14,14 +14,14 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 	getMarkdownTheme,
+	type ThemeColor,
 	type ToolDefinition,
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import { color } from "./theme.ts";
-import { liveOf, userText } from "./view-state.ts";
+import { liveOf, userText } from "../dist/view-state.js";
 
 // Pi's tool definitions differ in their schemas.
 type AnyDefinition = ToolDefinition<any, any>;
@@ -75,12 +75,17 @@ export class ChatView {
 	private streaming: AssistantMessageComponent | undefined;
 	/** Ctrl+O shows tool output in full, as in Pi. */
 	private expanded = false;
+	/** Pi's `hideThinkingBlock` setting: the answers show a label in place of their thinking. */
+	private hideThinking = false;
 	private readonly ui: TUI;
 	private readonly cwd: string;
+	/** Colors the lines that the transcript adds itself, such as `[compaction]`, in Pi's current theme. */
+	private readonly color: (name: ThemeColor, text: string) => string;
 
-	constructor(ui: TUI, cwd: string) {
+	constructor(ui: TUI, cwd: string, color: (name: ThemeColor, text: string) => string) {
 		this.ui = ui;
 		this.cwd = cwd;
+		this.color = color;
 	}
 
 	apply(view: ConversationView): void {
@@ -112,11 +117,22 @@ export class ChatView {
 		this.transcript.invalidate();
 	}
 
-	/** Shows tool output in full, or collapses it again. */
-	toggleExpanded(): void {
-		this.expanded = !this.expanded;
+	/** Shows tool output in full when `expanded` is true, else collapsed. */
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
 
-		for (const card of this.cards) card.setExpanded(this.expanded);
+		for (const card of this.cards) card.setExpanded(expanded);
+		this.transcript.invalidate();
+	}
+
+	/** Hides the thinking of the answers when `hide` is true, else shows it. */
+	setHideThinking(hide: boolean): void {
+		this.hideThinking = hide;
+
+		for (const child of this.transcript.children) {
+			if (child instanceof AssistantMessageComponent) child.setHideThinkingBlock(hide);
+		}
+
 		this.transcript.invalidate();
 	}
 
@@ -158,7 +174,8 @@ export class ChatView {
 			this.transcript.addChild(new Spacer(1));
 			this.transcript.addChild(new UserMessageComponent(userText(message.content), getMarkdownTheme()));
 		} else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
-			const component = this.streaming ?? new AssistantMessageComponent(undefined, false, getMarkdownTheme());
+			const component =
+				this.streaming ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
 
 			if (this.streaming === undefined) this.transcript.addChild(component);
 			this.streaming = undefined;
@@ -191,17 +208,17 @@ export class ChatView {
 			card.updateResult(displayedResult(message));
 			this.running.delete(card);
 		} else if (entry.kind === "pi.compaction") {
-			this.addText(color("muted", "[compaction]"));
+			this.addText(this.color("muted", "[compaction]"));
 
 			if (message?.role === "user") this.addText(userText(message.content));
 		} else if (entry.kind === "pi.reset") {
-			this.addText(color("muted", "[new context]"));
+			this.addText(this.color("muted", "[new context]"));
 		}
 	}
 
 	private syncStreaming(message: AssistantMessage): void {
 		if (this.streaming === undefined) {
-			this.streaming = new AssistantMessageComponent(undefined, false, getMarkdownTheme());
+			this.streaming = new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
 			this.transcript.addChild(this.streaming);
 		}
 

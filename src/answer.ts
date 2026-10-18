@@ -8,7 +8,7 @@ import { type AssistantMessage, type Message, Type, validateToolArguments } from
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ConversationId, Extension, HookApi, JsonObject, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { Json } from "./protocol.ts";
+import { errorMessage, Json } from "./protocol.ts";
 
 /**
  * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
@@ -80,7 +80,7 @@ export function createAnswers(durable: typeof Durable): Answers {
 			} catch (error) {
 				return {
 					isError: true,
-					output: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+					output: [{ type: "text", text: errorMessage(error) }],
 				};
 			}
 

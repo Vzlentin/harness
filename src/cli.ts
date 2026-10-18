@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects } from "./projects.ts";
-import { AGENT_HANDLE, statePaths } from "./protocol.ts";
-import { setupOnce } from "./setup.ts";
+import { request } from "./client.ts";
+import { piEnv } from "./herdr.ts";
+import { type MirrorTarget, piArgs } from "./mirror.ts";
+import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "./projects.ts";
+import { AGENT_HANDLE, errorMessage, statePaths } from "./protocol.ts";
+import { setupOnce, userPath } from "./setup.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -196,26 +200,39 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 	process.exit(0);
 }
 
-/** Opens the viewer of a child in this terminal. */
+/** Opens a child in Pi in this terminal. */
 async function attachCommand(args: string[]): Promise<void> {
 	const [handle] = args;
 
 	if (args.length !== 1 || handle === undefined) usage();
-	await openViewer(handle);
+	await openInPi({ project: resolveProject(process.env, process.cwd()), handle });
 }
 
-/** Opens the viewer of the agent of the project `name`, which is `main` or a project, in this terminal. */
+/** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	// The viewer's connection resolves the project from the env.
-	process.env.HARNESS_PROJECT = name;
-	await openViewer(AGENT_HANDLE);
+	await openInPi({ project: name, handle: AGENT_HANDLE });
 }
 
-async function openViewer(handle: string): Promise<void> {
-	const { ProcessTerminal } = await import("@earendil-works/pi-tui");
-	const { attach } = await import("./viewer.ts");
-	process.exitCode = await attach(handle, { terminal: new ProcessTerminal(), env: process.env });
+/**
+ * Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. It starts
+ * the host when none runs. A first watch fails before Pi starts for an unknown child and for a project agent without a
+ * model.
+ */
+async function openInPi(target: MirrorTarget): Promise<void> {
+	await request({ type: "watch", handle: target.handle }, { start: true, project: target.project });
+
+	const result = spawnSync("pi", piArgs(target), {
+		stdio: "inherit",
+		env: { ...piEnv(process.env), PATH: userPath() },
+	});
+
+	if (result.error !== undefined && "code" in result.error && result.error.code === "ENOENT") {
+		fail("pi is not on PATH. Install Pi to open the agent");
+	}
+
+	if (result.error !== undefined) throw result.error;
+	process.exitCode = result.status ?? 1;
 }
 
 /**
@@ -274,6 +291,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((cause: unknown) => {
-	process.stderr.write(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+	process.stderr.write(`${errorMessage(cause)}\n`);
 	process.exitCode = 1;
 });
