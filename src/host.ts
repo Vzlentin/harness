@@ -11,6 +11,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Op } from "@earendil-works/chord/delta";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -35,6 +36,7 @@ import {
 	type HarnessSettings,
 	type JsonObject,
 } from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
@@ -189,7 +191,9 @@ export async function runHost(options: {
 		send: (request, signal) => handleRequest(request, { ...base, signal }),
 	});
 
-	const selected = [ChildContext, tool, ...entries.extensions];
+	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
+	const selected = [ChildContext, tool, createCodemodeExtension({ sandbox }), ...entries.extensions];
 
 	try {
 		for (const extension of selected) registry.install(extension);
@@ -303,6 +307,7 @@ export async function runHost(options: {
 		});
 	}).catch(async (cause: unknown) => {
 		await entries.close();
+		await sandbox.close();
 		await harness.close(context);
 		lock.close();
 		throw cause;
@@ -320,8 +325,10 @@ export async function runHost(options: {
 			for (const abort of aborts) abort.abort();
 
 			try {
-				// Entries close first: an entry may still need the open harness.
+				// Entries close first: an entry may still need the open harness. The sandbox closes before the harness, so a
+				// script that runs gets no outcome and continues after a restart.
 				await entries.close();
+				await sandbox.close();
 				await harness.close(context);
 
 				for (const env of envs.values()) await env.cleanup(context);

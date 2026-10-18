@@ -31,7 +31,7 @@ harness spawn \
   --prompt "Run the targeted tests"
 ```
 
-Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the tools of the host's entries (see [Limits](#limits)). An unknown tool name is an error:
+Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Limits](#limits)). An unknown tool name is an error:
 
 ```sh
 harness spawn --tools read,bash --prompt "Investigate the failure"
@@ -130,7 +130,7 @@ A child's system prompt has what a Pi session in the child's working directory g
 
 ## Limits
 
-- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions.
+- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions. `codemode` runs JavaScript that calls the other tools of the child, as Pi's `codemode` does. A script that a host stop interrupts continues when the host starts again.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

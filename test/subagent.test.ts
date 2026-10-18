@@ -200,7 +200,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain("Use the read tool to load a skill's file");
 		expect(seen?.system).not.toContain("<name>local</name>");
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
-		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"]);
+		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "codemode"]);
 
 		// Once `/trust` saves the decision, the next request loads the project skill.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
@@ -211,6 +211,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
 		expect(requests.get("Task:\nBash only")?.system).toContain("Use bash to load a skill's file");
 		expect(requests.get("Task:\nBash only")?.tools).toEqual(["bash"]);
+	});
+
+	it("gives a child codemode, whose scripts call its other tools", async () => {
+		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Codemode"]))]);
+		expect(stdout).toContain("Tool said: ");
+		// The script changes the output of bash, so the answer has text that the script source does not have.
+		expect(stdout).toContain("FROM THE SCRIPT");
 	});
 
 	it("gives the child's bash its session ID, provider, model and thinking level", async () => {

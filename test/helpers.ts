@@ -161,6 +161,12 @@ async function respond(
 		});
 	}
 
+	if (prompt === "Task:\nCodemode") {
+		const code = 'const run = await tools.bash({ command: "echo from the script" }); return run.output.toUpperCase();';
+
+		return fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" });
+	}
+
 	if (prompt === "Task:\nNest") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
