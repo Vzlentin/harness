@@ -25,6 +25,7 @@ import {
 	type AnyTask,
 	type Conversation,
 	type ConversationId,
+	type ConversationView,
 	createRegistry,
 	type DocumentWatch,
 	defineDoc,
@@ -32,6 +33,7 @@ import {
 	Harness,
 	type HarnessInspection,
 	type HarnessSettings,
+	type JsonObject,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -60,6 +62,8 @@ import {
 	type Reply,
 	type Request,
 	RequestLine,
+	type ViewChange,
+	type ViewParts,
 	type WatchLine,
 } from "./protocol.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
@@ -844,10 +848,10 @@ async function setUpAgent(
 
 /**
  * Opens a watch of `handle` on `connection` and returns the reply, with the view and the child. After the reply, each
- * commit to the child's conversation and each rename gives one `{ event: WatchLine }` line. It waits for a slow socket
- * to drain, so pi-durable replaces the frames it holds back with one frame of the whole view. The watches stop when the
- * socket closes, when setup fails, or when the connection ends; a wait for `drain` then stays on the closed socket and
- * goes with it. When the child stops, the viewer gets a `stopped` event and the connection ends; when the conversation
+ * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
+ * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
+ * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
+ * `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a `stopped` event and the connection ends; when the conversation
  * watch ends for another reason, the connection ends.
  */
 async function serveWatch(handler: Handler, handle: string, connection: Connection): Promise<Replies["watch"]> {
@@ -899,7 +903,7 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 		// this one chain, so a line never has older info than the line before it.
 		let queue: Promise<void> = Promise.resolve();
 
-		const send = (ops: readonly Op[]) => {
+		const send = (change: ViewChange) => {
 			queue = queue.then(async () => {
 				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
 				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
@@ -907,7 +911,7 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 
 				if (child === undefined || !socket.writable) return;
 
-				if (!write({ ops, child })) await once(socket, "drain").catch(() => {});
+				if (!write({ change, child })) await once(socket, "drain").catch(() => {});
 			});
 
 			return queue;
@@ -922,13 +926,56 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 				end();
 			} else if (next.name !== found.record?.name) {
 				found = { ...found, record: next, info: () => childInfo(handler, handle, next) };
-				await send([]);
+				await send({});
 			}
 		});
-		conversation.start((_view, ops) => send(ops));
+		conversation.start((view, ops) => send(viewChange(view, ops)));
 	});
 
 	return { view: conversation.value, child: last };
+}
+
+/**
+ * What `ops` changed in a watched view, as whole values of `view`, the view after them: the entries from the first one
+ * that an op reached, each document that an op reached, and the conversation record. An op on the root, or on a part
+ * that this does not know, gives the whole view.
+ */
+function viewChange(view: ConversationView, ops: readonly Op[]): ViewChange {
+	let from: number | undefined;
+	const kinds = new Set<string>();
+	let conversation = false;
+
+	for (const op of ops) {
+		if (op[0] === "r") return { view };
+		const [part, next] = op[1];
+
+		if (part === "entries") {
+			// No op moves the entries before the index where it starts: a splice starts at its index, a change in an entry at
+			// that entry, and a reorder or a new array at the first entry.
+			const index = next !== undefined ? Number(next) : op[0] === "p" ? op[2] : 0;
+			from = Math.min(from ?? index, index);
+		} else if (part === "docs" && next !== undefined) {
+			kinds.add(String(next));
+		} else if (part === "conversation") {
+			conversation = true;
+		} else {
+			return { view };
+		}
+	}
+
+	const parts: { -readonly [Part in keyof ViewParts]: ViewParts[Part] } = {};
+
+	if (from !== undefined) parts.entries = { from, items: view.entries.slice(from) };
+
+	if (kinds.size > 0) {
+		parts.docs = Object.fromEntries(
+			[...kinds].map((kind): [string, JsonObject | null] => [kind, view.docs[kind] ?? null]),
+		);
+	}
+
+	if (conversation) parts.conversation = view.conversation;
+
+	return parts;
 }
 
 /** The record of `handle` in the `Children` value `state`. */

@@ -1,6 +1,6 @@
 /**
- * The `subagent` tool, `/subagent` and the subagents widget. They use the client of the harness package that holds
- * this folder, from its built `dist/`, and start the host of that package.
+ * The `subagent` tool, `/subagent`, the subagents widget and the mirror sessions of `/harness`. They use the client of
+ * the harness package that holds this folder, from its built `dist/`, and start the host of that package.
  */
 import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -16,11 +16,13 @@ import { request } from "../dist/client.js";
 import { openViewerTab } from "../dist/herdr.js";
 import { childLine, runDisplayName } from "../dist/protocol.js";
 import * as tool from "../dist/tool.js";
+import { registerMirror } from "./mirror.ts";
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
 export default function subagentExtension(pi: ExtensionAPI) {
+	registerMirror(pi);
 	const { parameters, output } = tool.toolSchemas(Type);
 	pi.registerTool({
 		name: "subagent",

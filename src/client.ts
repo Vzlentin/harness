@@ -4,7 +4,7 @@ import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { MAIN_PROJECT, resolveProject } from "./projects.ts";
+import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
 	cliPath,
 	onLines,
@@ -110,12 +110,14 @@ export class Client {
 }
 
 /**
- * A connection to the host of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`), after its `hello`.
- * When no host listens and `start` is true, it starts one, detached, with its output in `host.log`, and tries to
- * connect for 10 s, or until `signal` aborts. When no host listens and `start` is false, it is undefined.
+ * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`),
+ * after its `hello`. When no host listens and `start` is true, it starts one, detached, with its output in `host.log`,
+ * and tries to connect for 10 s, or until `signal` aborts. When no host listens and `start` is false, it is undefined.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
-	const project = resolveProject(process.env, process.cwd());
+	const project =
+		options.project === undefined ? resolveProject(process.env, process.cwd()) : checkProject(options.project);
+
 	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
 
@@ -161,7 +163,12 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 	}
 }
 
-type ConnectOptions = { readonly start: boolean; readonly signal?: AbortSignal | undefined };
+type ConnectOptions = {
+	readonly start: boolean;
+	readonly signal?: AbortSignal | undefined;
+	/** `main` or a project name. Without it, the project comes from `HARNESS_PROJECT` and the cwd. */
+	readonly project?: string;
+};
 
 type OneShot<T extends Request["type"]> = Extract<Request, { type: T }>;
 

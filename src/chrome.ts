@@ -1,10 +1,10 @@
 import { homedir } from "node:os";
 import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
-import { type ConversationView, type EntryRecord, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
+import type { ConversationView, EntryRecord, UsageState } from "@earendil-works/pi-durable";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ChildInfo } from "./protocol.ts";
 import { bold, color } from "./theme.ts";
-import { docOf } from "./view-state.ts";
+import { usageOf } from "./view-state.ts";
 
 /** One line, cut to the width, with `hints` at the right end: the first hints go when they do not all fit. */
 export class Line implements Component {
@@ -43,7 +43,7 @@ export function headerText(child: ChildInfo, title: string): string {
  * `contextWindow` is known and the child has answered once.
  */
 export function footerText(child: ChildInfo, view: ConversationView, contextWindow: number | undefined): string {
-	const usage = totalUsage(docOf(view, UsageDoc));
+	const usage = totalUsage(usageOf(view));
 	const used = lastUsage(view.entries);
 
 	const context =

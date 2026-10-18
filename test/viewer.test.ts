@@ -3,8 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
-import { apply } from "@earendil-works/chord/delta";
+import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Terminal } from "@earendil-works/pi-tui";
@@ -12,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
 import { openViewerTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, statePaths, type WatchLine } from "../src/protocol.ts";
+import { AGENT_HANDLE, applyChange, statePaths, type WatchLine } from "../src/protocol.ts";
 import { attach } from "../src/viewer.ts";
 import {
 	CLI,
@@ -139,7 +138,7 @@ afterAll(async () => {
 });
 
 describe("subagent", { timeout: 30_000 }, () => {
-	it("watches a child: a snapshot, then an update after each commit", async () => {
+	it("watches a child: a snapshot, then the change of each commit, which rebuilds the view", async () => {
 		gates.set("Task:\nWatched", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watched"]));
 		await until(() => called("Task:\nWatched") === 1);
@@ -148,15 +147,16 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const lines: WatchLine[] = [];
 		void collect(first.lines, lines);
 
+		// The view of the first watch after the changes of all the lines so far.
+		const rebuilt = () =>
+			lines.reduce((view, line) => (line.stopped ? view : applyChange(view, line.change)), first.view);
+
 		try {
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
 			gates.get("Task:\nWatched")?.resolve();
-			let view = first.view;
 			await until(() => lines.some((line) => !line.stopped && line.child.state === "idle"));
-
-			for (const line of lines) if (!line.stopped) view = apply(view, line.ops);
-			expect(textsOf(view)).toEqual(["Task:\nWatched", "Answer to Task:\nWatched"]);
+			expect(textsOf(rebuilt())).toEqual(["Task:\nWatched", "Answer to Task:\nWatched"]);
 
 			const second = await connect({ start: false });
 
@@ -164,6 +164,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 				const fresh = await second?.request({ type: "watch", handle });
 				expect(fresh?.child.state).toBe("idle");
 				expect(textsOf(fresh?.view)).toEqual(["Task:\nWatched", "Answer to Task:\nWatched"]);
+				// The changes rebuild the whole view of a new watch: the entries, the documents and the conversation.
+				await until(() => isDeepStrictEqual(rebuilt(), fresh?.view));
 			} finally {
 				second?.close();
 			}

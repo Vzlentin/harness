@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { apply } from "@earendil-works/chord/delta";
-import { getSelectListTheme, initTheme } from "@earendil-works/pi-coding-agent";
+import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import {
 	Container,
@@ -11,6 +10,7 @@ import {
 	Loader,
 	type OverlayHandle,
 	ScrollView,
+	Spacer,
 	setKeybindings,
 	type Terminal,
 	Text,
@@ -18,12 +18,13 @@ import {
 	TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { ChatView } from "./chat.ts";
+import { type ChatKit, ChatView } from "./chat.ts";
 import { footerText, headerText, Line } from "./chrome.ts";
 import { type Client, connect } from "./client.ts";
 import { agentReporter, viewerTarget } from "./herdr.ts";
 import { ModelPicker } from "./picker.ts";
 import {
+	applyChange,
 	type ChildInfo,
 	childLabel,
 	type ModelInfo,
@@ -32,7 +33,10 @@ import {
 	type WatchLine,
 } from "./protocol.ts";
 import { color } from "./theme.ts";
-import { inboxOf, liveOf, queued, statusText } from "./view-state.ts";
+import { inboxOf, liveOf, queued, statusText, withdrawnTexts } from "./view-state.ts";
+
+/** The viewer's chat draws with the Pi modules of this package. */
+const KIT: ChatKit = { coding, tui: { Container, Spacer, Text }, color };
 
 declare module "@earendil-works/pi-tui" {
 	interface Keybindings {
@@ -155,15 +159,15 @@ class Viewer {
 		this.child = watched.child;
 		this.lines = watched.lines;
 
-		initTheme();
+		coding.initTheme();
 		this.keybindings = new KeybindingsManager(KEYBINDINGS);
 		setKeybindings(this.keybindings);
 		this.tui = new TuiAltScreen(this.terminal, false);
-		this.chat = new ChatView(this.tui, this.child.cwd);
+		this.chat = new ChatView(KIT, this.tui, this.child.cwd);
 		this.scroll = new ScrollView(this.chat.transcript, { follow: "end", primary: true });
 		this.editor = new Editor(
 			this.tui,
-			{ borderColor: (text) => color("borderMuted", text), selectList: getSelectListTheme() },
+			{ borderColor: (text) => color("borderMuted", text), selectList: coding.getSelectListTheme() },
 			{ paddingX: 1 },
 		);
 		const status = new Container();
@@ -338,12 +342,7 @@ class Viewer {
 
 	/** Aborts the turn. The host withdraws the queued messages, so they go back to the editor, steers first. */
 	private abort(): void {
-		const inputs = queued(inboxOf(this.view));
-
-		const texts = [
-			...inputs.filter((input) => input.mode === "steer"),
-			...inputs.filter((input) => input.mode === "followUp"),
-		].map((input) => input.text);
+		const texts = withdrawnTexts(inboxOf(this.view));
 
 		this.client.request({ type: "abort", handle: this.handle }).then(() => {
 			this.notice.setText("");
@@ -384,7 +383,7 @@ class Viewer {
 			return;
 		}
 
-		this.view = apply(this.view, line.ops);
+		this.view = applyChange(this.view, line.change);
 		this.child = line.child;
 		this.render();
 		this.reporter.report(this.child.state === "busy");

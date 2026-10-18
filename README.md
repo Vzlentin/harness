@@ -44,6 +44,9 @@ harness stop <handle>
 harness main                # talk to the agent of the main project
 ```
 
+In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
+type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
+
 [docs/spec.md](docs/spec.md) describes all the commands, the tool, the viewer, projects, the host and its state.
 
 ## Development

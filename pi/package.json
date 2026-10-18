@@ -1,6 +1,6 @@
 {
 	"private": true,
-	"description": "The Pi extension of harness: the subagent tool, the /subagent command and the subagents widget",
+	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget and the /harness mirror sessions",
 	"type": "module",
 	"pi": {
 		"extensions": [
@@ -9,6 +9,7 @@
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	}
 }

@@ -3,13 +3,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
-import type { Op } from "@earendil-works/chord/delta";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
+import type {
+	ConversationRecord,
+	ConversationView,
+	EntryRecord,
+	JsonObject,
+	TaskId,
+	TaskOutcome,
+	TaskState,
+} from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
@@ -103,9 +110,9 @@ export type Request =
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
 	/**
-	 * The viewer's stream of the child: the reply, then one `{ event: WatchLine }` line after each commit to the child's
-	 * conversation and after each rename. Every other line on the connection stays a reply, in request order. A
-	 * connection carries one watch.
+	 * The stream of the child for the viewer and the Pi extension: the reply, then one `{ event: WatchLine }` line after
+	 * each commit to the child's conversation and after each rename. Every other line on the connection stays a reply, in
+	 * request order. A connection carries one watch.
 	 */
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
@@ -235,12 +242,46 @@ export type Replies = {
 };
 
 /**
- * An event of a watch after its reply, sent as `{ event: WatchLine }`: the changes of one commit or a rename, or the end
- * when the child was stopped.
+ * The parts of a watched view that changed, as whole values: the entries from index `from` on, the documents that
+ * changed by kind (`null` for a removed document), and the conversation record. A part that did not change is absent.
+ */
+export type ViewParts = {
+	readonly entries?: { readonly from: number; readonly items: readonly EntryRecord[] };
+	readonly docs?: Readonly<Record<string, JsonObject | null>>;
+	readonly conversation?: ConversationRecord;
+};
+
+/**
+ * What one commit changed in a watched view, so a client keeps the view without chord: some parts, or the whole view,
+ * as after a watch that fell behind.
+ */
+export type ViewChange = ViewParts | { readonly view: ConversationView };
+
+/**
+ * An event of a watch after its reply, sent as `{ event: WatchLine }`: the change of one commit, an empty change after a
+ * rename, or the end when the child was stopped.
  */
 export type WatchLine =
-	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
+	| { readonly change: ViewChange; readonly child: ChildInfo; readonly stopped?: undefined }
 	| { readonly stopped: true };
+
+/** `view` after `change`. A client of a watch keeps its view up to date with it. */
+export function applyChange(view: ConversationView, change: ViewChange): ConversationView {
+	if ("view" in change) return change.view;
+	const { entries, docs = {}, conversation } = change;
+	const changedDocs = { ...view.docs };
+
+	for (const [kind, doc] of Object.entries(docs)) {
+		if (doc === null) delete changedDocs[kind];
+		else changedDocs[kind] = doc;
+	}
+
+	return {
+		conversation: conversation ?? view.conversation,
+		entries: entries === undefined ? view.entries : [...view.entries.slice(0, entries.from), ...entries.items],
+		docs: changedDocs,
+	};
+}
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
