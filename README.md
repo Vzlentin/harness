@@ -13,25 +13,30 @@ with `/login` in `pi`, or set the API key of the provider, such as `ANTHROPIC_AP
 npm install -g @vzlentin/harness
 ```
 
-This gives you the `harness` command.
-
-### Pi
-
-To also get the `subagent` tool, the `/subagent` command and the subagents widget in Pi:
+This gives you the `harness` command. When `pi` is on your `PATH`, the install also runs `pi install` on the `pi/`
+folder of the package, which adds the `subagent` tool, the `/subagent` command and the subagents widget to Pi. Pi and
+the `harness` command use the same host. npm hides the output of this step; to see it, add `--foreground-scripts`. When
+you install Pi later, or the step fails, run it yourself:
 
 ```sh
-pi install npm:@vzlentin/pi-subagent
+pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
 ```
 
-You can add it now or later. Pi and the `harness` command use the same host.
+When you install with `--prefix`, give the same `--prefix` to `npm root -g`.
 
 ### Update and remove
 
 ```sh
-npm update -g @vzlentin/harness
-pi update                                   # when you installed @vzlentin/pi-subagent
+npm install -g @vzlentin/harness@latest
+pi remove "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"    # first: npm runs no script on uninstall
 npm uninstall -g @vzlentin/harness
+```
+
+From 0.1.0, remove the old Pi package first, then install again:
+
+```sh
 pi remove npm:@vzlentin/pi-subagent
+npm install -g @vzlentin/harness@latest
 ```
 
 ## Use
@@ -59,5 +64,6 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 `node src/cli.ts` runs the CLI of this checkout. Give it its own `XDG_STATE_HOME`, so its hosts do not share sockets and
 stores with the hosts of the installed `harness`.
 
-The checkout runs from its TypeScript source. `npm publish` builds `dist/` first, and the package contains only
-`dist/`. The Pi plugin is the package in `pi-subagent/`, published from that directory with `npm publish`.
+The checkout runs from its TypeScript source. `npm publish` builds `dist/` first, and the package contains `dist/`,
+the Pi extension in `pi/` and its `postinstall` script. The extension imports `../dist/`, so to try the checkout's
+extension in Pi, run `npm run build`, then `pi install ./pi`, and build again after each change in `src/`.

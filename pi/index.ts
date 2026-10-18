@@ -1,6 +1,6 @@
 /**
- * The `subagent` tool, `/subagent` and the subagents widget. They use the client of the harness install that this
- * package depends on, and start the host of that install.
+ * The `subagent` tool, `/subagent` and the subagents widget. They use the client of the harness package that holds
+ * this folder, from its built `dist/`, and start the host of that package.
  */
 import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -12,10 +12,10 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { request } from "@vzlentin/harness/client";
-import { openViewerTab } from "@vzlentin/harness/herdr";
-import { childLine, runDisplayName } from "@vzlentin/harness/protocol";
-import * as tool from "@vzlentin/harness/tool";
+import { request } from "../dist/client.js";
+import { openViewerTab } from "../dist/herdr.js";
+import { childLine, runDisplayName } from "../dist/protocol.js";
+import * as tool from "../dist/tool.js";
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";

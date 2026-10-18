@@ -1,6 +1,6 @@
 # harness reference
 
-The behaviour of the `harness` CLI, the `subagent` tool, the viewer and the host. The [README](../README.md) has the install.
+The behaviour of the `harness` CLI, the `subagent` tool, the Pi extension, the viewer and the host. The [README](../README.md) has the install.
 
 ## Commands
 
@@ -181,7 +181,13 @@ A spawn without `provider`, `model`, or `thinking` uses the caller's. A spawn re
 
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
-- In Pi, the extension of [`@vzlentin/pi-subagent`](../README.md#pi) gives the tool. The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
+- In Pi, the extension in the `pi/` folder of the package gives the tool (see [Pi extension](#pi-extension)). The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
 - In another pi-durable host, the entry `@vzlentin/harness/durable-entry` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
+
+## Pi extension
+
+The package has the Pi extension in its `pi/` folder: the `subagent` tool, the `/subagent` command and the subagents widget. It uses the `dist/` modules of the same package, so it starts the host of that install. Pi records the path of the folder and loads it from there; it does not copy it.
+
+After a global install (`npm install -g`, where npm sets `npm_config_global=true`), the `postinstall` script runs `pi install <package>/pi` with the `pi` on `PATH`, without the `node_modules/.bin` folders that npm adds, so the `pi` of the package's own dependencies is not used. The path is the real path of the package. Another install, such as `npm ci` in a checkout or an install as a dependency, does nothing. When `pi` is not on `PATH`, the script writes `harness: pi is not on PATH. To get the subagent tool in Pi, run: pi install <path>`. When `pi install` fails, it writes `harness: pi install failed (<reason>). To get the subagent tool in Pi, run: pi install <path>`. In both cases the npm install succeeds. npm shows the output of the script only with `--foreground-scripts`. A second install keeps one entry in Pi's settings. npm runs no script on `npm uninstall`, so the entry stays until `pi remove <path>`; Pi starts without the extension when the path is gone.

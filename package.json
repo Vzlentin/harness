@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/harness",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
 	"repository": {
 		"type": "git",
@@ -18,7 +18,9 @@
 		"./package.json": "./package.json"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"pi",
+		"scripts/postinstall.js"
 	],
 	"engines": {
 		"node": ">=22.19.0"
@@ -26,6 +28,7 @@
 	"scripts": {
 		"build": "rm -rf dist && tsc -p tsconfig.build.json",
 		"prepack": "npm run build",
+		"postinstall": "node scripts/postinstall.js",
 		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && vitest --run --passWithNoTests",
 		"test": "vitest --run --passWithNoTests"
 	},
