@@ -377,10 +377,15 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			return spawnChild(request, handler);
 		case "send": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
-			const sent = await sendTo(request, await childTarget(handler, request.handle, record));
-			await markSent(handler.harness, request.handle, request.requestId);
+			// Mark the request first: a wait that sees it as the last request must find it in `sent`.
+			const added = await markSent(handler.harness, request.handle, request.requestId, true);
 
-			return sent;
+			try {
+				return await sendTo(request, await childTarget(handler, request.handle, record));
+			} catch (error) {
+				if (added) await markSent(handler.harness, request.handle, request.requestId, false);
+				throw error;
+			}
 		}
 
 		case "input":
@@ -529,7 +534,7 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
 		context,
 	);
-	await markSent(harness, handle, `spawn:${request.requestId}`);
+	await markSent(harness, handle, `spawn:${request.requestId}`, true);
 
 	return childInfo(handler, handle, record);
 }
@@ -560,49 +565,71 @@ async function waitChild(
 ): Promise<{ answer: string }> {
 	const record = await childRecord(handler.harness, request.handle);
 	const child = await childOf(handler, record);
-	const sent = record.sent ?? [];
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
+	const waiting = withAbortSignal(AbortSignal.any([timeout, handler.signal]), context);
+	let main: string | null;
 	let answer: Answer;
+	let earlier: Answer[];
 
 	try {
-		answer = await child.settled(withAbortSignal(AbortSignal.any([timeout, handler.signal]), context));
+		main = await child.lastRequest(waiting);
+		answer = await child.settled(waiting, main ?? undefined);
+		// Read the record after the answer: a send is in `sent` before it can be the last request.
+		const current = (await childRecord(handler.harness, request.handle)).sent ?? [];
+		const unread = unreadBefore(current, record.read ?? 0, main, record.sent ?? []);
+		earlier = [];
+
+		for (const requestId of unread.ids) {
+			const before = await child.settled(waiting, requestId);
+
+			// A steer goes into the turn that was running, so its request can share that turn's answer.
+			if (!("entry" in before && "entry" in answer && before.entry === answer.entry)) earlier.push(before);
+		}
+
+		await handler.harness.commit(async (tx) => {
+			const latest = (await tx.doc(Children)).children[request.handle];
+
+			if (latest !== undefined) latest.read = Math.max(latest.read ?? 0, unread.read);
+		}, context);
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);
 		throw error;
 	}
 
-	const unread = sent.slice(record.read ?? 0);
-	const earlier: string[] = [];
-
-	for (const [index, requestId] of unread.entries()) {
-		const before = await child.settled(context, requestId);
-
-		// A steer goes into the turn that was running, so its request can share that turn's answer.
-		if ("entry" in before && "entry" in answer && before.entry === answer.entry) continue;
-
-		// The newest request of the caller is usually the last request, and its failure is the failure of the wait.
-		if (index === unread.length - 1 && !("entry" in before) && !("entry" in answer)) continue;
+	const texts = earlier.map((before) => {
 		const text = answerText(request.handle, before);
-		earlier.push(text.failed ? `(no answer: ${text.text})` : text.text);
-	}
 
-	await handler.harness.commit(async (tx) => {
-		const current = (await tx.doc(Children)).children[request.handle];
-
-		if (current !== undefined) current.read = Math.max(current.read ?? 0, sent.length);
-	}, context);
+		return text.failed ? `(no answer: ${text.text})` : text.text;
+	});
 
 	const last = answerText(request.handle, answer);
-	const all = [...earlier, last.text];
+	const all = [...texts, last.text];
 	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
 
-	const text =
-		earlier.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
+	const text = texts.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
 
 	// A failed last turn is an error that still gives the earlier answers.
 	if (last.failed) throw new Error(text);
 
 	return { answer: text };
+}
+
+/** The requests whose answers a wait gives before its own, and the new `read` of the child record. */
+type Unread = { readonly ids: readonly string[]; readonly read: number };
+
+/**
+ * The requests of `sent` from `read` on that a wait for `main` gives before the answer to `main`, and the new `read`.
+ * When `main` is a request of the caller, they are the ones before it, and `main` counts as read; a send after it
+ * stays unread. Otherwise, such as for viewer input, they are the caller's requests known when the wait started.
+ */
+function unreadBefore(sent: readonly string[], read: number, main: string | null, atStart: readonly string[]): Unread {
+	const index = main === null ? -1 : sent.indexOf(main);
+
+	if (index >= read) return { ids: sent.slice(read, index), read: index + 1 };
+
+	if (index >= 0) return { ids: [], read };
+
+	return { ids: atStart.slice(read), read: Math.max(read, atStart.length) };
 }
 
 /** The text of `answer`, or the failure of a turn with no answer. A cut answer still gives its text. */
@@ -616,15 +643,21 @@ function answerText(handle: string, answer: Answer) {
 	return { text: failureText(handle, answer.cause, answer.detail), failed: true };
 }
 
-/** Adds `requestId` to the requests of `handle` that a `wait` gives the answers of. A repeated request is not added. */
-async function markSent(harness: Harness, handle: string, requestId: string): Promise<void> {
-	await harness.commit(async (tx) => {
+/**
+ * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, or removes it after a send that
+ * failed. A repeated request is not added. True when it changed the record.
+ */
+async function markSent(harness: Harness, handle: string, requestId: string, add: boolean): Promise<boolean> {
+	return harness.commit(async (tx) => {
 		const record = (await tx.doc(Children)).children[handle];
 
-		if (record === undefined) return;
+		if (record === undefined) return false;
 		const sent = record.sent ?? [];
 
-		if (!sent.includes(requestId)) record.sent = [...sent, requestId];
+		if (add === sent.includes(requestId)) return false;
+		record.sent = add ? [...sent, requestId] : sent.filter((id) => id !== requestId);
+
+		return true;
 	}, context);
 }
 
