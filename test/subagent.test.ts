@@ -239,11 +239,66 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 		expect((await cli(["status", handle])).stdout).toBe(`${handle}: busy (faux/faux-1, medium)\n`);
 		gates.get("Task:\nHold on")?.resolve();
-		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Then summarize\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				"--- Answer 1 of 2 ---\nAnswer to Task:\nHold on\n\n--- Answer 2 of 2 ---\nAnswer to Then summarize\n",
+		);
 
 		expect((await cli(["rename", handle, "summary"])).stdout).toBe(`Renamed summary (${handle})\n`);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped summary (${handle})\n`);
 		expect((await cli(["status", handle])).stderr).toBe(`Unknown subagent: ${handle}\n`);
+	});
+
+	it("gives an answer that no wait read with the answer to the next message", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "First"]));
+
+		while ((await cli(["status", handle])).stdout !== `${handle}: idle (faux/faux-1, medium)\n`) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		expect((await cli(["send", handle, "Second"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				"--- Answer 1 of 2 ---\nAnswer to Task:\nFirst\n\n--- Answer 2 of 2 ---\nAnswer to Second\n",
+		);
+		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Second\n`);
+	});
+
+	it("keeps a message sent during a wait unread for the next wait", async () => {
+		gates.set("Task:\nSlow", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Slow"]));
+		await until(() => called("Task:\nSlow") === 1);
+		const waiting = cli(["wait", handle]);
+		// The wait has read the last request before the follow-up comes.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect((await cli(["send", handle, "--follow-up", "Late"])).stdout).toBe(`Queued follow-up for ${handle}\n`);
+		gates.get("Task:\nSlow")?.resolve();
+		expect((await waiting).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nSlow\n`);
+		await until(() => called("Late") === 1);
+
+		while ((await cli(["status", handle])).stdout !== `${handle}: idle (faux/faux-1, medium)\n`) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		expect((await cli(["send", handle, "After"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				"--- Answer 1 of 2 ---\nAnswer to Late\n\n--- Answer 2 of 2 ---\nAnswer to After\n",
+		);
+	});
+
+	it("gives an earlier failed turn as an unread answer", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Fail"]));
+
+		while ((await cli(["status", handle])).stdout !== `${handle}: error (faux/faux-1, medium)\n`) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		expect((await cli(["send", handle, "Again"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
+				`--- Answer 1 of 2 ---\n(no answer: ${handle} failed: overloaded)\n\n--- Answer 2 of 2 ---\nAnswer to Again\n`,
+		);
 	});
 
 	it("stops a busy child", async () => {

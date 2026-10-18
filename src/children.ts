@@ -154,6 +154,8 @@ export type Child = {
 	 * `context` stops only the wait; the child runs until `close()`.
 	 */
 	settled(context: Context, request?: string): Promise<Answer>;
+	/** The newest request ID admitted, which `settled` waits for by default, or null before the first one. */
+	lastRequest(context: Context): Promise<string | null>;
 	state(context: Context): Promise<ChildState>;
 	/** The spend of the child and everything under it, for reports. */
 	usage(context: Context): Promise<UsageState>;
@@ -501,6 +503,7 @@ export function createChildren(durable: typeof Durable): Children {
 			send: turns.send,
 			ask,
 			settled,
+			lastRequest: async (context) => (await lastRequest(context)) ?? null,
 			async state(context) {
 				if ((await place.store.snapshot(ChildDoc, id, context))?.closed === true) return "closed";
 
