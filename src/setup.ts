@@ -6,13 +6,21 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join, sep } from "node:path";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
 const PackageJson = Type.Object({ name: Type.String(), version: Type.String() });
 
 type PackageJson = Static<typeof PackageJson>;
+
+const PiSettings = Type.Object({
+	packages: Type.Optional(Type.Array(Type.Union([Type.String(), Type.Object({ source: Type.String() })]))),
+});
+
+/** The prefixes of the Pi package sources that are not local paths, as Pi reads them. */
+const REMOTE = ["npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:"];
 
 /** A package that setup acts on: its real directory and its `package.json`. */
 type Installed = { readonly dir: string; readonly json: PackageJson };
@@ -84,10 +92,15 @@ function writeStamp(installed: Installed): void {
 	writeFileSync(path, `${installed.dir}\n${installed.json.version}\n`);
 }
 
-/** False when `pi install` failed. */
+/**
+ * False when `pi install` failed. It runs no `pi` when Pi already lists the extension, as `pi install` would write the
+ * entry again in its own form, relative to the agent directory.
+ */
 function registerExtension({ dir, json }: Installed): boolean {
 	const label = basename(json.name);
 	const extension = join(dir, "pi");
+
+	if (piLists(extension)) return true;
 
 	return runPi(label, ["install", extension], `To add the Pi extension of ${label}, run: pi install ${extension}`);
 }
@@ -114,6 +127,42 @@ function runPi(label: string, args: readonly string[], later: string): boolean {
 	}
 
 	return true;
+}
+
+/**
+ * Whether the `packages` of Pi's global settings list the folder `extension` as a local path, absolute or relative to
+ * the agent directory, with `~` or as a `file:` URL, as Pi resolves them.
+ */
+function piLists(extension: string): boolean {
+	const env = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = env ? expandHome(env) : join(homedir(), ".pi", "agent");
+	let settings: unknown;
+
+	try {
+		settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+	} catch {
+		return false;
+	}
+
+	if (!Value.Check(PiSettings, settings)) return false;
+
+	return (settings.packages ?? []).some((item) => {
+		const source = (Value.Check(Type.String(), item) ? item : item.source).trim();
+
+		if (REMOTE.some((prefix) => source.startsWith(prefix))) return false;
+		const path = source.startsWith("file://") ? fileURLToPath(source) : resolve(agentDir, expandHome(source));
+
+		try {
+			return realpathSync(path) === extension;
+		} catch {
+			return false;
+		}
+	});
+}
+
+/** `path` with a leading `~` replaced by the home directory. */
+function expandHome(path: string): string {
+	return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
