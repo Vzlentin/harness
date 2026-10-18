@@ -192,18 +192,17 @@ The package has the Pi extension in its `pi/` folder: the `subagent` tool, the `
 
 Setup registers the extension in Pi. It acts only for a top-level global install: the real path of the package is `<root>/@vzlentin/harness`, where `<root>` is a `node_modules` folder in `lib` (the prefix on Windows) with no other `node_modules` folder above it. A copy that npm puts in another global package, a dependency of a project and a checkout get no setup. Setup does this, with its output on stderr:
 
-1. For each Pi package of the `retiredPiPackages` field of the package's `package.json` (`npm:@vzlentin/pi-subagent`, the old extension, which makes Pi exit with `Tool "subagent" conflicts` next to this one) that the `packages` of Pi's global settings list (`$PI_CODING_AGENT_DIR/settings.json`, default `~/.pi/agent/settings.json`), with or without a version, it writes `harness: removing <source> from Pi, which @vzlentin/harness replaces` and runs `pi remove <source>`.
-2. It runs `pi install <package>/pi`. A second install keeps one entry in Pi's settings.
-3. Unless a `pi` command failed, it writes the stamp `$XDG_STATE_HOME/harness/.setup/<hash>` (default `~/.local/state/harness/.setup/`), where `<hash>` is the SHA-256 of the real path and the version of the package.
+1. It runs `pi install <package>/pi`. A second install keeps one entry in Pi's settings.
+2. Unless `pi` failed, it writes the stamp `$XDG_STATE_HOME/harness/.setup/<hash>` (default `~/.local/state/harness/.setup/`), where `<hash>` is the SHA-256 of the real path and the version of the package.
 
-Setup runs `pi` from `PATH`, without the `node_modules/.bin` folders that npm adds, so the `pi` of the package's own dependencies is not used. When `pi` is not on `PATH`, it writes `harness: pi is not on PATH. To add the Pi extension of harness, run: pi install <path>` (`pi remove <source>` for step 1). When `pi` fails, it writes `harness: pi <install|remove> failed (<reason>). ...` with the same command. A Pi failure does not fail setup, but it writes no stamp, so the next `harness` command tries again. When `pi` is not on `PATH`, the stamp is written, so a user without Pi gets the hint once per version; after installing Pi, run the `pi install` command of the hint.
+Setup runs `pi` from `PATH`, without the `node_modules/.bin` folders that npm adds, so the `pi` of the package's own dependencies is not used. When `pi` is not on `PATH`, it writes `harness: pi is not on PATH. To add the Pi extension of harness, run: pi install <path>`. When `pi` fails, it writes `harness: pi install failed (<reason>). ...` with the same command. A Pi failure does not fail setup, but it writes no stamp, so the next `harness` command tries again. When `pi` is not on `PATH`, the stamp is written, so a user without Pi gets the hint once per version; after installing Pi, run the `pi install` command of the hint.
 
 Two things run setup:
 
 - The `postinstall` script, when npm sets `npm_config_global=true` (`npm install -g`). It runs setup every time, so a reinstall repairs the entry. npm 11 runs it; npm 12 does not run install scripts by default. npm shows its output only with `--foreground-scripts`. An error in it is a warning, and the npm install succeeds. Another install, such as `npm ci` in a checkout, does nothing.
 - The installed CLI (`dist/cli.js`), before each command but `host`, when the stamp of this path and version does not exist. So with npm 12, the first `harness` command after an install or an update does the setup. Setup never fails the command: an error writes `harness: setup failed: <reason>`. The checkout's `src/cli.ts` runs no setup.
 
-`@vzlentin/harness/setup` exports the two functions, for another package with a `pi/` folder, such as workflows. Each takes the directory of the package, reads its `name`, `version` and `retiredPiPackages` from its `package.json`, and uses the last part of the name in its messages:
+`@vzlentin/harness/setup` exports the two functions, for another package with a `pi/` folder, such as workflows. Each takes the directory of the package, reads its `name` and `version` from its `package.json`, and uses the last part of the name in its messages:
 
 - `setup(packageDir)`: setup as above. It throws when it cannot read the `package.json` or write the stamp, not for a Pi failure.
 - `setupOnce(packageDir)`: setup when the stamp of this path and version does not exist. It never throws: an error writes `harness: setup failed: <reason>`.

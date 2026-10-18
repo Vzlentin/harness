@@ -10,27 +10,18 @@ import { basename, delimiter, dirname, join, sep } from "node:path";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
-const PackageJson = Type.Object({
-	name: Type.String(),
-	version: Type.String(),
-	retiredPiPackages: Type.Optional(Type.Array(Type.String())),
-});
+const PackageJson = Type.Object({ name: Type.String(), version: Type.String() });
 
 type PackageJson = Static<typeof PackageJson>;
-
-const PiSettings = Type.Object({
-	packages: Type.Optional(Type.Array(Type.Union([Type.String(), Type.Object({ source: Type.String() })]))),
-});
 
 /** A package that setup acts on: its real directory and its `package.json`. */
 type Installed = { readonly dir: string; readonly json: PackageJson };
 
 /**
- * Registers `<packageDir>/pi` in Pi when `packageDir` is a top-level global npm install. First it runs `pi remove` for
- * each Pi package of the `retiredPiPackages` field of the package's `package.json` that Pi's settings list. It writes
- * its messages to stderr, and it does not throw for a Pi failure: it writes a warning with the command to run.
- * It writes the stamp that `setupOnce` reads unless a `pi` command failed, so the next run tries again. Without `pi`
- * on PATH it writes the stamp, so a user without Pi gets the hint once per version.
+ * Registers `<packageDir>/pi` in Pi when `packageDir` is a top-level global npm install. It writes its messages to
+ * stderr, and it does not throw for a Pi failure: it writes a warning with the command to run. It writes the stamp
+ * that `setupOnce` reads unless `pi` failed, so the next run tries again. Without `pi` on PATH it writes the stamp, so
+ * a user without Pi gets the hint once per version.
  */
 export function setup(packageDir: string): void {
 	const installed = readInstalled(packageDir);
@@ -93,22 +84,12 @@ function writeStamp(installed: Installed): void {
 	writeFileSync(path, `${installed.dir}\n${installed.json.version}\n`);
 }
 
-/** False when a `pi` command failed. */
+/** False when `pi install` failed. */
 function registerExtension({ dir, json }: Installed): boolean {
 	const label = basename(json.name);
 	const extension = join(dir, "pi");
-	const later = `To add the Pi extension of ${label}, run: pi install ${extension}`;
-	const listed = piPackages();
 
-	for (const retired of json.retiredPiPackages ?? []) {
-		for (const source of listed.filter((item) => item === retired || item.startsWith(`${retired}@`))) {
-			process.stderr.write(`${label}: removing ${source} from Pi, which ${json.name} replaces\n`);
-
-			if (!runPi(label, ["remove", source], `To remove it, run: pi remove ${source}`)) return false;
-		}
-	}
-
-	return runPi(label, ["install", extension], later);
+	return runPi(label, ["install", extension], `To add the Pi extension of ${label}, run: pi install ${extension}`);
 }
 
 /** Runs `pi`, with a warning when it is missing or fails. False when it failed; true when it worked or is missing. */
@@ -141,21 +122,4 @@ function userPath(): string {
 		.split(delimiter)
 		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
 		.join(delimiter);
-}
-
-/** The sources of the packages in Pi's global settings, or none when the file is missing or not valid. */
-function piPackages(): string[] {
-	const env = process.env.PI_CODING_AGENT_DIR;
-	const agentDir = env ? env.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".pi", "agent");
-	let settings: unknown;
-
-	try {
-		settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-	} catch {
-		return [];
-	}
-
-	if (!Value.Check(PiSettings, settings)) return [];
-
-	return (settings.packages ?? []).map((item) => (Value.Check(Type.String(), item) ? item : item.source));
 }

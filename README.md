@@ -24,11 +24,6 @@ pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
 
 When you install with `--prefix`, give the same `--prefix` to `npm root -g`.
 
-### Move from 0.1.0
-
-0.1.0 had the extension in the separate Pi package `@vzlentin/pi-subagent`. Update as below: the setup removes that
-package from Pi (`pi remove npm:@vzlentin/pi-subagent`), since it conflicts with the new extension.
-
 ### Update and remove
 
 ```sh

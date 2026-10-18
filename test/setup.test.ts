@@ -24,8 +24,7 @@ function piCalls(): string[] {
 async function installAt(at: string, version = "0.2.0"): Promise<string> {
 	const dir = join(root, at, "@vzlentin", "harness");
 	await mkdir(join(dir, "pi"), { recursive: true });
-	const json = { name: "@vzlentin/harness", version, retiredPiPackages: ["npm:@vzlentin/pi-subagent"] };
-	await writeFile(join(dir, "package.json"), JSON.stringify(json));
+	await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@vzlentin/harness", version }));
 
 	return realpathSync(dir);
 }
@@ -77,20 +76,6 @@ describe("setup", () => {
 		setupOnce(await installAt("prefix/lib/node_modules/other/node_modules"));
 		expect(piCalls()).toEqual([]);
 		expect(stamps()).toEqual([]);
-	});
-
-	it("removes the retired pi-subagent from Pi before it installs", async () => {
-		const dir = await installAt("prefix/lib/node_modules");
-		await mkdir(join(root, "agent"));
-		const packages = ["npm:@vzlentin/pi-subagent@0.1.0", { source: "npm:other" }, "npm:@vzlentin/pi-subagent-x"];
-		await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ packages }));
-		const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-
-		setup(dir);
-		expect(piCalls()).toEqual(["remove npm:@vzlentin/pi-subagent@0.1.0", `install ${join(dir, "pi")}`]);
-		expect(stderr).toHaveBeenCalledWith(
-			"harness: removing npm:@vzlentin/pi-subagent@0.1.0 from Pi, which @vzlentin/harness replaces\n",
-		);
 	});
 
 	it("writes the command to run later when pi is not on PATH, and does not throw", async () => {
