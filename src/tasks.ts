@@ -1,5 +1,5 @@
 /**
- * The tasks that clients start in the host: the tasks of the `piDurable` entries, as background tasks of the root
+ * The tasks that clients start in the host: the tasks of the entries, as background tasks of the root
  * conversation, by the client's key.
  */
 import type { JsonValue } from "@earendil-works/chord";
@@ -30,7 +30,7 @@ export type TaskHost = {
 };
 
 /**
- * The extension of the tasks of the `piDurable` entries, which is the list of the kinds that `start` can create. The
+ * The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The
  * registry refuses a task name that two entries give.
  */
 export function startableTasks(tasks: readonly AnyTask[]): Extension {

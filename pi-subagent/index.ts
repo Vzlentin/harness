@@ -1,15 +1,21 @@
 /**
- * The `subagent` tool, `/subagent` and the subagents widget. They use the code of this package, so Pi and the
- * `harness` CLI of the same install run the same version and start the same host.
+ * The `subagent` tool, `/subagent` and the subagents widget. They use the client of the harness install that this
+ * package depends on, and start the host of that install.
  */
 import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { request } from "../src/client.ts";
-import { openViewerTab } from "../src/herdr.ts";
-import { childLine, runDisplayName } from "../src/protocol.ts";
-import * as tool from "../src/tool.ts";
-import { savedTrust } from "../src/trust.ts";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { request } from "@vzlentin/harness/client";
+import { openViewerTab } from "@vzlentin/harness/herdr";
+import { childLine, runDisplayName } from "@vzlentin/harness/protocol";
+import * as tool from "@vzlentin/harness/tool";
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
@@ -125,4 +131,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		widgetContext = undefined;
 		ctx.ui.setWidget("subagents", undefined);
 	});
+}
+
+/**
+ * Whether Pi trusts the project in `cwd` with no one to ask, as the host does in `src/trust.ts` of harness. It is here
+ * with Pi's own modules, so Pi does not load the copy of pi-coding-agent that harness installs.
+ */
+function savedTrust(cwd: string): boolean {
+	if (!hasTrustRequiringProjectResources(cwd)) return true;
+	const agentDir = getAgentDir();
+	const decision = new ProjectTrustStore(agentDir).get(cwd);
+	if (decision !== null) return decision;
+	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
 }

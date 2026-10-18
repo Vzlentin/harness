@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
+	cliPath,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -180,7 +180,7 @@ function startHost(project: string, dir: string, log: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 	try {
-		const cli = fileURLToPath(new URL("../bin/harness.mjs", import.meta.url));
+		const cli = cliPath();
 		spawn(process.execPath, [cli, "--project", project, "host"], {
 			cwd: dir,
 			detached: true,

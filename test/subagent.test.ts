@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { cp, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
@@ -19,14 +18,12 @@ import { projectDir } from "../src/projects.ts";
 import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
-	CLI,
 	called,
 	calls,
 	cli,
 	gates,
 	handleOf,
 	models,
-	type Result,
 	requests,
 	root,
 	setUp,
@@ -300,57 +297,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			new RegExp(`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nAnswer to Sent message\n`),
 		);
 		expect(called("Sent message")).toBe(1);
-	});
-
-	it("gives children the host's own tool when harness is also an installed package", async () => {
-		const linked = join(root, "linked-package");
-		await symlink(join(dirname(CLI), ".."), linked);
-		const settings = join(root, "agent", "settings.json");
-		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [linked] }));
-		try {
-			await host?.close();
-			host = await startHost();
-			// With the entry of the package, the caller of a child would be `<store>:<conversation ID>`, and the depth
-			// limit would not see the third level.
-			const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
-			expect((await cli(["wait", handle])).stdout).toContain("Nested subagents are disabled");
-		} finally {
-			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
-			await host?.close();
-			host = await startHost();
-		}
-	});
-
-	it("runs its CLI and starts its host from a copy under node_modules, where Node does not strip types", async () => {
-		const installed = join(root, "consumer", "node_modules", "harness");
-		const source = join(dirname(CLI), "..");
-		await mkdir(installed, { recursive: true });
-		for (const path of ["bin", "src", "package.json"])
-			await cp(join(source, path), join(installed, path), { recursive: true });
-		await symlink(join(source, "node_modules"), join(installed, "node_modules"));
-		// Its own state, so `list` starts a host from the copy. No jiti file cache: each copy has a new path.
-		const env = { ...process.env, XDG_STATE_HOME: join(root, "copy-state"), JITI_FS_CACHE: "false" };
-		const run = (file: string) =>
-			new Promise<Result>((resolve) => {
-				execFile(process.execPath, [join(installed, file), "list"], { cwd: root, env }, (error, stdout, stderr) =>
-					resolve({ code: error === null ? 0 : (error.code as number), stdout, stderr }),
-				);
-			});
-		const plain = await run(join("src", "cli.ts"));
-		expect(plain.stderr).toContain("ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING");
-		try {
-			expect(await run(join("bin", "harness.mjs"))).toEqual({ code: 0, stdout: "No subagents\n", stderr: "" });
-		} finally {
-			const saved = process.env.XDG_STATE_HOME;
-			process.env.XDG_STATE_HOME = env.XDG_STATE_HOME;
-			const client = await connect({ start: false }).finally(() => {
-				process.env.XDG_STATE_HOME = saved;
-			});
-			if (client !== undefined) {
-				process.kill(client.pid);
-				client.close();
-			}
-		}
 	});
 
 	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {

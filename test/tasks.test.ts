@@ -1,15 +1,21 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { request } from "../src/client.ts";
+import { connect, request } from "../src/client.ts";
+import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
 import { AGENT_HANDLE, type Request, statePaths, type TaskInfo } from "../src/protocol.ts";
 import { aborted, called, cli, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
+
+/** Sets the entry of the fixture that gives its task. */
+function setFixtureEntry(): void {
+	setEntry("fixture", join(FIXTURE, "ask.ts"));
+}
 const KIND = "fixture.ask";
 
 let host: Host | undefined;
@@ -37,11 +43,12 @@ async function taskRequest<T extends "task" | "wait-task" | "abort-task">(type: 
 
 beforeAll(async () => {
 	await setUp();
+	setFixtureEntry();
+	// The fixture is also a Pi package, whose old-style entry loads in each host start.
 	await writeFile(
 		join(root, "agent", "settings.json"),
 		JSON.stringify({ retry: { enabled: false }, packages: [FIXTURE] }),
 	);
-	// The old-style entry of the fixture loads in each host start.
 	host = await startHost();
 });
 
@@ -66,6 +73,11 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect(await taskRequest("wait-task", "agent-model")).toMatchObject({
 			outcome: { status: "completed", result: "Answer to Fixture agent" },
 		});
+	});
+
+	it("sets an entry in entries.json once", () => {
+		expect(setEntry("fixture", join(FIXTURE, "ask.ts"))).toBe(false);
+		expect(readEntries()).toEqual({ fixture: join(FIXTURE, "ask.ts") });
 	});
 
 	it("starts a task once per key and waits for its outcome", async () => {
@@ -166,8 +178,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		await host?.close();
 		// The child's turn resumes in the next host; it must end, so only the blocked task is left.
 		gates.delete("Fixture blocked");
-		const settings = join(root, "agent", "settings.json");
-		await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+		await writeFile(entriesPath(), "{}");
 		const { dir } = statePaths(MAIN_PROJECT);
 		const idle = await runHost({
 			stateDir: dir,
@@ -185,10 +196,52 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			await until(() => closed);
 		} finally {
 			await idle.close();
-			await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [FIXTURE] }));
+			setFixtureEntry();
 		}
 		host = await startHost();
 		expect(await taskRequest("abort-task", "blocked")).toMatchObject({ key: "blocked" });
+	});
+
+	it("loads a TypeScript entry under node_modules, where Node does not strip types", async () => {
+		const dir = join(root, "node_modules", "typed-entry");
+		await mkdir(dir, { recursive: true });
+		await writeFile(
+			join(dir, "index.ts"),
+			`import type * as Durable from "@earendil-works/pi-durable";
+export default function typedEntry({ durable }: { readonly durable: typeof Durable }) {
+	const task = durable.defineTask<unknown, { phase: "run" }, string>({
+		name: "fixture.typed",
+		version: 1,
+		initial: () => ({ phase: "run" }),
+		phases: {
+			run: (_task, runtime, context) =>
+				runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "typed" } }), context),
+		},
+		abort: (_task, runtime, context) =>
+			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+	});
+	return { extensions: [], tasks: [task], close: async () => {} };
+}
+`,
+		);
+		setEntry("typed", join(dir, "index.ts"));
+		// A host process of its own, as installed: the host of the tests runs under Vite, which strips types anywhere.
+		const saved = process.env.XDG_STATE_HOME;
+		process.env.XDG_STATE_HOME = join(root, "typed-state");
+		let pid: number | undefined;
+		try {
+			expect(await cli(["list"])).toMatchObject({ code: 0, stdout: "No subagents\n" });
+			const client = await connect({ start: false });
+			pid = client?.pid;
+			client?.close();
+			await start("typed", "Fixture typed", "fixture.typed");
+			expect(await taskRequest("wait-task", "typed")).toMatchObject({
+				outcome: { status: "completed", result: "typed" },
+			});
+		} finally {
+			if (pid !== undefined) process.kill(pid);
+			process.env.XDG_STATE_HOME = saved;
+		}
 	});
 
 	it("starts a task when the project agent gets no model", async () => {

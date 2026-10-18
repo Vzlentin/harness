@@ -8,7 +8,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { sendToHost, subagentTool } from "./tool.ts";
 
 /**
- * The `piDurable` entry. The caller is `<store>:<conversation ID>`, where the store is a random ID that the store keeps,
+ * The entry for a pi-durable host. The caller is `<store>:<conversation ID>`, where the store is a random ID that the store keeps,
  * so conversations of two stores do not share children.
  */
 export default function subagentEntry({ durable, ai }: { readonly durable: typeof Durable; readonly ai: typeof Ai }) {

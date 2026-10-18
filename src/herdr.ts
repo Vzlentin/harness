@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { resolveProject } from "./projects.ts";
-import { AGENT_HANDLE, type ChildInfo, childLabel, runDisplayName } from "./protocol.ts";
+import { AGENT_HANDLE, type ChildInfo, childLabel, cliPath, runDisplayName } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
@@ -25,7 +24,7 @@ export function viewerTarget(
  * `env`.
  */
 export function viewerCommand(handle: string, project: string): string[] {
-	const cli = fileURLToPath(new URL("../bin/harness.mjs", import.meta.url));
+	const cli = cliPath();
 	const target = viewerTarget(handle, project);
 	return ["env", process.execPath, cli, ...target.project, ...target.resume];
 }
