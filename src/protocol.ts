@@ -116,9 +116,16 @@ export type Request =
 	  }
 	/**
 	 * Starts a background task of the kind `kind`, a task of an installed `piDurable` entry, in the root conversation.
-	 * A repeated `key` gives the first task, and its new kind and input are ignored.
+	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
+	 * whose definition of `kind` has another version refuses before it creates anything.
 	 */
-	| { readonly type: "start"; readonly kind: string; readonly input: JsonValue; readonly key: string }
+	| {
+			readonly type: "start";
+			readonly kind: string;
+			readonly input: JsonValue;
+			readonly key: string;
+			readonly version?: number;
+	  }
 	| { readonly type: "task"; readonly key: string }
 	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
 	| { readonly type: "wait-task"; readonly key: string }

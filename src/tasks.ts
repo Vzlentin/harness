@@ -46,7 +46,13 @@ export async function startTask(host: TaskHost, request: Extract<Request, { type
 	await host.root.commit(async (tx) => {
 		const state = await tx.doc(StartedTasks);
 		if (Object.hasOwn(state.tasks, request.key)) return;
-		state.tasks[request.key] = await tx.createTask(startableTask(host.startable, request.kind), request.input, {
+		const task = startableTask(host.startable, request.kind);
+		if (request.version !== undefined && task.definition.version !== request.version) {
+			throw new Error(
+				`This host has version ${task.definition.version} of ${request.kind}, not ${request.version}: stop the host so it starts again with the installed version`,
+			);
+		}
+		state.tasks[request.key] = await tx.createTask(task, request.input, {
 			ownership: { kind: "conversation" },
 			background: true,
 		});
