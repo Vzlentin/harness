@@ -115,8 +115,6 @@ export function registerMirror(pi: ExtensionAPI): void {
 	pi.on("model_select", (event) => {
 		if (event.source !== "restore") attached?.selectModel(event.model.provider, event.model.id);
 	});
-
-	pi.on("thinking_level_select", (event) => attached?.selectThinking(event.level));
 }
 
 /**
@@ -207,9 +205,10 @@ class Attachment {
 		this.#configure({ provider, model });
 	}
 
-	/** Gives the agent the thinking level that the user selected in Pi, once Pi has the agent's model. */
-	selectThinking(thinking: ChildInfo["thinking"]): void {
+	/** Gives the agent the thinking level that the user cycled to in Pi, once Pi has the agent's model. */
+	cycledThinking(): void {
 		const child = this.#mirror.child;
+		const thinking = this.#pi.getThinkingLevel();
 
 		if (child === undefined || child.thinking === thinking || !this.#hasAgentModel(child)) return;
 		this.#configure({ thinking });
@@ -323,11 +322,20 @@ class Attachment {
 
 		if (model !== undefined && !this.#hasAgentModel(child) && !this.#settingModel) {
 			this.#settingModel = true;
+			// Pi sets its own thinking level when it takes a model, so the agent's level follows once Pi has the model.
 			void this.#pi.setModel(model).finally(() => {
 				this.#settingModel = false;
+				const current = this.#mirror.child;
+
+				if (current !== undefined && !this.#closed) this.#syncThinking(current);
 			});
 		}
 
+		this.#syncThinking(child);
+	}
+
+	/** Gives the Pi session the thinking level of the agent, once Pi has the agent's model. */
+	#syncThinking(child: ChildInfo): void {
 		if (this.#hasAgentModel(child) && this.#pi.getThinkingLevel() !== child.thinking) {
 			this.#pi.setThinkingLevel(child.thinking);
 		}
@@ -370,8 +378,10 @@ class Attachment {
 
 /**
  * The editor of a mirror session. While the agent works, the interrupt key (Esc) aborts its turn and the follow-up key
- * (Alt+Enter) queues the text as a follow-up. Pi's editor handles every other key. After the thinking key (Ctrl+T),
- * which Pi applies only to its own messages, the transcript of the agent follows the setting.
+ * (Alt+Enter) queues the text as a follow-up. Pi's editor handles every other key. After the key that hides thinking
+ * (Ctrl+T), which Pi applies only to its own messages, the transcript of the agent follows the setting. After the key
+ * that cycles the thinking level (Shift+Tab), the agent gets the level of Pi. Pi also changes its level when it takes a
+ * model, so the mirror follows this key, not each change of Pi's level.
  */
 class MirrorEditor extends coding.CustomEditor {
 	readonly #keys: KeybindingsManager;
@@ -405,6 +415,8 @@ class MirrorEditor extends coding.CustomEditor {
 		super.handleInput(data);
 
 		if (this.#keys.matches(data, "app.thinking.toggle")) this.#attachment.showThinkingSetting();
+
+		if (this.#keys.matches(data, "app.thinking.cycle")) this.#attachment.cycledThinking();
 	}
 }
 
