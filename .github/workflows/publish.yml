@@ -19,9 +19,25 @@ jobs:
       - run: npm ci
       - run: npm run check
 
-  publish:
+  # On main, release-please opens or updates the release PR. When that PR is merged, it creates the tag and the GitHub
+  # release, and the publish job runs.
+  release:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+
+  publish:
+    needs: release
+    if: needs.release.outputs.created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,6 +64,6 @@ jobs:
             exit 1
           fi
           if ! npm publish; then
-            echo "::error::npm publish failed for $name@$version. See the npm error above. CI does not retry with another version: to release, change version in package.json in a new commit."
+            echo "::error::npm publish failed for $name@$version. See the npm error above. Fix the cause and re-run this job: the tag and the GitHub release exist already."
             exit 1
           fi
