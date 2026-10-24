@@ -1,0 +1,202 @@
+/**
+ * The targets of the host's requests: the children by handle, the project agent, and the conversations of the children
+ * library by ID, with the `Children` records of the host.
+ */
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import * as durable from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import { type Child, createChildren, type Input, type Owner, type Place } from "./children.ts";
+import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
+
+const context = BACKGROUND_CONTEXT;
+
+/** What the targets use of the host. */
+export type TargetHost = {
+	readonly harness: Harness;
+	/** The host's store, models and tools, for the children library. */
+	readonly place: Place;
+	readonly owner: Owner;
+	readonly project: string;
+	/** The project agent: the root conversation, with a model and the project directory from its first use. */
+	readonly agent: () => Promise<Conversation>;
+};
+
+export type ChildRecord = {
+	name?: string;
+	/** `PI_SESSION_ID` of the spawner: a Pi session, the conversation ID of another child, or `cli`. */
+	caller: string;
+	createdAt: string;
+	conversationId: ConversationId;
+	/** The request IDs of the spawn and of each `send` of the caller, in order. */
+	sent?: string[];
+	/** How many requests of `sent` a `wait` gave the answer of. */
+	read?: number;
+};
+
+export type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
+
+/**
+ * The children by handle, and the handle of each spawn request ID. Version 2 leaves each child's last request to the
+ * children library; a store with version 1 has children that the library does not know.
+ */
+export const Children = defineDoc<ChildrenState>({
+	kind: "subagent.children",
+	version: 2,
+	scope: "session",
+	initial: () => ({ children: {}, requests: {} }),
+});
+
+/** The request ID of the project agent's newest input, which its `error` state comes from. */
+const AgentState = defineDoc<{ lastRequest: string | null }>({
+	kind: "harness.agent",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({ lastRequest: null }),
+});
+
+/** The children library, on this process's pi-durable. */
+export const library = createChildren(durable);
+
+/**
+ * The conversation of `ref`: a child or the project agent by handle, or a conversation of the children library by ID,
+ * with its info, its input, and the record of a child.
+ */
+export async function target(handler: TargetHost, ref: Target) {
+	if (ref.conversation !== undefined) return conversationTarget(handler, ref.conversation);
+	const { handle } = ref;
+
+	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
+	const root = await handler.agent();
+	const { harness, place, project } = handler;
+
+	const turn = library.turn(
+		place,
+		root.id,
+		root,
+		async (readContext) => (await harness.snapshot(AgentState, root.id, readContext))?.lastRequest,
+		async (tx, requestId) => {
+			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
+		},
+	);
+
+	return {
+		conversation: root,
+		info: async (): Promise<ChildInfo> => ({
+			...(await agentFields(root)),
+			handle,
+			name: `${project} agent`,
+			state: await turn.state(context),
+		}),
+		send: (input: Input) => turn.send(input, context),
+		record: undefined,
+	};
+}
+
+export type Found = Awaited<ReturnType<typeof target>>;
+
+/**
+ * The target of the library conversation `id`, of any owner, such as a child of a task. It has no record, and it takes
+ * input only while it works.
+ */
+async function conversationTarget(handler: TargetHost, id: string) {
+	const child = await library.inspect(handler.place, id, context);
+
+	if (child === undefined) throw new Error(`Unknown conversation: ${id}`);
+	const { conversation, lineage } = child;
+
+	const info = async (): Promise<ChildInfo> => {
+		const childState = await child.state(context);
+		const state: ChildState = childState === "closed" ? "idle" : childState;
+
+		return { handle: id, conversation: id, name: lineage.key, state, ...(await agentFields(conversation)) };
+	};
+
+	return {
+		conversation,
+		info,
+		send: async (input: Input) => {
+			if ((await child.state(context)) !== "busy") throw new Error(`${lineage.key} takes input only while it works`);
+			// Small race: a turn that ends between the check and the submit starts a new turn; needs busy-only admission in
+			// pi-durable.
+			await conversation.submit({ ...input, whenBusy: "steer" }, context);
+		},
+		record: undefined,
+	};
+}
+
+/** The target of the child `handle`, whose record is `record`. */
+export async function childTarget(handler: TargetHost, handle: string, record: ChildRecord) {
+	const child = await childOf(handler, record);
+
+	return {
+		conversation: child.conversation,
+		info: () => childInfo(handler, handle, record),
+		send: (input: Input) => child.send(input, context),
+		record,
+	};
+}
+
+export async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
+	const state = await harness.snapshot(Children, context);
+	const record = recordOf(state, handle);
+
+	if (record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+
+	return record;
+}
+
+/** The record of `handle`, which must belong to `caller`. */
+export async function ownRecord(harness: Harness, handle: string, caller: string): Promise<ChildRecord> {
+	const record = await childRecord(harness, handle);
+
+	if (record.caller !== caller) throw new Error(`Subagent ${handle} belongs to another session`);
+
+	return record;
+}
+
+export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
+	const child = await library.find(handler.place, handler.owner, { id: String(record.conversationId) }, context);
+
+	if (child === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
+
+	return child;
+}
+
+/** The info of `handle`. A caller that already has the record gives it as `record`. */
+export async function childInfo(
+	handler: Pick<TargetHost, "harness" | "place" | "owner">,
+	handle: string,
+	record?: ChildRecord,
+): Promise<ChildInfo> {
+	record ??= await childRecord(handler.harness, handle);
+	const child = await childOf(handler, record);
+	const childState = await child.state(context);
+	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
+	const state: ChildState = childState === "closed" ? "idle" : childState;
+
+	const fields = await agentFields(child.conversation);
+
+	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
+}
+
+/** The model, thinking level and directory of the agent of `conversation`, for its info. */
+async function agentFields(
+	conversation: Conversation,
+): Promise<Pick<ChildInfo, "provider" | "model" | "thinking" | "cwd">> {
+	const agent = await conversation.agent(context);
+
+	return {
+		provider: agent.model?.provider ?? "",
+		model: agent.model?.modelId ?? "",
+		thinking: agent.thinkingLevel,
+		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
+		cwd: agent.cwd ?? "",
+	};
+}
+
+/** The record of `handle` in the `Children` value `state`. */
+export function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
+	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
+}

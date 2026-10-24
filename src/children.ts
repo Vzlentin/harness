@@ -200,6 +200,15 @@ export type Children = {
 		which: { readonly key: string } | { readonly id: string },
 		context: Context,
 	): Promise<Child | undefined>;
+	/**
+	 * The lineage, conversation and state of the child with the conversation ID `id`, of any owner, without its owner
+	 * operations. Nothing for a root, an unknown ID, or text that is not an ID.
+	 */
+	inspect(
+		place: Place,
+		id: string,
+		context: Context,
+	): Promise<Pick<Child, "lineage" | "conversation" | "state"> | undefined>;
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
 	/**
@@ -537,7 +546,12 @@ export function createChildren(durable: typeof Durable): Children {
 		};
 	}
 
-	const find: Children["find"] = async (place, owner, which, context) => {
+	/** The child of a key or a conversation ID, of any owner, with its document. */
+	async function load(
+		place: Place,
+		which: { readonly key: string } | { readonly id: string },
+		context: Context,
+	): Promise<{ child: Child; owner: Readonly<OwnerState> } | undefined> {
 		const id =
 			"key" in which
 				? (await place.store.snapshot(Keys, which.key, context))?.conversation
@@ -549,16 +563,29 @@ export function createChildren(durable: typeof Durable): Children {
 
 		if (doc === undefined || conversation === undefined) return undefined;
 
-		if (!sameOwner(doc.owner, ownerState(owner))) throw new Error(`The child ${id} belongs to another owner`);
+		return { child: makeChild(place, id, lineageOf(doc), conversation), owner: doc.owner };
+	}
 
-		return makeChild(place, id, lineageOf(doc), conversation);
+	const find: Children["find"] = async (place, owner, which, context) => {
+		const loaded = await load(place, which, context);
+
+		if (loaded === undefined) return undefined;
+
+		if (!sameOwner(loaded.owner, ownerState(owner))) {
+			throw new Error(`The child ${loaded.child.id} belongs to another owner`);
+		}
+
+		return loaded.child;
 	};
+
+	const inspect: Children["inspect"] = async (place, id, context) => (await load(place, { id }, context))?.child;
 
 	return {
 		extension,
 		answerExtension: answers.extension,
 		lineage,
 		find,
+		inspect,
 		turn,
 		async open(place, owner, key, spec, context, setup) {
 			const existing = await find(place, owner, { key }, context);
