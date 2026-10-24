@@ -10,7 +10,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../pi/chat.ts";
 import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
 import type { Host } from "../src/host.ts";
-import { Mirror, type MirrorConfigure, type MirrorOptions, type MirrorTarget } from "../src/mirror.ts";
+import {
+	harnessArgs,
+	isMirrorTarget,
+	Mirror,
+	type MirrorConfigure,
+	type MirrorOptions,
+	type MirrorTarget,
+	piArgs,
+} from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
 import { AGENT_HANDLE, errorMessage } from "../src/protocol.ts";
 import { inboxOf } from "../src/view-state.ts";
@@ -114,6 +122,20 @@ afterAll(async () => {
 });
 
 describe("mirror", { timeout: 30_000 }, () => {
+	it("gives the Pi and harness arguments of each kind of target, and refuses a target with both keys", () => {
+		const conversation: MirrorTarget = { project: "work", conversation: "42" };
+		expect(piArgs(conversation)).toEqual(["--harness", "work", "--harness-conversation", "42"]);
+		expect(harnessArgs(conversation)).toEqual(["--project", "work", "attach", "--conversation", "42"]);
+		const child: MirrorTarget = { project: "work", handle: "abc123" };
+		expect(piArgs(child)).toEqual(["--harness", "work", "--harness-child", "abc123"]);
+		expect(harnessArgs(child)).toEqual(["--project", "work", "attach", "abc123"]);
+		expect(piArgs(AGENT)).toEqual(["--harness", "main"]);
+		expect(harnessArgs(AGENT)).toEqual(["main"]);
+		expect(isMirrorTarget(conversation)).toBe(true);
+		expect(isMirrorTarget(child)).toBe(true);
+		expect(isMirrorTarget({ project: "work", handle: "abc123", conversation: "42" })).toBe(false);
+	});
+
 	it("shows the project agent and its answer to a message", async () => {
 		let changes = 0;
 		const mirror = new Mirror(AGENT, () => changes++, { start: false });

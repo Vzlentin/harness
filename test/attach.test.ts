@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
@@ -11,7 +11,21 @@ import { agentReporter, openChildTab } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
 import { AGENT_HANDLE, statePaths, type WatchLine } from "../src/protocol.ts";
 import { applyChange } from "../src/view-change.ts";
-import { CLI, called, cli, gates, handleOf, root, setUp, startHost, tearDown, textOf, until } from "./helpers.ts";
+import {
+	CLI,
+	called,
+	cli,
+	fakePi,
+	gates,
+	handleOf,
+	logLines,
+	root,
+	setUp,
+	startHost,
+	tearDown,
+	textOf,
+	until,
+} from "./helpers.ts";
 
 /** The text of each user and assistant message in `view`. */
 function textsOf(view: ConversationView | undefined): string[] {
@@ -41,22 +55,6 @@ function seqOf(line: string | undefined): number {
 	return Number(/--seq (\d+)/.exec(line ?? "")?.[1]);
 }
 
-/** A `pi` on `PATH` that logs its arguments and its Herdr variables to `log`, one line for each call, and exits with 3. */
-async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
-	const bin = await mkdtemp(join(root, "bin-"));
-	const log = join(bin, "pi.log");
-
-	const script = `#!/bin/sh
-echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE" >> "${log}"
-exit 3
-`;
-
-	await writeFile(join(bin, "pi"), script);
-	await chmod(join(bin, "pi"), 0o755);
-
-	return { env: { PATH: `${bin}:${process.env.PATH}` }, log };
-}
-
 /**
  * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab.
  * With `failTabCreate`, `tab create` writes that text to stderr and exits with 1.
@@ -79,10 +77,6 @@ if [ "$1 $2" = "tab create" ]; then ${tabCreate}; fi
 	await chmod(join(bin, "herdr"), 0o755);
 
 	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
-}
-
-function logLines(log: string): string[] {
-	return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
 }
 
 let host: Host | undefined;

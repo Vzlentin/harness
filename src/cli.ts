@@ -7,7 +7,7 @@ import { request } from "./client.ts";
 import { piEnv } from "./herdr.ts";
 import { type MirrorTarget, piArgs } from "./mirror.ts";
 import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "./projects.ts";
-import { AGENT_HANDLE, errorMessage, statePaths } from "./protocol.ts";
+import { AGENT_HANDLE, errorMessage, statePaths, type Target } from "./protocol.ts";
 import { setupOnce, userPath } from "./setup.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
@@ -27,6 +27,7 @@ function usage(): never {
   harness stop <handle>
   harness list
   harness attach <handle>
+  harness attach --conversation <id>
   harness create <name> --cwd <dir>
   harness projects
 Any command but harness <project> takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
@@ -200,12 +201,16 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 	process.exit(0);
 }
 
-/** Opens a child in Pi in this terminal. */
+/** Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. */
 async function attachCommand(args: string[]): Promise<void> {
-	const [handle] = args;
+	const [first, id] = args;
+	let ref: Target;
 
-	if (args.length !== 1 || handle === undefined) usage();
-	await openInPi({ project: resolveProject(process.env, process.cwd()), handle });
+	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = { handle: first };
+	else if (args.length === 2 && first === "--conversation" && id) ref = { conversation: id };
+	else usage();
+
+	await openInPi({ project: resolveProject(process.env, process.cwd()), ...ref });
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
@@ -216,11 +221,12 @@ async function agentCommand(name: string, project: string | undefined): Promise<
 
 /**
  * Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. It starts
- * the host when none runs. A first watch fails before Pi starts for an unknown child and for a project agent without a
- * model.
+ * the host when none runs. A first watch fails before Pi starts for an unknown child, an unknown conversation and a
+ * project agent without a model.
  */
 async function openInPi(target: MirrorTarget): Promise<void> {
-	await request({ type: "watch", handle: target.handle }, { start: true, project: target.project });
+	const ref = target.conversation === undefined ? { handle: target.handle } : { conversation: target.conversation };
+	await request({ type: "watch", ...ref }, { start: true, project: target.project });
 
 	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",

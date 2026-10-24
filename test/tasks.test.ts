@@ -6,9 +6,24 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect, request } from "../src/client.ts";
 import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
+import { Mirror } from "../src/mirror.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
-import { aborted, called, cli, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { AGENT_HANDLE, childTitle, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
+import { inboxOf } from "../src/view-state.ts";
+import {
+	aborted,
+	called,
+	cli,
+	fakePi,
+	gates,
+	logLines,
+	models,
+	root,
+	setUp,
+	startHost,
+	tearDown,
+	until,
+} from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
 
@@ -213,6 +228,80 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		);
 
 		await expect(request(configure, { start: false })).rejects.toThrow("Unknown subagent: nosuch");
+	});
+
+	it("mirrors a task's child by conversation: steers it while it works, aborts it, and refuses configure", async () => {
+		gates.set("Fixture mirrored", Promise.withResolvers());
+		const ids = await startWithIds("mirrored", "Fixture mirrored");
+		const { id } = await taskRequest("task", "mirrored");
+		const mirror = new Mirror({ project: MAIN_PROJECT, conversation: ids.child }, () => {}, { start: false });
+
+		try {
+			await until(() => mirror.status.kind !== "connecting");
+			expect(mirror.status).toEqual({ kind: "open" });
+			const child = mirror.child;
+
+			if (child === undefined) throw new Error("no child");
+			expect(child).toMatchObject({ conversation: ids.child, name: `fixture:${id}`, state: "busy" });
+			expect(childTitle(child)).toBe(`fixture:${id}`);
+			await mirror.send("Fixture mirror steer", false);
+			await until(() => mirror.view !== undefined && inboxOf(mirror.view).items.length > 0);
+			// The abort targets the conversation, and gives back the steer that the host withdraws.
+			expect(await mirror.abort()).toEqual(["Fixture mirror steer"]);
+			expect(aborted.has("Fixture mirrored")).toBe(true);
+			expect(called("Fixture mirror steer")).toBe(0);
+			await expect(mirror.send("Fixture mirror idle", false)).rejects.toThrow(
+				`fixture:${id} takes input only while it works`,
+			);
+			// A request would fail with `Unknown subagent`, so this text shows that none went.
+			await expect(mirror.configure({ thinking: "high" })).rejects.toThrow(
+				"A conversation of the children library keeps its model and thinking level",
+			);
+		} finally {
+			mirror.close();
+			gates.delete("Fixture mirrored");
+		}
+	});
+
+	it("opens a task's child in Pi by conversation, and refuses other conversation IDs before Pi starts", async () => {
+		gates.set("Fixture attached", Promise.withResolvers());
+		const ids = await startWithIds("attached", "Fixture attached");
+		const pi = await fakePi();
+
+		try {
+			expect(await cli(["attach", "--conversation", ids.child], pi.env)).toMatchObject({ code: 3, stderr: "" });
+			expect(logLines(pi.log)).toEqual([
+				`--harness main --harness-conversation ${ids.child} HERDR_ENV= HARNESS_HERDR_PANE=`,
+			]);
+
+			for (const conversation of ["999999", ids.root]) {
+				expect(await cli(["attach", "--conversation", conversation], pi.env)).toMatchObject({
+					code: 1,
+					stderr: `Unknown conversation: ${conversation}\n`,
+				});
+			}
+
+			for (const args of [
+				["attach", "--conversation"],
+				["attach", "--conversation", ids.child, "extra"],
+			]) {
+				const usage = await cli(args, pi.env);
+				expect(usage.code).toBe(1);
+				expect(usage.stderr).toContain("harness attach --conversation <id>");
+			}
+
+			// The usage comes before the project check.
+			const noProject = await cli(["attach"], { ...pi.env, HARNESS_PROJECT: "nosuch" });
+			expect(noProject.code).toBe(1);
+			expect(noProject.stderr).toContain("harness attach --conversation <id>");
+			expect(noProject.stderr).not.toContain("Unknown harness project");
+
+			expect(logLines(pi.log)).toHaveLength(1);
+		} finally {
+			gates.get("Fixture attached")?.resolve();
+			await taskRequest("wait-task", "attached");
+			gates.delete("Fixture attached");
+		}
 	});
 
 	it("resumes a task after a host restart", async () => {

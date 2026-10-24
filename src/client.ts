@@ -12,6 +12,7 @@ import {
 	type Replies,
 	type Request,
 	statePaths,
+	type Target,
 	type WatchLine,
 } from "./protocol.ts";
 
@@ -88,9 +89,7 @@ export class Client {
 	 * Sends the `watch` request of `target`, a handle or a conversation ID. Its `lines` are the events of the watch, and
 	 * end when the connection closes. Other requests can follow on this client. Call it once.
 	 */
-	async watch(
-		target: string | { readonly conversation: string },
-	): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
+	async watch(target: string | Target): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
 		const lines = new Readable({ objectMode: true, read() {} });
 		this.#lines = lines;
 		const ref = target instanceof Object ? target : { handle: target };
