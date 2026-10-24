@@ -1,8 +1,8 @@
 /**
  * Mirror sessions: a Pi session that shows a child or the agent of a harness project in Pi's own chat, and sends what
  * the user types to it. The agent runs in the host of the project; the session keeps only its target, in one custom
- * entry. `/harness [project]` opens one in a new session, and `pi --harness <project> [--harness-child <handle>]` in the
- * session that Pi starts with.
+ * entry. `/harness [project]` opens one in a new session, and `pi --harness <project> [--harness-child <handle> |
+ * --harness-conversation <id>]` in the session that Pi starts with.
  */
 
 import { homedir } from "node:os";
@@ -43,6 +43,12 @@ export function registerMirror(pi: ExtensionAPI): void {
 	pi.registerFlag(PI_FLAGS.child, {
 		type: "string",
 		description: "Show this subagent of the harness project in the new session, in place of the project agent",
+	});
+
+	pi.registerFlag(PI_FLAGS.conversation, {
+		type: "string",
+		description:
+			"Show this conversation of the children library of the harness project in the new session, in place of the project agent",
 	});
 
 	pi.registerEntryRenderer(MIRROR_ENTRY, (entry, options, theme) => {
@@ -125,15 +131,23 @@ function mirrorEntry(entries: readonly SessionEntry[]): MirrorEntry | undefined 
 }
 
 /**
- * The mirror entry for `--harness <project>` and `--harness-child <handle>`, written in the session that Pi starts
- * with. Without a project, it is the project of `HARNESS_PROJECT` and Pi's working directory; without a child, the
- * project agent. It refuses a session with messages, such as one of `--continue`, because Pi's own agent answered there.
+ * The mirror entry for `--harness <project>`, `--harness-child <handle>` and `--harness-conversation <id>`, written in
+ * the session that Pi starts with. Without a project, it is the project of `HARNESS_PROJECT` and Pi's working
+ * directory; without a child or a conversation, the project agent. It refuses both a child and a conversation, and a
+ * session with messages, such as one of `--continue`, because Pi's own agent answered there.
  */
 function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undefined {
 	const project = stringFlag(pi, PI_FLAGS.project);
 	const child = stringFlag(pi, PI_FLAGS.child);
+	const conversation = stringFlag(pi, PI_FLAGS.conversation);
 
-	if (project === undefined && child === undefined) return undefined;
+	if (project === undefined && child === undefined && conversation === undefined) return undefined;
+
+	if (child && conversation) {
+		ctx.ui.notify("harness: use --harness-child or --harness-conversation, not both", "error");
+
+		return undefined;
+	}
 
 	if (ctx.sessionManager.getBranch().some((entry) => entry.type === "message")) {
 		ctx.ui.notify("harness: --harness needs a new session, not one with messages", "error");
@@ -144,10 +158,8 @@ function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undef
 	let target: MirrorTarget;
 
 	try {
-		target = {
-			project: project ? checkProject(project) : resolveProject(process.env, ctx.cwd),
-			handle: child || AGENT_HANDLE,
-		};
+		const name = project ? checkProject(project) : resolveProject(process.env, ctx.cwd);
+		target = conversation ? { project: name, conversation } : { project: name, handle: child || AGENT_HANDLE };
 	} catch (error) {
 		ctx.ui.notify(`harness: ${errorMessage(error)}`, "error");
 

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -298,6 +299,27 @@ function replaceEnvironment(values: NodeJS.ProcessEnv): void {
 export async function tearDown(): Promise<void> {
 	replaceEnvironment(environment);
 	await rm(root, { recursive: true, force: true });
+}
+
+/** A `pi` on `PATH` that logs its arguments and its Herdr variables to `log`, one line for each call, and exits with 3. */
+export async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+	const bin = await mkdtemp(join(root, "bin-"));
+	const log = join(bin, "pi.log");
+
+	const script = `#!/bin/sh
+echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE" >> "${log}"
+exit 3
+`;
+
+	await writeFile(join(bin, "pi"), script);
+	await chmod(join(bin, "pi"), 0o755);
+
+	return { env: { PATH: `${bin}:${process.env.PATH}` }, log };
+}
+
+/** The lines of the log file `log`, or none when it does not exist. */
+export function logLines(log: string): string[] {
+	return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
 }
 
 /** A terminal for a TUI that is not started: it keeps nothing and gives no input. */
