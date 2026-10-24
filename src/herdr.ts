@@ -17,6 +17,9 @@ const PANE_VARIABLE = "HARNESS_HERDR_PANE";
 /** The part of the output of `herdr tab create` that has the pane of the tab. */
 const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
 
+/** The part of the output of `herdr pane split` that has the new pane. */
+const PaneSplit = Type.Object({ result: Type.Object({ pane: Type.Object({ pane_id: Type.String() }) }) });
+
 export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
 
 /**
@@ -25,6 +28,28 @@ export type AgentReporter = { report(busy: boolean): void; release(): Promise<vo
  */
 function openCommand(target: MirrorTarget): string[] {
 	return ["env", process.execPath, cliPath(), ...harnessArgs(target)];
+}
+
+/** The `--env` flags of `herdr` that give `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set. */
+function envFlags(env: NodeJS.ProcessEnv): string[] {
+	// The new pane must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in
+	// projects.ts.
+	const state = env.XDG_STATE_HOME;
+	const config = env.XDG_CONFIG_HOME;
+
+	return [
+		...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
+		...(config ? ["--env", `XDG_CONFIG_HOME=${config}`] : []),
+	];
+}
+
+/** Runs the command that opens `target` in Pi in the Herdr pane `pane`, with each word in single quotes. */
+async function runOpen(pane: string, target: MirrorTarget, env: NodeJS.ProcessEnv): Promise<void> {
+	const command = openCommand(target)
+		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
+		.join(" ");
+
+	await herdr(["pane", "run", pane, command], env);
 }
 
 /** Whether this process runs in a Herdr pane, also as the Pi that the CLI starts there. */
@@ -58,21 +83,75 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
  */
 export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
 	const project = resolveProject(env, process.cwd());
-	// The tab must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in projects.ts.
-	const state = env.XDG_STATE_HOME;
-	const config = env.XDG_CONFIG_HOME;
+
+	const created = await herdr(
+		["tab", "create", "--cwd", child.cwd, "--label", childLabel(child), "--focus", ...envFlags(env)],
+		env,
+	);
+
+	let output: unknown;
+
+	try {
+		output = JSON.parse(created);
+	} catch {
+		output = undefined;
+	}
+
+	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
+
+	await runOpen(output.result.root_pane.pane_id, { project, handle: child.handle }, env);
+}
+
+/**
+ * Opens the children library conversation `conversation` in Pi, on the project of `env` and this process's cwd: in a
+ * new pane to the right of the Herdr pane `place.pane`, or in a new tab of the Herdr workspace `place.workspace`. The
+ * pane or tab gets the key of the conversation as its label. For a conversation, `ChildInfo` gives the same ID in
+ * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID, and then makes no more
+ * calls.
+ */
+export async function openConversationPane(
+	conversation: ChildInfo,
+	place: { pane: string; workspace?: never } | { workspace: string; pane?: never },
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	const project = resolveProject(env, process.cwd());
+	const target = { project, conversation: conversation.handle };
+	const label = childLabel(conversation);
+
+	if (place.pane !== undefined) {
+		const split = await herdr(
+			["pane", "split", place.pane, "--direction", "right", "--cwd", conversation.cwd, ...envFlags(env)],
+			env,
+		);
+
+		let output: unknown;
+
+		try {
+			output = JSON.parse(split);
+		} catch {
+			output = undefined;
+		}
+
+		if (!Value.Check(PaneSplit, output)) throw new Error(`herdr pane split gave no pane ID: ${split.trim()}`);
+		const pane = output.result.pane.pane_id;
+		await herdr(["pane", "rename", pane, label], env);
+		await runOpen(pane, target, env);
+
+		return;
+	}
 
 	const created = await herdr(
 		[
 			"tab",
 			"create",
+			"--workspace",
+			place.workspace,
 			"--cwd",
-			child.cwd,
+			conversation.cwd,
 			"--label",
-			childLabel(child),
+			label,
 			"--focus",
-			...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
-			...(config ? ["--env", `XDG_CONFIG_HOME=${config}`] : []),
+			...envFlags(env),
 		],
 		env,
 	);
@@ -86,13 +165,8 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
 	}
 
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
-	const pane = output.result.root_pane.pane_id;
 
-	const command = openCommand({ project, handle: child.handle })
-		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
-		.join(" ");
-
-	await herdr(["pane", "run", pane, command], env);
+	await runOpen(output.result.root_pane.pane_id, target, env);
 }
 
 /**
