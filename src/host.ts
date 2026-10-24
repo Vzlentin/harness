@@ -17,7 +17,6 @@ import {
 	type ConversationId,
 	createRegistry,
 	type DocumentWatch,
-	defineDoc,
 	type Extension,
 	Harness,
 	type HarnessInspection,
@@ -28,22 +27,11 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import {
-	type Answer,
-	type Child,
-	createChildren,
-	type Input,
-	type Owner,
-	type Place,
-	resolveModel,
-	type Spec,
-} from "./children.ts";
+import { type Answer, type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import { loadEntries } from "./load-entries.ts";
 import {
-	AGENT_HANDLE,
 	type ChildInfo,
-	type ChildState,
 	errorMessage,
 	onLines,
 	PROTOCOL_VERSION,
@@ -51,8 +39,24 @@ import {
 	type Reply,
 	type Request,
 	RequestLine,
+	type Target,
 	type WatchLine,
 } from "./protocol.ts";
+import {
+	type ChildRecord,
+	Children,
+	type ChildrenState,
+	childInfo,
+	childOf,
+	childRecord,
+	childTarget,
+	type Found,
+	library,
+	ownRecord,
+	recordOf,
+	type TargetHost,
+	target,
+} from "./targets.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
 import { type ViewChange, viewChange } from "./view-change.ts";
@@ -64,44 +68,6 @@ const context = BACKGROUND_CONTEXT;
 
 /** The `detail` of a failed turn that is an error object. */
 const ErrorDetail = Type.Object({ message: Type.String() });
-
-type ChildRecord = {
-	name?: string;
-	/** `PI_SESSION_ID` of the spawner: a Pi session, the conversation ID of another child, or `cli`. */
-	caller: string;
-	createdAt: string;
-	conversationId: ConversationId;
-	/** The request IDs of the spawn and of each `send` of the caller, in order. */
-	sent?: string[];
-	/** How many requests of `sent` a `wait` gave the answer of. */
-	read?: number;
-};
-
-type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
-
-/**
- * The children by handle, and the handle of each spawn request ID. Version 2 leaves each child's last request to the
- * children library; a store with version 1 has children that the library does not know.
- */
-const Children = defineDoc<ChildrenState>({
-	kind: "subagent.children",
-	version: 2,
-	scope: "session",
-	initial: () => ({ children: {}, requests: {} }),
-});
-
-/** The request ID of the project agent's newest input, which its `error` state comes from. */
-const AgentState = defineDoc<{ lastRequest: string | null }>({
-	kind: "harness.agent",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "initial",
-	initial: () => ({ lastRequest: null }),
-});
-
-/** The children library, on this process's pi-durable. */
-const library = createChildren(durable);
 
 export type Host = {
 	/** Resolves once the host has closed, by `close()`, the idle exit, or a store failure. */
@@ -345,18 +311,13 @@ export async function runHost(options: {
 	return { closed, close };
 }
 
-type Handler = TaskHost & {
-	/** The host's store, models and tools, for the children library. */
-	readonly place: Place;
-	readonly owner: Owner;
-	/** The root conversation, which owns the host's children and is the project agent. */
-	readonly root: Conversation;
-	readonly project: string;
-	/** The project agent: the root conversation, with a model and the project directory from its first use. */
-	readonly agent: () => Promise<Conversation>;
-	/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
-	readonly connection?: Connection;
-};
+type Handler = TaskHost &
+	TargetHost & {
+		/** The root conversation, which owns the host's children and is the project agent. */
+		readonly root: Conversation;
+		/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
+		readonly connection?: Connection;
+	};
 
 type Connection = { readonly socket: Socket; afterReply(start: () => void): void };
 
@@ -385,7 +346,11 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 		}
 
 		case "input":
-			return sendTo(request, await target(handler, request.handle));
+			// A conversation takes input only while it works, so its input is always a steer.
+			return sendTo(
+				request.conversation === undefined ? request : { ...request, followUp: false },
+				await target(handler, request),
+			);
 		case "wait":
 			return waitChild(request, handler);
 		case "status":
@@ -397,7 +362,7 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 		case "watch":
 			if (handler.connection === undefined) throw new Error("A watch needs a connection");
 
-			return serveWatch(handler, request.handle, handler.connection);
+			return serveWatch(handler, request, handler.connection);
 		case "start":
 			// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without
 			// a model for the agent, the task still starts: its children may name their own.
@@ -536,7 +501,7 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 /** Sends the input of `request` to `found`. */
 async function sendTo(
 	request: Extract<RequestLine, { type: "send" | "input" }>,
-	found: Pick<Target, "info" | "send">,
+	found: Pick<Found, "info" | "send">,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const busy = (await found.info()).state === "busy";
 	await found.send({
@@ -656,7 +621,7 @@ async function markSent(harness: Harness, handle: string, requestId: string, add
 }
 
 async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
-	const found = await target(handler, request.handle);
+	const found = await target(handler, request);
 	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
 	await found.conversation.abort(context);
 
@@ -667,82 +632,12 @@ async function configureChild(
 	request: Extract<RequestLine, { type: "configure" }>,
 	handler: Handler,
 ): Promise<ChildInfo> {
-	const found = await target(handler, request.handle);
+	// Only the handle: the schema of `configure` does not refuse an extra `conversation` key.
+	const found = await target(handler, { handle: request.handle });
 	const agent = await found.conversation.agent(context);
 	await found.conversation.configure(resolveModel(handler.place.models, agent, request), context);
 
 	return found.info();
-}
-
-/**
- * The conversation of `handle`, a child or the project agent, with its info, its input, and the record of a child.
- */
-async function target(handler: Handler, handle: string) {
-	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
-	const root = await handler.agent();
-	const { harness, place, project } = handler;
-
-	const turn = library.turn(
-		place,
-		root.id,
-		root,
-		async (readContext) => (await harness.snapshot(AgentState, root.id, readContext))?.lastRequest,
-		async (tx, requestId) => {
-			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
-		},
-	);
-
-	return {
-		conversation: root,
-		info: async (): Promise<ChildInfo> => ({
-			...(await agentFields(root)),
-			handle,
-			name: `${project} agent`,
-			state: await turn.state(context),
-		}),
-		send: (input: Input) => turn.send(input, context),
-		record: undefined,
-	};
-}
-
-type Target = Awaited<ReturnType<typeof target>>;
-
-/** The target of the child `handle`, whose record is `record`. */
-async function childTarget(handler: Handler, handle: string, record: ChildRecord) {
-	const child = await childOf(handler, record);
-
-	return {
-		conversation: child.conversation,
-		info: () => childInfo(handler, handle, record),
-		send: (input: Input) => child.send(input, context),
-		record,
-	};
-}
-
-async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
-	const state = await harness.snapshot(Children, context);
-	const record = recordOf(state, handle);
-
-	if (record === undefined) throw new Error(`Unknown subagent: ${handle}`);
-
-	return record;
-}
-
-/** The record of `handle`, which must belong to `caller`. */
-async function ownRecord(harness: Harness, handle: string, caller: string): Promise<ChildRecord> {
-	const record = await childRecord(harness, handle);
-
-	if (record.caller !== caller) throw new Error(`Subagent ${handle} belongs to another session`);
-
-	return record;
-}
-
-async function childOf(handler: Pick<Handler, "place" | "owner">, record: ChildRecord): Promise<Child> {
-	const child = await library.find(handler.place, handler.owner, { id: String(record.conversationId) }, context);
-
-	if (child === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
-
-	return child;
 }
 
 function failureText(handle: string, reason: string, detail: JsonValue | undefined): string {
@@ -755,38 +650,6 @@ function failureText(handle: string, reason: string, detail: JsonValue | undefin
 			: undefined;
 
 	return text === undefined ? `${handle} failed: ${reason}` : `${handle} failed: ${text}`;
-}
-
-/** The info of `handle`. A caller that already has the record gives it as `record`. */
-async function childInfo(
-	handler: Pick<Handler, "harness" | "place" | "owner">,
-	handle: string,
-	record?: ChildRecord,
-): Promise<ChildInfo> {
-	record ??= await childRecord(handler.harness, handle);
-	const child = await childOf(handler, record);
-	const childState = await child.state(context);
-	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
-	const state: ChildState = childState === "closed" ? "idle" : childState;
-
-	const fields = await agentFields(child.conversation);
-
-	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
-}
-
-/** The model, thinking level and directory of the agent of `conversation`, for its info. */
-async function agentFields(
-	conversation: Conversation,
-): Promise<Pick<ChildInfo, "provider" | "model" | "thinking" | "cwd">> {
-	const agent = await conversation.agent(context);
-
-	return {
-		provider: agent.model?.provider ?? "",
-		model: agent.model?.modelId ?? "",
-		thinking: agent.thinkingLevel,
-		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
-		cwd: agent.cwd ?? "",
-	};
 }
 
 /**
@@ -834,7 +697,8 @@ async function setUpAgent(
  * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets a `stopped` event and the connection ends; when the conversation
  * watch ends for another reason, the connection ends.
  */
-async function serveWatch(handler: Handler, handle: string, connection: Connection): Promise<Replies["watch"]> {
+async function serveWatch(handler: Handler, ref: Target, connection: Connection): Promise<Replies["watch"]> {
+	const handle = ref.conversation ?? ref.handle;
 	const { harness } = handler;
 	const { socket } = connection;
 	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
@@ -848,15 +712,16 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 		if (socket.writable) socket.end();
 	};
 
-	let found: Target;
+	let found: Found;
 	let children: DocumentWatch<ChildrenState> | undefined;
 	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
 	let last: ChildInfo;
 
 	try {
-		found = await target(handler, handle);
+		found = await target(handler, ref);
 
-		// The project agent has no record, and no `Children` watch: it is never renamed or stopped.
+		// The project agent and a conversation target have no record and no `Children` watch: they are never renamed
+		// or stopped.
 		if (found.record !== undefined) {
 			// The `Children` watch opens before the info, so it gets each later rename and stop of the child.
 			children = await harness.watchDoc(Children, watchContext);
@@ -913,11 +778,6 @@ async function serveWatch(handler: Handler, handle: string, connection: Connecti
 	});
 
 	return { view: conversation.value, child: last };
-}
-
-/** The record of `handle` in the `Children` value `state`. */
-function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
-	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
 }
 
 /**

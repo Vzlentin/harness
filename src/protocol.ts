@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { type Static, type TProperties, Type } from "typebox";
 import type { ViewChange } from "./view-change.ts";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
@@ -19,9 +19,13 @@ export const AGENT_HANDLE = "agent";
 
 export type ChildState = "busy" | "idle" | "error";
 
-/** One child as the host reports it. Provider, model and thinking level come from the child's agent. */
+/**
+ * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`
+ * target, `handle` and `conversation` are the conversation ID, and `name` is the child's lineage key.
+ */
 export type ChildInfo = {
 	readonly handle: string;
+	readonly conversation?: string;
 	readonly name?: string;
 	readonly state: ChildState;
 	readonly provider: string;
@@ -61,6 +65,14 @@ export const Json = Type.Cyclic(
 	"Json",
 );
 
+/**
+ * The target of `watch`, `input` and `abort`: a handle, or the ID of a conversation that the children library opened,
+ * such as a child of a task.
+ */
+export type Target =
+	| { readonly handle: string; readonly conversation?: never }
+	| { readonly conversation: string; readonly handle?: never };
+
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
 export type Request =
 	| { readonly type: "hello"; readonly version: number }
@@ -97,9 +109,9 @@ export type Request =
 	 * after each commit to the child's conversation and after each rename. Every other line on the connection stays a
 	 * reply, in request order. A connection carries one watch.
 	 */
-	| { readonly type: "watch"; readonly handle: string }
+	| ({ readonly type: "watch" } & Target)
 	/** Stops the child's current turn. A mirror session sends it. */
-	| { readonly type: "abort"; readonly handle: string }
+	| ({ readonly type: "abort" } & Target)
 	/**
 	 * A mirror session's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
 	 * when the model has it, and takes the nearest level that it has otherwise. The host refuses a level that the model
@@ -112,14 +124,13 @@ export type Request =
 			readonly model?: string;
 			readonly thinking?: ModelThinkingLevel;
 	  }
-	/** A mirror session's message to the child. It has no caller. */
-	| {
+	/** A mirror session's message to the child. It has no caller. A conversation takes it only while it works, as a steer. */
+	| ({
 			readonly type: "input";
 			readonly requestId: string;
-			readonly handle: string;
 			readonly message: string;
 			readonly followUp: boolean;
-	  }
+	  } & Target)
 	/**
 	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
 	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
@@ -137,6 +148,27 @@ export type Request =
 	| { readonly type: "wait-task"; readonly key: string }
 	/** Aborts the task and the work that it owns. */
 	| { readonly type: "abort-task"; readonly key: string };
+
+/**
+ * The request objects of `type` with `fields` and a target: one with `handle`, one with `conversation`. Each refuses the
+ * other key, because an object schema accepts extra keys.
+ */
+function targeted<T extends string, F extends TProperties>(type: T, fields: F) {
+	return Type.Union([
+		Type.Object({
+			...fields,
+			type: Type.Literal(type),
+			handle: Type.String(),
+			conversation: Type.Optional(Type.Never()),
+		}),
+		Type.Object({
+			...fields,
+			type: Type.Literal(type),
+			conversation: Type.String(),
+			handle: Type.Optional(Type.Never()),
+		}),
+	]);
+}
 
 /**
  * The check of a request line on the host. It is looser than `Request`, so the host answers a spawn without `cwd` and an
@@ -170,8 +202,8 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
-	Type.Object({ type: Type.Literal("watch"), handle: Type.String() }),
-	Type.Object({ type: Type.Literal("abort"), handle: Type.String() }),
+	targeted("watch", {}),
+	targeted("abort", {}),
 	Type.Object({
 		type: Type.Literal("configure"),
 		handle: Type.String(),
@@ -179,13 +211,7 @@ export const RequestLine = Type.Union([
 		model: Type.Optional(Type.String()),
 		thinking: Type.Optional(Type.String()),
 	}),
-	Type.Object({
-		type: Type.Literal("input"),
-		requestId: Type.String(),
-		handle: Type.String(),
-		message: Type.String(),
-		followUp: Type.Boolean(),
-	}),
+	targeted("input", { requestId: Type.String(), message: Type.String(), followUp: Type.Boolean() }),
 	Type.Object({
 		type: Type.Literal("start"),
 		kind: Type.String(),
@@ -261,8 +287,14 @@ function isControlCharacter(character: string): boolean {
 	return code <= 0x1f || code === 0x7f;
 }
 
+type Labeled = {
+	readonly handle: string;
+	readonly name?: string | undefined;
+	readonly conversation?: string | undefined;
+};
+
 /** The label of a child: its name, or its handle when it has no name. */
-export function childLabel(child: { readonly handle: string; readonly name?: string | undefined }): string {
+export function childLabel(child: Labeled): string {
 	return child.name ?? child.handle;
 }
 
@@ -270,9 +302,12 @@ export function runDisplayName(metadata: { readonly handle: string; readonly nam
 	return metadata.name ? `${metadata.name} (${metadata.handle})` : metadata.handle;
 }
 
-/** The title of a child in a client: `<name> (<handle>)`, or only the name for the project agent, which says what it is. */
-export function childTitle(child: { readonly handle: string; readonly name?: string | undefined }): string {
-	return child.handle === AGENT_HANDLE ? childLabel(child) : runDisplayName(child);
+/**
+ * The title of a child in a client: `<name> (<handle>)`, or only the name for the project agent, which says what it is,
+ * and for a conversation, whose name is its key.
+ */
+export function childTitle(child: Labeled): string {
+	return child.handle === AGENT_HANDLE || child.conversation !== undefined ? childLabel(child) : runDisplayName(child);
 }
 
 /** The message of a thrown value. */

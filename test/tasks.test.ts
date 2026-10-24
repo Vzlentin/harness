@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -7,7 +7,7 @@ import { connect, request } from "../src/client.ts";
 import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, statePaths, type TaskInfo } from "../src/protocol.ts";
+import { AGENT_HANDLE, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
 import { aborted, called, cli, gates, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
@@ -28,6 +28,15 @@ function start(key: string, prompt: string, kind = KIND): Promise<TaskInfo> {
 
 		return reply;
 	});
+}
+
+/** Starts the gated task of `key` with `prompt`, and gives the conversation IDs of its child and its root. */
+async function startWithIds(key: string, prompt: string): Promise<{ child: string; root: string }> {
+	const idFile = join(root, `${key}.ids.json`);
+	await request({ type: "start", kind: KIND, key, input: { cwd: root, prompt, idFile } }, { start: false });
+	await until(() => called(prompt) === 1);
+
+	return JSON.parse(await readFile(idFile, "utf8"));
 }
 
 /** Sends the request `type` of the task of `key`, through the socket. */
@@ -128,6 +137,82 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect(await waiting).toEqual({ ...running, status: "terminal", outcome: { status: "aborted" } });
 		expect(aborted.has("Fixture gated")).toBe(true);
 		gates.delete("Fixture gated");
+	});
+
+	it("watches a task's child by conversation and steers it only while it works", async () => {
+		gates.set("Fixture watched", Promise.withResolvers());
+		const ids = await startWithIds("watched", "Fixture watched");
+		const { id } = await taskRequest("task", "watched");
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+
+		try {
+			const watched = await client.watch({ conversation: ids.child });
+			const lines: WatchLine[] = [];
+
+			void (async () => {
+				for await (const line of watched.lines) lines.push(line);
+			})();
+
+			expect(watched.child).toMatchObject({
+				handle: ids.child,
+				conversation: ids.child,
+				name: `fixture:${id}`,
+				state: "busy",
+			});
+
+			const input = { type: "input", requestId: "steer-1", message: "Fixture steer", followUp: true } as const;
+			expect(await request({ ...input, conversation: ids.child }, { start: false })).toMatchObject({
+				verb: "Steered",
+				child: { conversation: ids.child, state: "busy" },
+			});
+			await until(() => lines.length > 0);
+			gates.get("Fixture watched")?.resolve();
+			expect(await taskRequest("wait-task", "watched")).toMatchObject({
+				status: "terminal",
+				outcome: { status: "completed", result: "Answer to Fixture watched" },
+			});
+			await until(() => lines.some((line) => !line.stopped && line.child.state === "idle"));
+			// The steer went into the gated turn, after the answer to the task's question.
+			expect(called("Fixture steer")).toBe(1);
+			expect(lines.some((line) => line.stopped)).toBe(false);
+			await expect(
+				request({ ...input, requestId: "steer-2", conversation: ids.child }, { start: false }),
+			).rejects.toThrow(`fixture:${id} takes input only while it works`);
+		} finally {
+			client.close();
+			gates.delete("Fixture watched");
+		}
+	});
+
+	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {
+		gates.set("Fixture aborted", Promise.withResolvers());
+		const ids = await startWithIds("aborted", "Fixture aborted");
+		expect(await request({ type: "abort", conversation: ids.child }, { start: false })).toMatchObject({
+			conversation: ids.child,
+			state: "idle",
+		});
+		expect(aborted.has("Fixture aborted")).toBe(true);
+		expect(await taskRequest("wait-task", "aborted")).toMatchObject({ outcome: { status: "failed" } });
+		gates.delete("Fixture aborted");
+
+		for (const conversation of [ids.root, "999999", "abc"]) {
+			await expect(request({ type: "watch", conversation }, { start: false })).rejects.toThrow(
+				`Unknown conversation: ${conversation}`,
+			);
+		}
+
+		// Both targets at once: the type refuses it, so the line goes through JSON.
+		const both = JSON.parse(JSON.stringify({ type: "watch", handle: AGENT_HANDLE, conversation: ids.child }));
+		await expect(request(both, { start: false })).rejects.toThrow("Unknown or invalid request: watch");
+
+		// `configure` takes only a handle, also with an extra `conversation` key.
+		const configure = JSON.parse(
+			JSON.stringify({ type: "configure", handle: "nosuch", conversation: ids.child, thinking: "high" }),
+		);
+
+		await expect(request(configure, { start: false })).rejects.toThrow("Unknown subagent: nosuch");
 	});
 
 	it("resumes a task after a host restart", async () => {

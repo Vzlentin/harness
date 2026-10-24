@@ -1,4 +1,8 @@
-/** A `piDurable` entry with a task that asks a child it owns one question and completes with the answer. */
+/**
+ * A `piDurable` entry with a task that asks a child it owns one question and completes with the answer. With `idFile`,
+ * the task writes the conversation IDs of its child and its root there as JSON, after it opens the child.
+ */
+import { writeFile } from "node:fs/promises";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Children, Place } from "../../../src/children.ts";
 
@@ -11,7 +15,11 @@ export default function askEntry({
 	readonly children: Children;
 	readonly place: Place;
 }) {
-	const Ask = durable.defineTask<{ cwd: string; prompt: string; agentModel?: boolean }, { phase: "ask" }, string>({
+	const Ask = durable.defineTask<
+		{ cwd: string; prompt: string; agentModel?: boolean; idFile?: string },
+		{ phase: "ask" },
+		string
+	>({
 		name: "fixture.ask",
 		version: 1,
 		initial: () => ({ phase: "ask" }),
@@ -21,6 +29,12 @@ export default function askEntry({
 				const model = task.input.agentModel === true ? {} : { provider: "faux", model: "faux-1" };
 				const spec = { root: "fixture", ...model, cwd: task.input.cwd };
 				const child = await children.open(place, owner, `fixture:${runtime.taskId}`, spec, context);
+
+				if (task.input.idFile !== undefined) {
+					const ids = { child: String(child.id), root: String(runtime.conversationId) };
+					await writeFile(task.input.idFile, JSON.stringify(ids));
+				}
+
 				const answer = await child.ask({ type: "input", content: task.input.prompt, requestId: "q" }, context);
 				await runtime.commit(
 					() => ({
