@@ -5,10 +5,11 @@ import { stripVTControlCharacters } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
+import { type ProgramStatus, TuiMainScreen } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../pi/chat.ts";
 import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
+import { ProgramStatusReport } from "../pi/program-status.ts";
 import type { Host } from "../src/host.ts";
 import {
 	harnessArgs,
@@ -66,6 +67,26 @@ async function opened(target: MirrorTarget, options: MirrorOptions = {}): Promis
 	if (mirror.status.kind === "failed") throw new Error(mirror.status.reason);
 
 	return mirror;
+}
+
+/**
+ * A mirror of `target` that reports its state to a fake terminal, as a mirror session does: once before the first
+ * connection, then at each change. `reports` has each report that the terminal got.
+ */
+function reportedMirror(target: MirrorTarget, options: MirrorOptions = {}) {
+	const reports: ProgramStatus[] = [];
+
+	const terminal = {
+		setProgramStatus: (status: ProgramStatus) => {
+			reports.push(status);
+		},
+	};
+
+	const report = new ProgramStatusReport(terminal);
+	const mirror: Mirror = new Mirror(target, () => report.update(mirror), { start: false, ...options });
+	report.update(mirror);
+
+	return { mirror, report, reports };
 }
 
 type ThinkingLevel = ReturnType<PiModels["getThinkingLevel"]>;
@@ -265,14 +286,18 @@ describe("mirror", { timeout: 30_000 }, () => {
 	});
 
 	it("fails when all the tries to connect again fail, and rejects the messages that waited", async () => {
-		const mirror = await opened(AGENT, { retryDelaysMs: [0, 300] });
+		const { mirror, reports } = reportedMirror(AGENT, { retryDelaysMs: [0, 300] });
 		const reason = `${HOST_CLOSED}. Connecting again failed: Could not connect to the harness host`;
+		const idle = { state: "idle", app: "harness", message: "main agent" };
 
 		try {
+			await until(() => mirror.status.kind === "open");
 			await closeHost();
 			await until(() => mirror.status.kind === "reconnecting");
+			expect(reports.at(-1)).toEqual(idle);
 			await expect(mirror.send("Never sent", false)).rejects.toThrow(reason);
 			expect(mirror.status).toEqual({ kind: "failed", reason });
+			expect(reports.at(-1)).toEqual(idle);
 			await expect(mirror.send("After the failure", false)).rejects.toThrow(reason);
 		} finally {
 			mirror.close();
@@ -305,6 +330,52 @@ describe("mirror", { timeout: 30_000 }, () => {
 			chat.stopTimers();
 			mirror.close();
 		}
+	});
+	it("reports to the terminal each change of the state of the agent, and idle when Pi leaves", async () => {
+		const { mirror, report, reports } = reportedMirror(AGENT);
+
+		try {
+			expect(reports).toEqual([{ state: "idle", app: "harness", message: "main agent" }]);
+			await until(() => mirror.status.kind === "open");
+			gates.set("Report gated", Promise.withResolvers());
+			await mirror.send("Report gated", false);
+			await until(() => mirror.busy);
+			gates.get("Report gated")?.resolve();
+			await until(() => mirror.child?.state === "idle");
+			await mirror.send("Fail lines", false);
+			await until(() => mirror.child?.state === "error");
+		} finally {
+			mirror.close();
+		}
+
+		report.leave(mirror);
+		expect(reports).toEqual([
+			{ state: "idle", app: "harness", message: "main agent" },
+			{ state: "working", app: "harness", message: "main agent" },
+			{ state: "idle", app: "harness", message: "main agent" },
+			{ state: "working", app: "harness", message: "main agent" },
+			{ state: "error", app: "harness", message: "overloaded" },
+			{ state: "idle", app: "harness", message: "main agent" },
+		]);
+	});
+
+	it("reports the new title of a renamed child", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Report rename"]));
+		await cli(["wait", handle]);
+		const { mirror, reports } = reportedMirror({ project: "main", handle });
+
+		try {
+			await until(() => mirror.status.kind === "open");
+			expect((await cli(["rename", handle, "reported"])).code).toBe(0);
+			await until(() => mirror.child?.name === "reported");
+		} finally {
+			mirror.close();
+		}
+
+		expect(reports).toEqual([
+			{ state: "idle", app: "harness", message: handle },
+			{ state: "idle", app: "harness", message: `reported (${handle})` },
+		]);
 	});
 });
 
