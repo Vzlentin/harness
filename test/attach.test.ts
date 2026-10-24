@@ -7,9 +7,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
-import { agentReporter, openChildTab } from "../src/herdr.ts";
+import { agentReporter, openChildTab, openConversationPane } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, statePaths, type WatchLine } from "../src/protocol.ts";
+import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
 import { applyChange } from "../src/view-change.ts";
 import {
 	CLI,
@@ -56,27 +56,38 @@ function seqOf(line: string | undefined): number {
 }
 
 /**
- * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, and gives the pane `p1` to a new tab.
- * With `failTabCreate`, `tab create` writes that text to stderr and exits with 1.
+ * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, gives the pane `p1` to a new tab, and
+ * the pane `p2` to a split. With `fail`, each call writes that text to stderr and exits with 1, after the log line.
  */
-async function fakeHerdr(failTabCreate?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+async function fakeHerdr(fail?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
 
-	const tabCreate =
-		failTabCreate === undefined
-			? `echo '{"result":{"root_pane":{"pane_id":"p1"}}}'`
-			: `echo '${failTabCreate}' >&2; exit 1`;
-
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-if [ "$1 $2" = "tab create" ]; then ${tabCreate}; fi
+${fail === undefined ? "" : `echo '${fail}' >&2; exit 1`}
+if [ "$1 $2" = "tab create" ]; then echo '{"result":{"root_pane":{"pane_id":"p1"}}}'; fi
+if [ "$1 $2" = "pane split" ]; then echo '{"result":{"type":"pane_info","pane":{"pane_id":"p2"}}}'; fi
 `;
 
 	await writeFile(join(bin, "herdr"), script);
 	await chmod(join(bin, "herdr"), 0o755);
 
 	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
+}
+
+/** A children library conversation, as the host lists it, in `root`. */
+function conversationInfo(): ChildInfo {
+	return {
+		handle: "c1",
+		conversation: "c1",
+		name: "key",
+		state: "idle",
+		provider: "p",
+		model: "m",
+		thinking: "off",
+		cwd: root,
+	};
 }
 
 let host: Host | undefined;
@@ -359,5 +370,37 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await expect(openChildTab(child, herdr.env)).rejects.toThrow("no such session");
 		expect(logLines(herdr.log)).toHaveLength(1);
 		expect(logLines(herdr.log)[0]).toMatch(/^tab create /);
+	});
+	it("opens a conversation in Pi in a Herdr pane split", async () => {
+		const herdr = await fakeHerdr();
+		const state = herdr.env.XDG_STATE_HOME;
+		const config = herdr.env.XDG_CONFIG_HOME;
+		expect(state).toBeTruthy();
+		expect(config).toBeTruthy();
+		await openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env);
+		expect(logLines(herdr.log)).toEqual([
+			`pane split p0 --direction right --cwd ${root} --env XDG_STATE_HOME=${state} --env XDG_CONFIG_HOME=${config}`,
+			"pane rename p2 key",
+			`pane run p2 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '--conversation' 'c1'`,
+		]);
+	});
+
+	it("opens a conversation in Pi in a new tab of a Herdr workspace", async () => {
+		const herdr = await fakeHerdr();
+		const env = { ...herdr.env };
+		delete env.XDG_STATE_HOME;
+		delete env.XDG_CONFIG_HOME;
+		await openConversationPane(conversationInfo(), { workspace: "w1" }, env);
+		expect(logLines(herdr.log)).toEqual([
+			`tab create --workspace w1 --cwd ${root} --label key --focus`,
+			`pane run p1 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '--conversation' 'c1'`,
+		]);
+	});
+
+	it("rejects with the herdr error when it cannot open a conversation pane, and makes no more calls", async () => {
+		const herdr = await fakeHerdr("no such pane");
+		await expect(openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env)).rejects.toThrow("no such pane");
+		expect(logLines(herdr.log)).toHaveLength(1);
+		expect(logLines(herdr.log)[0]).toMatch(/^pane split /);
 	});
 });
