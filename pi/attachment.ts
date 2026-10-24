@@ -20,6 +20,7 @@ import { type ChildInfo, childLabel, childTitle, errorMessage } from "../dist/pr
 import { inboxOf, liveOf, queued, statusText } from "../dist/view-state.js";
 import { ChatView } from "./chat.ts";
 import { ModelSync } from "./model-sync.ts";
+import { ProgramStatusReport } from "./program-status.ts";
 import { usageLine } from "./usage-line.ts";
 
 /** The key of the status widget above the editor. */
@@ -40,6 +41,8 @@ export class Attachment {
 	#chat: ChatView | undefined;
 	/** The state of the agent for Herdr, made when the agent is first known. */
 	#reporter: AgentReporter | undefined;
+	/** The state of the agent for the terminal, made with the TUI. */
+	#programStatus: ProgramStatusReport | undefined;
 	#expanded = false;
 	#closed = false;
 
@@ -57,6 +60,7 @@ export class Attachment {
 			(ui, theme) => {
 				this.#ui = ui;
 				this.#theme = theme;
+				this.#programStatus ??= new ProgramStatusReport(ui.terminal);
 
 				return this.#status;
 			},
@@ -64,6 +68,7 @@ export class Attachment {
 		);
 		ctx.ui.setEditorComponent((ui, theme, keybindings) => new MirrorEditor(ui, theme, keybindings, this));
 		this.#mirror = new Mirror(target, (previous) => this.#update(previous));
+		this.#programStatus?.update(this.#mirror);
 		this.models = new ModelSync(pi, ctx, this.#mirror, (cause) => this.#notify(cause));
 	}
 
@@ -121,6 +126,7 @@ export class Attachment {
 		this.#ctx.ui.setWidget(WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
 		void this.#reporter?.release();
+		this.#programStatus?.leave(this.#mirror);
 	}
 
 	/** Shows each change of the mirror, whose status was `previous` before it. */
@@ -135,6 +141,7 @@ export class Attachment {
 
 		if (status.kind === "failed" && previous.kind !== "failed") this.#showFailure(status.reason);
 		this.#reporter?.report(this.#mirror.busy);
+		this.#programStatus?.update(this.#mirror);
 
 		if (child !== undefined) this.#followAgent(child);
 		ui.requestRender();

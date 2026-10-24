@@ -180,6 +180,10 @@ async function respond(
 
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 
+	if (prompt === "Fail lines") {
+		return fauxAssistantMessage("", { stopReason: "error", errorMessage: "  overloaded \nretry later" });
+	}
+
 	if (prompt === "Schema") {
 		return fauxAssistantMessage(fauxToolCall("respond", { answer: SCHEMA_ANSWER }), { stopReason: "toolUse" });
 	}
