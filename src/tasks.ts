@@ -15,6 +15,7 @@ const StartedTasks = durable.defineDoc<{ tasks: Record<string, TaskId<JsonValue>
 	kind: "harness.tasks",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	initial: () => ({ tasks: {} }),
 });
 

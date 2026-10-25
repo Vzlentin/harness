@@ -930,6 +930,7 @@ const ChildrenDoc = durable.defineDoc<{ children: Record<string, { conversationI
 	kind: "subagent.children",
 	version: 2,
 	scope: "session",
+	checkpointWhen: () => false,
 	initial: () => ({ children: {} }),
 });
 
@@ -988,6 +989,7 @@ async function childrenStore(name: string, version: number): Promise<string> {
 	const Children = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
 		kind: "subagent.children",
 		version,
+		checkpointWhen: () => false,
 		scope: "session",
 		initial: () => ({ children: {}, requests: {} }),
 	});

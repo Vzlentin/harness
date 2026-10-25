@@ -29,8 +29,7 @@ const Holder = durable.defineTask<null, { phase: "hold" }, null>({
 	initial: () => ({ phase: "hold" }),
 	phases: {
 		hold: async (_task, runtime, taskContext) => {
-			await runtime.sleep(runtime.now() + 3_600_000, taskContext);
-			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), taskContext);
+			await runtime.sleepUntil(runtime.now() + 3_600_000, { phase: "hold" }, taskContext);
 		},
 	},
 	abort: (_task, runtime, taskContext) =>

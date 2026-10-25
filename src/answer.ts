@@ -47,6 +47,7 @@ export function createAnswers(durable: typeof Durable): Answers {
 		scope: "conversation",
 		history: "latest",
 		fork: "current",
+		checkpointWhen: () => false,
 		initial: () => ({ answers: {} }),
 	});
 
