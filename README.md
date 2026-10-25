@@ -28,7 +28,7 @@ With only Pi, run `pi install npm:@vzlentin/pi-agents` and start `pi`. The exten
 ### Update and remove
 
 ```sh
-npm install -g @vzlentin/harness@latest
+npm install -g @vzlentin/harness@latest    # the setup pins the extension to this version
 pi remove npm:@vzlentin/pi-agents    # npm runs no script on uninstall
 npm uninstall -g @vzlentin/harness
 ```
@@ -62,6 +62,6 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 stores with the hosts of the installed `harness`.
 
 The checkout runs from its TypeScript source. The package contains `dist/` and its `postinstall` script. The Pi
-extension in `pi/` is the package `@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes that version. `npm run check` builds `dist/` too, before the type check. The extension
+extension in `pi/` is the package `@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. `npm run check` builds `dist/` too, before the type check. The extension
 loads `dist/` of the global harness, so to try the checkout's extension in Pi, run `npm run build`, `npm link`, then
 `pi install ./pi`, and build again after each change in `src/`.

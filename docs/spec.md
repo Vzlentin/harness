@@ -220,4 +220,6 @@ Two things run setup:
 - `setup(packageDir, piPackage)`: setup as above. It throws when it cannot read the `package.json` or write the stamp, not for a Pi failure.
 - `setupOnce(packageDir, piPackage)`: setup when the stamp of this path and version does not exist. It never throws: an error writes `harness: setup failed: <reason>`.
 
+`npm install -g @vzlentin/harness@latest` updates harness, and the setup then pins the extension to that version.
+
 npm runs no script on `npm uninstall`, so the entry stays in Pi until `pi remove npm:@vzlentin/pi-agents`.
