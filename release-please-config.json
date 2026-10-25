@@ -7,7 +7,8 @@
 			"include-component-in-tag": false,
 			"bump-minor-pre-major": true,
 			"bump-patch-for-minor-pre-major": true,
-			"pull-request-title-pattern": "release: ${version}"
+			"pull-request-title-pattern": "release: ${version}",
+			"extra-files": [{ "type": "json", "path": "pi/package.json", "jsonpath": "$.version" }]
 		}
 	}
 }
