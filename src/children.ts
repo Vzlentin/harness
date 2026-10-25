@@ -253,6 +253,7 @@ export function createChildren(durable: typeof Durable): Children {
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
+		checkpointWhen: () => false,
 		initial: () => ({
 			key: "",
 			root: "",
@@ -271,6 +272,7 @@ export function createChildren(durable: typeof Durable): Children {
 		kind: "pi-subagent.key",
 		version: 1,
 		scope: "session",
+		checkpointWhen: () => false,
 		family: true,
 		initial: () => ({ conversation: 0 }),
 	});

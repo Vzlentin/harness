@@ -43,6 +43,7 @@ export const Children = defineDoc<ChildrenState>({
 	kind: "subagent.children",
 	version: 2,
 	scope: "session",
+	checkpointWhen: () => false,
 	initial: () => ({ children: {}, requests: {} }),
 });
 
@@ -52,6 +53,7 @@ const AgentState = defineDoc<{ lastRequest: string | null }>({
 	version: 1,
 	scope: "conversation",
 	history: "latest",
+	checkpointWhen: () => false,
 	fork: "initial",
 	initial: () => ({ lastRequest: null }),
 });

@@ -16,6 +16,7 @@ export default function subagentEntry({ durable, ai }: { readonly durable: typeo
 		kind: "pi-subagent.store",
 		version: 1,
 		scope: "session",
+		checkpointWhen: () => false,
 		initial: () => ({ id: "" }),
 	});
 
