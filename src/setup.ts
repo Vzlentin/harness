@@ -1,6 +1,7 @@
 /**
- * Registers the Pi extension of a globally installed package in Pi. The `postinstall` script and the CLI of the package
- * run it, since npm 12 does not run install scripts by default. workflows uses it too, as `@vzlentin/harness/setup`.
+ * Registers the Pi package of a globally installed package in Pi, as `npm:<piPackage>@<version>`. The `postinstall`
+ * script and the CLI of the package run it, since npm 12 does not run install scripts by default. workflows uses it
+ * too, as `@vzlentin/harness/setup`, with its own Pi package.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -27,30 +28,30 @@ const REMOTE = ["npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:"
 type Installed = { readonly dir: string; readonly json: PackageJson };
 
 /**
- * Registers `<packageDir>/pi` in Pi when `packageDir` is a top-level global npm install. It writes its messages to
- * stderr, and it does not throw for a Pi failure: it writes a warning with the command to run. It writes the stamp
- * that `setupOnce` reads unless `pi` failed, so the next run tries again. Without `pi` on PATH it writes the stamp, so
- * a user without Pi gets the hint once per version.
+ * Registers `npm:<piPackage>@<version>` in Pi when `packageDir` is a top-level global npm install, with the version of
+ * `<packageDir>/package.json`. It writes its messages to stderr, and it does not throw for a Pi failure: it writes a
+ * warning with the command to run. It writes the stamp that `setupOnce` reads unless `pi` failed, so the next run
+ * tries again. Without `pi` on PATH it writes the stamp, so a user without Pi gets the hint once per version.
  */
-export function setup(packageDir: string): void {
+export function setup(packageDir: string, piPackage: string): void {
 	const installed = readInstalled(packageDir);
 
 	if (installed === undefined || !isTopLevelGlobal(installed)) return;
 
-	if (registerExtension(installed)) writeStamp(installed);
+	if (registerExtension(installed, piPackage)) writeStamp(installed);
 }
 
 /**
  * `setup` once per version and path of the package: it does nothing when the stamp of `setup` exists. It never
  * throws; an error is a warning.
  */
-export function setupOnce(packageDir: string): void {
+export function setupOnce(packageDir: string, piPackage: string): void {
 	try {
 		const installed = readInstalled(packageDir);
 
 		if (installed === undefined || !isTopLevelGlobal(installed) || existsSync(stampPath(installed))) return;
 
-		if (registerExtension(installed)) writeStamp(installed);
+		if (registerExtension(installed, piPackage)) writeStamp(installed);
 	} catch (error) {
 		process.stderr.write(`harness: setup failed: ${errorMessage(error)}\n`);
 	}
@@ -94,16 +95,16 @@ function writeStamp(installed: Installed): void {
 }
 
 /**
- * False when `pi install` failed. It runs no `pi` when Pi already lists the extension, as `pi install` would write the
- * entry again in its own form, relative to the agent directory.
+ * Runs `pi install npm:<piPackage>@<version>` unless Pi already lists it. False when `pi install` failed. Pi replaces
+ * an entry with the same package name, so an older version or a range is updated in place.
  */
-function registerExtension({ dir, json }: Installed): boolean {
+function registerExtension({ json }: Installed, piPackage: string): boolean {
 	const label = basename(json.name);
-	const extension = join(dir, "pi");
+	const source = `npm:${piPackage}@${json.version}`;
 
-	if (piLists(extension)) return true;
+	if (piLists(piPackage, source)) return true;
 
-	return runPi(label, ["install", extension], `To add the Pi extension of ${label}, run: pi install ${extension}`);
+	return runPi(label, ["install", source], `To add the Pi extension of ${label}, run: pi install ${source}`);
 }
 
 /** Runs `pi`, with a warning when it is missing or fails. False when it failed; true when it worked or is missing. */
@@ -131,10 +132,11 @@ function runPi(label: string, args: readonly string[], later: string): boolean {
 }
 
 /**
- * Whether the `packages` of Pi's global settings list the folder `extension` as a local path, absolute or relative to
- * the agent directory, with `~` or as a `file:` URL, as Pi resolves them.
+ * Whether the `packages` of Pi's global settings list `source` exactly, or a local folder whose `package.json` has the
+ * name `piPackage`, at any version. A local path is absolute or relative to the agent directory, with `~` or as a
+ * `file:` URL, as Pi resolves it. Another remote source, such as another `npm:` spec, is not listed.
  */
-function piLists(extension: string): boolean {
+function piLists(piPackage: string, source: string): boolean {
 	const env = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = env ? expandHome(env) : join(homedir(), ".pi", "agent");
 	let settings: unknown;
@@ -148,13 +150,17 @@ function piLists(extension: string): boolean {
 	if (!Value.Check(PiSettings, settings)) return false;
 
 	return (settings.packages ?? []).some((item) => {
-		const source = (Value.Check(Type.String(), item) ? item : item.source).trim();
+		const entry = (Value.Check(Type.String(), item) ? item : item.source).trim();
 
-		if (REMOTE.some((prefix) => source.startsWith(prefix))) return false;
-		const path = source.startsWith("file://") ? fileURLToPath(source) : resolve(agentDir, expandHome(source));
+		if (entry === source) return true;
+
+		if (REMOTE.some((prefix) => entry.startsWith(prefix))) return false;
 
 		try {
-			return realpathSync(path) === extension;
+			const path = entry.startsWith("file://") ? fileURLToPath(entry) : resolve(agentDir, expandHome(entry));
+			const json: unknown = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
+
+			return Value.Check(PackageJson, json) && json.name === piPackage;
 		} catch {
 			return false;
 		}

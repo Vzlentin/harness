@@ -13,22 +13,20 @@ with `/login` in `pi`, or set the API key of the provider, such as `ANTHROPIC_AP
 npm install -g @vzlentin/harness
 ```
 
-This works with npm 11 and npm 12. It gives you the `harness` command, and a setup runs `pi install` on the `pi/`
-folder of the package, which adds the `subagent` tool, the `/subagent` and `/harness` commands and the subagents widget
-to Pi. Pi and the `harness` command use the same host. npm 12 runs no install script by default, so there the first
+This works with npm 11 and npm 12. It gives you the `harness` command, and a setup runs `pi install` on
+`npm:@vzlentin/pi-agents` at the same version, which adds the `subagent` tool, the `/subagent` and `/harness` commands
+and the subagents widget to Pi. Pi and the `harness` command use the same host. npm 12 runs no install script by default, so there the first
 `harness` command does the setup. When `pi` is not on your `PATH`, or the step fails, the setup prints the command to run later:
 
 ```sh
-pi install "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"
+pi install "npm:@vzlentin/pi-agents@$(harness --version)"
 ```
-
-When you install with `--prefix`, give the same `--prefix` to `npm root -g`.
 
 ### Update and remove
 
 ```sh
 npm install -g @vzlentin/harness@latest
-pi remove "$(realpath "$(npm root -g)/@vzlentin/harness/pi")"    # first: npm runs no script on uninstall
+pi remove npm:@vzlentin/pi-agents    # npm runs no script on uninstall
 npm uninstall -g @vzlentin/harness
 ```
 
