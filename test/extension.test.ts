@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,6 +163,33 @@ describe("the Pi extension", () => {
 		host = await startHost();
 
 		expect(await callTool(await load(), { action: "list" })).toBe("No subagents\n");
+	});
+
+	it("waits until the install lock is free before it looks up harness", async () => {
+		await fakeNpm(globalRoot);
+		host = await startHost();
+		const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+
+		try {
+			const lock = join(root, "state", "harness", "install.lock");
+			await mkdir(lock, { recursive: true });
+			await writeFile(join(lock, "pid"), String(holder.pid));
+			let loaded = false;
+
+			const loading = load().then((registered) => {
+				loaded = true;
+
+				return registered;
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			expect(loaded).toBe(false);
+			await rm(lock, { recursive: true, force: true });
+
+			expect(await callTool(await loading, { action: "list" })).toBe("No subagents\n");
+		} finally {
+			holder.kill();
+		}
 	});
 
 	it("answers with the install command when harness is not installed", async () => {

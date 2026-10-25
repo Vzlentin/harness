@@ -168,12 +168,22 @@ The children get the tool too. Their caller is their conversation ID, as for the
 
 ## Pi extension
 
-The Pi extension is the npm package `@vzlentin/pi-agents`, from the `pi/` folder of this repository: the `subagent` tool, the `/subagent` command, the subagents widget and the mirror sessions (see [Mirror sessions](#mirror-sessions)). `/subagent` lists the children of the session and opens the one that you select in Pi, in a new Herdr tab (see `openChildTab`); outside Herdr, it shows `Run in another terminal: harness attach <handle>`. The extension has the same version as harness. It has no copy of harness: it uses the `dist/` modules of the global harness install, so it starts the host of that install. When Pi loads the extension, it finds the install in this order:
+The Pi extension is the npm package `@vzlentin/pi-agents`, from the `pi/` folder of this repository: the `subagent` tool, the `/subagent` command, the subagents widget and the mirror sessions (see [Mirror sessions](#mirror-sessions)). `/subagent` lists the children of the session and opens the one that you select in Pi, in a new Herdr tab (see `openChildTab`); outside Herdr, it shows `Run in another terminal: harness attach <handle>`. The extension has the same version as harness. It has no copy of harness: it uses the `dist/` modules of the global harness install, so it starts the host of that install. When Pi loads the extension, it first waits until the install lock is free (see [Install lock](#install-lock)): the lock folder is gone or its holder is dead. It does not take the lock. Then it finds the install in this order:
 
 1. The package of the first `harness` on `PATH`: two folders above the real path of the command, which is `<package>/dist/cli.js`.
 2. `<root>/@vzlentin/harness`, where `<root>` is the output of `npm root -g`.
 
 A folder counts only when its `package.json` has the name `@vzlentin/harness`. When the first `harness` on `PATH` is not in such a folder, the extension tries the second step. When no step finds harness, the extension registers the `subagent` tool, the `/subagent` and `/harness` commands and the `--harness`, `--harness-child` and `--harness-conversation` flags, and each one gives `harness is not installed: npm install -g @vzlentin/harness@<version>`, where `<version>` is the version of the extension. The tool gives it as its description and its text result, the commands and a session started with one of the flags show it as an error. There is no widget. When harness is found but one of its `dist/` modules does not load, such as in a checkout without `npm run build`, Pi shows that the extension failed to load.
+
+### Install lock
+
+The install lock is a contract of harness that workflows uses too. One process at a time holds it while it installs. It is the folder `$XDG_STATE_HOME/harness/install.lock` (default `~/.local/state/harness/install.lock`).
+
+- To take the lock, a process creates the parent folder, then creates the lock folder with a non-recursive `mkdir`. When the `mkdir` succeeds, the process writes its PID in the file `pid` in the lock folder: it writes `pid.<pid>`, then renames it to `pid`.
+- When the folder exists, the process checks the holder again every 200 ms. There is no timeout.
+- The holder is dead when `kill(pid, 0)` fails with `ESRCH`. Any other result, such as `EPERM`, means that the holder is alive. When `pid` is missing or does not hold a whole number, the holder is dead only when the mtime of the lock folder is older than 10 s. A reused PID looks alive, so the lock stays held until that new process ends.
+- When the holder is dead, the process takes over the lock in place, and does not remove the lock folder. It creates the guard folder `takeover` in the lock folder with a non-recursive `mkdir`, goes on only when the `pid` text and the inode of the lock folder are the same as before the guard and the holder is still dead, writes its own `pid` with the same rename, and removes `takeover`. The guard changes the mtime of the lock folder, so when `pid` is missing or not a whole number, this check uses the mtime read before the guard. When `takeover` exists, it waits, and removes `takeover` when its mtime is older than 10 s.
+- To release the lock, the holder removes the lock folder.
 
 ### Mirror sessions
 
