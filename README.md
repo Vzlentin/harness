@@ -22,6 +22,9 @@ and the subagents widget to Pi. Pi and the `harness` command use the same host. 
 pi install "npm:@vzlentin/pi-agents@$(harness --version)"
 ```
 
+With only Pi, run `pi install npm:@vzlentin/pi-agents` and start `pi`. The extension asks to install harness with
+`npm install -g`. Answer yes, then run `/reload`.
+
 ### Update and remove
 
 ```sh
