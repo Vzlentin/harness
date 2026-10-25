@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/Vzlentin/harness/compare/v0.3.1...v0.4.0) (2026-10-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* setup(packageDir) and setupOnce(packageDir) of @vzlentin/harness/setup now take a second argument, the npm name of the Pi package. workflows needs a new peer range.
+
+### Features
+
+* add harness --version ([eb94696](https://github.com/Vzlentin/harness/commit/eb94696d6a13513e13e820de78ad47985a3a00e9))
+* offer to install harness at session start ([33f4bf1](https://github.com/Vzlentin/harness/commit/33f4bf15f8ff48b3ed19f49881cedc1af4f88696))
+* pin npm:&lt;piPackage&gt;@&lt;version&gt; in Pi at setup ([74d905d](https://github.com/Vzlentin/harness/commit/74d905ddedac9047c7bb5fb4b6b11f921758f8f1))
+* publish pi/ as @vzlentin/pi-agents and load the global harness ([fe3222b](https://github.com/Vzlentin/harness/commit/fe3222b07f48bdac79f833bc5fa647e988ef80bd))
+* wait on the harness install lock before the extension looks up harness ([90f3113](https://github.com/Vzlentin/harness/commit/90f3113029a888afdf66f190774935815a883b07))
+
 ## [0.3.1](https://github.com/Vzlentin/harness/compare/v0.3.0...v0.3.1) (2026-10-24)
 
 
