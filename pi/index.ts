@@ -24,6 +24,7 @@ import type * as projects from "../dist/projects.js";
 import type * as protocol from "../dist/protocol.js";
 import type * as tool from "../dist/tool.js";
 import type * as viewState from "../dist/view-state.js";
+import { waitInstallLockFree } from "./install-lock.ts";
 import { FLAGS, registerFlags, registerMirror } from "./mirror.ts";
 
 /** The modules of the global harness install that the extension uses. */
@@ -45,6 +46,7 @@ const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
 export default async function subagentExtension(pi: ExtensionAPI): Promise<void> {
+	await waitInstallLockFree();
 	const folder = harnessFolder();
 
 	if (folder === undefined) {
