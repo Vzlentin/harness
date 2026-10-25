@@ -1,6 +1,6 @@
 # harness
 
-Observable, persistent subagents on [Pi](https://github.com/earendil-works/pi)'s libraries and
+Observable, persistent (sub)agents on [Pi](https://github.com/earendil-works/pi)'s libraries and
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable). Each subagent is a conversation in a durable
 host process. You can spawn it, check its status, wait for its answer, steer it, and talk to it live in Pi.
 
