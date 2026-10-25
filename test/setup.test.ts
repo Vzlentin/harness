@@ -114,7 +114,8 @@ describe("the installed CLI", () => {
 		await run(process.execPath, [join(repo, "src", "cli.ts"), "projects"]);
 		expect(piCalls()).toEqual([]);
 
-		await run(process.execPath, [cli, "projects"]);
+		expect((await run(process.execPath, [cli, "--version"])).stdout).toBe("0.2.0\n");
+		expect(piCalls()).toEqual([`install ${join(dir, "pi")}`]);
 		const { stdout } = await run(process.execPath, [cli, "projects"]);
 		expect(stdout).toBe("main\n");
 		expect(piCalls()).toEqual([`install ${join(dir, "pi")}`]);
