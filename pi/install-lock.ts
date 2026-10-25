@@ -11,9 +11,14 @@ import { setTimeout } from "node:timers/promises";
 const POLL_MS = 200;
 const STALE_MS = 10_000;
 
+/** The state folder of harness, `$XDG_STATE_HOME/harness`. */
+export function stateFolder(): string {
+	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness");
+}
+
 /** The folder of the install lock. */
 function lockPath(): string {
-	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", "install.lock");
+	return join(stateFolder(), "install.lock");
 }
 
 /** True when `mtimeMs` is older than 10 s. */

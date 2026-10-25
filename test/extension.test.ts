@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -12,15 +12,16 @@ import type {
 	ExtensionHandler,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import subagentExtension from "../pi/index.ts";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import subagentExtension, { offerInstall } from "../pi/index.ts";
 import type { Host } from "../src/host.ts";
-import { root, setUp, startHost, tearDown } from "./helpers.ts";
+import { logLines, root, setUp, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(readFileSync(join(repo, "pi", "package.json"), "utf8"));
 const MESSAGE = `harness is not installed: npm install -g @vzlentin/harness@${version}`;
+const EXTENSION = join(repo, "pi", "index.ts");
 
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 
@@ -232,11 +233,207 @@ describe("the Pi extension", () => {
 
 		for (const reason of reasons) {
 			for (const handler of registered.handlers.get("session_start") ?? []) {
-				// SAFETY: the session_start handler without harness uses only `ui.notify`.
-				await handler({ type: "session_start", reason }, { ui } as ExtensionContext);
+				// SAFETY: the session_start handlers without harness read only `mode` and `ui.notify`.
+				await handler({ type: "session_start", reason }, { mode: "print", ui } as ExtensionContext);
 			}
 		}
 
 		expect(notes).toEqual([[MESSAGE, "error"]]);
 	});
+});
+
+/** How the fake `npm install -g` behaves: it sleeps `sleep` seconds first, and fails with 30 output lines on `fail`. */
+type InstallBehaviour = { readonly sleep: number; readonly fail: boolean };
+
+/** The log of the fake `npm` and of the `harness` that its install creates. */
+function logPath(): string {
+	return join(root, "log");
+}
+
+/** The npm prefix of the fake `npm`. */
+function prefixPath(): string {
+	return join(root, "prefix");
+}
+
+/**
+ * A `npm` on `PATH` that logs its arguments. `npm install -g` creates `@vzlentin/harness` in the global root, with a
+ * `dist/cli.js` that logs its arguments too.
+ */
+async function installingNpm(behaviour: InstallBehaviour): Promise<void> {
+	const log = logPath();
+	const dir = join(prefixPath(), "lib", "node_modules", "@vzlentin", "harness");
+
+	const script = [
+		"#!/bin/sh",
+		`echo "npm $*" >> "${log}"`,
+		`case "$1" in`,
+		`prefix) echo "${prefixPath()}" ;;`,
+		`root) echo "${join(prefixPath(), "lib", "node_modules")}" ;;`,
+		"install)",
+		`  sleep ${behaviour.sleep}`,
+		behaviour.fail
+			? `  i=1; while [ $i -le 30 ]; do echo "line $i"; i=$((i + 1)); done; echo "npm error failed" >&2; exit 1`
+			: "  :",
+		`  mkdir -p "${join(dir, "dist")}" "${join(prefixPath(), "bin")}"`,
+		`  echo '{"name":"@vzlentin/harness"}' > "${join(dir, "package.json")}"`,
+		`  printf '#!/bin/sh\\necho "harness $*" >> "${log}"\\n' > "${join(dir, "dist", "cli.js")}"`,
+		`  chmod +x "${join(dir, "dist", "cli.js")}"`,
+		`  ln -s "${join(dir, "dist", "cli.js")}" "${join(prefixPath(), "bin", "harness")}"`,
+		"  ;;",
+		"esac",
+	].join("\n");
+
+	await writeFile(join(bin, "npm"), `${script}\n`);
+	await chmod(join(bin, "npm"), 0o755);
+}
+
+/** A fake UI that answers `answer` to each dialog and records the dialogs and the notifications. */
+function fakeUI(answer: boolean) {
+	const dialogs: [string, string][] = [];
+	const notes: [string, string | undefined][] = [];
+
+	const ui: Pick<ExtensionContext["ui"], "confirm" | "notify"> = {
+		confirm: async (title, message) => {
+			dialogs.push([title, message]);
+
+			return answer;
+		},
+		notify: (message, type) => {
+			notes.push([message, type]);
+		},
+	};
+
+	return { ui, dialogs, notes };
+}
+
+/** Calls the `session_start` handlers at startup in the mode `mode`, with `ui`. */
+async function startSession(
+	registered: Registered,
+	mode: ExtensionContext["mode"],
+	ui: Pick<ExtensionContext["ui"], "confirm" | "notify">,
+): Promise<void> {
+	for (const handler of registered.handlers.get("session_start") ?? []) {
+		// SAFETY: the session_start handlers without harness read only `mode` and `ui`, and `hasUI` for the widget.
+		await handler({ type: "session_start", reason: "startup" }, { mode, hasUI: true, ui } as ExtensionContext);
+	}
+}
+
+/** Loads the extension without harness, and empties the log of the lookup. */
+async function loadMissing(behaviour: InstallBehaviour): Promise<Registered> {
+	await installingNpm(behaviour);
+	const registered = await load();
+	await rm(logPath(), { force: true });
+
+	return registered;
+}
+
+/** Runs a process that imports the extension and runs the install offer with a UI that answers yes. */
+function installer(): Promise<void> {
+	const script = [
+		`const { offerInstall } = await import(${JSON.stringify(EXTENSION)});`,
+		`await offerInstall({ confirm: async () => true, notify: () => {} }, ${JSON.stringify(version)});`,
+	].join("\n");
+
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "inherit" });
+		child.once("error", reject);
+		child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit code ${code}`))));
+	});
+}
+
+describe("the install offer", () => {
+	const lock = (): string => join(root, "state", "harness", "install.lock");
+	const declined = (): string => join(root, "state", "harness", "install.declined");
+
+	it("installs harness and runs it when the answer is yes", async () => {
+		const registered = await loadMissing({ sleep: 0, fail: false });
+		const { ui, dialogs, notes } = fakeUI(true);
+		await startSession(registered, "tui", ui);
+		await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
+
+		expect(dialogs).toEqual([
+			["harness is not installed", `Install @vzlentin/harness@${version} with npm install -g into ${prefixPath()}?`],
+		]);
+
+		expect(logLines(logPath())).toEqual([
+			"npm root -g",
+			"npm prefix -g",
+			`npm install -g @vzlentin/harness@${version}`,
+			"npm root -g",
+			"harness --version",
+		]);
+
+		expect(notes).toEqual([["harness installed, run /reload", "info"]]);
+		expect(existsSync(lock())).toBe(false);
+	});
+
+	it("shows the end of the output and the command when npm install fails", async () => {
+		const registered = await loadMissing({ sleep: 0, fail: true });
+		const { ui, notes } = fakeUI(true);
+		await startSession(registered, "tui", ui);
+		await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
+		const tail = Array.from({ length: 19 }, (_, i) => `line ${i + 12}`);
+
+		expect(notes).toEqual([
+			[[...tail, "npm error failed", `Run by hand: npm install -g @vzlentin/harness@${version}`].join("\n"), "error"],
+		]);
+
+		expect(existsSync(lock())).toBe(false);
+	});
+
+	it("remembers a no and does not ask again", async () => {
+		const registered = await loadMissing({ sleep: 0, fail: false });
+		const { ui, dialogs, notes } = fakeUI(false);
+		await startSession(registered, "tui", ui);
+		await vi.waitFor(() => expect(existsSync(lock())).toBe(false), { timeout: 10_000 });
+
+		expect(existsSync(declined())).toBe(true);
+		const next = await load();
+		await startSession(next, "tui", ui);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		expect(dialogs).toHaveLength(1);
+		expect(notes).toEqual([]);
+		expect(logLines(logPath())).not.toContain(`npm install -g @vzlentin/harness@${version}`);
+		expect(await callTool(next, {})).toBe(MESSAGE);
+	});
+
+	it("does not ask in print mode or in RPC mode", async () => {
+		const registered = await loadMissing({ sleep: 0, fail: false });
+		const { ui, dialogs } = fakeUI(true);
+		await startSession(registered, "print", ui);
+		await startSession(registered, "rpc", ui);
+		await new Promise((resolve) => setTimeout(resolve, 500));
+
+		expect(dialogs).toEqual([]);
+		expect(logLines(logPath())).toEqual([]);
+	});
+
+	it("does not ask again when an offer waits on the lock while the user answers no", async () => {
+		await installingNpm({ sleep: 0, fail: false });
+		const dialogs: string[] = [];
+
+		const ui: Pick<ExtensionContext["ui"], "confirm" | "notify"> = {
+			confirm: async (title) => {
+				dialogs.push(title);
+				await new Promise((resolve) => setTimeout(resolve, 300));
+
+				return false;
+			},
+			notify: () => {},
+		};
+
+		await Promise.all([offerInstall(ui, version), offerInstall(ui, version)]);
+
+		expect(dialogs).toHaveLength(1);
+		expect(existsSync(declined())).toBe(true);
+	});
+
+	it("installs once when two processes offer at the same time", async () => {
+		await installingNpm({ sleep: 1, fail: false });
+		await Promise.all([installer(), installer()]);
+		const installs = logLines(logPath()).filter((line) => line.startsWith("npm install"));
+
+		expect(installs).toEqual([`npm install -g @vzlentin/harness@${version}`]);
+	}, 30_000);
 });

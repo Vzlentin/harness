@@ -1,16 +1,18 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget and the mirror sessions of `/harness`. They use the client of
  * the global harness install, from its built `dist/`, and start the host of that install. Without harness, the tool,
- * the commands and the flags answer with the command that installs it.
+ * the commands and the flags answer with the command that installs it, and an interactive session offers to install it.
  */
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionUIContext,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
@@ -24,7 +26,7 @@ import type * as projects from "../dist/projects.js";
 import type * as protocol from "../dist/protocol.js";
 import type * as tool from "../dist/tool.js";
 import type * as viewState from "../dist/view-state.js";
-import { waitInstallLockFree } from "./install-lock.ts";
+import { releaseInstallLock, stateFolder, takeInstallLock, waitInstallLockFree } from "./install-lock.ts";
 import { FLAGS, registerFlags, registerMirror } from "./mirror.ts";
 
 /** The modules of the global harness install that the extension uses. */
@@ -41,6 +43,8 @@ export type Harness = {
 const HARNESS_PACKAGE = "@vzlentin/harness";
 const HarnessManifest = Type.Object({ name: Type.Literal(HARNESS_PACKAGE) });
 const OwnManifest = Type.Object({ version: Type.String() });
+const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
+const runFile = promisify(execFile);
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
@@ -56,6 +60,70 @@ export default async function subagentExtension(pi: ExtensionAPI): Promise<void>
 	}
 
 	registerHarness(pi, await loadHarness(folder));
+}
+
+/**
+ * Asks to install harness `version` with npm, and installs it when the answer is yes. It does nothing when the user
+ * declined before (`install.declined` in the state folder) or when harness is found under the install lock. It shows
+ * each failure as an error and never rejects.
+ */
+export async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "notify">, version: string): Promise<void> {
+	const declined = join(stateFolder(), "install.declined");
+	const spec = `${HARNESS_PACKAGE}@${version}`;
+
+	let held = false;
+
+	if (existsSync(declined)) return;
+
+	try {
+		await takeInstallLock();
+		held = true;
+
+		if (existsSync(declined) || harnessFolder() !== undefined) return;
+		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
+
+		if (!(await ui.confirm("harness is not installed", `Install ${spec} with npm install -g into ${prefix}?`))) {
+			mkdirSync(stateFolder(), { recursive: true });
+			writeFileSync(declined, "");
+
+			return;
+		}
+
+		await runUserCommand("npm", ["install", "-g", spec]);
+		const folder = harnessFolder();
+
+		if (folder === undefined) throw new Error(`npm installed ${spec}, but harness is not found`);
+		await runUserCommand(join(folder, "dist", "cli.js"), ["--version"]);
+		ui.notify("harness installed, run /reload", "info");
+	} catch (error) {
+		const output = Value.Check(CommandOutput, error) ? `${error.stdout}\n${error.stderr}` : "";
+		const reason = error instanceof Error ? error.message : String(error);
+
+		const lines = (output.trim() === "" ? reason : output)
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.slice(-20);
+
+		ui.notify([...lines, `Run by hand: npm install -g ${spec}`].join("\n"), "error");
+	} finally {
+		if (held) releaseInstallLock();
+	}
+}
+
+/** Runs `file` with `PATH` without the `node_modules/.bin` folders, as the setup of harness does, and gives its stdout. */
+async function runUserCommand(file: string, args: string[]): Promise<string> {
+	const path = (process.env.PATH ?? "")
+		.split(delimiter)
+		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
+		.join(delimiter);
+
+	const { stdout } = await runFile(file, args, {
+		encoding: "utf8",
+		env: { ...process.env, PATH: path },
+		maxBuffer: 64 * 1024 * 1024,
+	});
+
+	return stdout;
 }
 
 /** Registers the tool, the commands, the flags and the widget, which use `harness`. */
@@ -303,5 +371,11 @@ function registerMissing(pi: ExtensionAPI): void {
 		if (event.reason !== "startup") return;
 
 		if (Object.values(FLAGS).some((name) => pi.getFlag(name) !== undefined)) ctx.ui.notify(message, "error");
+	});
+
+	// Pi waits for each handler, so the session starts while the dialog and the install run.
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		void offerInstall(ctx.ui, version);
 	});
 }
