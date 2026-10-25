@@ -14,11 +14,11 @@ import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import { type AgentReporter, agentReporter } from "../dist/herdr.js";
-import { Mirror, type MirrorStatus, type MirrorTarget, targetTitle } from "../dist/mirror.js";
-import { type ChildInfo, childLabel, childTitle, errorMessage } from "../dist/protocol.js";
-import { inboxOf, liveOf, queued, statusText } from "../dist/view-state.js";
+import type { AgentReporter } from "../dist/herdr.js";
+import type { Mirror, MirrorStatus, MirrorTarget } from "../dist/mirror.js";
+import type { ChildInfo } from "../dist/protocol.js";
 import { ChatView } from "./chat.ts";
+import type { Harness } from "./index.ts";
 import { ModelSync } from "./model-sync.ts";
 import { ProgramStatusReport } from "./program-status.ts";
 import { usageLine } from "./usage-line.ts";
@@ -32,6 +32,7 @@ export class Attachment {
 	// After a session switch, `#pi` and `#ctx` are stale and throw, so only code that checks `#closed` uses them. The
 	// components that Pi draws use `#theme` instead.
 	readonly #pi: ExtensionAPI;
+	readonly #harness: Harness;
 	readonly #ctx: ExtensionContext;
 	#theme: Theme;
 	readonly #frame: tui.Container;
@@ -46,28 +47,39 @@ export class Attachment {
 	#expanded = false;
 	#closed = false;
 
-	constructor(pi: ExtensionAPI, ctx: ExtensionContext, entryId: string, target: MirrorTarget, frame: tui.Container) {
+	constructor(
+		pi: ExtensionAPI,
+		harness: Harness,
+		ctx: ExtensionContext,
+		entryId: string,
+		target: MirrorTarget,
+		frame: tui.Container,
+	) {
 		this.entryId = entryId;
 		this.#pi = pi;
+		this.#harness = harness;
 		this.#ctx = ctx;
 		this.#theme = ctx.ui.theme;
 		this.#frame = frame;
 		this.#frame.clear();
-		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${targetTitle(target)}...`));
+		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${harness.mirror.targetTitle(target)}...`));
 		// Pi calls the factory at once, which gives the TUI that the tool cards need.
 		ctx.ui.setWidget(
 			WIDGET,
 			(ui, theme) => {
 				this.#ui = ui;
 				this.#theme = theme;
-				this.#programStatus ??= new ProgramStatusReport(ui.terminal);
+				this.#programStatus ??= new ProgramStatusReport(ui.terminal, {
+					targetTitle: harness.mirror.targetTitle,
+					childTitle: harness.protocol.childTitle,
+				});
 
 				return this.#status;
 			},
 			{ placement: "aboveEditor" },
 		);
 		ctx.ui.setEditorComponent((ui, theme, keybindings) => new MirrorEditor(ui, theme, keybindings, this));
-		this.#mirror = new Mirror(target, (previous) => this.#update(previous));
+		this.#mirror = new harness.mirror.Mirror(target, (previous) => this.#update(previous));
 		this.#programStatus?.update(this.#mirror);
 		this.models = new ModelSync(pi, ctx, this.#mirror, (cause) => this.#notify(cause));
 	}
@@ -85,7 +97,7 @@ export class Attachment {
 			if (this.#closed) return;
 			const editor = this.#ctx.ui.getEditorText();
 			this.#ctx.ui.setEditorText([editor, text].filter((part) => part.trim() !== "").join("\n\n"));
-			this.#ctx.ui.notify(`harness: not sent: ${errorMessage(cause)}`, "error");
+			this.#ctx.ui.notify(`harness: not sent: ${this.#harness.protocol.errorMessage(cause)}`, "error");
 		});
 	}
 
@@ -160,14 +172,15 @@ export class Attachment {
 	}
 
 	#startTranscript(ui: TUI, first: ChildInfo): ChatView {
-		const chat = new ChatView(ui, first.cwd, (name, text) => this.#theme.fg(name, text));
+		const chat = new ChatView(ui, first.cwd, (name, text) => this.#theme.fg(name, text), this.#harness.viewState);
 		this.#chat = chat;
 		chat.setExpanded(this.#expanded);
 		this.showThinkingSetting();
 		this.#frame.clear();
 		this.#frame.addChild(this.#line("muted", () => this.#header(this.#mirror.child ?? first)));
 		this.#frame.addChild(chat.transcript);
-		this.#reporter = agentReporter(process.env, childLabel(first), this.#mirror.target);
+		const { herdr, protocol } = this.#harness;
+		this.#reporter = herdr.agentReporter(process.env, protocol.childLabel(first), this.#mirror.target);
 
 		return chat;
 	}
@@ -175,6 +188,7 @@ export class Attachment {
 	/** Shows above the editor what the agent does, its queued messages and its usage line. */
 	#showStatus(ui: TUI, view: ConversationView | undefined, child: ChildInfo | undefined): void {
 		const { status, busy } = this.#mirror;
+		const { inboxOf, liveOf, queued, statusText } = this.#harness.viewState;
 		const lines: string[] = [];
 
 		if (view !== undefined && status.kind === "open") {
@@ -184,7 +198,10 @@ export class Attachment {
 		}
 
 		if (view !== undefined && child !== undefined) {
-			lines.push(usageLine(this.#theme, this.#ctx.modelRegistry, child, view));
+			const { childTitle } = this.#harness.protocol;
+			const { lastAnswerUsage, usageTotals } = this.#harness.viewState;
+			const functions = { childTitle, lastAnswerUsage, usageTotals };
+			lines.push(usageLine(this.#theme, this.#ctx.modelRegistry, child, view, functions));
 		}
 
 		const working =
@@ -207,19 +224,23 @@ export class Attachment {
 	/** Gives Pi the agent's title, and on an open connection its model and thinking level. */
 	#followAgent(child: ChildInfo): void {
 		if (this.#mirror.status.kind === "open") this.models.fromAgent(child);
-		const title = childTitle(child);
+		const title = this.#harness.protocol.childTitle(child);
 
 		if (this.#pi.getSessionName() !== title) this.#pi.setSessionName(title);
 	}
 
 	#notify(cause: unknown): void {
-		if (!this.#closed) this.#ctx.ui.notify(`harness: ${errorMessage(cause)}`, "error");
+		if (!this.#closed) this.#ctx.ui.notify(`harness: ${this.#harness.protocol.errorMessage(cause)}`, "error");
 	}
 
 	#header(child: ChildInfo): string {
 		const theme = this.#theme;
 
-		return [theme.bold(theme.fg("accent", "harness")), theme.fg("text", childTitle(child)), child.cwd].join(" │ ");
+		return [
+			theme.bold(theme.fg("accent", "harness")),
+			theme.fg("text", this.#harness.protocol.childTitle(child)),
+			child.cwd,
+		].join(" │ ");
 	}
 
 	/** One line in the theme color `name`, colored at each render so that it follows a change of theme. */

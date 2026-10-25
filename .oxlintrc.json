@@ -35,5 +35,24 @@
 		"anti-slop/no-widen-then-assert": "error",
 		"anti-slop/require-readable-spacing": "error",
 		"anti-slop/require-safety-comment-for-type-assertion": "error"
-	}
+	},
+	"overrides": [
+		{
+			"files": ["pi/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../dist/*"],
+								"allowTypeImports": true,
+								"message": "pi/ is published without dist/: import its types only, and take the modules from the Harness object."
+							}
+						]
+					}
+				]
+			}
+		}
+	]
 }

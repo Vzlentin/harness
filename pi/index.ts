@@ -1,8 +1,12 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget and the mirror sessions of `/harness`. They use the client of
- * the harness package that holds this folder, from its built `dist/`, and start the host of that package.
+ * the global harness install, from its built `dist/`, and start the host of that install. Without harness, the tool,
+ * the commands and the flags answer with the command that installs it.
  */
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
@@ -12,17 +16,50 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { request } from "../dist/client.js";
-import { inHerdr, openChildTab } from "../dist/herdr.js";
-import { childLine, errorMessage, runDisplayName } from "../dist/protocol.js";
-import * as tool from "../dist/tool.js";
-import { registerMirror } from "./mirror.ts";
+import { Value } from "typebox/value";
+import type * as client from "../dist/client.js";
+import type * as herdr from "../dist/herdr.js";
+import type * as mirror from "../dist/mirror.js";
+import type * as projects from "../dist/projects.js";
+import type * as protocol from "../dist/protocol.js";
+import type * as tool from "../dist/tool.js";
+import type * as viewState from "../dist/view-state.js";
+import { FLAGS, registerFlags, registerMirror } from "./mirror.ts";
+
+/** The modules of the global harness install that the extension uses. */
+export type Harness = {
+	readonly client: typeof client;
+	readonly herdr: typeof herdr;
+	readonly mirror: typeof mirror;
+	readonly projects: typeof projects;
+	readonly protocol: typeof protocol;
+	readonly tool: typeof tool;
+	readonly viewState: typeof viewState;
+};
+
+const HARNESS_PACKAGE = "@vzlentin/harness";
+const HarnessManifest = Type.Object({ name: Type.Literal(HARNESS_PACKAGE) });
+const OwnManifest = Type.Object({ version: Type.String() });
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
-export default function subagentExtension(pi: ExtensionAPI) {
-	registerMirror(pi);
+export default async function subagentExtension(pi: ExtensionAPI): Promise<void> {
+	const folder = harnessFolder();
+
+	if (folder === undefined) {
+		registerMissing(pi);
+
+		return;
+	}
+
+	registerHarness(pi, await loadHarness(folder));
+}
+
+/** Registers the tool, the commands, the flags and the widget, which use `harness`. */
+function registerHarness(pi: ExtensionAPI, harness: Harness): void {
+	const { client, herdr, protocol, tool } = harness;
+	registerMirror(pi, harness);
 	const { parameters, output } = tool.toolSchemas(Type);
 	pi.registerTool({
 		name: "subagent",
@@ -59,7 +96,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
 	pi.registerCommand("subagent", {
 		description: "Open a subagent spawned by this session in Pi, in a new Herdr tab",
 		handler: async (_args, ctx) => {
-			const children = await request({ type: "list", caller: ctx.sessionManager.getSessionId() }, { start: true });
+			const children = await client.request(
+				{ type: "list", caller: ctx.sessionManager.getSessionId() },
+				{ start: true },
+			);
 
 			if (children.length === 0) {
 				ctx.ui.notify("No subagents spawned by this session", "info");
@@ -67,29 +107,29 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const chosen = await ctx.ui.select("Attach to subagent", children.map(childLine));
+			const chosen = await ctx.ui.select("Attach to subagent", children.map(protocol.childLine));
 
 			// A name can start with the display name of another child, so the longest match is the chosen child.
 			const child = children
-				.filter((c: { handle: string; name?: string }) => chosen?.startsWith(`${runDisplayName(c)}  `))
+				.filter((c: { handle: string; name?: string }) => chosen?.startsWith(`${protocol.runDisplayName(c)}  `))
 				.sort(
 					(a: { handle: string; name?: string }, b: { handle: string; name?: string }) =>
-						runDisplayName(b).length - runDisplayName(a).length,
+						protocol.runDisplayName(b).length - protocol.runDisplayName(a).length,
 				)[0];
 
 			if (child === undefined) return;
 			const command = `harness attach ${child.handle}`;
 
-			if (!inHerdr(process.env)) {
+			if (!herdr.inHerdr(process.env)) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 
 				return;
 			}
 
 			try {
-				await openChildTab(child, process.env);
+				await herdr.openChildTab(child, process.env);
 			} catch (error) {
-				const message = errorMessage(error);
+				const message = protocol.errorMessage(error);
 				ctx.ui.notify(`Could not open a Herdr tab: ${message}. Run in another terminal: ${command}`, "error");
 			}
 		},
@@ -107,10 +147,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		try {
 			const context = widgetContext;
 
-			const children = await request(
-				{ type: "list", caller: context.sessionManager.getSessionId() },
-				{ start: false },
-			).catch(() => undefined);
+			const children = await client
+				.request({ type: "list", caller: context.sessionManager.getSessionId() }, { start: false })
+				.catch(() => undefined);
 
 			if (context !== widgetContext) return;
 
@@ -167,4 +206,100 @@ function savedTrust(cwd: string): boolean {
 	if (decision !== null) return decision;
 
 	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
+}
+
+/**
+ * The folder of the global harness install: the package of the first `harness` on `PATH`, else the package in the
+ * global `node_modules` of npm. A folder counts only when its `package.json` names `@vzlentin/harness`.
+ */
+function harnessFolder(): string | undefined {
+	const onPath = pathFolder();
+
+	if (onPath !== undefined && isHarness(onPath)) return onPath;
+	const global = npmFolder();
+
+	return global !== undefined && isHarness(global) ? global : undefined;
+}
+
+/** The package of the first `harness` on `PATH`: `<package>/dist/cli.js` is the real path of the command. */
+function pathFolder(): string | undefined {
+	try {
+		const dirs = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
+		const command = dirs.map((dir) => join(dir, "harness")).find((path) => existsSync(path));
+
+		return command === undefined ? undefined : dirname(dirname(realpathSync(command)));
+	} catch {
+		return undefined;
+	}
+}
+
+/** The harness package in the global `node_modules` of npm. */
+function npmFolder(): string | undefined {
+	try {
+		const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+
+		return join(root.trim(), HARNESS_PACKAGE);
+	} catch {
+		return undefined;
+	}
+}
+
+function isHarness(folder: string): boolean {
+	try {
+		return Value.Check(HarnessManifest, JSON.parse(readFileSync(join(folder, "package.json"), "utf8")));
+	} catch {
+		return false;
+	}
+}
+
+/** Loads the modules of the harness install in `folder`. A module that does not load makes the extension fail. */
+async function loadHarness(folder: string): Promise<Harness> {
+	const names = ["client", "herdr", "mirror", "projects", "protocol", "tool", "view-state"];
+	const urls = names.map((name) => pathToFileURL(join(folder, "dist", `${name}.js`)).href);
+
+	const [client, herdr, mirror, projects, protocol, tool, viewState] = await Promise.all(
+		urls.map((url) => import(url)),
+	);
+
+	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
+	return { client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
+}
+
+/** Registers the tool, the commands and the flags without harness: each one gives the command that installs it. */
+function registerMissing(pi: ExtensionAPI): void {
+	const { version } = Value.Parse(
+		OwnManifest,
+		JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
+	);
+
+	const message = `harness is not installed: npm install -g ${HARNESS_PACKAGE}@${version}`;
+
+	pi.registerTool({
+		name: "subagent",
+		label: "Subagent",
+		description: message,
+		parameters: Type.Object({}),
+		async execute() {
+			return { content: [{ type: "text", text: message }], details: undefined };
+		},
+	});
+
+	pi.registerCommand("subagent", {
+		description: message,
+		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
+	});
+
+	pi.registerCommand("harness", {
+		description: message,
+		getArgumentCompletions: () => null,
+		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
+	});
+
+	registerFlags(pi);
+
+	pi.on("session_start", (event, ctx) => {
+		if (event.reason !== "startup") return;
+
+		if (Object.values(FLAGS).some((name) => pi.getFlag(name) !== undefined)) ctx.ui.notify(message, "error");
+	});
 }

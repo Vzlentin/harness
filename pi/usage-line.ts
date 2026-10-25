@@ -2,8 +2,14 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { type ChildInfo, childTitle } from "../dist/protocol.js";
-import { lastAnswerUsage, usageTotals } from "../dist/view-state.js";
+import type { ChildInfo, childTitle } from "../dist/protocol.js";
+import type * as viewState from "../dist/view-state.js";
+
+/** The functions of harness that the usage line uses. */
+type UsageFunctions = { readonly childTitle: typeof childTitle } & Pick<
+	typeof viewState,
+	"lastAnswerUsage" | "usageTotals"
+>;
 
 /**
  * The title of the agent, the tokens and the cost of its model requests and tool results, and the context of its last
@@ -15,9 +21,10 @@ export function usageLine(
 	models: ExtensionContext["modelRegistry"],
 	child: ChildInfo,
 	view: ConversationView,
+	harness: UsageFunctions,
 ): string {
-	const totals = usageTotals(view);
-	const last = lastAnswerUsage(view);
+	const totals = harness.usageTotals(view);
+	const last = harness.lastAnswerUsage(view);
 	const model = models.find(child.provider, child.model);
 	const subscription = model !== undefined && models.isUsingOAuth(model);
 	const usage: string[] = [];
@@ -31,7 +38,7 @@ export function usageLine(
 	if (totals.cacheWrite) usage.push(`W${formatTokens(totals.cacheWrite)}`);
 
 	if (totals.cost || subscription) usage.push(`$${totals.cost.toFixed(3)}${subscription ? " (sub)" : ""}`);
-	const parts = [childTitle(child)];
+	const parts = [harness.childTitle(child)];
 
 	if (usage.length > 0) parts.push(usage.join(" "));
 	const contextWindow = model?.contextWindow ?? 0;
