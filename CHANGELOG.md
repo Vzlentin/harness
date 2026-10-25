@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Vzlentin/harness/compare/v0.4.0...v0.4.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** move to pi 1.4.0 ([#27](https://github.com/Vzlentin/harness/issues/27)) ([7de0cad](https://github.com/Vzlentin/harness/commit/7de0cad2300ff6d867e058dc6a48949a18139f4f))
+
 ## [0.4.0](https://github.com/Vzlentin/harness/compare/v0.3.1...v0.4.0) (2026-10-25)
 
 
