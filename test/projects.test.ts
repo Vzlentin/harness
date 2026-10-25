@@ -43,6 +43,11 @@ describe("projects", { timeout: 30_000 }, () => {
 		);
 	});
 
+	it("prints the version of the package", async () => {
+		const { version } = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
+		expect(await cli(["--version"])).toEqual({ code: 0, stdout: `${version}\n`, stderr: "" });
+	});
+
 	it("creates a project and lists the projects", async () => {
 		const failures: [string[], string][] = [
 			[["create", "Bad", "--cwd", dirA], "A project name has 1 to 32 characters"],

@@ -2,7 +2,10 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { request } from "./client.ts";
 import { piEnv } from "./herdr.ts";
 import { type MirrorTarget, piArgs } from "./mirror.ts";
@@ -30,6 +33,7 @@ function usage(): never {
   harness attach --conversation <id>
   harness create <name> --cwd <dir>
   harness projects
+  harness --version
 Any command but harness <project> takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
 }
 
@@ -260,6 +264,15 @@ async function main(): Promise<void> {
 	// npm 12 runs no install script by default, so an installed CLI finishes the setup. A checkout runs `cli.ts`, and
 	// the host starts from a command that already did it.
 	if (import.meta.url.endsWith(".js") && command !== "host") setupOnce(fileURLToPath(new URL("..", import.meta.url)));
+
+	if (command === "--version") {
+		if (project !== undefined || args.length !== 0) usage();
+
+		const json: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		process.stdout.write(`${Value.Parse(Type.Object({ version: Type.String() }), json).version}\n`);
+
+		return;
+	}
 
 	if (command === "create") return createCommand(args);
 

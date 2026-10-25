@@ -85,6 +85,7 @@ harness projects
 
 - `create <name> --cwd <dir>` prints `Created <name> (<dir>)`, where `<dir>` is the real path of the directory. A relative `--cwd` is relative to the current directory. The name has 1 to 32 characters: `a-z` first, then `a-z`, `0-9` or `-`. It cannot be `main` or a command name. A name that exists, and a directory that does not exist, are errors.
 - `projects` prints `<name>  <dir>` for each project, in creation order, then `main`.
+- `--version` prints the version of the package. It takes no argument and no `--project`.
 
 The projects are in `$XDG_CONFIG_HOME/harness/projects.json` (default `~/.config/harness/projects.json`), an object of name to directory. A command that reads the file fails when a name does not follow the rule of `create` or a directory is not an absolute path.
 
