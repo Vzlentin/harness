@@ -161,14 +161,19 @@ A spawn without `provider`, `model`, or `thinking` uses the caller's. A spawn re
 
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
-- In Pi, the extension in the `pi/` folder of the package gives the tool (see [Pi extension](#pi-extension)). The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
+- In Pi, the extension `@vzlentin/pi-agents` gives the tool (see [Pi extension](#pi-extension)). The caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `harness list` in that session shows the tool's children.
 - In another pi-durable host, the entry `@vzlentin/harness/durable-entry` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
 
 ## Pi extension
 
-The package has the Pi extension in its `pi/` folder: the `subagent` tool, the `/subagent` command, the subagents widget and the mirror sessions (see [Mirror sessions](#mirror-sessions)). `/subagent` lists the children of the session and opens the one that you select in Pi, in a new Herdr tab (see `openChildTab`); outside Herdr, it shows `Run in another terminal: harness attach <handle>`. It uses the `dist/` modules of the same package, so it starts the host of that install. Pi records the path of the folder and loads it from there; it does not copy it.
+The Pi extension is the npm package `@vzlentin/pi-agents`, from the `pi/` folder of this repository: the `subagent` tool, the `/subagent` command, the subagents widget and the mirror sessions (see [Mirror sessions](#mirror-sessions)). `/subagent` lists the children of the session and opens the one that you select in Pi, in a new Herdr tab (see `openChildTab`); outside Herdr, it shows `Run in another terminal: harness attach <handle>`. The extension has the same version as harness. It has no copy of harness: it uses the `dist/` modules of the global harness install, so it starts the host of that install. When Pi loads the extension, it finds the install in this order:
+
+1. The package of the first `harness` on `PATH`: two folders above the real path of the command, which is `<package>/dist/cli.js`.
+2. `<root>/@vzlentin/harness`, where `<root>` is the output of `npm root -g`.
+
+A folder counts only when its `package.json` has the name `@vzlentin/harness`. When the first `harness` on `PATH` is not in such a folder, the extension tries the second step. When no step finds harness, the extension registers the `subagent` tool, the `/subagent` and `/harness` commands and the `--harness`, `--harness-child` and `--harness-conversation` flags, and each one gives `harness is not installed: npm install -g @vzlentin/harness@<version>`, where `<version>` is the version of the extension. The tool gives it as its description and its text result, the commands and a session started with one of the flags show it as an error. There is no widget. When harness is found but one of its `dist/` modules does not load, such as in a checkout without `npm run build`, Pi shows that the extension failed to load.
 
 ### Mirror sessions
 

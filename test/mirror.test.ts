@@ -19,9 +19,11 @@ import {
 	type MirrorOptions,
 	type MirrorTarget,
 	piArgs,
+	targetTitle,
 } from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
-import { AGENT_HANDLE, errorMessage } from "../src/protocol.ts";
+import { AGENT_HANDLE, childTitle, errorMessage } from "../src/protocol.ts";
+import * as viewState from "../src/view-state.ts";
 import { inboxOf } from "../src/view-state.ts";
 import {
 	called,
@@ -82,7 +84,7 @@ function reportedMirror(target: MirrorTarget, options: MirrorOptions = {}) {
 		},
 	};
 
-	const report = new ProgramStatusReport(terminal);
+	const report = new ProgramStatusReport(terminal, { targetTitle, childTitle });
 	const mirror: Mirror = new Mirror(target, () => report.update(mirror), { start: false, ...options });
 	report.update(mirror);
 
@@ -312,7 +314,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 		const cwd = await mkdtemp(join(root, "drawn-"));
 		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
 		const mirror = await opened({ project: "main", handle });
-		const chat = new ChatView(new TuiMainScreen(new FakeTerminal()), cwd, (_name, text) => text);
+		const chat = new ChatView(new TuiMainScreen(new FakeTerminal()), cwd, (_name, text) => text, viewState);
 
 		const drawn = () => {
 			if (mirror.view !== undefined) chat.apply(mirror.view);

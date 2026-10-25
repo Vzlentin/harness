@@ -14,16 +14,43 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import { isMirrorTarget, MIRROR_ENTRY, type MirrorTarget, PI_FLAGS } from "../dist/mirror.js";
-import { checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "../dist/projects.js";
-import { AGENT_HANDLE, errorMessage } from "../dist/protocol.js";
+import type { MirrorTarget, PI_FLAGS } from "../dist/mirror.js";
 import { Attachment } from "./attachment.ts";
+import type { Harness } from "./index.ts";
+
+/** The flags of a mirror session, which the extension registers also without harness. */
+export const FLAGS: typeof PI_FLAGS = {
+	project: "harness",
+	child: "harness-child",
+	conversation: "harness-conversation",
+};
 
 /** The mirror entry of a session: its ID and its target. */
 type MirrorEntry = { readonly id: string; readonly target: MirrorTarget };
 
-/** Registers `/harness`, `--harness` and the handlers that turn a session with a mirror entry into a mirror session. */
-export function registerMirror(pi: ExtensionAPI): void {
+/** Registers `--harness`, `--harness-child` and `--harness-conversation`. */
+export function registerFlags(pi: ExtensionAPI): void {
+	pi.registerFlag(FLAGS.project, {
+		type: "string",
+		description: "Show the agent of this harness project (main or a project name) in the new session",
+	});
+
+	pi.registerFlag(FLAGS.child, {
+		type: "string",
+		description: "Show this subagent of the harness project in the new session, in place of the project agent",
+	});
+
+	pi.registerFlag(FLAGS.conversation, {
+		type: "string",
+		description:
+			"Show this conversation of the children library of the harness project in the new session, in place of the project agent",
+	});
+}
+
+/** Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. */
+export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
+	const { MIRROR_ENTRY } = harness.mirror;
+	const { AGENT_HANDLE, errorMessage } = harness.protocol;
 	// The frame of each mirror entry in Pi's chat. Pi can draw the entry before or after `session_start`.
 	const frames = new Map<string, tui.Container>();
 	let attached: Attachment | undefined;
@@ -35,21 +62,7 @@ export function registerMirror(pi: ExtensionAPI): void {
 		return frame;
 	};
 
-	pi.registerFlag(PI_FLAGS.project, {
-		type: "string",
-		description: "Show the agent of this harness project (main or a project name) in the new session",
-	});
-
-	pi.registerFlag(PI_FLAGS.child, {
-		type: "string",
-		description: "Show this subagent of the harness project in the new session, in place of the project agent",
-	});
-
-	pi.registerFlag(PI_FLAGS.conversation, {
-		type: "string",
-		description:
-			"Show this conversation of the children library of the harness project in the new session, in place of the project agent",
-	});
+	registerFlags(pi);
 
 	pi.registerEntryRenderer(MIRROR_ENTRY, (entry, options, theme) => {
 		if (attached?.entryId === entry.id) attached.restyle(theme, options.expanded);
@@ -59,12 +72,12 @@ export function registerMirror(pi: ExtensionAPI): void {
 
 	pi.registerCommand("harness", {
 		description: "Show the agent of a harness project in a new session: /harness [project]",
-		getArgumentCompletions: projectItems,
+		getArgumentCompletions: (prefix) => projectItems(harness, prefix),
 		handler: async (args, ctx) => {
 			let project: string | undefined;
 
 			try {
-				project = args.trim() === "" ? await pickProject(ctx) : checkProject(args.trim());
+				project = args.trim() === "" ? await pickProject(harness, ctx) : harness.projects.checkProject(args.trim());
 			} catch (error) {
 				ctx.ui.notify(`harness: ${errorMessage(error)}`, "error");
 
@@ -90,9 +103,10 @@ export function registerMirror(pi: ExtensionAPI): void {
 			if (!branch.some((entry) => entry.id === id)) frames.delete(id);
 		}
 
-		const entry = mirrorEntry(branch) ?? (event.reason === "startup" ? flagEntry(pi, ctx) : undefined);
+		const entry =
+			mirrorEntry(harness, branch) ?? (event.reason === "startup" ? flagEntry(pi, harness, ctx) : undefined);
 
-		if (entry !== undefined) attached = new Attachment(pi, ctx, entry.id, entry.target, frameOf(entry.id));
+		if (entry !== undefined) attached = new Attachment(pi, harness, ctx, entry.id, entry.target, frameOf(entry.id));
 	});
 
 	pi.on("session_shutdown", () => {
@@ -120,7 +134,9 @@ export function registerMirror(pi: ExtensionAPI): void {
 }
 
 /** The newest mirror entry of `entries` with a valid target. */
-function mirrorEntry(entries: readonly SessionEntry[]): MirrorEntry | undefined {
+function mirrorEntry(harness: Harness, entries: readonly SessionEntry[]): MirrorEntry | undefined {
+	const { MIRROR_ENTRY, isMirrorTarget } = harness.mirror;
+
 	for (const entry of entries.toReversed()) {
 		if (entry.type === "custom" && entry.customType === MIRROR_ENTRY && isMirrorTarget(entry.data)) {
 			return { id: entry.id, target: entry.data };
@@ -136,10 +152,12 @@ function mirrorEntry(entries: readonly SessionEntry[]): MirrorEntry | undefined 
  * directory; without a child or a conversation, the project agent. It refuses both a child and a conversation, and a
  * session with messages, such as one of `--continue`, because Pi's own agent answered there.
  */
-function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undefined {
-	const project = stringFlag(pi, PI_FLAGS.project);
-	const child = stringFlag(pi, PI_FLAGS.child);
-	const conversation = stringFlag(pi, PI_FLAGS.conversation);
+function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): MirrorEntry | undefined {
+	const { checkProject, resolveProject } = harness.projects;
+	const { AGENT_HANDLE, errorMessage } = harness.protocol;
+	const project = stringFlag(pi, FLAGS.project);
+	const child = stringFlag(pi, FLAGS.child);
+	const conversation = stringFlag(pi, FLAGS.conversation);
 
 	if (project === undefined && child === undefined && conversation === undefined) return undefined;
 
@@ -167,9 +185,9 @@ function flagEntry(pi: ExtensionAPI, ctx: ExtensionContext): MirrorEntry | undef
 	}
 
 	// `appendEntry` gives no entry ID, so the entry comes back from the branch.
-	pi.appendEntry(MIRROR_ENTRY, target);
+	pi.appendEntry(harness.mirror.MIRROR_ENTRY, target);
 
-	return mirrorEntry(ctx.sessionManager.getBranch());
+	return mirrorEntry(harness, ctx.sessionManager.getBranch());
 }
 
 /** The value of the string flag `name`, or undefined when it is not given. */
@@ -183,7 +201,8 @@ function stringFlag(pi: ExtensionAPI, name: string): string | undefined {
  * The project that the user selects for `/harness` without a project: the project of Pi's working directory first,
  * then the other projects and `main`. It is undefined when the user cancels.
  */
-async function pickProject(ctx: ExtensionCommandContext): Promise<string | undefined> {
+async function pickProject(harness: Harness, ctx: ExtensionCommandContext): Promise<string | undefined> {
+	const { MAIN_PROJECT, projectDir, readProjects, resolveProject } = harness.projects;
 	const projects = readProjects();
 	const current = resolveProject(process.env, ctx.cwd, projects);
 	const names = [current, ...[...Object.keys(projects), MAIN_PROJECT].filter((name) => name !== current)];
@@ -203,7 +222,8 @@ function tildePath(path: string): string {
 }
 
 /** The projects whose names start with `prefix`, for the argument of `/harness`. */
-function projectItems(prefix: string): AutocompleteItem[] | null {
+function projectItems(harness: Harness, prefix: string): AutocompleteItem[] | null {
+	const { MAIN_PROJECT, readProjects } = harness.projects;
 	let names: string[];
 
 	try {

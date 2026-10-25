@@ -21,7 +21,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import { liveOf, userText } from "../dist/view-state.js";
+import type * as viewState from "../dist/view-state.js";
 
 // Pi's tool definitions differ in their schemas.
 type AnyDefinition = ToolDefinition<any, any>;
@@ -81,15 +81,22 @@ export class ChatView {
 	private readonly cwd: string;
 	/** Colors the lines that the transcript adds itself, such as `[compaction]`, in Pi's current theme. */
 	private readonly color: (name: ThemeColor, text: string) => string;
+	private readonly views: Pick<typeof viewState, "liveOf" | "userText">;
 
-	constructor(ui: TUI, cwd: string, color: (name: ThemeColor, text: string) => string) {
+	constructor(
+		ui: TUI,
+		cwd: string,
+		color: (name: ThemeColor, text: string) => string,
+		views: Pick<typeof viewState, "liveOf" | "userText">,
+	) {
 		this.ui = ui;
 		this.cwd = cwd;
 		this.color = color;
+		this.views = views;
 	}
 
 	apply(view: ConversationView): void {
-		const live = liveOf(view);
+		const live = this.views.liveOf(view);
 		this.syncTranscript(view.entries);
 		const message = live.generation?.message;
 
@@ -172,7 +179,7 @@ export class ChatView {
 
 		if (entry.kind === "pi.user" && message?.role === "user") {
 			this.transcript.addChild(new Spacer(1));
-			this.transcript.addChild(new UserMessageComponent(userText(message.content), getMarkdownTheme()));
+			this.transcript.addChild(new UserMessageComponent(this.views.userText(message.content), getMarkdownTheme()));
 		} else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
 			const component =
 				this.streaming ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
@@ -210,7 +217,7 @@ export class ChatView {
 		} else if (entry.kind === "pi.compaction") {
 			this.addText(this.color("muted", "[compaction]"));
 
-			if (message?.role === "user") this.addText(userText(message.content));
+			if (message?.role === "user") this.addText(this.views.userText(message.content));
 		} else if (entry.kind === "pi.reset") {
 			this.addText(this.color("muted", "[new context]"));
 		}

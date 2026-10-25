@@ -3,17 +3,20 @@
  * while it works, `error` when its last request failed, and `idle` in all other cases.
  */
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
-import { type Mirror, targetTitle } from "../dist/mirror.js";
-import { childTitle } from "../dist/protocol.js";
+import type { Mirror, targetTitle } from "../dist/mirror.js";
+import type { childTitle } from "../dist/protocol.js";
 
 /** The program name of each report. */
 const APP = "harness";
 
 type Mirrored = Pick<Mirror, "target" | "status" | "child" | "view" | "busy">;
 
+/** The functions of harness that give the title of an agent. */
+type Titles = { readonly targetTitle: typeof targetTitle; readonly childTitle: typeof childTitle };
+
 /** The title of the agent of `mirror`. */
-function title({ target, child }: Pick<Mirrored, "target" | "child">): string {
-	return child === undefined ? targetTitle(target) : childTitle(child);
+function title(titles: Titles, { target, child }: Pick<Mirrored, "target" | "child">): string {
+	return child === undefined ? titles.targetTitle(target) : titles.childTitle(child);
 }
 
 /** The first line of the error of the last failed request, or `Error` when there is none. */
@@ -30,28 +33,30 @@ function errorLine({ view }: Pick<Mirrored, "view">): string {
 }
 
 /** The state of the agent of `mirror`. */
-function programStatus(mirror: Mirrored): ProgramStatus {
-	if (mirror.busy) return { state: "working", app: APP, message: title(mirror) };
+function programStatus(titles: Titles, mirror: Mirrored): ProgramStatus {
+	if (mirror.busy) return { state: "working", app: APP, message: title(titles, mirror) };
 
 	if (mirror.status.kind === "open" && mirror.child?.state === "error") {
 		return { state: "error", app: APP, message: errorLine(mirror) };
 	}
 
-	return { state: "idle", app: APP, message: title(mirror) };
+	return { state: "idle", app: APP, message: title(titles, mirror) };
 }
 
 export class ProgramStatusReport {
 	readonly #terminal: Pick<Terminal, "setProgramStatus">;
+	readonly #titles: Titles;
 	/** The state and the message of the last report. */
 	#last: string | undefined;
 
-	constructor(terminal: Pick<Terminal, "setProgramStatus">) {
+	constructor(terminal: Pick<Terminal, "setProgramStatus">, titles: Titles) {
 		this.#terminal = terminal;
+		this.#titles = titles;
 	}
 
 	/** Reports the state of the agent of `mirror` when its state or its message changed since the last report. */
 	update(mirror: Mirrored): void {
-		const report = programStatus(mirror);
+		const report = programStatus(this.#titles, mirror);
 		const key = `${report.state}\n${report.message}`;
 
 		if (key === this.#last) return;
@@ -61,6 +66,6 @@ export class ProgramStatusReport {
 
 	/** Reports `idle` one more time, when Pi leaves the session of `mirror`. */
 	leave(mirror: Pick<Mirrored, "target" | "child">): void {
-		this.#terminal.setProgramStatus({ state: "idle", app: APP, message: title(mirror) });
+		this.#terminal.setProgramStatus({ state: "idle", app: APP, message: title(this.#titles, mirror) });
 	}
 }
