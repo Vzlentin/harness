@@ -20,13 +20,30 @@ function piCalls(): string[] {
 	return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
 }
 
-/** A package `@vzlentin/harness` with a `pi/` folder in `<root>/<at>`, as npm installs it. */
+const pinned = "npm:@vzlentin/pi-agents@0.2.0";
+
+/** A package `@vzlentin/harness` in `<root>/<at>`, as npm installs it. */
 async function installAt(at: string, version = "0.2.0"): Promise<string> {
 	const dir = join(root, at, "@vzlentin", "harness");
-	await mkdir(join(dir, "pi"), { recursive: true });
+	await mkdir(dir, { recursive: true });
 	await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@vzlentin/harness", version }));
 
 	return realpathSync(dir);
+}
+
+/** Pi's global settings with these `packages`. */
+async function piPackages(packages: unknown[]): Promise<void> {
+	await mkdir(join(root, "agent"), { recursive: true });
+	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ packages }));
+}
+
+/** A local folder `<root>/<at>` with a `package.json`. */
+async function localPackage(at: string, name: string, version: string): Promise<string> {
+	const dir = join(root, at);
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, "package.json"), JSON.stringify({ name, version }));
+
+	return dir;
 }
 
 async function fakePi(dir: string, tag: string): Promise<void> {
@@ -60,20 +77,53 @@ afterEach(async () => {
 });
 
 describe("setup", () => {
-	it("registers pi/ of a top-level global install, once per stamp", async () => {
+	it("registers the pinned Pi package for a top-level global install, once per stamp", async () => {
 		const dir = await installAt("prefix/lib/node_modules");
 
-		setup(dir);
-		expect(piCalls()).toEqual([`install ${join(dir, "pi")}`]);
+		setup(dir, "@vzlentin/pi-agents");
+		expect(piCalls()).toEqual([`install ${pinned}`]);
 		expect(stamps()).toHaveLength(1);
-		setupOnce(dir);
+		setupOnce(dir, "@vzlentin/pi-agents");
 		expect(piCalls()).toHaveLength(1);
 	});
 
+	it("installs the pinned version over another version of the Pi package", async () => {
+		const dir = await installAt("prefix/lib/node_modules");
+		await piPackages(["npm:@vzlentin/pi-agents@0.1.0"]);
+
+		setup(dir, "@vzlentin/pi-agents");
+		expect(piCalls()).toEqual([`install ${pinned}`]);
+	});
+
+	it("runs no pi when Pi lists the pinned version, or a local folder of the Pi package", async () => {
+		const dir = await installAt("prefix/lib/node_modules");
+		await piPackages([{ source: pinned }]);
+		setup(dir, "@vzlentin/pi-agents");
+		expect(piCalls()).toEqual([]);
+		expect(stamps()).toHaveLength(1);
+
+		await installAt("prefix/lib/node_modules", "0.2.1");
+		const absolute = await localPackage("checkout/pi", "@vzlentin/pi-agents", "9.9.9");
+		await localPackage("agent/local/pi", "@vzlentin/pi-agents", "9.9.9");
+		await piPackages([absolute]);
+		setup(dir, "@vzlentin/pi-agents");
+		await piPackages(["local/pi"]);
+		setup(dir, "@vzlentin/pi-agents");
+		expect(piCalls()).toEqual([]);
+	});
+
+	it("installs the Pi package when Pi lists only another package", async () => {
+		const dir = await installAt("prefix/lib/node_modules");
+		await piPackages(["file://host/x", "npm:@vzlentin/pi-workflows@0.2.0"]);
+
+		setup(dir, "@vzlentin/pi-agents");
+		expect(piCalls()).toEqual([`install ${pinned}`]);
+	});
+
 	it("does nothing for a copy nested in another global package, or outside lib/node_modules", async () => {
-		setup(await installAt("prefix/lib/node_modules/parent-tool/node_modules"));
-		setup(await installAt("project/node_modules"));
-		setupOnce(await installAt("prefix/lib/node_modules/other/node_modules"));
+		setup(await installAt("prefix/lib/node_modules/parent-tool/node_modules"), "@vzlentin/pi-agents");
+		setup(await installAt("project/node_modules"), "@vzlentin/pi-agents");
+		setupOnce(await installAt("prefix/lib/node_modules/other/node_modules"), "@vzlentin/pi-agents");
 		expect(piCalls()).toEqual([]);
 		expect(stamps()).toEqual([]);
 	});
@@ -83,9 +133,9 @@ describe("setup", () => {
 		process.env.PATH = ["/usr/bin", "/bin"].join(delimiter);
 		const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 
-		setup(dir);
+		setup(dir, "@vzlentin/pi-agents");
 		expect(stderr).toHaveBeenCalledWith(
-			`harness: pi is not on PATH. To add the Pi extension of harness, run: pi install ${join(dir, "pi")}\n`,
+			`harness: pi is not on PATH. To add the Pi extension of harness, run: pi install ${pinned}\n`,
 		);
 		expect(stamps()).toHaveLength(1);
 	});
@@ -95,9 +145,9 @@ describe("setup", () => {
 		await writeFile(join(root, "bin", "pi"), "#!/bin/sh\nexit 3\n");
 		const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 
-		setup(dir);
+		setup(dir, "@vzlentin/pi-agents");
 		expect(stderr).toHaveBeenCalledWith(
-			`harness: pi install failed (exit 3). To add the Pi extension of harness, run: pi install ${join(dir, "pi")}\n`,
+			`harness: pi install failed (exit 3). To add the Pi extension of harness, run: pi install ${pinned}\n`,
 		);
 		expect(stamps()).toEqual([]);
 	});
@@ -115,10 +165,10 @@ describe("the installed CLI", () => {
 		expect(piCalls()).toEqual([]);
 
 		expect((await run(process.execPath, [cli, "--version"])).stdout).toBe("0.2.0\n");
-		expect(piCalls()).toEqual([`install ${join(dir, "pi")}`]);
+		expect(piCalls()).toEqual([`install ${pinned}`]);
 		const { stdout } = await run(process.execPath, [cli, "projects"]);
 		expect(stdout).toBe("main\n");
-		expect(piCalls()).toEqual([`install ${join(dir, "pi")}`]);
+		expect(piCalls()).toEqual([`install ${pinned}`]);
 
 		await installAt("prefix/lib/node_modules", "0.2.1");
 		await run(process.execPath, [cli, "projects"]);

@@ -263,7 +263,8 @@ async function main(): Promise<void> {
 
 	// npm 12 runs no install script by default, so an installed CLI finishes the setup. A checkout runs `cli.ts`, and
 	// the host starts from a command that already did it.
-	if (import.meta.url.endsWith(".js") && command !== "host") setupOnce(fileURLToPath(new URL("..", import.meta.url)));
+	if (import.meta.url.endsWith(".js") && command !== "host")
+		setupOnce(fileURLToPath(new URL("..", import.meta.url)), "@vzlentin/pi-agents");
 
 	if (command === "--version") {
 		if (project !== undefined || args.length !== 0) usage();
