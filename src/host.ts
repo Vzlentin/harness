@@ -4,7 +4,6 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -27,7 +26,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Answer, type Place, resolveModel, type Spec } from "./children.ts";
+import { type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import { loadEntries } from "./load-entries.ts";
 import {
@@ -42,7 +41,9 @@ import {
 	type Target,
 	type WatchLine,
 } from "./protocol.ts";
+import { type Connection, Push } from "./push.ts";
 import {
+	addSent,
 	type ChildRecord,
 	Children,
 	type ChildrenState,
@@ -52,13 +53,17 @@ import {
 	childTarget,
 	type Found,
 	library,
+	markRead,
 	ownRecord,
 	recordOf,
+	removeSent,
 	type TargetHost,
 	target,
+	turnRunning,
 } from "./targets.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
+import { type UnreadAnswers, unreadAnswers } from "./unread.ts";
 import { type ViewChange, viewChange } from "./view-change.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
@@ -66,8 +71,15 @@ const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
 const context = BACKGROUND_CONTEXT;
 
-/** The `detail` of a failed turn that is an error object. */
-const ErrorDetail = Type.Object({ message: Type.String() });
+/** The requests that do not count as activity for the idle exit. */
+const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set(["hello", "list", "status", "answers"]);
+
+/** The depth limit of the subagent tree when Pi's global settings have no valid `agentDepthLimit`. */
+const DEPTH_LIMIT = 4;
+const DepthSetting = Type.Object({ agentDepthLimit: Type.Integer({ minimum: 1 }) });
+
+/** The answer of a `wait` for a turn whose answer a push already gave. */
+const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 
 export type Host = {
 	/** Resolves once the host has closed, by `close()`, the idle exit, or a store failure. */
@@ -126,7 +138,7 @@ export async function runHost(options: {
 
 	const envs = new Map<ConversationId, NodeExecutionEnv>();
 	const startable = startableTasks(entries.tasks);
-	let base: Omit<Handler, "signal" | "connection">;
+	let base: Base;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
 	let agentSetUp: Promise<Conversation> | undefined;
 
@@ -207,7 +219,10 @@ export async function runHost(options: {
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
 	const root = await harness.root(context);
-	base = { harness, place, owner: { kind: "detached", root }, root, project, agent, startable };
+
+	const owner = { kind: "detached", root } as const;
+	const push = new Push({ harness, place, owner, root, project, agent, warn });
+	base = { harness, place, owner, root, project, agent, startable, settings, push };
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
@@ -221,15 +236,13 @@ export async function runHost(options: {
 		onLines(socket, (line) => {
 			queue = queue.then(async () => {
 				let reply: Reply;
-				let start: (() => void) | undefined;
-				const connection = { socket, afterReply: (afterReply: () => void) => (start = afterReply) };
+				let afterReply: ((written: Promise<boolean>) => void) | undefined;
+				const connection: Connection = { socket, afterReply: (run) => (afterReply = run) };
 
 				try {
 					const request = parseRequest(line);
 
-					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
-						lastActivity = Date.now();
-					}
+					if (!PASSIVE_REQUESTS.has(request.type)) lastActivity = Date.now();
 
 					reply = {
 						ok: true,
@@ -239,8 +252,12 @@ export async function runHost(options: {
 					reply = { ok: false, error: errorMessage(error) };
 				}
 
-				if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`);
-				start?.();
+				const written = new Promise<boolean>((resolve) => {
+					if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`, (error) => resolve(error == null));
+					else resolve(false);
+				});
+
+				afterReply?.(written);
 			});
 		});
 		socket.on("error", () => socket.destroy());
@@ -270,6 +287,7 @@ export async function runHost(options: {
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
+			push.close();
 			server.close();
 
 			for (const socket of connections) socket.destroy();
@@ -295,10 +313,13 @@ export async function runHost(options: {
 
 	const timer = setInterval(
 		() => {
-			if (connections.size > 0 || Date.now() - lastActivity < idleExitMs) return;
+			// A connection with an open `answers` request alone does not keep the host running.
+			const busy = () => [...connections].some((socket) => !push.listens(socket));
+
+			if (busy() || Date.now() - lastActivity < idleExitMs) return;
 			harness
 				.inspect(context)
-				.then(({ tasks }) => (liveTasks(tasks) === 0 && connections.size === 0 ? close() : undefined))
+				.then(({ tasks }) => (liveTasks(tasks) === 0 && !busy() ? close() : undefined))
 				.catch(warn);
 		},
 		Math.min(IDLE_CHECK_MS, idleExitMs),
@@ -311,15 +332,21 @@ export async function runHost(options: {
 	return { closed, close };
 }
 
-type Handler = TaskHost &
+/** What every request of the host uses. */
+type Base = Omit<TaskHost, "signal"> &
 	TargetHost & {
 		/** The root conversation, which owns the host's children and is the project agent. */
 		readonly root: Conversation;
-		/** The socket of the request, and a hook that runs `start` after the reply is written. The in-process tool has none. */
-		readonly connection?: Connection;
+		/** Pi's settings, for the depth limit of the subagent tree. */
+		readonly settings: SettingsManager;
+		readonly push: Push;
 	};
 
-type Connection = { readonly socket: Socket; afterReply(start: () => void): void };
+type Handler = Base &
+	TaskHost & {
+		/** The socket of the request, and its hook after the reply. The in-process tool has none. */
+		readonly connection?: Connection;
+	};
 
 function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
@@ -334,15 +361,19 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			return spawnChild(request, handler);
 		case "send": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
-			// Mark the request first: a wait that sees it as the last request must find it in `sent`.
-			const added = await markSent(handler.harness, request.handle, request.requestId, true);
 
-			try {
-				return await sendTo(request, await childTarget(handler, request.handle, record));
-			} catch (error) {
-				if (added) await markSent(handler.harness, request.handle, request.requestId, false);
-				throw error;
-			}
+			// A sweep leaves the child while its request is in `sent` and not yet admitted.
+			return handler.push.whileActive(request.handle, async () => {
+				// Mark the request first: a wait that sees it as the last request must find it in `sent`.
+				const added = await addSent(handler.harness, request.handle, request.requestId, request);
+
+				try {
+					return await sendTo(request, await childTarget(handler, request.handle, record), handler.harness);
+				} catch (error) {
+					if (added) await removeSent(handler.harness, request.handle, request.requestId);
+					throw error;
+				}
+			});
 		}
 
 		case "input":
@@ -350,9 +381,14 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			return sendTo(
 				request.conversation === undefined ? request : { ...request, followUp: false },
 				await target(handler, request),
+				handler.harness,
 			);
 		case "wait":
-			return waitChild(request, handler);
+			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
+		case "answers":
+			if (handler.connection === undefined) throw new Error("answers needs a connection");
+
+			return handler.push.listen(request.caller, handler.connection, handler.signal);
 		case "status":
 			return childInfo(handler, request.handle);
 		case "abort":
@@ -466,6 +502,7 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 			model: request.model,
 			fallbackThinking: request.callerThinking,
 			cwd: request.cwd,
+			limit: await depthLimit(handler.settings),
 		};
 
 		if (request.thinking !== undefined) spec = { ...spec, thinking: request.thinking };
@@ -493,17 +530,21 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
 		context,
 	);
-	await markSent(harness, handle, `spawn:${request.requestId}`, true);
+	await addSent(harness, handle, `spawn:${request.requestId}`, request);
 
 	return childInfo(handler, handle, record);
 }
 
-/** Sends the input of `request` to `found`. */
+/**
+ * Sends the input of `request` to `found`. The verb comes from the conversation's own turn, so a child that only its
+ * children hold is prompted.
+ */
 async function sendTo(
 	request: Extract<RequestLine, { type: "send" | "input" }>,
-	found: Pick<Found, "info" | "send">,
+	found: Pick<Found, "conversation" | "info" | "send">,
+	harness: Harness,
 ): Promise<{ verb: string; child: ChildInfo }> {
-	const busy = (await found.info()).state === "busy";
+	const busy = await turnRunning(harness, found.conversation.id);
 	await found.send({
 		type: "input",
 		content: request.message,
@@ -525,99 +566,40 @@ async function waitChild(
 	const record = await childRecord(handler.harness, request.handle);
 	const child = await childOf(handler, record);
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
-	const waiting = withAbortSignal(AbortSignal.any([timeout, handler.signal]), context);
-	let main: string | null;
-	let answer: Answer;
-	let earlier: Answer[];
+	const signal = AbortSignal.any([timeout, handler.signal]);
+	const waiting = withAbortSignal(signal, context);
+	let text: UnreadAnswers;
 
 	try {
-		main = await child.lastRequest(waiting);
-		answer = await child.settled(waiting, main ?? undefined);
-		// Read the record after the answer: a send is in `sent` before it can be the last request.
-		const current = (await childRecord(handler.harness, request.handle)).sent ?? [];
-		const unread = unreadBefore(current, record.read ?? 0, main, record.sent ?? []);
-		earlier = [];
+		const { main, answer } = await handler.push.done(child, signal);
+		// Read the record after the answer and after a push in flight: a send is in `sent` before it can be the last
+		// request, and a push marks its answers read only once its reply is written.
+		await handler.push.written(request.handle);
+		const latest = await childRecord(handler.harness, request.handle);
 
-		for (const requestId of unread.ids) {
-			const before = await child.settled(waiting, requestId);
-
-			// A steer goes into the turn that was running, so its request can share that turn's answer.
-			if (!("entry" in before && "entry" in answer && before.entry === answer.entry)) earlier.push(before);
-		}
-
-		await handler.harness.commit(async (tx) => {
-			const latest = (await tx.doc(Children)).children[request.handle];
-
-			if (latest !== undefined) latest.read = Math.max(latest.read ?? 0, unread.read);
-		}, context);
+		if (main !== null && main === latest.pushed) return { answer: NO_NEW_ANSWERS };
+		text = await unreadAnswers(child, request.handle, latest, main, answer, record.sent ?? [], waiting);
+		await markRead(handler.harness, request.handle, text.read);
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);
 		throw error;
 	}
 
-	const texts = earlier.map((before) => {
-		const text = answerText(request.handle, before);
-
-		return text.failed ? `(no answer: ${text.text})` : text.text;
-	});
-
-	const last = answerText(request.handle, answer);
-	const all = [...texts, last.text];
-	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
-
-	const text = texts.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
-
 	// A failed last turn is an error that still gives the earlier answers.
-	if (last.failed) throw new Error(text);
+	if (text.failed) throw new Error(text.text);
 
-	return { answer: text };
-}
-
-/** The requests whose answers a wait gives before its own, and the new `read` of the child record. */
-type Unread = { readonly ids: readonly string[]; readonly read: number };
-
-/**
- * The requests of `sent` from `read` on that a wait for `main` gives before the answer to `main`, and the new `read`.
- * When `main` is a request of the caller, they are the ones before it, and `main` counts as read; a send after it
- * stays unread. Otherwise, such as for the input of a mirror session, they are the caller's requests known when the wait started.
- */
-function unreadBefore(sent: readonly string[], read: number, main: string | null, atStart: readonly string[]): Unread {
-	const index = main === null ? -1 : sent.indexOf(main);
-
-	if (index >= read) return { ids: sent.slice(read, index), read: index + 1 };
-
-	if (index >= 0) return { ids: [], read };
-
-	return { ids: atStart.slice(read), read: Math.max(read, atStart.length) };
-}
-
-/** The text of `answer`, or the failure of a turn with no answer. A cut answer still gives its text. */
-function answerText(handle: string, answer: Answer) {
-	if (answer.status === "ok" || answer.reason !== "unanswered") return { text: answer.text, failed: false };
-
-	if (answer.cause === "queued") {
-		return { text: `${handle} stopped with queued messages after a failed turn`, failed: true };
-	}
-
-	return { text: failureText(handle, answer.cause, answer.detail), failed: true };
+	return { answer: text.text };
 }
 
 /**
- * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, or removes it after a send that
- * failed. A repeated request is not added. True when it changed the record.
+ * The depth limit of a new subagent tree: `agentDepthLimit` in Pi's global settings, read again at each spawn. A child
+ * of a child keeps the limit of its tree.
  */
-async function markSent(harness: Harness, handle: string, requestId: string, add: boolean): Promise<boolean> {
-	return harness.commit(async (tx) => {
-		const record = (await tx.doc(Children)).children[handle];
+async function depthLimit(settings: SettingsManager): Promise<number> {
+	await settings.reload();
+	const global = settings.getGlobalSettings();
 
-		if (record === undefined) return false;
-		const sent = record.sent ?? [];
-
-		if (add === sent.includes(requestId)) return false;
-		record.sent = add ? [...sent, requestId] : sent.filter((id) => id !== requestId);
-
-		return true;
-	}, context);
+	return Value.Check(DepthSetting, global) ? global.agentDepthLimit : DEPTH_LIMIT;
 }
 
 async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
@@ -638,18 +620,6 @@ async function configureChild(
 	await found.conversation.configure(resolveModel(handler.place.models, agent, request), context);
 
 	return found.info();
-}
-
-function failureText(handle: string, reason: string, detail: JsonValue | undefined): string {
-	if (reason === "aborted") return `${handle} was aborted`;
-
-	const text = Value.Check(Type.String(), detail)
-		? detail
-		: Value.Check(ErrorDetail, detail)
-			? detail.message
-			: undefined;
-
-	return text === undefined ? `${handle} failed: ${reason}` : `${handle} failed: ${text}`;
 }
 
 /**

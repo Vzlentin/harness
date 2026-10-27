@@ -72,6 +72,27 @@ describe("children library", { timeout: 30_000 }, () => {
 		).rejects.toThrow("Nested subagents are disabled");
 	});
 
+	it("takes the depth limit of the spec for a new tree, and keeps the tree's for a child of a child", async () => {
+		const child = await library.open(place, owner, "t:limit-one", { root: "test", ...faux, limit: 3 }, context);
+		expect(child.lineage).toMatchObject({ depth: 1, limit: 3 });
+		const parent = String(child.id);
+		const grandchild = await library.open(place, owner, "t:limit-two", { parent, ...faux, limit: 1 }, context);
+		expect(grandchild.lineage).toMatchObject({ depth: 2, limit: 3 });
+
+		const deeper = await library.open(
+			place,
+			owner,
+			"t:limit-three",
+			{ parent: String(grandchild.id), ...faux },
+			context,
+		);
+
+		expect(deeper.lineage).toMatchObject({ depth: 3, limit: 3 });
+		await expect(
+			library.open(place, owner, "t:limit-four", { parent: String(deeper.id), ...faux }, context),
+		).rejects.toThrow("Nested subagents are disabled");
+	});
+
 	it("refuses a spec without a model when the owner's agent has none, and an unknown model", async () => {
 		await expect(library.open(place, owner, "t:none", { root: "test" }, context)).rejects.toThrow(
 			"No model: neither the spec nor the owner's agent names one",

@@ -4,20 +4,11 @@
  * runtime import of Pi, chord or pi-durable, so the Pi extension can load it.
  */
 import { randomUUID } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Client, connect } from "./client.ts";
-import {
-	AGENT_HANDLE,
-	type ChildInfo,
-	errorMessage,
-	type Request,
-	runDisplayName,
-	type Target,
-	type WatchLine,
-} from "./protocol.ts";
+import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
+import { AGENT_HANDLE, type ChildInfo, type Request, runDisplayName, type Target, type WatchLine } from "./protocol.ts";
 import { applyChange } from "./view-change.ts";
 import { inboxOf, withdrawnTexts } from "./view-state.ts";
 
@@ -94,11 +85,6 @@ export type MirrorOptions = {
 	/** Whether a connection starts the host when none runs. Default true. */
 	readonly start?: boolean;
 };
-
-const RETRY_DELAYS_MS = [0, 2000, 5000];
-
-/** A connection that was opened again and ends sooner than this is not opened again: the host fails at each start. */
-const SHORT_CONNECTION_MS = 10_000;
 
 const HOST_CLOSED = "The harness host closed the connection";
 
@@ -258,33 +244,25 @@ export class Mirror {
 	 */
 	async #connect(delays: readonly number[]): Promise<Watched | Error> {
 		const { signal } = this.#closing;
-		let error = new Error("Could not connect to the harness host");
 
-		for (const delay of delays) {
-			if (delay > 0) await sleep(delay, undefined, { signal }).catch(() => {});
+		const attempt = await tryEach(delays, signal, async (): Promise<Watched> => {
+			const client = await connect({ start: this.#start, project: this.target.project, signal });
 
-			if (signal.aborted) break;
-			let client: Client | undefined;
+			if (client === undefined) throw new Error("Could not connect to the harness host");
 
 			try {
-				client = await connect({ start: this.#start, project: this.target.project, signal });
-
-				if (client === undefined) throw new Error("Could not connect to the harness host");
-				const watched = await client.watch(this.#ref);
-
-				if (signal.aborted) {
-					client.close();
-					break;
-				}
-
-				return { ...watched, client };
+				return { ...(await client.watch(this.#ref)), client };
 			} catch (cause) {
-				client?.close();
-				error = new Error(errorMessage(cause));
+				client.close();
+				throw cause;
 			}
-		}
+		});
 
-		return signal.aborted ? new Error("The mirror is closed") : error;
+		if (!signal.aborted) return attempt;
+
+		if (!(attempt instanceof Error)) attempt.client.close();
+
+		return new Error("The mirror is closed");
 	}
 
 	/** Applies each change of the watch until it ends: `stopped` when the child was stopped, else `closed`. */

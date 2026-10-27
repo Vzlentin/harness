@@ -1,12 +1,13 @@
 /**
  * The targets of the host's requests: the children by handle, the project agent, and the conversations of the children
- * library by ID, with the `Children` records of the host.
+ * library by ID, with the `Children` records of the host and the commits of their read marks.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { type Child, createChildren, type Input, type Owner, type Place } from "./children.ts";
 import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
+import { isHeld } from "./unread.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -29,8 +30,12 @@ export type ChildRecord = {
 	conversationId: ConversationId;
 	/** The request IDs of the spawn and of each `send` of the caller, in order. */
 	sent?: string[];
-	/** How many requests of `sent` a `wait` gave the answer of. */
+	/** How many requests of `sent` a `wait` or a push gave the answer of. */
 	read?: number;
+	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
+	pushed?: string;
+	/** The request IDs of `sent` with `notify: false`, whose answers are not pushed and do not hold the caller. */
+	quiet?: string[];
 };
 
 export type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
@@ -175,8 +180,9 @@ export async function childInfo(
 	record ??= await childRecord(handler.harness, handle);
 	const child = await childOf(handler, record);
 	const childState = await child.state(context);
+	const held = isHeld(await handler.harness.snapshot(Children, context), record.conversationId);
 	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
-	const state: ChildState = childState === "closed" ? "idle" : childState;
+	const state: ChildState = held ? "busy" : childState === "closed" ? "idle" : childState;
 
 	const fields = await agentFields(child.conversation);
 
@@ -196,6 +202,63 @@ async function agentFields(
 		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
 		cwd: agent.cwd ?? "",
 	};
+}
+
+/**
+ * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of. Without `notify`, its answer is not
+ * pushed. A repeated request is not added. True when it changed the record.
+ */
+export async function addSent(
+	harness: Harness,
+	handle: string,
+	requestId: string,
+	options: { readonly notify: boolean },
+): Promise<boolean> {
+	return harness.commit(async (tx) => {
+		const record = (await tx.doc(Children)).children[handle];
+		const sent = record?.sent ?? [];
+
+		if (record === undefined || sent.includes(requestId)) return false;
+		record.sent = [...sent, requestId];
+
+		if (!options.notify) record.quiet = [...(record.quiet ?? []), requestId];
+
+		return true;
+	}, context);
+}
+
+/** Removes `requestId` from the requests of `handle`, after a send that failed. */
+export async function removeSent(harness: Harness, handle: string, requestId: string): Promise<void> {
+	await harness.commit(async (tx) => {
+		const record = (await tx.doc(Children)).children[handle];
+
+		const sent = record?.sent ?? [];
+
+		if (record === undefined || !sent.includes(requestId)) return;
+		record.sent = sent.filter((id) => id !== requestId);
+
+		if (record.quiet?.includes(requestId)) record.quiet = record.quiet.filter((id) => id !== requestId);
+	}, context);
+}
+
+/**
+ * Marks the requests of `handle` up to `read` as read. After a push, `pushed` is the request whose answer the push gave
+ * last, so that a `wait` for it gives no new answer.
+ */
+export async function markRead(harness: Harness, handle: string, read: number, pushed?: string): Promise<void> {
+	await harness.commit(async (tx) => {
+		const record = (await tx.doc(Children)).children[handle];
+
+		if (record === undefined) return;
+		record.read = Math.max(record.read ?? 0, read);
+
+		if (pushed !== undefined) record.pushed = pushed;
+	}, context);
+}
+
+/** Whether the conversation `id` runs a turn of its own, whatever its children do. */
+export async function turnRunning(harness: Harness, id: ConversationId): Promise<boolean> {
+	return (await harness.snapshot(durable.LiveDoc, id, context))?.run !== undefined;
 }
 
 /** The record of `handle` in the `Children` value `state`. */

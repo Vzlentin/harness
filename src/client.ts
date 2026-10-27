@@ -2,11 +2,13 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
 	cliPath,
+	errorMessage,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -17,6 +19,38 @@ import {
 } from "./protocol.ts";
 
 const START_TIMEOUT_MS = 10_000;
+
+/** The waits before the tries to connect again after the host closed a long-lived connection. */
+export const RETRY_DELAYS_MS: readonly number[] = [0, 2000, 5000];
+
+/** A connection that ends sooner than this after it was opened again shows a host that fails at each start. */
+export const SHORT_CONNECTION_MS = 10_000;
+
+/**
+ * The result of the first `attempt` that succeeds, with one try after each delay of `delays`. It is the error of the
+ * last try when all fail. When `signal` aborts, it stops trying.
+ */
+export async function tryEach<T>(
+	delays: readonly number[],
+	signal: AbortSignal,
+	attempt: () => Promise<T>,
+): Promise<T | Error> {
+	let error = new Error("Could not connect to the harness host");
+
+	for (const delay of delays) {
+		if (delay > 0) await sleep(delay, undefined, { signal }).catch(() => {});
+
+		if (signal.aborted) break;
+
+		try {
+			return await attempt();
+		} catch (cause) {
+			error = new Error(errorMessage(cause));
+		}
+	}
+
+	return error;
+}
 
 /** A line from the host: a reply, or an event of the watch. The value of a reply and the event are not checked here. */
 const HostLine = Type.Union([

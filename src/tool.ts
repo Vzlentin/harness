@@ -14,8 +14,10 @@ const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "
 const NO_ABORT = new AbortController().signal;
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
+When a child finishes, its answer comes to you as a message that starts a turn. Use \`wait\` only when you need the answer in this turn.
 - spawn: start a child with \`prompts\` and \`files\`. It uses your provider, model and thinking level unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer, after the earlier answers of the spawn and the sends that no \`wait\` gave. \`stop\` also stops the children the child spawned. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
+- spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.
 - list: your children.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.`;
@@ -51,6 +53,9 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		handle: text("send, wait, status, rename, stop: the hex ID that spawn prints in parentheses, not the name"),
 		message: text("send: the message"),
 		followUp: Type.Optional(Type.Boolean({ description: "send: queue after the current answer, not a steer" })),
+		notify: Type.Optional(
+			Type.Boolean({ description: "spawn, send: false turns off the message with the answer; default true" }),
+		),
 		timeout: Type.Optional(Type.Integer({ minimum: 1, description: "wait: seconds; default 1800" })),
 		key: text("spawn, send: a key that makes a repeated call do nothing; default the call"),
 	});
@@ -130,7 +135,8 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 		case "send": {
 			const message = required(args.message?.trim(), "message", action);
 			const followUp = args.followUp === true;
-			const sent = await send({ type: "send", requestId, caller, handle: handle(), message, followUp }, signal);
+			const notify = args.notify !== false;
+			const sent = await send({ type: "send", requestId, caller, handle: handle(), message, followUp, notify }, signal);
 
 			return { text: `${sent.verb} ${runDisplayName(sent.child)}\n`, data: { action, value: sent } };
 		}
@@ -210,6 +216,7 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 		type: "spawn",
 		requestId,
 		caller: scope.caller,
+		notify: args.notify !== false,
 		provider,
 		model,
 		callerThinking: scope.thinking,
