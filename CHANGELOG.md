@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/Vzlentin/harness/compare/v0.4.1...v0.5.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* the protocol goes from 9 to 10, for the answers request. A client refuses a host with the other version.
+
+### Features
+
+* push the answer of a subagent to its parent ([#29](https://github.com/Vzlentin/harness/issues/29)) ([f044ab7](https://github.com/Vzlentin/harness/commit/f044ab750220cf04ada4eb2bbf1a148ca5d353be))
+
 ## [0.4.1](https://github.com/Vzlentin/harness/compare/v0.4.0...v0.4.1) (2026-10-25)
 
 
