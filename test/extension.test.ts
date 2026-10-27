@@ -22,7 +22,7 @@ import { gates, logLines, root, setUp, startHost, tearDown } from "./helpers.ts"
 const run = promisify(execFile);
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { version } = JSON.parse(readFileSync(join(repo, "pi", "package.json"), "utf8"));
-const MESSAGE = `harness is not installed: npm install -g @vzlentin/harness@${version}`;
+const MESSAGE = `harness ${version} is not installed: npm install -g @vzlentin/harness@${version}`;
 const EXTENSION = join(repo, "pi", "index.ts");
 const FAUX = { provider: "faux", model: "faux-1" };
 
@@ -62,7 +62,7 @@ beforeAll(async () => {
 	const dir = join(globalRoot, "@vzlentin", "harness");
 	const tsc = join(repo, "node_modules", "typescript", "bin", "tsc");
 	await run(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", join(dir, "dist")], { cwd: repo });
-	await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@vzlentin/harness", version: "0.0.1" }));
+	await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@vzlentin/harness", version }));
 	await symlink(join(repo, "node_modules"), join(dir, "node_modules"));
 }, 60_000);
 
@@ -322,6 +322,22 @@ describe("the Pi extension", () => {
 		}
 	});
 
+	it("counts a harness older than the extension as not installed, and a newer one as installed", async () => {
+		const manifest = join(globalRoot, "@vzlentin", "harness", "package.json");
+		await fakeNpm(globalRoot);
+
+		try {
+			await writeFile(manifest, JSON.stringify({ name: "@vzlentin/harness", version: "0.0.1" }));
+			expect(await callTool(await load(), {})).toBe(MESSAGE);
+
+			host = await startHost();
+			await writeFile(manifest, JSON.stringify({ name: "@vzlentin/harness", version: "99.0.0-rc.1" }));
+			expect(await callTool(await load(), { action: "list" })).toBe("No subagents\n");
+		} finally {
+			await writeFile(manifest, JSON.stringify({ name: "@vzlentin/harness", version }));
+		}
+	});
+
 	it("answers with the install command when harness is not installed", async () => {
 		await fakeNpm(await mkdtemp(join(root, "empty-")));
 		const registered = await load();
@@ -404,7 +420,7 @@ async function installingNpm(behaviour: InstallBehaviour): Promise<void> {
 			? `  i=1; while [ $i -le 30 ]; do echo "line $i"; i=$((i + 1)); done; echo "npm error failed" >&2; exit 1`
 			: "  :",
 		`  mkdir -p "${join(dir, "dist")}" "${join(prefixPath(), "bin")}"`,
-		`  echo '{"name":"@vzlentin/harness"}' > "${join(dir, "package.json")}"`,
+		`  echo '{"name":"@vzlentin/harness","version":"${version}"}' > "${join(dir, "package.json")}"`,
 		`  printf '#!/bin/sh\\necho "harness $*" >> "${log}"\\n' > "${join(dir, "dist", "cli.js")}"`,
 		`  chmod +x "${join(dir, "dist", "cli.js")}"`,
 		`  ln -s "${join(dir, "dist", "cli.js")}" "${join(prefixPath(), "bin", "harness")}"`,
@@ -481,7 +497,10 @@ describe("the install offer", () => {
 		await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
 
 		expect(dialogs).toEqual([
-			["harness is not installed", `Install @vzlentin/harness@${version} with npm install -g into ${prefixPath()}?`],
+			[
+				`harness ${version} is not installed`,
+				`Install @vzlentin/harness@${version} with npm install -g into ${prefixPath()}?`,
+			],
 		]);
 
 		expect(logLines(logPath())).toEqual([
