@@ -44,8 +44,14 @@ export type Harness = {
 };
 
 const HARNESS_PACKAGE = "@vzlentin/harness";
-const HarnessManifest = Type.Object({ name: Type.Literal(HARNESS_PACKAGE) });
+const HarnessManifest = Type.Object({ name: Type.Literal(HARNESS_PACKAGE), version: Type.String() });
 const OwnManifest = Type.Object({ version: Type.String() });
+
+const { version: OWN_VERSION } = Value.Parse(
+	OwnManifest,
+	JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
+);
+
 const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
 const runFile = promisify(execFile);
 
@@ -85,7 +91,9 @@ export async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "not
 		if (existsSync(declined) || harnessFolder() !== undefined) return;
 		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
 
-		if (!(await ui.confirm("harness is not installed", `Install ${spec} with npm install -g into ${prefix}?`))) {
+		const title = `harness ${version} is not installed`;
+
+		if (!(await ui.confirm(title, `Install ${spec} with npm install -g into ${prefix}?`))) {
 			mkdirSync(stateFolder(), { recursive: true });
 			writeFileSync(declined, "");
 
@@ -351,12 +359,24 @@ function npmFolder(): string | undefined {
 	}
 }
 
+/** Whether `folder` is a harness install at the version of this extension or later: `pi update` moves only the extension. */
 function isHarness(folder: string): boolean {
 	try {
-		return Value.Check(HarnessManifest, JSON.parse(readFileSync(join(folder, "package.json"), "utf8")));
+		const manifest: unknown = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
+
+		return Value.Check(HarnessManifest, manifest) && !olderThan(manifest.version, OWN_VERSION);
 	} catch {
 		return false;
 	}
+}
+
+/** Whether the version `found` is older than `wanted`, by major, minor and patch. A prerelease counts as its release. */
+function olderThan(found: string, wanted: string): boolean {
+	const parts = (version: string) => (version.split("-")[0] ?? "").split(".").map(Number);
+	const [have, want] = [parts(found), parts(wanted)];
+	const at = want.findIndex((part, index) => part !== have[index]);
+
+	return at !== -1 && (have[at] ?? 0) < (want[at] ?? 0);
 }
 
 /** Loads the modules of the harness install in `folder`. A module that does not load makes the extension fail. */
@@ -372,14 +392,10 @@ async function loadHarness(folder: string): Promise<Harness> {
 	return { answers, client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
 }
 
-/** Registers the tool, the commands and the flags without harness: each one gives the command that installs it. */
+/** Registers the tool, the commands and the flags without harness at the version of this extension: each one gives the command that installs it. */
 function registerMissing(pi: ExtensionAPI): void {
-	const { version } = Value.Parse(
-		OwnManifest,
-		JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
-	);
-
-	const message = `harness is not installed: npm install -g ${HARNESS_PACKAGE}@${version}`;
+	const version = OWN_VERSION;
+	const message = `harness ${version} is not installed: npm install -g ${HARNESS_PACKAGE}@${version}`;
 
 	pi.registerTool({
 		name: "subagent",
