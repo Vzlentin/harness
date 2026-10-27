@@ -9,7 +9,7 @@ import { type Static, type TProperties, Type } from "typebox";
 import type { ViewChange } from "./view-change.ts";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
@@ -80,6 +80,8 @@ export type Request =
 			readonly type: "spawn";
 			readonly requestId: string;
 			readonly caller: string;
+			/** Whether the host pushes the answers of this request to the caller. */
+			readonly notify: boolean;
 			readonly name?: string;
 			readonly provider: string;
 			readonly model: string;
@@ -98,10 +100,17 @@ export type Request =
 			readonly handle: string;
 			readonly message: string;
 			readonly followUp: boolean;
+			/** As for `spawn`. */
+			readonly notify: boolean;
 	  }
 	| { readonly type: "wait"; readonly handle: string; readonly timeout: number }
 	| { readonly type: "status"; readonly handle: string }
 	| { readonly type: "list"; readonly caller: string }
+	/**
+	 * Waits until the host has answers of the children of `caller` to push, marks them read and replies with them. A
+	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
+	 */
+	| { readonly type: "answers"; readonly caller: string }
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
 	/**
@@ -180,6 +189,7 @@ export const RequestLine = Type.Union([
 		type: Type.Literal("spawn"),
 		requestId: Type.String(),
 		caller: Type.String(),
+		notify: Type.Boolean(),
 		name: Type.Optional(Type.String()),
 		provider: Type.String(),
 		model: Type.String(),
@@ -196,10 +206,12 @@ export const RequestLine = Type.Union([
 		handle: Type.String(),
 		message: Type.String(),
 		followUp: Type.Boolean(),
+		notify: Type.Boolean(),
 	}),
 	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
 	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
+	Type.Object({ type: Type.Literal("answers"), caller: Type.String() }),
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
 	targeted("watch", {}),
@@ -234,6 +246,7 @@ export type Replies = {
 	readonly wait: { readonly answer: string };
 	readonly status: ChildInfo;
 	readonly list: readonly ChildInfo[];
+	readonly answers: readonly Delivery[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
@@ -253,6 +266,22 @@ export type Replies = {
 export type WatchLine =
 	| { readonly change: ViewChange; readonly child: ChildInfo; readonly stopped?: undefined }
 	| { readonly stopped: true };
+
+/**
+ * The answers of one child that the host pushes to its caller: the answers that `wait` gives, or its error when
+ * `failed`.
+ */
+export type Delivery = {
+	readonly handle: string;
+	readonly name?: string;
+	readonly text: string;
+	readonly failed: boolean;
+};
+
+/** The text of the message that brings `delivery` to its caller. */
+export function deliveryText(delivery: Delivery): string {
+	return `subagent ${runDisplayName(delivery)} ${delivery.failed ? "failed" : "finished"}\n\n${delivery.text}`;
+}
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };

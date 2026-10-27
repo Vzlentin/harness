@@ -349,10 +349,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From mirror\n`);
 	});
 
-	it("lets a child spawn a child, but not a third level", async () => {
+	it("lets a child spawn a child, but not a third level, with agentDepthLimit 2", async () => {
+		await setDepthLimit(2);
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
 		const { stdout } = await cli(["wait", handle]);
-		expect(stdout).toMatch(/^[a-z0-9]+ finished\n\nTool said: Spawned nested \(([a-z0-9]+)\)\nState: busy\n/);
+		// A nested child that ends before its parent's wait comes also gives its answer as a message to the parent.
+		expect(stdout).toContain("Tool said: Spawned nested (");
 		expect(stdout).toContain("finished\n\nTool said: Nested subagents are disabled");
 		expect(called("Task:\nNest")).toBe(2);
 		// The nested child belongs to its parent, not to this caller.
@@ -360,6 +362,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("stops the children that a child spawned with it", async () => {
+		await setDepthLimit(2);
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
 		const nested = /Spawned nested \(([a-z0-9]+)\)/.exec((await cli(["wait", handle])).stdout)?.[1] ?? "";
 		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested})`);
@@ -367,7 +370,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
 	});
 
-	it("lets a child spawn a child with the tool, but not a third level", async () => {
+	it("lets a child spawn a child with the tool, but not a third level, with agentDepthLimit 2", async () => {
+		await setDepthLimit(2);
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(
@@ -376,6 +380,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 			),
 		);
 		expect(called("Task:\nNest tool")).toBe(2);
+	});
+
+	it("nests subagents 4 levels deep without agentDepthLimit", async () => {
+		await setDepthLimit(undefined);
+		const before = called("Task:\nNest");
+		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Nest"]))]);
+		expect(stdout).toContain("Nested subagents are disabled");
+		expect(called("Task:\nNest") - before).toBe(4);
 	});
 
 	it("runs a send and a wait in one message in order", async () => {
@@ -506,6 +518,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				type: "spawn",
 				requestId: "spawn-once",
 				caller: "cli",
+				notify: true,
 				provider: "faux",
 				model: "faux-1",
 				callerThinking: "medium",
@@ -524,6 +537,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				handle: first.handle,
 				message: "Twice?",
 				followUp: false,
+				notify: true,
 			} as const;
 
 			await client.request(send);
@@ -564,6 +578,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				type: "spawn",
 				requestId: "spawn-no-cwd",
 				caller,
+				notify: true,
 				provider: "faux",
 				model: "faux-1",
 				callerThinking: "medium",
@@ -601,6 +616,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			type: "spawn",
 			requestId: "spawn-interrupted",
 			caller,
+			notify: true,
 			provider: "faux",
 			model: "faux-1",
 			callerThinking: "medium",
@@ -642,6 +658,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				handle,
 				message: "Between",
 				followUp: false,
+				notify: true,
 			});
 			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({ answer: "Answer to Between" });
 			expect((await client.request(spawn)).handle).toBe(handle);
@@ -924,6 +941,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 });
+
+/** Writes Pi's global settings of the tests, with `agentDepthLimit` when `limit` is set. */
+async function setDepthLimit(limit: number | undefined): Promise<void> {
+	const settings =
+		limit === undefined ? { retry: { enabled: false } } : { retry: { enabled: false }, agentDepthLimit: limit };
+
+	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
+}
 
 /** The `subagent.children` document of the host, to read a child's conversation ID. */
 const ChildrenDoc = durable.defineDoc<{ children: Record<string, { conversationId: number }> }>({

@@ -1,6 +1,7 @@
 /**
- * The `subagent` tool, `/subagent`, the subagents widget and the mirror sessions of `/harness`. They use the client of
- * the global harness install, from its built `dist/`, and start the host of that install. Without harness, the tool,
+ * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the mirror
+ * sessions of `/harness`. They use the client of the global harness install, from its built `dist/`, and start the host
+ * of that install. Without harness, the tool,
  * the commands and the flags answer with the command that installs it, and an interactive session offers to install it.
  */
 import { execFile, execFileSync } from "node:child_process";
@@ -19,6 +20,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
+import type * as answers from "../dist/answers.js";
 import type * as client from "../dist/client.js";
 import type * as herdr from "../dist/herdr.js";
 import type * as mirror from "../dist/mirror.js";
@@ -31,6 +33,7 @@ import { FLAGS, registerFlags, registerMirror } from "./mirror.ts";
 
 /** The modules of the global harness install that the extension uses. */
 export type Harness = {
+	readonly answers: typeof answers;
 	readonly client: typeof client;
 	readonly herdr: typeof herdr;
 	readonly mirror: typeof mirror;
@@ -130,6 +133,21 @@ async function runUserCommand(file: string, args: string[]): Promise<string> {
 function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	const { client, herdr, protocol, tool } = harness;
 	registerMirror(pi, harness);
+	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
+	let listener: answers.AnswerListener | undefined;
+
+	const deliver = (delivery: protocol.Delivery): void => {
+		pi.sendMessage(
+			{
+				customType: "subagent-answer",
+				content: [{ type: "text", text: protocol.deliveryText(delivery) }],
+				display: true,
+				details: delivery,
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+	};
+
 	const { parameters, output } = tool.toolSchemas(Type);
 	pi.registerTool({
 		name: "subagent",
@@ -249,6 +267,12 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
+		listener?.close();
+		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
+			start: hasSpawned(ctx),
+		});
+
 		if (!ctx.hasUI) return;
 		widgetContext = ctx;
 		void refreshWidget();
@@ -257,11 +281,24 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		listener?.close();
+		listener = undefined;
+
 		if (widgetTimer) clearInterval(widgetTimer);
 		widgetTimer = undefined;
 		widgetContext = undefined;
 		ctx.ui.setWidget("subagents", undefined);
 	});
+}
+
+/** Whether the session of `ctx` has a result of the `subagent` tool. */
+function hasSpawned(ctx: ExtensionContext): boolean {
+	return ctx.sessionManager
+		.getEntries()
+		.some(
+			(entry) =>
+				entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent",
+		);
 }
 
 /**
@@ -324,15 +361,15 @@ function isHarness(folder: string): boolean {
 
 /** Loads the modules of the harness install in `folder`. A module that does not load makes the extension fail. */
 async function loadHarness(folder: string): Promise<Harness> {
-	const names = ["client", "herdr", "mirror", "projects", "protocol", "tool", "view-state"];
+	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "tool", "view-state"];
 	const urls = names.map((name) => pathToFileURL(join(folder, "dist", `${name}.js`)).href);
 
-	const [client, herdr, mirror, projects, protocol, tool, viewState] = await Promise.all(
+	const [answers, client, herdr, mirror, projects, protocol, tool, viewState] = await Promise.all(
 		urls.map((url) => import(url)),
 	);
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
+	return { answers, client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
 }
 
 /** Registers the tool, the commands and the flags without harness: each one gives the command that installs it. */

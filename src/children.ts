@@ -28,7 +28,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import { complete, createAnswers } from "./answer.ts";
 
-/** The deepest child by default: a child of a child of a root. */
+/** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
 
 /**
@@ -76,6 +76,11 @@ export type Spec = {
 	/** The only tools the child gets, by name. */
 	readonly tools?: readonly string[];
 	readonly instructions?: string;
+	/**
+	 * The deepest depth of a new tree, for a child without a parent in a tree. A child of a child keeps the limit of its
+	 * tree. Default `DEFAULT_DEPTH_LIMIT`.
+	 */
+	readonly limit?: number;
 };
 
 /** Where a child sits in its tree. */
@@ -616,7 +621,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const parentId = spec.parent === undefined ? undefined : conversationIdOf(spec.parent);
 			const parent = spec.parent === undefined ? undefined : await lineage(place.store, spec.parent, context);
 			const depth = (parent?.depth ?? 0) + 1;
-			const limit = parent?.limit ?? DEFAULT_DEPTH_LIMIT;
+			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 
 			if (depth > limit) throw new Error("Nested subagents are disabled");
 			const root = parent?.root ?? spec.root ?? spec.parent;

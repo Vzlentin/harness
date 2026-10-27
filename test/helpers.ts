@@ -79,6 +79,19 @@ const toolSpawns = new Map([
 	["Agent waits", "Agent gated"],
 ]);
 
+/**
+ * Prompts that call the `subagent` tool to spawn a child with the given arguments, then end their turn without a wait,
+ * so the answer of the child comes back as a push.
+ */
+const pushSpawns = new Map<string, { readonly prompts: readonly string[]; readonly notify?: false }>([
+	["Task:\nTree", { prompts: ["Tree branch"] }],
+	["Task:\nTree branch", { prompts: ["Tree leaf"] }],
+	["Task:\nQuiet parent", { prompts: ["Quiet child"], notify: false }],
+]);
+
+/** The handle of the child that each prompt of `pushSpawns` spawned. */
+export const spawnedBy = new Map<string, string>();
+
 /** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
 export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
 
@@ -125,7 +138,14 @@ async function respond(
 		return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
 	}
 
-	if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
+	if (last?.role === "toolResult") {
+		const handle = /^Spawned nested \(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
+
+		if (pushSpawns.has(prompt) && handle !== undefined) spawnedBy.set(prompt, handle);
+
+		return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
+	}
+
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
 	const [system] = context.messages;
 
@@ -151,9 +171,18 @@ async function respond(
 	}
 
 	if (child !== undefined) {
-		const args = { action: "spawn", name: "nested", prompts: [child] };
+		// The tests of these prompts are about `wait`, so the answer comes only through it.
+		const args = { action: "spawn", name: "nested", prompts: [child], notify: false };
 
 		return fauxAssistantMessage(fauxToolCall("subagent", args), { stopReason: "toolUse" });
+	}
+
+	const push = pushSpawns.get(prompt);
+
+	if (push !== undefined) {
+		return fauxAssistantMessage(fauxToolCall("subagent", { action: "spawn", name: "nested", ...push }), {
+			stopReason: "toolUse",
+		});
 	}
 
 	if (prompt === "Task:\nUse a tool") {
