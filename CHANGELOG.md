@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Vzlentin/harness/compare/v0.5.0...v0.5.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **pi:** count an install older than the extension as not installed ([#31](https://github.com/Vzlentin/harness/issues/31)) ([a806130](https://github.com/Vzlentin/harness/commit/a80613044b96396f0425062452295aee9f21f557))
+
 ## [0.5.0](https://github.com/Vzlentin/harness/compare/v0.4.1...v0.5.0) (2026-10-27)
 
 
