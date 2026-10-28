@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/Vzlentin/harness/compare/v0.5.1...v0.6.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* @vzlentin/harness/setup is gone. workflows must drop its import of it.
+
+### Features
+
+* install harness through Pi, with pi-agents depending on harness ([#33](https://github.com/Vzlentin/harness/issues/33)) ([ff9fc23](https://github.com/Vzlentin/harness/commit/ff9fc23451b1eaee1acf3ad865c67bc201251a96))
+
 ## [0.5.1](https://github.com/Vzlentin/harness/compare/v0.5.0...v0.5.1) (2026-10-27)
 
 
