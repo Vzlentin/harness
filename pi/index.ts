@@ -1,25 +1,21 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the mirror
- * sessions of `/harness`. They use the client of the global harness install, from its built `dist/`, and start the host
- * of that install. Without harness, the tool,
- * the commands and the flags answer with the command that installs it, and an interactive session offers to install it.
+ * sessions of `/harness`. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
+ * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
-import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
-	type ExtensionUIContext,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Value } from "typebox/value";
 import type * as answers from "../dist/answers.js";
 import type * as client from "../dist/client.js";
 import type * as herdr from "../dist/herdr.js";
@@ -28,10 +24,9 @@ import type * as projects from "../dist/projects.js";
 import type * as protocol from "../dist/protocol.js";
 import type * as tool from "../dist/tool.js";
 import type * as viewState from "../dist/view-state.js";
-import { releaseInstallLock, stateFolder, takeInstallLock, waitInstallLockFree } from "./install-lock.ts";
-import { FLAGS, registerFlags, registerMirror } from "./mirror.ts";
+import { registerMirror } from "./mirror.ts";
 
-/** The modules of the global harness install that the extension uses. */
+/** The modules of the harness install that the extension uses. */
 export type Harness = {
 	readonly answers: typeof answers;
 	readonly client: typeof client;
@@ -44,97 +39,30 @@ export type Harness = {
 };
 
 const HARNESS_PACKAGE = "@vzlentin/harness";
-const HarnessManifest = Type.Object({ name: Type.Literal(HARNESS_PACKAGE), version: Type.String() });
-const OwnManifest = Type.Object({ version: Type.String() });
-
-const { version: OWN_VERSION } = Value.Parse(
-	OwnManifest,
-	JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
-);
-
-const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
-const runFile = promisify(execFile);
 
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
 export default async function subagentExtension(pi: ExtensionAPI): Promise<void> {
-	await waitInstallLockFree();
-	const folder = harnessFolder();
-
-	if (folder === undefined) {
-		registerMissing(pi);
-
-		return;
-	}
-
-	registerHarness(pi, await loadHarness(folder));
+	const require = createRequire(import.meta.url);
+	putHarnessBinLast(require);
+	registerHarness(pi, await loadHarness(require));
 }
 
 /**
- * Asks to install harness `version` with npm, and installs it when the answer is yes. It does nothing when the user
- * declined before (`install.declined` in the state folder) or when harness is found under the install lock. It shows
- * each failure as an error and never rejects.
+ * Puts the `.bin` folder next to the harness package last on `PATH`, so Pi's tools find `harness`. It goes last because
+ * the folder also holds the commands of other dependencies, such as an older `pi`, which must not hide the user's own.
+ * It removes the folder first, so each load of the extension leaves it on `PATH` once.
  */
-export async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "notify">, version: string): Promise<void> {
-	const declined = join(stateFolder(), "install.declined");
-	const spec = `${HARNESS_PACKAGE}@${version}`;
+function putHarnessBinLast(require: NodeJS.Require): void {
+	const modules = require.resolve
+		.paths(HARNESS_PACKAGE)
+		?.find((dir) => existsSync(join(dir, HARNESS_PACKAGE, "package.json")));
 
-	let held = false;
-
-	if (existsSync(declined)) return;
-
-	try {
-		await takeInstallLock();
-		held = true;
-
-		if (existsSync(declined) || harnessFolder() !== undefined) return;
-		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
-
-		const title = `harness ${version} is not installed`;
-
-		if (!(await ui.confirm(title, `Install ${spec} with npm install -g into ${prefix}?`))) {
-			mkdirSync(stateFolder(), { recursive: true });
-			writeFileSync(declined, "");
-
-			return;
-		}
-
-		await runUserCommand("npm", ["install", "-g", spec]);
-		const folder = harnessFolder();
-
-		if (folder === undefined) throw new Error(`npm installed ${spec}, but harness is not found`);
-		await runUserCommand(join(folder, "dist", "cli.js"), ["--version"]);
-		ui.notify("harness installed, run /reload", "info");
-	} catch (error) {
-		const output = Value.Check(CommandOutput, error) ? `${error.stdout}\n${error.stderr}` : "";
-		const reason = error instanceof Error ? error.message : String(error);
-
-		const lines = (output.trim() === "" ? reason : output)
-			.split("\n")
-			.filter((line) => line.trim() !== "")
-			.slice(-20);
-
-		ui.notify([...lines, `Run by hand: npm install -g ${spec}`].join("\n"), "error");
-	} finally {
-		if (held) releaseInstallLock();
-	}
-}
-
-/** Runs `file` with `PATH` without the `node_modules/.bin` folders, as the setup of harness does, and gives its stdout. */
-async function runUserCommand(file: string, args: string[]): Promise<string> {
-	const path = (process.env.PATH ?? "")
-		.split(delimiter)
-		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
-		.join(delimiter);
-
-	const { stdout } = await runFile(file, args, {
-		encoding: "utf8",
-		env: { ...process.env, PATH: path },
-		maxBuffer: 64 * 1024 * 1024,
-	});
-
-	return stdout;
+	if (modules === undefined) return;
+	const bin = join(modules, ".bin");
+	const rest = process.env.PATH ? process.env.PATH.split(delimiter).filter((entry) => entry !== bin) : [];
+	process.env.PATH = [...rest, bin].join(delimiter);
 }
 
 /** Registers the tool, the commands, the flags and the widget, which use `harness`. */
@@ -323,66 +251,10 @@ function savedTrust(cwd: string): boolean {
 	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
 }
 
-/**
- * The folder of the global harness install: the package of the first `harness` on `PATH`, else the package in the
- * global `node_modules` of npm. A folder counts only when its `package.json` names `@vzlentin/harness`.
- */
-function harnessFolder(): string | undefined {
-	const onPath = pathFolder();
-
-	if (onPath !== undefined && isHarness(onPath)) return onPath;
-	const global = npmFolder();
-
-	return global !== undefined && isHarness(global) ? global : undefined;
-}
-
-/** The package of the first `harness` on `PATH`: `<package>/dist/cli.js` is the real path of the command. */
-function pathFolder(): string | undefined {
-	try {
-		const dirs = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
-		const command = dirs.map((dir) => join(dir, "harness")).find((path) => existsSync(path));
-
-		return command === undefined ? undefined : dirname(dirname(realpathSync(command)));
-	} catch {
-		return undefined;
-	}
-}
-
-/** The harness package in the global `node_modules` of npm. */
-function npmFolder(): string | undefined {
-	try {
-		const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-
-		return join(root.trim(), HARNESS_PACKAGE);
-	} catch {
-		return undefined;
-	}
-}
-
-/** Whether `folder` is a harness install at the version of this extension or later: `pi update` moves only the extension. */
-function isHarness(folder: string): boolean {
-	try {
-		const manifest: unknown = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
-
-		return Value.Check(HarnessManifest, manifest) && !olderThan(manifest.version, OWN_VERSION);
-	} catch {
-		return false;
-	}
-}
-
-/** Whether the version `found` is older than `wanted`, by major, minor and patch. A prerelease counts as its release. */
-function olderThan(found: string, wanted: string): boolean {
-	const parts = (version: string) => (version.split("-")[0] ?? "").split(".").map(Number);
-	const [have, want] = [parts(found), parts(wanted)];
-	const at = want.findIndex((part, index) => part !== have[index]);
-
-	return at !== -1 && (have[at] ?? 0) < (want[at] ?? 0);
-}
-
-/** Loads the modules of the harness install in `folder`. A module that does not load makes the extension fail. */
-async function loadHarness(folder: string): Promise<Harness> {
+/** Loads the modules of the harness package that this extension resolves. A module that does not load makes the extension fail. */
+async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "tool", "view-state"];
-	const urls = names.map((name) => pathToFileURL(join(folder, "dist", `${name}.js`)).href);
+	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
 	const [answers, client, herdr, mirror, projects, protocol, tool, viewState] = await Promise.all(
 		urls.map((url) => import(url)),
@@ -390,45 +262,4 @@ async function loadHarness(folder: string): Promise<Harness> {
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
 	return { answers, client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
-}
-
-/** Registers the tool, the commands and the flags without harness at the version of this extension: each one gives the command that installs it. */
-function registerMissing(pi: ExtensionAPI): void {
-	const version = OWN_VERSION;
-	const message = `harness ${version} is not installed: npm install -g ${HARNESS_PACKAGE}@${version}`;
-
-	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
-		description: message,
-		parameters: Type.Object({}),
-		async execute() {
-			return { content: [{ type: "text", text: message }], details: undefined };
-		},
-	});
-
-	pi.registerCommand("subagent", {
-		description: message,
-		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
-	});
-
-	pi.registerCommand("harness", {
-		description: message,
-		getArgumentCompletions: () => null,
-		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
-	});
-
-	registerFlags(pi);
-
-	pi.on("session_start", (event, ctx) => {
-		if (event.reason !== "startup") return;
-
-		if (Object.values(FLAGS).some((name) => pi.getFlag(name) !== undefined)) ctx.ui.notify(message, "error");
-	});
-
-	// Pi waits for each handler, so the session starts while the dialog and the install run.
-	pi.on("session_start", (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		void offerInstall(ctx.ui, version);
-	});
 }

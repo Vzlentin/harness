@@ -15,6 +15,9 @@
 			"./index.ts"
 		]
 	},
+	"dependencies": {
+		"@vzlentin/harness": "0.5.1"
+	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
