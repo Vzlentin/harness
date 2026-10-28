@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { delimiter, join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client.ts";
@@ -11,7 +11,6 @@ import { piEnv } from "./herdr.ts";
 import { type MirrorTarget, piArgs } from "./mirror.ts";
 import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "./projects.ts";
 import { AGENT_HANDLE, errorMessage, statePaths, type Target } from "./protocol.ts";
-import { setupOnce, userPath } from "./setup.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -223,6 +222,14 @@ async function agentCommand(name: string, project: string | undefined): Promise<
 	await openInPi({ project: name, handle: AGENT_HANDLE });
 }
 
+/** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
+function userPath(): string {
+	return (process.env.PATH ?? "")
+		.split(delimiter)
+		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
+		.join(delimiter);
+}
+
 /**
  * Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. It starts
  * the host when none runs. A first watch fails before Pi starts for an unknown child, an unknown conversation and a
@@ -260,11 +267,6 @@ async function main(): Promise<void> {
 	}
 
 	const [command, ...args] = all;
-
-	// npm 12 runs no install script by default, so an installed CLI finishes the setup. A checkout runs `cli.ts`, and
-	// the host starts from a command that already did it.
-	if (import.meta.url.endsWith(".js") && command !== "host")
-		setupOnce(fileURLToPath(new URL("..", import.meta.url)), "@vzlentin/pi-agents");
 
 	if (command === "--version") {
 		if (project !== undefined || args.length !== 0) usage();

@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { realpathSync } from "node:fs";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -281,6 +281,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 			code: 1,
 			stderr: "pi is not on PATH. Install Pi to open the agent\n",
 		});
+	});
+
+	it("opens Pi without the node_modules/.bin folders on PATH, whose pi comes from pi-coding-agent", async () => {
+		const pi = await fakePi();
+		const bin = join(await mkdtemp(join(root, "npm-")), "node_modules", ".bin");
+		const decoyLog = join(bin, "pi.log");
+		await mkdir(bin, { recursive: true });
+		await writeFile(join(bin, "pi"), `#!/bin/sh\necho decoy >> "${decoyLog}"\nexit 3\n`);
+		await chmod(join(bin, "pi"), 0o755);
+
+		expect((await cli(["main"], { PATH: `${bin}:${pi.env.PATH}` })).code).toBe(3);
+		expect(logLines(pi.log)).toHaveLength(1);
+		expect(logLines(decoyLog)).toEqual([]);
 	});
 
 	it("reports the state of a mirrored agent to the Herdr pane of a Pi that the CLI started", async () => {

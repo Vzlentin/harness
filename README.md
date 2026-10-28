@@ -9,29 +9,40 @@ host process. You can spawn it, check its status, wait for its answer, steer it,
 You need Node.js 22.19 or later, and a login for a model provider in Pi's agent directory (`~/.pi/agent`): log in once
 with `/login` in `pi`, or set the API key of the provider, such as `ANTHROPIC_API_KEY`.
 
+With Pi:
+
+```sh
+pi install npm:@vzlentin/pi-agents
+```
+
+This adds the `subagent` tool, the `/subagent` and `/harness` commands and the subagents widget to Pi. Pi installs
+`@vzlentin/harness` with it, in its own npm folder, and Pi's tools find the `harness` command. Pi and the `harness`
+command use the same host. With [workflows](https://github.com/Vzlentin/workflows), install
+`npm:@vzlentin/pi-workflows` instead: it brings pi-agents with it.
+
+For the `harness` command in a terminal, add this line to your shell profile. The folder goes last, because it also
+holds the commands of other dependencies, such as an older `pi`:
+
+```sh
+export PATH="$PATH:$HOME/.pi/agent/npm/node_modules/.bin"
+```
+
+Without Pi, install only the command:
+
 ```sh
 npm install -g @vzlentin/harness
 ```
 
-This works with npm 11 and npm 12. It gives you the `harness` command, and a setup runs `pi install` on
-`npm:@vzlentin/pi-agents` at the same version, which adds the `subagent` tool, the `/subagent` and `/harness` commands
-and the subagents widget to Pi. Pi and the `harness` command use the same host. npm 12 runs no install script by default, so there the first
-`harness` command does the setup. When `pi` is not on your `PATH`, or the step fails, the setup prints the command to run later:
-
-```sh
-pi install "npm:@vzlentin/pi-agents@$(harness --version)"
-```
-
-With only Pi, run `pi install npm:@vzlentin/pi-agents` and start `pi`. The extension asks to install harness with
-`npm install -g`. Answer yes, then run `/reload`.
+Use one of the two. With both, you get two `harness` commands. When their versions differ, a client refuses the host of the other.
 
 ### Update and remove
 
 ```sh
-npm install -g @vzlentin/harness@latest    # the setup pins the extension to this version
-pi remove npm:@vzlentin/pi-agents    # npm runs no script on uninstall
-npm uninstall -g @vzlentin/harness
+pi update --extensions
+pi remove npm:@vzlentin/pi-agents
 ```
+
+Without Pi: `npm install -g @vzlentin/harness@latest` and `npm uninstall -g @vzlentin/harness`.
 
 ## Use
 
@@ -61,7 +72,15 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 `node src/cli.ts` runs the CLI of this checkout. Give it its own `XDG_STATE_HOME`, so its hosts do not share sockets and
 stores with the hosts of the installed `harness`.
 
-The checkout runs from its TypeScript source. The package contains `dist/` and its `postinstall` script. The Pi
-extension in `pi/` is the package `@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. `npm run check` builds `dist/` too, before the type check. The extension
-loads `dist/` of the global harness, so to try the checkout's extension in Pi, run `npm run build`, `npm link`, then
-`pi install ./pi`, and build again after each change in `src/`.
+The checkout runs from its TypeScript source. The package contains `dist/`. The Pi extension in `pi/` is the package
+`@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. `npm run check` builds `dist/` too, before the type check. The extension
+loads `dist/` of its dependency `@vzlentin/harness`. To try the checkout's extension in Pi, link the checkout as that
+dependency, then install `pi/`:
+
+```sh
+npm run build
+mkdir -p pi/node_modules/@vzlentin && ln -s ../../.. pi/node_modules/@vzlentin/harness
+pi install ./pi
+```
+
+Build again after each change in `src/`.

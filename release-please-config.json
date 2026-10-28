@@ -8,7 +8,10 @@
 			"bump-minor-pre-major": true,
 			"bump-patch-for-minor-pre-major": true,
 			"pull-request-title-pattern": "release: ${version}",
-			"extra-files": [{ "type": "json", "path": "pi/package.json", "jsonpath": "$.version" }]
+			"extra-files": [
+				{ "type": "json", "path": "pi/package.json", "jsonpath": "$.version" },
+				{ "type": "json", "path": "pi/package.json", "jsonpath": "$.dependencies['@vzlentin/harness']" }
+			]
 		}
 	}
 }
