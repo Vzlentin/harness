@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/harness",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"description": "A durable agent harness on Pi, starting with observable, persistent subagents",
 	"repository": {
 		"type": "git",
