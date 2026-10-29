@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
@@ -29,5 +32,27 @@ describe("the manifests", () => {
 			path: "pi/package.json",
 			jsonpath: "$.dependencies['@vzlentin/harness']",
 		});
+	});
+
+	it("make Pi load the extension once and the subagent skill from the Pi package", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "harness-manifest-"));
+
+		try {
+			const settingsManager = SettingsManager.inMemory();
+			const agentDir = join(cwd, "agent");
+			const packages = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+			const resolved = await packages.resolveExtensionSources([join(repo, "pi")], { temporary: true });
+			const skillPaths = resolved.skills.filter(({ enabled }) => enabled).map(({ path }) => path);
+
+			expect(resolved.extensions.map(({ path }) => path)).toEqual([join(repo, "pi", "index.ts")]);
+			expect(skillPaths).toEqual([join(repo, "pi", "skills", "subagent", "SKILL.md")]);
+
+			const { skills, diagnostics } = loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false });
+
+			expect(skills.map(({ name }) => name)).toEqual(["subagent"]);
+			expect(diagnostics).toEqual([]);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
 	});
 });
