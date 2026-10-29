@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Vzlentin/harness/compare/v0.6.0...v0.6.1) (2026-10-29)
+
+
+### Features
+
+* **pi:** ship the subagent skill in pi-agents ([#35](https://github.com/Vzlentin/harness/issues/35)) ([433b3c4](https://github.com/Vzlentin/harness/commit/433b3c464e4dac294cd7fa453d95a9f0221661ca))
+
 ## [0.6.0](https://github.com/Vzlentin/harness/compare/v0.5.1...v0.6.0) (2026-10-28)
 
 
