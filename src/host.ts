@@ -390,6 +390,8 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 				await target(handler, request),
 				handler.harness,
 			);
+		case "note":
+			return noteTo(request, handler);
 		case "wait":
 			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
 		case "answers":
@@ -560,6 +562,24 @@ async function sendTo(
 	});
 
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
+}
+
+/** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
+async function noteTo(
+	request: Extract<RequestLine, { type: "note" }>,
+	handler: Handler,
+): Promise<{ child: ChildInfo }> {
+	const kind = request.kind ?? "harness.note";
+
+	// pi-durable does not check the kind of a write.
+	if (kind.startsWith("pi.")) throw new Error(`A note kind cannot start with "pi.": ${kind}`);
+	const found = await target(handler, request);
+	const model = [{ role: "user", content: request.text, timestamp: Date.now() }] as const;
+	const entry: durable.EntryDraft = request.data === undefined ? { kind, model } : { kind, model, data: request.data };
+	// The scope keeps a note from taking the request ID of an input to the same conversation.
+	await found.write({ type: "write", requestId: `note:${request.requestId}`, entry });
+
+	return { child: await found.info() };
 }
 
 function sendVerb(busy: boolean, followUp: boolean): string {

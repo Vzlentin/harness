@@ -36,6 +36,9 @@ type Call = {
 
 export const calls: Call[] = [];
 
+/** The texts of the user messages of the last request for each prompt, in order. */
+export const contexts = new Map<string, string[]>();
+
 /** The system prompt and the tools of the last request for each prompt. */
 export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
 
@@ -147,6 +150,10 @@ async function respond(
 	}
 
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
+	contexts.set(
+		prompt,
+		messages.flatMap((message) => (message.role === "user" ? [textOf(message)] : [])),
+	);
 	const [system] = context.messages;
 
 	if (system?.role === "system") {
@@ -284,6 +291,7 @@ export async function setUp(): Promise<void> {
 	// macOS limits a Unix socket path to 104 bytes, so the state stays short, under /tmp.
 	root = await mkdtemp("/tmp/harness-");
 	requests.clear();
+	contexts.clear();
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));

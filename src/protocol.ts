@@ -9,11 +9,11 @@ import { type Static, type TProperties, Type } from "typebox";
 import type { ViewChange } from "./view-change.ts";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /**
- * The handle of the project agent, the host's root conversation, in `watch`, `input`, `abort` and `configure`. It is not
- * hex, so no child has it.
+ * The handle of the project agent, the host's root conversation, in `watch`, `input`, `note`, `abort` and `configure`. It
+ * is not hex, so no child has it.
  */
 export const AGENT_HANDLE = "agent";
 
@@ -141,6 +141,19 @@ export type Request =
 			readonly followUp: boolean;
 	  } & Target)
 	/**
+	 * A passive message for the conversation's transcript: a user message of the entry kind `kind` (default
+	 * `harness.note`), with `data`. It starts no turn. An idle conversation places it at once, and a busy one at its next
+	 * boundary, so the model reads it on its next request. The request ID is in the scope `note:`, and a repeated one adds
+	 * nothing. A kind that starts with `pi.` is refused.
+	 */
+	| ({
+			readonly type: "note";
+			readonly requestId: string;
+			readonly text: string;
+			readonly kind?: string;
+			readonly data?: JsonValue;
+	  } & Target)
+	/**
 	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
 	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
 	 * whose definition of `kind` has another version refuses before it creates anything.
@@ -224,6 +237,12 @@ export const RequestLine = Type.Union([
 		thinking: Type.Optional(Type.String()),
 	}),
 	targeted("input", { requestId: Type.String(), message: Type.String(), followUp: Type.Boolean() }),
+	targeted("note", {
+		requestId: Type.String(),
+		text: Type.String(),
+		kind: Type.Optional(Type.String({ minLength: 1 })),
+		data: Type.Optional(Json),
+	}),
 	Type.Object({
 		type: Type.Literal("start"),
 		kind: Type.String(),
@@ -252,6 +271,7 @@ export type Replies = {
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
 	readonly input: Replies["send"];
+	readonly note: { readonly child: ChildInfo };
 	readonly configure: ChildInfo;
 	readonly start: TaskInfo;
 	readonly task: TaskInfo;

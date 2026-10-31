@@ -127,6 +127,9 @@ export type Failure =
 /** Input to a child, at most once per request ID. */
 export type Input = Parameters<Conversation["submit"]>[0] & { readonly type: "input"; readonly requestId: string };
 
+/** A passive entry for a child's transcript, at most once per request ID. */
+export type Write = Extract<Parameters<Conversation["submit"]>[0], { type: "write" }> & { readonly requestId: string };
+
 /** One child, driven by its operations. Failures are returned, not thrown, so each caller keeps its own policy. */
 export type Child = {
 	readonly id: ConversationId;
@@ -140,6 +143,12 @@ export type Child = {
 	 * its answer.
 	 */
 	send(input: Input, context: Context): Promise<void>;
+	/**
+	 * Admits the passive entry `write` and returns. It starts no turn: an idle child places it at once, and a busy child
+	 * at its next boundary. A request ID admitted before is not admitted again, and a closed child refuses it. It does
+	 * not change the last request.
+	 */
+	write(write: Write, context: Context): Promise<void>;
 	/**
 	 * Sends `input` as one turn and gives its answer. A request ID answered before gives its saved answer with no new
 	 * turn. A request ID that was not answered, or whose answer does not count, is sent again as `<requestId>#2`, `#3`
@@ -517,6 +526,16 @@ export function createChildren(durable: typeof Durable): Children {
 			lineage: childLineage,
 			conversation,
 			send: turns.send,
+			async write(write, context) {
+				await place.store.commit(async (tx) => {
+					if ((await tx.submissionByRequest(id, write.requestId)) !== undefined) return undefined;
+
+					if ((await tx.doc(ChildDoc, id)).closed) throw new Error(`The child ${id} is closed`);
+
+					return undefined;
+				}, context);
+				await conversation.submit(write, context);
+			},
 			ask,
 			settled,
 			lastRequest: async (context) => (await lastRequest(context)) ?? null,
