@@ -1,9 +1,11 @@
 /**
  * What a child sees of its working directory, as a Pi session there sees it: the coding tools, and the system prompt
- * sections with the project instructions, the skills and the working directory.
+ * sections with the project instructions, the skills and the working directory. `overlay-view.ts` applies a child's
+ * overlay.
  */
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { Context } from "@earendil-works/chord";
 import type { ImageContent, Static, TextContent, TSchema } from "@earendil-works/pi-ai";
 import {
 	createFindTool,
@@ -23,7 +25,8 @@ import {
 	section,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
 import { errorMessage } from "./protocol.ts";
 import { savedTrust } from "./trust.ts";
 
@@ -58,11 +61,6 @@ function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegi
 		},
 	});
 }
-
-type Resources = {
-	readonly context: readonly { readonly path: string; readonly content: string }[];
-	readonly skills: ReturnType<typeof loadSkills>["skills"];
-};
 
 const resources = new Map<string, Promise<Resources>>();
 
@@ -121,18 +119,22 @@ function skillPath(resource: {
 
 const cwdOf = (input: PromptInput): string | undefined => input.env?.cwd ?? input.agent.cwd;
 
-/** The resources of the conversation's directory. */
-async function inputResources(input: PromptInput): Promise<Resources | undefined> {
+/** The resources of the conversation's directory, as its overlay changes them. */
+async function inputResources(input: PromptInput, context: Context): Promise<Resources | undefined> {
 	const cwd = cwdOf(input);
 
-	return cwd === undefined ? undefined : resourcesOf(cwd);
+	if (cwd === undefined) return undefined;
+	const loaded = await resourcesOf(cwd);
+	const files = await overlayOf(input.read, input.conversationId, context);
+
+	return files === undefined ? loaded : withOverlay(loaded, files);
 }
 
 /** The tools and sections that children get; a conversation selects it by default. */
 export const ChildContext = defineExtension({
 	name: "pi-subagent-context",
 	tools: [
-		createReadTool(),
+		overlayRead(),
 		piTool(createGrepTool),
 		piTool(createFindTool),
 		piTool(createLsTool),
@@ -141,8 +143,8 @@ export const ChildContext = defineExtension({
 		createBashTool(),
 	],
 	sections: [
-		section("project_context", async (input) => {
-			const files = (await inputResources(input))?.context ?? [];
+		section("project_context", async (input, context) => {
+			const files = (await inputResources(input, context))?.context ?? [];
 
 			if (files.length === 0) return undefined;
 
@@ -153,7 +155,7 @@ export const ChildContext = defineExtension({
 				),
 			].join("\n\n");
 		}),
-		section("skills", async (input) => {
+		section("skills", async (input, context) => {
 			// As in Pi, skills need a tool that reads their files, and the hint names the first one offered.
 			const offered = input.agent.tools.map(({ name }) => name);
 			const callable = input.agent.callable.map(({ name }) => name);
@@ -163,7 +165,7 @@ export const ChildContext = defineExtension({
 				(callable.includes("read") || callable.includes("bash") ? "indirect" : undefined);
 
 			if (reader === undefined) return undefined;
-			const skills = (await inputResources(input))?.skills ?? [];
+			const skills = (await inputResources(input, context))?.skills ?? [];
 
 			return formatSkillsForPrompt(skills, reader).trim() || undefined;
 		}),

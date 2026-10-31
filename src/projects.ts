@@ -90,6 +90,14 @@ export function projectDir(name: string, projects: Readonly<Record<string, strin
 	return projects[checkProject(name, projects)] ?? homedir();
 }
 
+/** The memory that the agents of the project `name` get: the `.optmem` folder in its directory `dir`, if it exists. Never for main. */
+export function memoryDir(name: string, dir: string): string | undefined {
+	if (name === MAIN_PROJECT) return undefined;
+	const path = join(dir, ".optmem");
+
+	return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true ? path : undefined;
+}
+
 /**
  * The project of a command: `HARNESS_PROJECT` in `env`, then the project with the longest directory that is `cwd` or
  * contains it, then `main`. An unknown `HARNESS_PROJECT` is an error.

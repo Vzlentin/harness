@@ -36,6 +36,9 @@ type Call = {
 
 export const calls: Call[] = [];
 
+/** The texts of the user messages of the last request for each prompt, in order. */
+export const contexts = new Map<string, string[]>();
+
 /** The system prompt and the tools of the last request for each prompt. */
 export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
 
@@ -77,6 +80,7 @@ const toolSpawns = new Map([
 	["Task:\nSend and wait", "Send and wait child"],
 	["Agent spawn", "Agent child"],
 	["Agent waits", "Agent gated"],
+	["Overlay nest", "Read prompts/p.md"],
 ]);
 
 /**
@@ -147,6 +151,10 @@ async function respond(
 	}
 
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
+	contexts.set(
+		prompt,
+		messages.flatMap((message) => (message.role === "user" ? [textOf(message)] : [])),
+	);
 	const [system] = context.messages;
 
 	if (system?.role === "system") {
@@ -185,6 +193,12 @@ async function respond(
 		});
 	}
 
+	const readPath = /^(?:Task:\n)?Read (.+)$/.exec(prompt)?.[1];
+
+	if (readPath !== undefined) {
+		return fauxAssistantMessage(fauxToolCall("read", { path: readPath }), { stopReason: "toolUse" });
+	}
+
 	if (prompt === "Task:\nUse a tool") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: `while [ ! -f go ]; do sleep 0.05; done` }), {
 			stopReason: "toolUse",
@@ -205,6 +219,12 @@ async function respond(
 		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL $HARNESS_PROJECT"';
 
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
+	}
+
+	if (prompt === "Task:\nMemory") {
+		return fauxAssistantMessage(fauxToolCall("bash", { command: 'echo "${MEMORY_DIR-unset}"' }), {
+			stopReason: "toolUse",
+		});
 	}
 
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
@@ -278,6 +298,7 @@ export async function setUp(): Promise<void> {
 	// macOS limits a Unix socket path to 104 bytes, so the state stays short, under /tmp.
 	root = await mkdtemp("/tmp/harness-");
 	requests.clear();
+	contexts.clear();
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
@@ -299,6 +320,7 @@ export async function setUp(): Promise<void> {
 		"HERDR_PANE_ID",
 		"HARNESS_HERDR_PANE",
 		"HARNESS_PROJECT",
+		"MEMORY_DIR",
 		// Node warns on stderr when both are set, and the tests compare stderr.
 		"FORCE_COLOR",
 		"NO_COLOR",

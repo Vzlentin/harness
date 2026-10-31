@@ -5,7 +5,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
-import { type Child, createChildren, type Input, type Owner, type Place } from "./children.ts";
+import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "./children.ts";
 import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
 import { isHeld } from "./unread.ts";
 
@@ -97,6 +97,9 @@ export async function target(handler: TargetHost, ref: Target) {
 			state: await turn.state(context),
 		}),
 		send: (input: Input) => turn.send(input, context),
+		write: async (write: Write) => {
+			await root.submit(write, context);
+		},
 		record: undefined,
 	};
 }
@@ -105,7 +108,7 @@ export type Found = Awaited<ReturnType<typeof target>>;
 
 /**
  * The target of the library conversation `id`, of any owner, such as a child of a task. It has no record, and it takes
- * input only while it works.
+ * input only while it works, and a note while it is open.
  */
 async function conversationTarget(handler: TargetHost, id: string) {
 	const child = await library.inspect(handler.place, id, context);
@@ -129,6 +132,10 @@ async function conversationTarget(handler: TargetHost, id: string) {
 			// pi-durable.
 			await conversation.submit({ ...input, whenBusy: "steer" }, context);
 		},
+		write: async (write: Write) => {
+			if ((await child.state(context)) === "closed") throw new Error(`${lineage.key} takes input only while it works`);
+			await conversation.submit(write, context);
+		},
 		record: undefined,
 	};
 }
@@ -141,6 +148,7 @@ export async function childTarget(handler: TargetHost, handle: string, record: C
 		conversation: child.conversation,
 		info: () => childInfo(handler, handle, record),
 		send: (input: Input) => child.send(input, context),
+		write: (write: Write) => child.write(write, context),
 		record,
 	};
 }

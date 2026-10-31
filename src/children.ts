@@ -27,6 +27,7 @@ import type {
 	UsageState,
 } from "@earendil-works/pi-durable";
 import { complete, createAnswers } from "./answer.ts";
+import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 
 /** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -81,6 +82,12 @@ export type Spec = {
 	 * tree. Default `DEFAULT_DEPTH_LIMIT`.
 	 */
 	readonly limit?: number;
+	/**
+	 * Files that the child sees in place of the disk, by path, relative to `cwd`: a string replaces the file, null
+	 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk. A
+	 * child of a parent with an overlay gets that overlay too, copied when the child is created; its own paths win.
+	 */
+	readonly overlay?: Overlay;
 };
 
 /** Where a child sits in its tree. */
@@ -127,6 +134,9 @@ export type Failure =
 /** Input to a child, at most once per request ID. */
 export type Input = Parameters<Conversation["submit"]>[0] & { readonly type: "input"; readonly requestId: string };
 
+/** A passive entry for a child's transcript, at most once per request ID. */
+export type Write = Extract<Parameters<Conversation["submit"]>[0], { type: "write" }> & { readonly requestId: string };
+
 /** One child, driven by its operations. Failures are returned, not thrown, so each caller keeps its own policy. */
 export type Child = {
 	readonly id: ConversationId;
@@ -140,6 +150,12 @@ export type Child = {
 	 * its answer.
 	 */
 	send(input: Input, context: Context): Promise<void>;
+	/**
+	 * Admits the passive entry `write` and returns. It starts no turn: an idle child places it at once, and a busy child
+	 * at its next boundary. A request ID admitted before is not admitted again, and a closed child refuses it. It does
+	 * not change the last request.
+	 */
+	write(write: Write, context: Context): Promise<void>;
 	/**
 	 * Sends `input` as one turn and gives its answer. A request ID answered before gives its saved answer with no new
 	 * turn. A request ID that was not answered, or whose answer does not count, is sent again as `<requestId>#2`, `#3`
@@ -271,6 +287,8 @@ export function createChildren(durable: typeof Durable): Children {
 			closed: false,
 		}),
 	});
+
+	const OverlayDoc = overlayDoc(durable);
 
 	/** The conversation of each key; 0 before it exists. */
 	const Keys = durable.defineDocFamily<{ conversation: ConversationId | 0 }, null>({
@@ -517,6 +535,16 @@ export function createChildren(durable: typeof Durable): Children {
 			lineage: childLineage,
 			conversation,
 			send: turns.send,
+			async write(write, context) {
+				await place.store.commit(async (tx) => {
+					if ((await tx.submissionByRequest(id, write.requestId)) !== undefined) return undefined;
+
+					if ((await tx.doc(ChildDoc, id)).closed) throw new Error(`The child ${id} is closed`);
+
+					return undefined;
+				}, context);
+				await conversation.submit(write, context);
+			},
 			ask,
 			settled,
 			lastRequest: async (context) => (await lastRequest(context)) ?? null,
@@ -605,6 +633,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const agent = await ownerConversation?.agent(context);
 			const { model, thinkingLevel } = resolveModel(place.models, agent, spec);
 			const cwd = spec.cwd ?? agent?.cwd;
+			const own = spec.overlay === undefined ? undefined : resolveOverlay(spec.overlay, cwd);
 			let tools: ToolRegistration[] | undefined;
 
 			if (spec.tools !== undefined) {
@@ -620,6 +649,11 @@ export function createChildren(durable: typeof Durable): Children {
 
 			const parentId = spec.parent === undefined ? undefined : conversationIdOf(spec.parent);
 			const parent = spec.parent === undefined ? undefined : await lineage(place.store, spec.parent, context);
+
+			const inherited =
+				parentId === undefined ? undefined : (await place.store.snapshot(OverlayDoc, parentId, context))?.files;
+
+			const overlay = own !== undefined && inherited !== undefined ? mergeOverlay(inherited, own) : (own ?? inherited);
 			const depth = (parent?.depth ?? 0) + 1;
 			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 
@@ -665,6 +699,8 @@ export function createChildren(durable: typeof Durable): Children {
 				};
 
 				Object.assign(await tx.doc(ChildDoc, child.id), state);
+
+				if (overlay !== undefined) (await tx.doc(OverlayDoc, child.id)).files = overlay;
 
 				// A parent that the library opened lists the child, so closing the parent closes it too.
 				if (parent !== undefined && parentId !== undefined) (await tx.doc(ChildDoc, parentId)).children.push(child.id);

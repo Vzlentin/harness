@@ -26,10 +26,13 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { catchUp } from "./catchup.ts";
 import { type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import { loadEntries } from "./load-entries.ts";
+import { memoryDir } from "./projects.ts";
 import {
+	AGENT_HANDLE,
 	type ChildInfo,
 	errorMessage,
 	onLines,
@@ -99,7 +102,7 @@ export async function runHost(options: {
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
 	readonly idleExitMs?: number;
 }): Promise<Host | undefined> {
-	const { stateDir, project, cwd, models, idleExitMs = IDLE_EXIT_MS } = options;
+	const { stateDir, project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
@@ -143,7 +146,7 @@ export async function runHost(options: {
 	let agentSetUp: Promise<Conversation> | undefined;
 
 	const agent = () =>
-		(agentSetUp ??= setUpAgent(base.root, models, settings, project, cwd).catch((cause: unknown) => {
+		(agentSetUp ??= setUpAgent(base.root, models, settings, project, projectCwd).catch((cause: unknown) => {
 			agentSetUp = undefined;
 			throw cause;
 		}));
@@ -178,7 +181,13 @@ export async function runHost(options: {
 
 					if (cached !== undefined) return cached;
 					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId), HARNESS_PROJECT: project };
+
+					// An undefined MEMORY_DIR removes the host's own value from the shell.
+					const shellEnv: NodeJS.ProcessEnv = {
+						PI_SESSION_ID: String(conversationId),
+						HARNESS_PROJECT: project,
+						MEMORY_DIR: memoryDir(project, projectCwd),
+					};
 
 					if (agent?.model !== undefined) {
 						shellEnv.PI_PROVIDER = agent.model.provider;
@@ -222,7 +231,8 @@ export async function runHost(options: {
 
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
-	base = { harness, place, owner, root, project, agent, startable, settings, push };
+
+	base = { harness, place, owner, root, project, agent, startable, settings, push, cwd: projectCwd, warn };
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
@@ -340,6 +350,9 @@ type Base = Omit<TaskHost, "signal"> &
 		/** Pi's settings, for the depth limit of the subagent tree. */
 		readonly settings: SettingsManager;
 		readonly push: Push;
+		/** The project directory. */
+		readonly cwd: string;
+		readonly warn: (cause: unknown) => void;
 	};
 
 type Handler = Base &
@@ -376,13 +389,21 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			});
 		}
 
-		case "input":
+		case "input": {
+			const found = await target(handler, request);
+
+			if (request.handle === AGENT_HANDLE) await catchUp(handler, found.write, request.requestId);
+
 			// A conversation takes input only while it works, so its input is always a steer.
 			return sendTo(
 				request.conversation === undefined ? request : { ...request, followUp: false },
-				await target(handler, request),
+				found,
 				handler.harness,
 			);
+		}
+
+		case "note":
+			return noteTo(request, handler);
 		case "wait":
 			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
 		case "answers":
@@ -553,6 +574,24 @@ async function sendTo(
 	});
 
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
+}
+
+/** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
+async function noteTo(
+	request: Extract<RequestLine, { type: "note" }>,
+	handler: Handler,
+): Promise<{ child: ChildInfo }> {
+	const kind = request.kind ?? "harness.note";
+
+	// pi-durable does not check the kind of a write.
+	if (kind.startsWith("pi.")) throw new Error(`A note kind cannot start with "pi.": ${kind}`);
+	const found = await target(handler, request);
+	const model = [{ role: "user", content: request.text, timestamp: Date.now() }] as const;
+	const entry: durable.EntryDraft = request.data === undefined ? { kind, model } : { kind, model, data: request.data };
+	// The scope keeps a note from taking the request ID of an input to the same conversation.
+	await found.write({ type: "write", requestId: `note:${request.requestId}`, entry });
+
+	return { child: await found.info() };
 }
 
 function sendVerb(busy: boolean, followUp: boolean): string {

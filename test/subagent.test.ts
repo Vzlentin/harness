@@ -24,6 +24,7 @@ import {
 	called,
 	calls,
 	cli,
+	contexts,
 	gates,
 	handleOf,
 	models,
@@ -226,6 +227,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low main\n`));
 	});
 
+	it("gives the children of a project its .optmem folder as MEMORY_DIR", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "memory-")));
+		await mkdir(join(dir, ".optmem"));
+		expect((await cli(["create", "memory", "--cwd", dir])).code).toBe(0);
+		// The spawn runs in root, outside the project directory.
+		expect(await memoryOfChild("memory")).toBe(join(dir, ".optmem"));
+	});
+
+	it("gives no MEMORY_DIR to the children of a project without a .optmem folder", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "nomemory-")));
+		expect((await cli(["create", "nomemory", "--cwd", dir])).code).toBe(0);
+		expect(await memoryOfChild("nomemory")).toBe("unset");
+	});
+
+	it("gives no MEMORY_DIR to the children of main, even with a .optmem folder in home", async () => {
+		await mkdir(join(root, "home", ".optmem"), { recursive: true });
+		expect(await memoryOfChild()).toBe("unset");
+	});
+
 	it("steers a busy child after its tool round", async () => {
 		const cwd = await mkdtemp(join(root, "steer-"));
 		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
@@ -235,6 +255,63 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Focus on errors\n`);
 		expect((await cli(["send", handle, "Again"])).stdout).toBe(`Prompted ${handle}\n`);
 		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Again\n`);
+	});
+
+	it("gives a note to an idle child without a turn, and the child reads it with the next input", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Note idle"]));
+		await cli(["wait", handle]);
+		const before = calls.length;
+		const noted = await request({ type: "note", requestId: "idle", handle, text: "Remember blue" }, { start: false });
+		expect(noted).toEqual({ child: expect.objectContaining({ handle, state: "idle" }) });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(calls.length).toBe(before);
+		expect((await cli(["send", handle, "After note"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to After note\n`);
+		expect(contexts.get("After note")).toEqual(["Task:\nNote idle", "Remember blue", "After note"]);
+	});
+
+	it("gives a note to a busy child at its next boundary", async () => {
+		const cwd = await mkdtemp(join(root, "note-"));
+		const before = called("Task:\nUse a tool");
+		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
+		await until(() => called("Task:\nUse a tool") === before + 1);
+		const noted = await request({ type: "note", requestId: "busy", handle, text: "Busy note" }, { start: false });
+		expect(noted?.child.state).toBe("busy");
+		await writeFile(join(cwd, "go"), "");
+		await cli(["wait", handle]);
+		expect(contexts.get("Busy note")).toEqual(["Task:\nUse a tool", "Busy note"]);
+	});
+
+	it("keeps a note of a busy child after an abort", async () => {
+		gates.set("Task:\nNote gated", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Note gated"]));
+		await until(() => called("Task:\nNote gated") === 1);
+		await request({ type: "note", requestId: "aborted", handle, text: "Kept note" }, { start: false });
+		expect((await request({ type: "abort", handle }, { start: false }))?.state).toBe("idle");
+		gates.delete("Task:\nNote gated");
+		expect((await cli(["send", handle, "After abort"])).stdout).toBe(`Prompted ${handle}\n`);
+		await cli(["wait", handle]);
+		expect(contexts.get("After abort")).toEqual(["Task:\nNote gated", "Kept note", "After abort"]);
+	});
+
+	it("adds a note with a repeated request ID once, also after a host restart", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Note twice"]));
+		await cli(["wait", handle]);
+		const note = { type: "note", requestId: "twice", handle, text: "Once" } as const;
+		await request(note, { start: false });
+		await host?.close();
+		host = await startHost();
+		await request(note, { start: false });
+		await cli(["send", handle, "After twice"]);
+		await cli(["wait", handle]);
+		expect(contexts.get("After twice")).toEqual(["Task:\nNote twice", "Once", "After twice"]);
+	});
+
+	it("refuses a note kind that starts with pi.", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Note kind"]));
+		await cli(["wait", handle]);
+		const note = { type: "note", requestId: "kind", handle, text: "Bad", kind: "pi.user" } as const;
+		await expect(request(note, { start: false })).rejects.toThrow('A note kind cannot start with "pi.": pi.user');
 	});
 
 	it("queues a follow-up, renames and stops a child", async () => {
@@ -862,6 +939,21 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("gives a note to the project agent", async () => {
+		const { client, lines } = await watchAgent();
+
+		try {
+			const note = { type: "note", requestId: "agent", handle: AGENT_HANDLE, text: "Agent note" } as const;
+			expect((await client.request(note)).child.handle).toBe(AGENT_HANDLE);
+			expect(await inputAgent(client, "Agent after note")).toBe("Prompted");
+			await untilIdleAfterBusy(lines.events);
+		} finally {
+			client.close();
+		}
+
+		expect(contexts.get("Agent after note")?.slice(-2)).toEqual(["Agent note", "Agent after note"]);
+	});
+
 	it("aborts the agent's turn, but not the children it spawned", async () => {
 		gates.set("Task:\nAgent gated", Promise.withResolvers());
 		const waiting = Promise.withResolvers<string>();
@@ -1031,4 +1123,20 @@ async function childrenStore(name: string, version: number): Promise<string> {
 	await store.close(BACKGROUND_CONTEXT);
 
 	return stateDir;
+}
+
+/** Spawns a child of `project` (the suite host when undefined) that prints its MEMORY_DIR, while the host has its own. */
+async function memoryOfChild(project?: string): Promise<string> {
+	const projectHost = project === undefined ? undefined : await startHost(project);
+	const env = project === undefined ? {} : { HARNESS_PROJECT: project };
+	process.env.MEMORY_DIR = "/leaked";
+
+	try {
+		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Memory"], env))], env);
+
+		return stdout.match(/Tool said: (.*)\n/)?.[1] ?? stdout;
+	} finally {
+		delete process.env.MEMORY_DIR;
+		await projectHost?.close();
+	}
 }

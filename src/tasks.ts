@@ -101,6 +101,13 @@ async function taskId(harness: Harness, key: string): Promise<TaskId<JsonValue>>
 	return id;
 }
 
+/** The IDs of the tasks that `start` created, in order. */
+export async function startedTaskIds(harness: Harness): Promise<TaskId<JsonValue>[]> {
+	const state = await harness.snapshot(StartedTasks, context);
+
+	return Object.values(state?.tasks ?? {}).sort((a, b) => a - b);
+}
+
 /** The task of `kind` in `startable`. The entries give erased tasks, so this is where they get the type of `createTask`. */
 function startableTask(startable: Extension, kind: string): Task<JsonValue, { phase: string }, JsonValue, object> {
 	const task = startable.tasks?.find((found) => found.definition.name === kind);
