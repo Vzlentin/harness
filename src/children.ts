@@ -27,6 +27,7 @@ import type {
 	UsageState,
 } from "@earendil-works/pi-durable";
 import { complete, createAnswers } from "./answer.ts";
+import { type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 
 /** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -81,6 +82,11 @@ export type Spec = {
 	 * tree. Default `DEFAULT_DEPTH_LIMIT`.
 	 */
 	readonly limit?: number;
+	/**
+	 * Files that the child sees in place of the disk, by path, relative to `cwd`: a string replaces the file, null
+	 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk.
+	 */
+	readonly overlay?: Overlay;
 };
 
 /** Where a child sits in its tree. */
@@ -280,6 +286,8 @@ export function createChildren(durable: typeof Durable): Children {
 			closed: false,
 		}),
 	});
+
+	const OverlayDoc = overlayDoc(durable);
 
 	/** The conversation of each key; 0 before it exists. */
 	const Keys = durable.defineDocFamily<{ conversation: ConversationId | 0 }, null>({
@@ -624,6 +632,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const agent = await ownerConversation?.agent(context);
 			const { model, thinkingLevel } = resolveModel(place.models, agent, spec);
 			const cwd = spec.cwd ?? agent?.cwd;
+			const overlay = spec.overlay === undefined ? undefined : resolveOverlay(spec.overlay, cwd);
 			let tools: ToolRegistration[] | undefined;
 
 			if (spec.tools !== undefined) {
@@ -684,6 +693,8 @@ export function createChildren(durable: typeof Durable): Children {
 				};
 
 				Object.assign(await tx.doc(ChildDoc, child.id), state);
+
+				if (overlay !== undefined) (await tx.doc(OverlayDoc, child.id)).files = overlay;
 
 				// A parent that the library opened lists the child, so closing the parent closes it too.
 				if (parent !== undefined && parentId !== undefined) (await tx.doc(ChildDoc, parentId)).children.push(child.id);

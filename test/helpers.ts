@@ -192,6 +192,12 @@ async function respond(
 		});
 	}
 
+	const readPath = /^Read (.+)$/.exec(prompt)?.[1];
+
+	if (readPath !== undefined) {
+		return fauxAssistantMessage(fauxToolCall("read", { path: readPath }), { stopReason: "toolUse" });
+	}
+
 	if (prompt === "Task:\nUse a tool") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: `while [ ! -f go ]; do sleep 0.05; done` }), {
 			stopReason: "toolUse",
