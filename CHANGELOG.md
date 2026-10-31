@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/Vzlentin/harness/compare/v0.6.1...v0.6.2) (2026-10-31)
+
+
+### Features
+
+* add project memory, passive notes, catch-up and overlays to the host ([#37](https://github.com/Vzlentin/harness/issues/37)) ([8510a86](https://github.com/Vzlentin/harness/commit/8510a866875122c6ea9267b6e194b563e14db862))
+
 ## [0.6.1](https://github.com/Vzlentin/harness/compare/v0.6.0...v0.6.1) (2026-10-29)
 
 
