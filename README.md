@@ -61,6 +61,9 @@ type to it. Without a project, it asks for one. `pi --harness <project>` starts 
 
 When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
 
+Before your input, the agent of a project gets a short catch-up: the workflows runs that ended and the new commits on
+the default branch since its last input.
+
 [docs/spec.md](docs/spec.md) describes all the commands, the tool, the Pi extension, projects, the host and its state.
 
 ## Development

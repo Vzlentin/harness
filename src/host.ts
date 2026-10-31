@@ -26,11 +26,13 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { catchUp } from "./catchup.ts";
 import { type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import { loadEntries } from "./load-entries.ts";
 import { memoryDir } from "./projects.ts";
 import {
+	AGENT_HANDLE,
 	type ChildInfo,
 	errorMessage,
 	onLines,
@@ -229,7 +231,8 @@ export async function runHost(options: {
 
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
-	base = { harness, place, owner, root, project, agent, startable, settings, push };
+
+	base = { harness, place, owner, root, project, agent, startable, settings, push, cwd: projectCwd, warn };
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
@@ -347,6 +350,9 @@ type Base = Omit<TaskHost, "signal"> &
 		/** Pi's settings, for the depth limit of the subagent tree. */
 		readonly settings: SettingsManager;
 		readonly push: Push;
+		/** The project directory. */
+		readonly cwd: string;
+		readonly warn: (cause: unknown) => void;
 	};
 
 type Handler = Base &
@@ -383,13 +389,19 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 			});
 		}
 
-		case "input":
+		case "input": {
+			const found = await target(handler, request);
+
+			if (request.handle === AGENT_HANDLE) await catchUp(handler, found.write, request.requestId);
+
 			// A conversation takes input only while it works, so its input is always a steer.
 			return sendTo(
 				request.conversation === undefined ? request : { ...request, followUp: false },
-				await target(handler, request),
+				found,
 				handler.harness,
 			);
+		}
+
 		case "note":
 			return noteTo(request, handler);
 		case "wait":
