@@ -28,6 +28,13 @@ export function resolveOverlay(overlay: Overlay, cwd: string | undefined): Overl
 	return Object.fromEntries(Object.entries(overlay).map(([key, content]) => [resolveKey(key, cwd), content]));
 }
 
+/** `own`, then the paths of `inherited` that `own` does not have. Both have resolved keys. */
+export function mergeOverlay(inherited: Overlay, own: Overlay): Overlay {
+	const others = Object.entries(inherited).filter(([key]) => !Object.hasOwn(own, key));
+
+	return Object.fromEntries([...Object.entries(own), ...others]);
+}
+
 function resolveKey(key: string, cwd: string | undefined): string {
 	if (isAbsolute(key)) return resolve(key);
 

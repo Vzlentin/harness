@@ -27,7 +27,7 @@ import type {
 	UsageState,
 } from "@earendil-works/pi-durable";
 import { complete, createAnswers } from "./answer.ts";
-import { type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
+import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 
 /** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -84,7 +84,8 @@ export type Spec = {
 	readonly limit?: number;
 	/**
 	 * Files that the child sees in place of the disk, by path, relative to `cwd`: a string replaces the file, null
-	 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk.
+	 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk. A
+	 * child of a parent with an overlay gets that overlay too, copied when the child is created; its own paths win.
 	 */
 	readonly overlay?: Overlay;
 };
@@ -632,7 +633,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const agent = await ownerConversation?.agent(context);
 			const { model, thinkingLevel } = resolveModel(place.models, agent, spec);
 			const cwd = spec.cwd ?? agent?.cwd;
-			const overlay = spec.overlay === undefined ? undefined : resolveOverlay(spec.overlay, cwd);
+			const own = spec.overlay === undefined ? undefined : resolveOverlay(spec.overlay, cwd);
 			let tools: ToolRegistration[] | undefined;
 
 			if (spec.tools !== undefined) {
@@ -648,6 +649,11 @@ export function createChildren(durable: typeof Durable): Children {
 
 			const parentId = spec.parent === undefined ? undefined : conversationIdOf(spec.parent);
 			const parent = spec.parent === undefined ? undefined : await lineage(place.store, spec.parent, context);
+
+			const inherited =
+				parentId === undefined ? undefined : (await place.store.snapshot(OverlayDoc, parentId, context))?.files;
+
+			const overlay = own !== undefined && inherited !== undefined ? mergeOverlay(inherited, own) : (own ?? inherited);
 			const depth = (parent?.depth ?? 0) + 1;
 			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 

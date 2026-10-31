@@ -80,6 +80,7 @@ const toolSpawns = new Map([
 	["Task:\nSend and wait", "Send and wait child"],
 	["Agent spawn", "Agent child"],
 	["Agent waits", "Agent gated"],
+	["Overlay nest", "Read prompts/p.md"],
 ]);
 
 /**
@@ -192,7 +193,7 @@ async function respond(
 		});
 	}
 
-	const readPath = /^Read (.+)$/.exec(prompt)?.[1];
+	const readPath = /^(?:Task:\n)?Read (.+)$/.exec(prompt)?.[1];
 
 	if (readPath !== undefined) {
 		return fauxAssistantMessage(fauxToolCall("read", { path: readPath }), { stopReason: "toolUse" });
