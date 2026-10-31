@@ -226,6 +226,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low main\n`));
 	});
 
+	it("gives the children of a project its .optmem folder as MEMORY_DIR", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "memory-")));
+		await mkdir(join(dir, ".optmem"));
+		expect((await cli(["create", "memory", "--cwd", dir])).code).toBe(0);
+		// The spawn runs in root, outside the project directory.
+		expect(await memoryOfChild("memory")).toBe(join(dir, ".optmem"));
+	});
+
+	it("gives no MEMORY_DIR to the children of a project without a .optmem folder", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "nomemory-")));
+		expect((await cli(["create", "nomemory", "--cwd", dir])).code).toBe(0);
+		expect(await memoryOfChild("nomemory")).toBe("unset");
+	});
+
+	it("gives no MEMORY_DIR to the children of main, even with a .optmem folder in home", async () => {
+		await mkdir(join(root, "home", ".optmem"), { recursive: true });
+		expect(await memoryOfChild()).toBe("unset");
+	});
+
 	it("steers a busy child after its tool round", async () => {
 		const cwd = await mkdtemp(join(root, "steer-"));
 		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
@@ -1031,4 +1050,20 @@ async function childrenStore(name: string, version: number): Promise<string> {
 	await store.close(BACKGROUND_CONTEXT);
 
 	return stateDir;
+}
+
+/** Spawns a child of `project` (the suite host when undefined) that prints its MEMORY_DIR, while the host has its own. */
+async function memoryOfChild(project?: string): Promise<string> {
+	const projectHost = project === undefined ? undefined : await startHost(project);
+	const env = project === undefined ? {} : { HARNESS_PROJECT: project };
+	process.env.MEMORY_DIR = "/leaked";
+
+	try {
+		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Memory"], env))], env);
+
+		return stdout.match(/Tool said: (.*)\n/)?.[1] ?? stdout;
+	} finally {
+		delete process.env.MEMORY_DIR;
+		await projectHost?.close();
+	}
 }

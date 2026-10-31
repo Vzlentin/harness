@@ -59,6 +59,8 @@ harness main                # open the agent of the main project in Pi
 In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
 type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
 
+When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
+
 [docs/spec.md](docs/spec.md) describes all the commands, the tool, the Pi extension, projects, the host and its state.
 
 ## Development

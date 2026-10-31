@@ -207,6 +207,12 @@ async function respond(
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
 	}
 
+	if (prompt === "Task:\nMemory") {
+		return fauxAssistantMessage(fauxToolCall("bash", { command: 'echo "${MEMORY_DIR-unset}"' }), {
+			stopReason: "toolUse",
+		});
+	}
+
 	if (prompt === "Task:\nFail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 
 	if (prompt === "Fail lines") {
@@ -299,6 +305,7 @@ export async function setUp(): Promise<void> {
 		"HERDR_PANE_ID",
 		"HARNESS_HERDR_PANE",
 		"HARNESS_PROJECT",
+		"MEMORY_DIR",
 		// Node warns on stderr when both are set, and the tests compare stderr.
 		"FORCE_COLOR",
 		"NO_COLOR",

@@ -29,6 +29,7 @@ import { Value } from "typebox/value";
 import { type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext } from "./context.ts";
 import { loadEntries } from "./load-entries.ts";
+import { memoryDir } from "./projects.ts";
 import {
 	type ChildInfo,
 	errorMessage,
@@ -99,7 +100,7 @@ export async function runHost(options: {
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
 	readonly idleExitMs?: number;
 }): Promise<Host | undefined> {
-	const { stateDir, project, cwd, models, idleExitMs = IDLE_EXIT_MS } = options;
+	const { stateDir, project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS } = options;
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
@@ -143,7 +144,7 @@ export async function runHost(options: {
 	let agentSetUp: Promise<Conversation> | undefined;
 
 	const agent = () =>
-		(agentSetUp ??= setUpAgent(base.root, models, settings, project, cwd).catch((cause: unknown) => {
+		(agentSetUp ??= setUpAgent(base.root, models, settings, project, projectCwd).catch((cause: unknown) => {
 			agentSetUp = undefined;
 			throw cause;
 		}));
@@ -178,7 +179,13 @@ export async function runHost(options: {
 
 					if (cached !== undefined) return cached;
 					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-					const shellEnv: NodeJS.ProcessEnv = { PI_SESSION_ID: String(conversationId), HARNESS_PROJECT: project };
+
+					// An undefined MEMORY_DIR removes the host's own value from the shell.
+					const shellEnv: NodeJS.ProcessEnv = {
+						PI_SESSION_ID: String(conversationId),
+						HARNESS_PROJECT: project,
+						MEMORY_DIR: memoryDir(project, projectCwd),
+					};
 
 					if (agent?.model !== undefined) {
 						shellEnv.PI_PROVIDER = agent.model.provider;
