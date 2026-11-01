@@ -12,16 +12,16 @@ import {
 	Children,
 	childOf,
 	childTarget,
+	isPushRequest,
 	library,
 	markRead,
+	pushRequest,
 	type TargetHost,
 	target,
 } from "./targets.ts";
 import { isHeld, unreadAnswers, unreadNotify } from "./unread.ts";
 
 const context = BACKGROUND_CONTEXT;
-
-const PUSH_PREFIX = "push:";
 
 /** What the push uses of the host. */
 export type PushHost = TargetHost & {
@@ -45,6 +45,7 @@ type Listener = {
 	/** Resolves once the reply is written, with false when the write failed. */
 	readonly written: Promise<boolean>;
 	readonly resolve: (deliveries: readonly Delivery[]) => void;
+	readonly reject: (cause: Error) => void;
 };
 
 /** The answers of one child that a sweep takes. They become read up to `read`, and `main` is the last one. */
@@ -125,7 +126,7 @@ export class Push {
 	/**
 	 * The last request of `child` and its answer, once the child is done: its own turn ended and none of its children
 	 * holds it. While its children hold it, the child gets their pushes, and the input of each push becomes its last
-	 * request.
+	 * request. It throws once the push closes.
 	 */
 	async done(child: Child, signal: AbortSignal): Promise<{ readonly main: string | null; readonly answer: Answer }> {
 		const waiting = withAbortSignal(signal, context);
@@ -152,12 +153,23 @@ export class Push {
 			}
 
 			signal.throwIfAborted();
+
+			if (this.#closed) throw new Error("The host is closing");
 		}
 	}
 
-	/** `ended` resolves at the end of the next sweep, or when `signal` aborts. `cancel()` stops listening. */
+	/**
+	 * `ended` resolves at the end of the next sweep, when `signal` aborts, or when the push closes, at once after it.
+	 * `cancel()` stops listening.
+	 */
 	#nextSweep(signal: AbortSignal): NextSweep {
 		const { promise, resolve } = Promise.withResolvers<void>();
+
+		if (this.#closed) {
+			resolve();
+
+			return { ended: promise, cancel: () => {} };
+		}
 
 		const end = () => {
 			signal.removeEventListener("abort", end);
@@ -179,13 +191,22 @@ export class Push {
 	/**
 	 * Opens the `answers` request of `caller` on `reply`, in place of an older one, and sweeps. The reply comes with the
 	 * next answers that a sweep pushes to the caller. Those answers become read only once the reply is written; when the
-	 * write fails, or `signal` aborts first, they stay unread for the next request or a `wait`.
+	 * write fails, or `signal` aborts first, they stay unread for the next request or a `wait`. The older request gets
+	 * an error reply.
 	 */
 	listen(caller: string, reply: Connection, signal: AbortSignal): Promise<readonly Delivery[]> {
 		const deliveries = Promise.withResolvers<readonly Delivery[]>();
 		const written = Promise.withResolvers<boolean>();
 		reply.afterReply(written.resolve);
-		const listener: Listener = { socket: reply.socket, written: written.promise, resolve: deliveries.resolve };
+
+		const listener: Listener = {
+			socket: reply.socket,
+			written: written.promise,
+			resolve: deliveries.resolve,
+			reject: deliveries.reject,
+		};
+
+		this.#listeners.get(caller)?.reject(new Error("A newer answers request of the same caller replaced this one"));
 		this.#listeners.set(caller, listener);
 		signal.addEventListener(
 			"abort",
@@ -205,10 +226,14 @@ export class Push {
 		return [...this.#listeners.values()].some((listener) => listener.socket === socket);
 	}
 
-	/** Stops the sweeps. */
+	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
 	close(): void {
 		this.#closed = true;
 		this.#unsubscribe();
+		const ends = [...this.#sweepEnds];
+		this.#sweepEnds.clear();
+
+		for (const end of ends) end();
 	}
 
 	async #run(): Promise<void> {
@@ -281,7 +306,7 @@ export class Push {
 						type: "input",
 						content: deliveryText(delivery),
 						whenBusy: "followUp",
-						requestId: `${PUSH_PREFIX}${handle}:${read}`,
+						requestId: pushRequest(handle, read),
 					});
 					await markRead(this.#host.harness, handle, read, main);
 				}
@@ -355,11 +380,6 @@ export class Push {
 
 		return { delivery, handle, read, main };
 	}
-}
-
-/** Whether `requestId` is the input of a push, which a child gets from its own children. */
-function isPushRequest(requestId: string): boolean {
-	return requestId.startsWith(PUSH_PREFIX);
 }
 
 /** Whether `change` can end a turn or change a record: a live document without a run, or the `Children` document. */

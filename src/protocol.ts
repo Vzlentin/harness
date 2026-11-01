@@ -12,7 +12,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 /** How long the host waits for the lock of `durable.sqlite`, which a client such as the workflows CLI can hold. */
 export const STORE_LOCK_WAIT_MS = 60_000;
@@ -33,7 +33,7 @@ export function versionMismatch(client: number, host: number, pid: number): stri
  */
 export const AGENT_HANDLE = "agent";
 
-export type ChildState = "busy" | "idle" | "error";
+export type ChildState = "busy" | "idle" | "error" | "closed";
 
 /**
  * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`

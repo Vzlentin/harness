@@ -4,7 +4,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
-import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "./children.ts";
 import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
 import { isHeld } from "./unread.ts";
@@ -76,17 +76,14 @@ export async function target(handler: TargetHost, ref: Target) {
 
 	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
 	const root = await handler.agent();
-	const { harness, place, project } = handler;
+	const { place, project } = handler;
 
-	const turn = library.turn(
-		place,
-		root.id,
-		root,
-		async (readContext) => (await harness.snapshot(AgentState, root.id, readContext))?.lastRequest,
-		async (tx, requestId) => {
+	const turn = library.turn(place, root.id, root, {
+		read: async (tx) => (await tx.doc(AgentState, root.id)).lastRequest,
+		write: async (tx, requestId) => {
 			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
 		},
-	);
+	});
 
 	return {
 		conversation: root,
@@ -106,6 +103,9 @@ export async function target(handler: TargetHost, ref: Target) {
 
 export type Found = Awaited<ReturnType<typeof target>>;
 
+/** The options of a child's `send`, which a target that is not a child does not take. */
+export type SendOptions = Parameters<Child["send"]>[2];
+
 /**
  * The target of the library conversation `id`, of any owner, such as a child of a task. It has no record, and it takes
  * input only while it works, and a note while it is open.
@@ -116,12 +116,13 @@ async function conversationTarget(handler: TargetHost, id: string) {
 	if (child === undefined) throw new Error(`Unknown conversation: ${id}`);
 	const { conversation, lineage } = child;
 
-	const info = async (): Promise<ChildInfo> => {
-		const childState = await child.state(context);
-		const state: ChildState = childState === "closed" ? "idle" : childState;
-
-		return { handle: id, conversation: id, name: lineage.key, state, ...(await agentFields(conversation)) };
-	};
+	const info = async (): Promise<ChildInfo> => ({
+		handle: id,
+		conversation: id,
+		name: lineage.key,
+		state: await child.state(context),
+		...(await agentFields(conversation)),
+	});
 
 	return {
 		conversation,
@@ -147,7 +148,7 @@ export async function childTarget(handler: TargetHost, handle: string, record: C
 	return {
 		conversation: child.conversation,
 		info: () => childInfo(handler, handle, record),
-		send: (input: Input) => child.send(input, context),
+		send: (input: Input, options?: SendOptions) => child.send(input, context, options),
 		write: (write: Write) => child.write(write, context),
 		record,
 	};
@@ -189,8 +190,8 @@ export async function childInfo(
 	const child = await childOf(handler, record);
 	const childState = await child.state(context);
 	const held = isHeld(await handler.harness.snapshot(Children, context), record.conversationId);
-	// A closed child is idle: the watch can still send it before its record goes and the `stopped` line follows.
-	const state: ChildState = held ? "busy" : childState === "closed" ? "idle" : childState;
+	// A closed child that still holds its caller is closed: it never runs again.
+	const state: ChildState = childState !== "closed" && held ? "busy" : childState;
 
 	const fields = await agentFields(child.conversation);
 
@@ -213,55 +214,52 @@ async function agentFields(
 }
 
 /**
- * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of. Without `notify`, its answer is not
- * pushed. A repeated request is not added. True when it changed the record.
+ * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, in `tx`, the commit that makes it the
+ * child's last request. Without `notify`, its answer is not pushed. A repeated request is not added. It is the only
+ * writer of `sent` and `quiet`.
  */
 export async function addSent(
-	harness: Harness,
+	tx: Tx,
 	handle: string,
 	requestId: string,
 	options: { readonly notify: boolean },
-): Promise<boolean> {
-	return harness.commit(async (tx) => {
-		const record = (await tx.doc(Children)).children[handle];
-		const sent = record?.sent ?? [];
+): Promise<void> {
+	const record = (await tx.doc(Children)).children[handle];
+	const sent = record?.sent ?? [];
 
-		if (record === undefined || sent.includes(requestId)) return false;
-		record.sent = [...sent, requestId];
+	if (record === undefined || sent.includes(requestId)) return;
+	record.sent = [...sent, requestId];
 
-		if (!options.notify) record.quiet = [...(record.quiet ?? []), requestId];
-
-		return true;
-	}, context);
-}
-
-/** Removes `requestId` from the requests of `handle`, after a send that failed. */
-export async function removeSent(harness: Harness, handle: string, requestId: string): Promise<void> {
-	await harness.commit(async (tx) => {
-		const record = (await tx.doc(Children)).children[handle];
-
-		const sent = record?.sent ?? [];
-
-		if (record === undefined || !sent.includes(requestId)) return;
-		record.sent = sent.filter((id) => id !== requestId);
-
-		if (record.quiet?.includes(requestId)) record.quiet = record.quiet.filter((id) => id !== requestId);
-	}, context);
+	if (!options.notify) record.quiet = [...(record.quiet ?? []), requestId];
 }
 
 /**
- * Marks the requests of `handle` up to `read` as read. After a push, `pushed` is the request whose answer the push gave
- * last, so that a `wait` for it gives no new answer.
+ * Marks the requests of `handle` up to `read` as read; `read` never passes the length of `sent`. After a push, `pushed`
+ * is the request whose answer the push gave last, so that a `wait` for it gives no new answer. It is kept only for a
+ * request of `sent` or the input of a push.
  */
 export async function markRead(harness: Harness, handle: string, read: number, pushed?: string): Promise<void> {
 	await harness.commit(async (tx) => {
 		const record = (await tx.doc(Children)).children[handle];
 
 		if (record === undefined) return;
-		record.read = Math.max(record.read ?? 0, read);
+		const sent = record.sent ?? [];
+		record.read = Math.min(Math.max(record.read ?? 0, read), sent.length);
 
-		if (pushed !== undefined) record.pushed = pushed;
+		if (pushed !== undefined && (sent.includes(pushed) || isPushRequest(pushed))) record.pushed = pushed;
 	}, context);
+}
+
+const PUSH_PREFIX = "push:";
+
+/** The request ID of the push input that gives the answers of `handle` up to `read`. */
+export function pushRequest(handle: string, read: number): string {
+	return `${PUSH_PREFIX}${handle}:${read}`;
+}
+
+/** Whether `requestId` is the input of a push, which a conversation gets from its children. */
+export function isPushRequest(requestId: string): boolean {
+	return requestId.startsWith(PUSH_PREFIX);
 }
 
 /** Whether the conversation `id` runs a turn of its own, whatever its children do. */

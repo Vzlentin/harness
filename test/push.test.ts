@@ -201,6 +201,22 @@ describe("push", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("gives an answers request that a newer one of the same caller replaced an error", async () => {
+		const older = await connect({ start: false });
+		const newer = await connect({ start: false });
+
+		try {
+			if (older === undefined || newer === undefined) throw new Error("no host");
+			const replaced = older.request({ type: "answers", caller: "replaced-session" });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			void newer.request({ type: "answers", caller: "replaced-session" }).catch(() => {});
+			await expect(replaced).rejects.toThrow("A newer answers request of the same caller replaced this one");
+		} finally {
+			older?.close();
+			newer?.close();
+		}
+	});
+
 	it("exits when idle with only an answers request open", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "idle-")));
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);

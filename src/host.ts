@@ -24,7 +24,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { catchUp } from "./catchup.ts";
-import { type Place, resolveModel, type Spec } from "./children.ts";
+import { type Input, type Place, resolveModel, type Spec } from "./children.ts";
 import { ChildContext, PI_TRUST } from "./context.ts";
 import { ConversationEnvs } from "./conversation-envs.ts";
 import { loadEntries } from "./load-entries.ts";
@@ -58,7 +58,7 @@ import {
 	markRead,
 	ownRecord,
 	recordOf,
-	removeSent,
+	type SendOptions,
 	type TargetHost,
 	target,
 	turnRunning,
@@ -355,20 +355,16 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send": {
-			const record = await ownRecord(handler.harness, request.handle, request.caller);
+			const { handle, requestId, notify } = request;
+			const record = await ownRecord(handler.harness, handle, request.caller);
 
-			// A sweep leaves the child while its request is in `sent` and not yet admitted.
-			return handler.push.whileActive(request.handle, async () => {
-				// Mark the request first: a wait that sees it as the last request must find it in `sent`.
-				const added = await addSent(handler.harness, request.handle, request.requestId, request);
-
-				try {
-					return await sendTo(request, await childTarget(handler, request.handle, record), handler.harness);
-				} catch (error) {
-					if (added) await removeSent(handler.harness, request.handle, request.requestId);
-					throw error;
-				}
-			});
+			return handler.push.whileActive(handle, async () =>
+				sendTo(request, await childTarget(handler, handle, record), handler.harness, {
+					// The request goes into `sent` in the commit that makes it the last request, so a wait that sees it as the
+					// last request finds it in `sent`.
+					admitted: (tx) => addSent(tx, handle, requestId, { notify }),
+				}),
+			);
 		}
 
 		case "input": {
@@ -512,28 +508,36 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 
 		if (request.tools !== undefined) spec = { ...spec, tools: request.tools };
 
-		// The record is written in the commit that creates the child.
-		await library.open(place, handler.owner, `sub:${request.requestId}`, spec, context, async (tx, id) => {
-			const current = await tx.doc(Children);
-			let fresh = randomBytes(3).toString("hex");
+		// A stopped child keeps its key, closed, and `stop` removed its record: a repeated spawn opens a child under the
+		// next key. The keys are in a fixed order, so a retry after a crash finds the child that the first try opened.
+		for (let attempt = 0; handle === undefined; attempt += 1) {
+			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
-			const record: ChildRecord = { caller: request.caller, createdAt: new Date().toISOString(), conversationId: id };
-			current.children[fresh] = request.name === undefined ? record : { name: request.name, ...record };
-			current.requests[request.requestId] = fresh;
-		});
-		handle = (await harness.snapshot(Children, context))?.requests[request.requestId];
+			// The record is written in the commit that creates the child.
+			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
+				const current = await tx.doc(Children);
+				let fresh = randomBytes(3).toString("hex");
 
-		if (handle === undefined) throw new Error(`Missing subagent of ${request.requestId}`);
+				while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
+				const record: ChildRecord = { caller: request.caller, createdAt: new Date().toISOString(), conversationId: id };
+				current.children[fresh] = request.name === undefined ? record : { name: request.name, ...record };
+				current.requests[request.requestId] = fresh;
+			});
+
+			handle = (await harness.snapshot(Children, context))?.requests[request.requestId];
+
+			if (handle === undefined && (await opened.state(context)) !== "closed")
+				throw new Error(`Missing subagent of ${request.requestId}`);
+		}
 	}
 
 	const record = await childRecord(harness, handle);
-	// The request ID makes a repeated spawn find the first submission, also after a crash before it.
-	await (await childOf(handler, record)).send(
-		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
-		context,
-	);
-	await addSent(harness, handle, `spawn:${request.requestId}`, request);
+	const requestId = `spawn:${request.requestId}`;
+	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
+	// the request goes into `sent` in the commit that makes it the last request.
+	await (await childOf(handler, record)).send({ type: "input", content: request.prompt, requestId }, context, {
+		admitted: (tx) => addSent(tx, handle, requestId, { notify: request.notify }),
+	});
 
 	return childInfo(handler, handle, record);
 }
@@ -544,16 +548,22 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
  */
 async function sendTo(
 	request: Extract<RequestLine, { type: "send" | "input" }>,
-	found: Pick<Found, "conversation" | "info" | "send">,
+	found: Pick<Found, "conversation" | "info"> & {
+		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
+	},
 	harness: Harness,
+	options?: SendOptions,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const busy = await turnRunning(harness, found.conversation.id);
-	await found.send({
-		type: "input",
-		content: request.message,
-		whenBusy: request.followUp ? "followUp" : "steer",
-		requestId: request.requestId,
-	});
+	await found.send(
+		{
+			type: "input",
+			content: request.message,
+			whenBusy: request.followUp ? "followUp" : "steer",
+			requestId: request.requestId,
+		},
+		options,
+	);
 
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
 }
@@ -591,8 +601,15 @@ async function waitChild(
 	const waiting = withAbortSignal(signal, context);
 	let text: UnreadAnswers;
 
+	const refuseClosed = async () => {
+		if ((await child.state(context)) === "closed") throw new Error(`The child ${child.id} is closed`);
+	};
+
 	try {
+		await refuseClosed();
 		const { main, answer } = await handler.push.done(child, signal);
+		// A close during the wait ends the turn with an abort, which is not the child's answer.
+		await refuseClosed();
 		// Read the record after the answer and after a push in flight: a send is in `sent` before it can be the last
 		// request, and a push marks its answers read only once its reply is written.
 		await handler.push.written(request.handle);
@@ -742,7 +759,7 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 		const send = (change: ViewChange) => {
 			queue = queue.then(async () => {
 				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
-				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
+				// line. A stopped child gives `closed` here, and its `stopped` line follows.
 				const child = await found.info().catch(() => undefined);
 
 				if (child === undefined || !socket.writable) return;

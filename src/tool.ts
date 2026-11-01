@@ -63,7 +63,7 @@ export function toolSchemas(Type: typeof Ai.Type) {
 	const child = Type.Object({
 		handle: Type.String(),
 		name: Type.Optional(Type.String()),
-		state: Type.Union([Type.Literal("busy"), Type.Literal("idle"), Type.Literal("error")]),
+		state: Type.Union([Type.Literal("busy"), Type.Literal("idle"), Type.Literal("error"), Type.Literal("closed")]),
 		provider: Type.String(),
 		model: Type.String(),
 		thinking: Type.String(),

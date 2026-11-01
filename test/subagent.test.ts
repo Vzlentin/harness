@@ -8,7 +8,7 @@ import * as ai from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
-import { AssistantEntry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AssistantEntry, type ConversationId, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -785,6 +785,233 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Between")).toBe(1);
 	});
 
+	it("shows a child that the library closed as closed, and refuses a wait and a send to it", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
+		await child?.close(BACKGROUND_CONTEXT);
+		expect((await cli(["status", handle])).stdout).toBe(`${handle}: closed (faux/faux-1, medium)\n`);
+		expect((await cli(["wait", handle])).stderr).toBe(`The child ${id} is closed\n`);
+		expect((await cli(["send", handle, "After the close"])).stderr).toBe(`The child ${id} is closed\n`);
+		expect(called("After the close")).toBe(0);
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+
+		try {
+			expect((await client.request({ type: "watch", handle })).child.state).toBe("closed");
+			await expect(
+				client.request({ type: "note", requestId: "note-closed", handle, text: "Noted after the close" }),
+			).rejects.toThrow(`The child ${id} is closed`);
+		} finally {
+			client.close();
+		}
+	});
+
+	it("repairs the record of a send that is retried after a crash between its submit and its next commit", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Before the crash"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && armed) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementationOnce(async (...submitted) => {
+					armed = false;
+					const submission = await submit(...submitted);
+					failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+						throw new Error("Store failed");
+					});
+
+					return submission;
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+
+		const send = {
+			type: "send",
+			requestId: "send-crash",
+			caller: "cli",
+			handle,
+			message: "Sent at the crash",
+			followUp: false,
+			notify: true,
+		} as const;
+
+		try {
+			await expect(client.request(send)).rejects.toThrow("Store failed");
+			lookups.mockRestore();
+			failing?.mockRestore();
+			await client.request(send);
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
+				answer: "Answer to Sent at the crash",
+			});
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+			client.close();
+		}
+
+		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toContain("send-crash");
+		expect(called("Sent at the crash")).toBe(1);
+	});
+
+	it("repairs the record of a spawn that is retried after a crash between its submit and its next commit", async () => {
+		const store = await restartWithStore();
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && armed && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const submission = await submit(...submitted);
+					const [draft] = submitted;
+
+					if (armed && draft.type === "input" && draft.content === "Spawned at the crash") {
+						armed = false;
+						failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+							throw new Error("Store failed");
+						});
+					}
+
+					return submission;
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+		const caller = "spawn-crasher";
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-crash",
+			caller,
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			callerThinking: "medium",
+			cwd: root,
+			prompt: "Spawned at the crash",
+		} as const;
+
+		try {
+			await expect(client.request(spawn)).rejects.toThrow("Store failed");
+			lookups.mockRestore();
+			failing?.mockRestore();
+			const { handle } = await client.request(spawn);
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
+				answer: "Answer to Spawned at the crash",
+			});
+			expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toEqual([
+				"spawn:spawn-crash",
+			]);
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+			client.close();
+		}
+
+		expect(called("Spawned at the crash")).toBe(1);
+	});
+
+	it("keeps a send whose submit fails out of the child's requests, with the error of the submit", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Send fails"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && armed) {
+				vi.spyOn(found, "submit").mockImplementationOnce(async () => {
+					armed = false;
+					// The next commit fails too, so the error of the submit must not depend on it.
+					failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+						throw new Error("Store failed");
+					});
+					throw new Error("Stopped at submit");
+				});
+			}
+
+			return found;
+		});
+
+		try {
+			expect((await cli(["send", handle, "Lost"])).stderr).toBe("Stopped at submit\n");
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+		}
+
+		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toHaveLength(1);
+		expect((await cli(["status", handle])).stdout).toBe(`${handle}: idle (faux/faux-1, medium)\n`);
+		expect(called("Lost")).toBe(0);
+	});
+
+	it("spawns a new child for a repeated spawn of a child that was stopped", async () => {
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+		const caller = "stopper";
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-stopped",
+			caller,
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			callerThinking: "medium",
+			cwd: root,
+			prompt: "Stopped once",
+		} as const;
+
+		try {
+			const { handle } = await client.request(spawn);
+			await client.request({ type: "wait", handle, timeout: 10 });
+			await client.request({ type: "stop", caller, handle });
+			const again = await client.request(spawn);
+			expect(again.handle).not.toBe(handle);
+			expect(await client.request({ type: "wait", handle: again.handle, timeout: 10 })).toEqual({
+				answer: "Answer to Stopped once",
+			});
+			expect((await client.request(spawn)).handle).toBe(again.handle);
+			expect(await client.request({ type: "list", caller })).toMatchObject([{ handle: again.handle }]);
+		} finally {
+			client.close();
+		}
+
+		expect(called("Stopped once")).toBe(2);
+	});
+
 	it("finishes a turn after the host restarts", async () => {
 		gates.set("Task:\nSurvive", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--prompt", "Survive"]));
@@ -1233,8 +1460,33 @@ async function setDepthLimit(limit: number | undefined): Promise<void> {
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
 }
 
-/** The `subagent.children` document of the host, to read a child's conversation ID. */
-const ChildrenDoc = durable.defineDoc<{ children: Record<string, { conversationId: number }> }>({
+/** Restarts the suite host and gives its store, for a test that reads it or makes it fail. */
+async function restartWithStore(): Promise<Harness> {
+	await host?.close();
+	const open = Harness.open.bind(Harness);
+	let store: Harness | undefined;
+
+	const opened = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
+		store = await open(...args);
+
+		return store;
+	});
+
+	try {
+		host = await startHost();
+	} finally {
+		opened.mockRestore();
+	}
+
+	if (store === undefined) throw new Error("no store");
+
+	return store;
+}
+
+/** The `subagent.children` document of the host, to read a child's conversation ID and requests. */
+const ChildrenDoc = durable.defineDoc<{
+	children: Record<string, { conversationId: ConversationId; sent?: string[] }>;
+}>({
 	kind: "subagent.children",
 	version: 2,
 	scope: "session",
