@@ -20,7 +20,7 @@ const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ 
 /** The part of the output of `herdr pane split` that has the new pane. */
 const PaneSplit = Type.Object({ result: Type.Object({ pane: Type.Object({ pane_id: Type.String() }) }) });
 
-export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
+export type AgentReporter = { report(busy: boolean): Promise<void>; release(): Promise<void> };
 
 /**
  * The words of the command that opens `target` in Pi, with this Node and this package's CLI, so it does not need the
@@ -172,34 +172,55 @@ export async function openConversationPane(
 /**
  * Reports the state of the agent `label` to the Herdr pane of `HARNESS_HERDR_PANE`, with the command that opens
  * `target` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
- * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order.
+ * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order. A report of
+ * the state of the last report that waits or went through does nothing. After a failed last report, or after a
+ * release, the next report goes to Herdr again. `report` gives the end of its call, which never rejects.
  */
 export function agentReporter(env: NodeJS.ProcessEnv, label: string, target: MirrorTarget): AgentReporter {
 	const pane = env[PANE_VARIABLE] || undefined;
 	const resume = pane === undefined ? [] : ["--", ...openCommand(target)];
-	let calls: Promise<unknown> = Promise.resolve();
+	let calls: Promise<void> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;
 
-	const call = (command: string, options: readonly string[], resume: readonly string[]) => {
-		if (pane === undefined) return;
+	/** Queues one `herdr` call; `onFailure` runs with its `--seq` when it fails. */
+	const call = (
+		command: string,
+		options: readonly string[],
+		resume: readonly string[],
+		onFailure: (failed: number) => void,
+	) => {
+		if (pane === undefined) return calls;
 		seq = Math.max(Date.now(), seq + 1);
-		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(seq), pane];
+		const mine = seq;
+		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(mine), pane];
+
 		// A failed report never stops the caller.
-		calls = calls.then(() => herdr([...args, ...resume], env)).catch(() => {});
+		calls = calls.then(() =>
+			herdr([...args, ...resume], env).then(
+				() => {},
+				() => onFailure(mine),
+			),
+		);
+
+		return calls;
 	};
 
 	return {
 		report(busy) {
 			const state = busy ? "working" : "idle";
 
-			if (state === reported) return;
+			if (state === reported) return calls;
 			reported = state;
-			call("report-agent", ["--state", state], resume);
+
+			// Only the failure of the last call forgets the state: a later call has its own state, or a release.
+			return call("report-agent", ["--state", state], resume, (failed) => {
+				if (failed === seq) reported = undefined;
+			});
 		},
 		async release() {
-			call("release-agent", [], []);
-			await calls;
+			reported = undefined;
+			await call("release-agent", [], [], () => {});
 		},
 	};
 }

@@ -58,14 +58,20 @@ function seqOf(line: string | undefined): number {
 /**
  * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, gives the pane `p1` to a new tab, and
  * the pane `p2` to a split. With `fail`, each call writes that text to stderr and exits with 1, after the log line.
+ * With `failOnce`, only the first call does that.
  */
-async function fakeHerdr(fail?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+async function fakeHerdr(fail?: string, failOnce = false): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
+	const flag = join(bin, "fail-once");
+
+	if (failOnce) await writeFile(flag, "");
+
+	const failure = `echo '${fail}' >&2; exit 1`;
 
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-${fail === undefined ? "" : `echo '${fail}' >&2; exit 1`}
+${fail === undefined ? "" : failOnce ? `if [ -e "${flag}" ]; then rm "${flag}"; ${failure}; fi` : failure}
 if [ "$1 $2" = "tab create" ]; then echo '{"result":{"root_pane":{"pane_id":"p1"}}}'; fi
 if [ "$1 $2" = "pane split" ]; then echo '{"result":{"type":"pane_info","pane":{"pane_id":"p2"}}}'; fi
 `;
@@ -346,6 +352,26 @@ describe("subagent", { timeout: 30_000 }, () => {
 		silent.report(true);
 		await silent.release();
 		expect(logLines(herdr.log)).toHaveLength(6);
+	});
+
+	it("reports the state again after a failed report and after a release", async () => {
+		const herdr = await fakeHerdr("pane busy", true);
+
+		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-5" }, "retried", {
+			project: "main",
+			handle: "abc123",
+		});
+
+		await reporter.report(true);
+		await reporter.report(true);
+		await reporter.report(true);
+		await reporter.release();
+		await reporter.report(true);
+		await reporter.release();
+
+		const states = logLines(herdr.log).map((line) => /--state (\w+)|release-agent/.exec(line)?.[0]);
+
+		expect(states).toEqual(["--state working", "--state working", "release-agent", "--state working", "release-agent"]);
 	});
 
 	it("opens a child in Pi in a Herdr tab", async () => {

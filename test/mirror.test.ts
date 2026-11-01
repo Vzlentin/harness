@@ -253,6 +253,19 @@ describe("mirror", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("is failed once closed, and keeps the reason of an earlier failure", async () => {
+		const mirror = await opened(AGENT);
+		mirror.close();
+		expect(mirror.status).toEqual({ kind: "failed", reason: "The mirror is closed" });
+		expect(mirror.busy).toBe(false);
+		await expect(mirror.send("Closed mirror", false)).rejects.toThrow("The mirror is closed");
+
+		const unknown = new Mirror({ project: "main", handle: "fedcba" }, () => {}, { start: false });
+		await until(() => unknown.status.kind === "failed");
+		unknown.close();
+		expect(unknown.status).toEqual({ kind: "failed", reason: "Unknown subagent: fedcba" });
+	});
+
 	it("connects again when the host restarts, and then sends the message that waited, once", async () => {
 		const mirror = await opened(AGENT, { retryDelaysMs: [0, 500, 2000] });
 

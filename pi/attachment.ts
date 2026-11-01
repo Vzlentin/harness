@@ -152,7 +152,7 @@ export class Attachment {
 		this.#showStatus(ui, view, child);
 
 		if (status.kind === "failed" && previous.kind !== "failed") this.#showFailure(status.reason);
-		this.#reporter?.report(this.#mirror.busy);
+		void this.#reporter?.report(this.#mirror.busy);
 		this.#programStatus?.update(this.#mirror);
 
 		if (child !== undefined) this.#followAgent(child);

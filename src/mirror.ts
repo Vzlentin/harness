@@ -102,8 +102,8 @@ type Watched = Awaited<ReturnType<Client["watch"]>> & { readonly client: Client 
  * A live copy of one conversation of a harness host, and the requests that act on it. It connects at once, which starts
  * the host when none runs, and connects again when the host closes the connection, with one try after each of
  * `retryDelaysMs`. It fails for good when the first connection fails, when all the tries fail, when the child is
- * stopped, and when the host closes a connection that was opened again less than 10 s before, so that a host that fails
- * at each start does not start again and again. `onChange` runs after each change of `status`, `view` and `child`, with
+ * stopped, when the host closes a connection that was opened again less than 10 s before, so that a host that fails
+ * at each start does not start again and again, and when it closes. `onChange` runs after each change of `status`, `view` and `child`, with
  * the status before the change.
  */
 export class Mirror {
@@ -192,11 +192,16 @@ export class Mirror {
 		this.#setChild(await client.request({ type: "configure", handle, ...change }));
 	}
 
-	/** Closes the connection and stops connecting. The conversation keeps running in the host. */
+	/**
+	 * Closes the connection and stops connecting. The status becomes failed with `The mirror is closed`, unless it failed
+	 * before, and `onChange` does not run: the caller knows. The conversation keeps running in the host.
+	 */
 	close(): void {
 		this.#closing.abort();
 		this.#client?.close();
 		this.#reject(new Error("The mirror is closed"));
+
+		if (this.#status.kind !== "failed") this.#status = { kind: "failed", reason: "The mirror is closed" };
 	}
 
 	/** Connects, follows the watch, and connects again after the host closed the connection, until a failure or `close()`. */

@@ -4,6 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -12,6 +13,7 @@ import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
 	type Conversation,
+	type ConversationView,
 	createRegistry,
 	type DocumentWatch,
 	type Extension,
@@ -702,7 +704,7 @@ async function setUpAgent(
  * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
  * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
  * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
- * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets a `stopped` event and the connection ends; when the conversation
+ * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets one line of the whole view, then a `stopped` event, and the connection ends; when the conversation
  * watch ends for another reason, the connection ends.
  */
 async function serveWatch(handler: Handler, ref: Target, connection: Connection): Promise<Replies["watch"]> {
@@ -756,18 +758,35 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 		// this one chain, so a line never has older info than the line before it.
 		let queue: Promise<void> = Promise.resolve();
 
+		/** Writes the line of `change`, with the info of now. */
+		const writeLine = async (change: ViewChange) => {
+			// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
+			// line. A stopped child gives `closed` here, and its `stopped` line follows.
+			const child = await found.info().catch(() => undefined);
+
+			if (child === undefined || !socket.writable) return;
+
+			if (!write({ change, child })) await once(socket, "drain").catch(() => {});
+		};
+
 		const send = (change: ViewChange) => {
-			queue = queue.then(async () => {
-				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
-				// line. A stopped child gives `closed` here, and its `stopped` line follows.
-				const child = await found.info().catch(() => undefined);
-
-				if (child === undefined || !socket.writable) return;
-
-				if (!write({ change, child })) await once(socket, "drain").catch(() => {});
-			});
+			queue = queue.then(() => writeLine(change));
 
 			return queue;
+		};
+
+		/**
+		 * The `stopped` line, after the lines before it. The conversation watch can still hold back the frames of the
+		 * last commits for a slow socket, so one line of the whole view always comes first. A client applies `{ view }`
+		 * as a full replacement, so this line is harmless when the view went out already.
+		 */
+		const stop = async () => {
+			const latest = socket.writable ? await currentView(found.conversation, watchContext) : undefined;
+
+			if (latest !== undefined) await writeLine({ view: latest });
+
+			if (socket.writable) write({ stopped: true });
+			end();
 		};
 
 		childrenWatch?.start(async (state) => {
@@ -775,8 +794,8 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 			const next = recordOf(state, handle);
 
 			if (next === undefined) {
-				write({ stopped: true });
-				end();
+				queue = queue.then(stop);
+				await queue;
 			} else if (next.name !== found.record?.name) {
 				found = { ...found, record: next, info: () => childInfo(handler, handle, next) };
 				await send({});
@@ -786,6 +805,18 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 	});
 
 	return { view: conversation.value, child: last };
+}
+
+/** The view of `conversation` now, from a watch that never starts; nothing when it cannot be read. */
+async function currentView(conversation: Conversation, watchContext: Context): Promise<ConversationView | undefined> {
+	try {
+		const watch = await conversation.watch(watchContext);
+		await watch.stop();
+
+		return watch.value;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
