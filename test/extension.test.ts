@@ -181,11 +181,11 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 /** Calls the handlers of `event` with harness, for the session `session` without a UI and without entries. */
 async function sessionEvent(registered: Registered, event: SessionStartEvent | SessionShutdownEvent): Promise<void> {
 	const ctx: Pick<ExtensionContext, "hasUI"> & {
-		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntries">;
+		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntries" | "getBranch">;
 		readonly ui: Pick<ExtensionContext["ui"], "setWidget">;
 	} = {
 		hasUI: false,
-		sessionManager: { getSessionId: () => "session", getEntries: () => [] },
+		sessionManager: { getSessionId: () => "session", getEntries: () => [], getBranch: () => [] },
 		ui: { setWidget: () => {} },
 	};
 

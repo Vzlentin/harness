@@ -72,7 +72,8 @@ export class ChatView {
 	private readonly streamingCalls = new Set<string>();
 	private readonly renderers = new Map<string, AnyDefinition>();
 	private renderedEntryIds: EntryRecord["id"][] = [];
-	private streaming: AssistantMessageComponent | undefined;
+	/** The streamed answer, and its timestamp: its entry has the same timestamp. */
+	private streaming: { readonly component: AssistantMessageComponent; readonly timestamp: number } | undefined;
 	/** Ctrl+O shows tool output in full, as in Pi. */
 	private expanded = false;
 	/** Pi's `hideThinkingBlock` setting: the answers show a label in place of their thinking. */
@@ -97,6 +98,7 @@ export class ChatView {
 
 	apply(view: ConversationView): void {
 		const live = this.views.liveOf(view);
+
 		this.syncTranscript(view.entries);
 		const message = live.generation?.message;
 
@@ -143,20 +145,37 @@ export class ChatView {
 		this.transcript.invalidate();
 	}
 
-	/** Finishes the running cards: a running bash card keeps a timer until it gets a final result. */
+	/**
+	 * Finishes the running cards as interrupted, when no connection gives their final result: a running bash card keeps a
+	 * timer until it gets a final result.
+	 */
 	stopTimers(): void {
-		for (const component of this.running) component.updateResult({ content: [], isError: false }, false);
+		const content = [{ type: "text" as const, text: "Interrupted: no connection to the harness host" }];
+
+		for (const component of this.running) component.updateResult({ content, isError: true }, false);
 		this.running.clear();
 	}
 
 	private syncTranscript(entries: readonly EntryRecord[]): void {
-		// A compaction or a reset replaces the head of the active transcript.
-		if (this.renderedEntryIds.some((id, index) => entries[index]?.id !== id)) this.rebuild(entries);
+		// A compaction or a reset replaces the head of the active transcript. The streamed answer is drawn again from the
+		// entries when a new answer is not the one it streamed.
+		const headChanged = this.renderedEntryIds.some((id, index) => entries[index]?.id !== id);
+
+		if (headChanged || this.streamReplaced(entries.slice(this.renderedEntryIds.length))) this.rebuild(entries);
 
 		for (const entry of entries.slice(this.renderedEntryIds.length)) {
 			this.addEntry(entry);
 			this.renderedEntryIds.push(entry.id);
 		}
+	}
+
+	/** Whether the first assistant entry of `added` is not the streamed answer. */
+	private streamReplaced(added: readonly EntryRecord[]): boolean {
+		if (this.streaming === undefined) return false;
+		const answer = added.find((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.role === "assistant");
+		const message = answer?.model?.[0];
+
+		return message?.role === "assistant" && message.timestamp !== this.streaming.timestamp;
 	}
 
 	private rebuild(entries: readonly EntryRecord[]): void {
@@ -182,7 +201,7 @@ export class ChatView {
 			this.transcript.addChild(new UserMessageComponent(this.views.userText(message.content), getMarkdownTheme()));
 		} else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
 			const component =
-				this.streaming ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
+				this.streaming?.component ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
 
 			if (this.streaming === undefined) this.transcript.addChild(component);
 			this.streaming = undefined;
@@ -224,12 +243,12 @@ export class ChatView {
 	}
 
 	private syncStreaming(message: AssistantMessage): void {
-		if (this.streaming === undefined) {
-			this.streaming = new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
-			this.transcript.addChild(this.streaming);
-		}
+		const component =
+			this.streaming?.component ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());
 
-		this.streaming.updateContent(message, true);
+		if (this.streaming === undefined) this.transcript.addChild(component);
+		this.streaming = { component, timestamp: message.timestamp };
+		component.updateContent(message, true);
 
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;

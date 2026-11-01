@@ -89,15 +89,33 @@ export class Attachment {
 	}
 
 	/**
+	 * Whether the follow-up key queues the text as a follow-up to the agent, and not as Pi's own: while the agent works,
+	 * and also before the connection opens and while it connects again.
+	 */
+	get followUpToAgent(): boolean {
+		return this.#mirror.busy || this.#mirror.status.kind !== "open";
+	}
+
+	/**
 	 * Sends `text` to the agent: a new turn when it is idle, else a steer, or a follow-up with `followUp`. A text that
-	 * does not reach the agent goes back to the editor, after the text there, so it is not lost.
+	 * does not reach the agent goes back to the editor, after the text there, so it is not lost. A text that the host
+	 * may have stays out of the editor, so a send again does not give it twice; it is in the history of the editor.
 	 */
 	send(text: string, followUp: boolean): void {
 		this.#mirror.send(text, followUp).catch((cause: unknown) => {
 			if (this.#closed) return;
+			const { errorMessage } = this.#harness.protocol;
+
+			if (cause instanceof this.#harness.mirror.PossiblySentError) {
+				const reason = errorMessage(cause);
+				this.#ctx.ui.notify(`harness: maybe sent: ${reason}. The text is in the history of the editor`, "warning");
+
+				return;
+			}
+
 			const editor = this.#ctx.ui.getEditorText();
 			this.#ctx.ui.setEditorText([editor, text].filter((part) => part.trim() !== "").join("\n\n"));
-			this.#ctx.ui.notify(`harness: not sent: ${this.#harness.protocol.errorMessage(cause)}`, "error");
+			this.#ctx.ui.notify(`harness: not sent: ${errorMessage(cause)}`, "error");
 		});
 	}
 
@@ -127,8 +145,11 @@ export class Attachment {
 		if (!this.#closed) this.#chat?.setHideThinking(this.#pi.getSettings().hideThinkingBlock ?? false);
 	}
 
-	/** Closes the connection and gives Pi back its editor. The agent keeps running in the host. */
-	close(): void {
+	/**
+	 * Closes the connection and gives Pi back its editor. The agent keeps running in the host. The promise resolves when
+	 * Herdr has released the agent of the pane.
+	 */
+	async close(): Promise<void> {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.models.close();
@@ -137,8 +158,8 @@ export class Attachment {
 		this.#status.dispose();
 		this.#ctx.ui.setWidget(WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
-		void this.#reporter?.release();
 		this.#programStatus?.leave(this.#mirror);
+		await this.#reporter?.release();
 	}
 
 	/** Shows each change of the mirror, whose status was `previous` before it. */
@@ -152,7 +173,7 @@ export class Attachment {
 		this.#showStatus(ui, view, child);
 
 		if (status.kind === "failed" && previous.kind !== "failed") this.#showFailure(status.reason);
-		void this.#reporter?.report(this.#mirror.busy);
+		else void this.#reporter?.report(this.#mirror.busy);
 		this.#programStatus?.update(this.#mirror);
 
 		if (child !== undefined) this.#followAgent(child);
@@ -219,6 +240,9 @@ export class Attachment {
 		if (this.#chat === undefined) this.#frame.clear();
 		this.#frame.addChild(this.#line("error", () => reason));
 		this.#ctx.ui.notify(`harness: ${reason}`, "error");
+		// A failed mirror does not connect again, so Herdr forgets the agent of the pane now, and gets no more reports.
+		void this.#reporter?.release();
+		this.#reporter = undefined;
 	}
 
 	/** Gives Pi the agent's title, and on an open connection its model and thinking level. */
@@ -254,9 +278,9 @@ export class Attachment {
 
 /**
  * The editor of a mirror session. While the agent works, the interrupt key (Esc) aborts its turn and the follow-up key
- * (Alt+Enter) queues the text as a follow-up. Pi's editor handles every other key. After the key that hides thinking
- * (Ctrl+T), which Pi applies only to its own messages, the transcript of the agent follows the setting. After the key
- * that cycles the thinking level (Shift+Tab), the agent gets the level of Pi.
+ * (Alt+Enter) queues the text as a follow-up, as it does without an open connection. Pi's editor handles every other
+ * key. After the key that hides thinking (Ctrl+T), which Pi applies only to its own messages, the transcript of the
+ * agent follows the setting. After the key that cycles the thinking level (Shift+Tab), the agent gets the level of Pi.
  */
 class MirrorEditor extends coding.CustomEditor {
 	readonly #keys: KeybindingsManager;
@@ -275,7 +299,7 @@ class MirrorEditor extends coding.CustomEditor {
 			return;
 		}
 
-		if (this.#attachment.busy && this.#keys.matches(data, "app.message.followUp")) {
+		if (this.#attachment.followUpToAgent && this.#keys.matches(data, "app.message.followUp")) {
 			const text = this.getExpandedText().trim();
 
 			if (text !== "") {

@@ -24,8 +24,11 @@ export class ModelSync {
 	readonly #ctx: PiSession;
 	readonly #mirror: MirroredAgent;
 	readonly #notify: (cause: unknown) => void;
-	/** True while Pi sets the agent's model: `setModel` is async, and the agent changes often while it works. */
-	#settingModel = false;
+	/**
+	 * The model that Pi sets for the agent, while `setModel` runs: it is async, and the agent changes often while it
+	 * works. Pi tells the extension the model that it takes, and that is not a choice of the user.
+	 */
+	#setting: { readonly provider: string; readonly model: string } | undefined;
 	#closed = false;
 
 	constructor(pi: PiModels, ctx: PiSession, mirror: MirroredAgent, notify: (cause: unknown) => void) {
@@ -40,23 +43,42 @@ export class ModelSync {
 		if (this.#closed) return;
 		const model = this.#ctx.modelRegistry.find(child.provider, child.model);
 
-		if (model !== undefined && !this.#piHasModel(child) && !this.#settingModel) {
-			this.#settingModel = true;
+		if (model !== undefined && !this.#piHasModel(child) && this.#setting === undefined) {
+			const setting = { provider: child.provider, model: child.model };
+			this.#setting = setting;
 			// Pi sets its own thinking level when it takes a model, so the agent's level follows once Pi has the model.
-			void this.#pi.setModel(model).finally(() => {
-				this.#settingModel = false;
-				const current = this.#mirror.child;
+			// Without a login for the model, Pi does not take it and gives `false`.
+			this.#pi
+				.setModel(model)
+				.then((taken) => {
+					if (!taken && !this.#closed)
+						this.#notify(new Error(`Pi has no login for ${setting.provider}/${setting.model}`));
+				})
+				.catch((cause: unknown) => {
+					if (!this.#closed) this.#notify(cause);
+				})
+				.finally(() => {
+					this.#setting = undefined;
+					const current = this.#mirror.child;
 
-				if (current !== undefined) this.#thinkingFromAgent(current);
-			});
+					if (current === undefined) return;
+
+					// Only an agent that changed its model again while Pi set it starts another `setModel`, so a model that Pi
+					// does not take does not start one again and again.
+					if (current.provider !== setting.provider || current.model !== setting.model) this.fromAgent(current);
+					else this.#thinkingFromAgent(current);
+				});
 		}
 
 		this.#thinkingFromAgent(child);
 	}
 
-	/** Asks the host for the model that the user selected in Pi. */
+	/** Asks the host for the model that the user selected in Pi. The model that Pi takes from the agent is not asked. */
 	piSelected(provider: string, model: string): void {
 		const child = this.#mirror.child;
+		const setting = this.#setting;
+
+		if (setting !== undefined && setting.provider === provider && setting.model === model) return;
 
 		if (child === undefined || (child.provider === provider && child.model === model)) return;
 		this.#configure({ provider, model });
