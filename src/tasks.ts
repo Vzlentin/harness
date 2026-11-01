@@ -10,8 +10,11 @@ import type { Request, TaskInfo } from "./protocol.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** The tasks that `start` created, by client key. A key is never removed. */
-const StartedTasks = durable.defineDoc<{ tasks: Record<string, TaskId<JsonValue>> }>({
+/** The task ID of each `start` key. A key is never removed. */
+export type StartedTaskIds = { tasks: Record<string, TaskId<JsonValue>> };
+
+/** The tasks that `start` created, by client key. Clients that read the store file find the task of a key here. */
+export const StartedTasks = durable.defineDoc<StartedTaskIds>({
 	kind: "harness.tasks",
 	version: 1,
 	scope: "session",
