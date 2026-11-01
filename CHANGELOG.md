@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.3](https://github.com/Vzlentin/harness/compare/v0.6.2...v0.6.3) (2026-11-01)
+
+
+### Features
+
+* export the document of started task keys ([#44](https://github.com/Vzlentin/harness/issues/44)) ([c73f8e3](https://github.com/Vzlentin/harness/commit/c73f8e359cb5de5b9c2f9f5358565c52f9587d56))
+* name run sessions by their label in the catch-up ([#39](https://github.com/Vzlentin/harness/issues/39)) ([9094fcb](https://github.com/Vzlentin/harness/commit/9094fcb8c9c9e4aabdf252d44b687dc7da0c050c))
+
+
+### Bug Fixes
+
+* make the harness state machines explicit and crash-safe ([#43](https://github.com/Vzlentin/harness/issues/43)) ([b4c8ed7](https://github.com/Vzlentin/harness/commit/b4c8ed750207a8b22bc0a5b51f1366f76256b280))
+
 ## [0.6.2](https://github.com/Vzlentin/harness/compare/v0.6.1...v0.6.2) (2026-10-31)
 
 
