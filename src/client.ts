@@ -3,7 +3,7 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
 import {
@@ -13,12 +13,17 @@ import {
 	PROTOCOL_VERSION,
 	type Replies,
 	type Request,
+	STORE_LOCK_WAIT_MS,
 	statePaths,
 	type Target,
+	versionMismatch,
 	type WatchLine,
 } from "./protocol.ts";
 
 const START_TIMEOUT_MS = 10_000;
+
+/** The least time between two starts of a host by one client. */
+const RESTART_INTERVAL_MS = 1000;
 
 /** The waits before the tries to connect again after the host closed a long-lived connection. */
 export const RETRY_DELAYS_MS: readonly number[] = [0, 2000, 5000];
@@ -59,6 +64,19 @@ const HostLine = Type.Union([
 	Type.Object({ event: Type.Unknown() }),
 ]);
 
+/** The line `line` from the host, or undefined when it is not JSON or not a valid line. */
+function parseLine(line: string): Static<typeof HostLine> | undefined {
+	let parsed: unknown;
+
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+
+	return Value.Check(HostLine, parsed) ? parsed : undefined;
+}
+
 /**
  * A connection to the host. Requests are answered in order, one reply line for each request line. After `watch`, the
  * event lines of the watch come between the replies.
@@ -77,10 +95,12 @@ export class Client {
 	constructor(socket: Socket) {
 		this.#socket = socket;
 		onLines(socket, (line) => {
-			const parsed: unknown = JSON.parse(line);
+			if (this.#ended) return;
+			const parsed = parseLine(line);
 
-			if (!Value.Check(HostLine, parsed)) {
-				this.#pending.shift()?.reject(new Error(`The harness host sent an invalid reply: ${line}`));
+			// A line that is not valid cannot be matched to its request, so no later reply can be either.
+			if (parsed === undefined) {
+				this.abort(new Error(`The harness host sent an invalid reply: ${line}`));
 
 				return;
 			}
@@ -153,8 +173,8 @@ export class Client {
 
 /**
  * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`),
- * after its `hello`. When no host listens and `start` is true, it starts one, detached, with its output in `host.log`,
- * and tries to connect for 10 s, or until `signal` aborts. When no host listens and `start` is false, it is undefined.
+ * after its `hello`. When no host listens and `start` is true, it starts one (see `startAndConnect`). When no host
+ * listens and `start` is false, it is undefined.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
 	const project =
@@ -165,16 +185,7 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 
 	if (socket === undefined) {
 		if (!options.start) return undefined;
-		startHost(project, paths.dir, paths.log);
-		const deadline = Date.now() + START_TIMEOUT_MS;
-
-		while (socket === undefined) {
-			options.signal?.throwIfAborted();
-
-			if (Date.now() > deadline) throw new Error(`Could not start the harness host; see ${paths.log}`);
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-			socket = await tryConnect(paths.socket);
-		}
+		socket = await startAndConnect(project, paths, options.signal);
 	}
 
 	const client = new Client(socket);
@@ -182,17 +193,8 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 	try {
 		const hello = await client.request({ type: "hello", version: PROTOCOL_VERSION });
 
-		// A stopped host restarts from the installed code, which is the newer side here, so only the client can catch up.
-		if (hello.version > PROTOCOL_VERSION) {
-			throw new Error(
-				`This client uses harness protocol ${PROTOCOL_VERSION} and the host (pid ${hello.pid}) uses ${hello.version}. Reload Pi with /reload, or use the harness CLI of the host's install`,
-			);
-		}
-
 		if (hello.version !== PROTOCOL_VERSION) {
-			throw new Error(
-				`The harness host (pid ${hello.pid}) uses protocol ${hello.version}, not ${PROTOCOL_VERSION}. The host is older: stop it with kill ${hello.pid} and run the command again`,
-			);
+			throw new Error(versionMismatch(PROTOCOL_VERSION, hello.version, hello.pid));
 		}
 
 		client.pid = hello.pid;
@@ -262,17 +264,88 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 	});
 }
 
-function startHost(project: string, dir: string, log: string): void {
+/**
+ * Starts a host of `project`, detached, with its output in `host.log`, and connects to it, for 10 s, or until `signal`
+ * aborts. A started host that exits with code 0 found the lock held, such as by a host that closes on idle and has not
+ * released its lock yet, so it starts a host again, at most once per second. Another exit fails at once.
+ */
+async function startAndConnect(
+	project: string,
+	paths: ReturnType<typeof statePaths>,
+	signal: AbortSignal | undefined,
+): Promise<Socket> {
+	const deadline = Date.now() + START_TIMEOUT_MS;
+	let host = startHost(project, paths.dir, paths.log);
+
+	for (;;) {
+		signal?.throwIfAborted();
+		const socket = await tryConnect(paths.socket);
+
+		if (socket !== undefined) return socket;
+		const { exited } = host;
+
+		if (exited !== undefined && !("code" in exited && exited.code === 0)) {
+			throw new Error(`The harness host exited with ${exitText(exited)}; see ${paths.log}`);
+		}
+
+		if (exited !== undefined && Date.now() - host.startedAt >= RESTART_INTERVAL_MS) {
+			host = startHost(project, paths.dir, paths.log);
+		}
+
+		if (Date.now() > deadline) {
+			// A host that runs and does not listen yet is still in its start, such as in the wait for its store's lock.
+			throw new Error(
+				host.exited === undefined
+					? `The harness host (pid ${host.pid}) is still starting: it can wait up to ${STORE_LOCK_WAIT_MS / 1000} s for the lock of durable.sqlite. Run the command again soon; see ${paths.log}`
+					: `Could not start the harness host; see ${paths.log}`,
+			);
+		}
+
+		await sleep(100);
+	}
+}
+
+/** A host process that `startHost` started. */
+type StartedHost = {
+	readonly pid: number | undefined;
+	readonly startedAt: number;
+	/** How the process ended, or undefined while it runs. */
+	exited: HostExit | undefined;
+};
+
+/** The end of a started host: its exit code or signal, or the error that kept it from running. */
+type HostExit = { readonly code: number | null; readonly signal: NodeJS.Signals | null } | { readonly error: string };
+
+function exitText(exited: HostExit): string {
+	if ("error" in exited) return `error ${exited.error}`;
+
+	return exited.code === null ? `signal ${exited.signal}` : `code ${exited.code}`;
+}
+
+function startHost(project: string, dir: string, log: string): StartedHost {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 
 	try {
 		const cli = cliPath();
-		spawn(process.execPath, [cli, "--project", project, "host"], {
+
+		const child = spawn(process.execPath, [cli, "--project", project, "host"], {
 			cwd: dir,
 			detached: true,
 			stdio: ["ignore", output, output],
-		}).unref();
+		});
+
+		child.unref();
+		const host: StartedHost = { pid: child.pid, startedAt: Date.now(), exited: undefined };
+
+		child.once("exit", (code, signal) => {
+			host.exited = { code, signal };
+		});
+		child.once("error", (error) => {
+			host.exited = { error: error.message };
+		});
+
+		return host;
 	} finally {
 		closeSync(output);
 	}

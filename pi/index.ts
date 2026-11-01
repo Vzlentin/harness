@@ -23,6 +23,7 @@ import type * as mirror from "../dist/mirror.js";
 import type * as projects from "../dist/projects.js";
 import type * as protocol from "../dist/protocol.js";
 import type * as tool from "../dist/tool.js";
+import type * as trust from "../dist/trust.js";
 import type * as viewState from "../dist/view-state.js";
 import { registerMirror } from "./mirror.ts";
 
@@ -35,6 +36,7 @@ export type Harness = {
 	readonly projects: typeof projects;
 	readonly protocol: typeof protocol;
 	readonly tool: typeof tool;
+	readonly trust: typeof trust;
 	readonly viewState: typeof viewState;
 };
 
@@ -68,6 +70,9 @@ function putHarnessBinLast(require: NodeJS.Require): void {
 /** Registers the tool, the commands, the flags and the widget, which use `harness`. */
 function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	const { client, herdr, protocol, tool } = harness;
+	// Pi's own modules, so Pi does not load the copy of pi-coding-agent that harness installs.
+	const piTrust = { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore, SettingsManager };
+	const savedTrust = (cwd: string) => harness.trust.savedTrust(cwd, piTrust);
 	registerMirror(pi, harness);
 	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
@@ -205,8 +210,11 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	pi.on("session_start", (_event, ctx) => {
 		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
 		listener?.close();
+		// A write to stderr would break the TUI, so a delivery that fails is a notification.
 		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
 			start: hasSpawned(ctx),
+			onError: (error) =>
+				ctx.ui.notify(`Could not show the answer of a subagent: ${protocol.errorMessage(error)}`, "error"),
 		});
 
 		if (!ctx.hasUI) return;
@@ -237,29 +245,15 @@ function hasSpawned(ctx: ExtensionContext): boolean {
 		);
 }
 
-/**
- * Whether Pi trusts the project in `cwd` with no one to ask, as the host does in `src/trust.ts` of harness. It is here
- * with Pi's own modules, so Pi does not load the copy of pi-coding-agent that harness installs.
- */
-function savedTrust(cwd: string): boolean {
-	if (!hasTrustRequiringProjectResources(cwd)) return true;
-	const agentDir = getAgentDir();
-	const decision = new ProjectTrustStore(agentDir).get(cwd);
-
-	if (decision !== null) return decision;
-
-	return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always";
-}
-
 /** Loads the modules of the harness package that this extension resolves. A module that does not load makes the extension fail. */
 async function loadHarness(require: NodeJS.Require): Promise<Harness> {
-	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "tool", "view-state"];
+	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "tool", "trust", "view-state"];
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, client, herdr, mirror, projects, protocol, tool, viewState] = await Promise.all(
+	const [answers, client, herdr, mirror, projects, protocol, tool, trust, viewState] = await Promise.all(
 		urls.map((url) => import(url)),
 	);
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { answers, client, herdr, mirror, projects, protocol, tool, viewState } as Harness;
+	return { answers, client, herdr, mirror, projects, protocol, tool, trust, viewState } as Harness;
 }

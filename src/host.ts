@@ -8,12 +8,10 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { getAgentDir, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
-	AgentDoc,
 	type Conversation,
-	type ConversationId,
 	createRegistry,
 	type DocumentWatch,
 	type Extension,
@@ -22,15 +20,14 @@ import {
 	type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { catchUp } from "./catchup.ts";
 import { type Place, resolveModel, type Spec } from "./children.ts";
-import { ChildContext } from "./context.ts";
+import { ChildContext, PI_TRUST } from "./context.ts";
+import { ConversationEnvs } from "./conversation-envs.ts";
 import { loadEntries } from "./load-entries.ts";
-import { memoryDir } from "./projects.ts";
 import {
 	AGENT_HANDLE,
 	type ChildInfo,
@@ -41,7 +38,9 @@ import {
 	type Reply,
 	type Request,
 	RequestLine,
+	STORE_LOCK_WAIT_MS,
 	type Target,
+	versionMismatch,
 	type WatchLine,
 } from "./protocol.ts";
 import { type Connection, Push } from "./push.ts";
@@ -66,6 +65,7 @@ import {
 } from "./targets.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
+import { savedTrust } from "./trust.ts";
 import { type UnreadAnswers, unreadAnswers } from "./unread.ts";
 import { type ViewChange, viewChange } from "./view-change.ts";
 
@@ -113,9 +113,8 @@ export async function runHost(options: {
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
 
-	const settings = SettingsManager.create(stateDir, agentDir, {
-		projectTrusted: new ProjectTrustStore(agentDir).get(stateDir) === true,
-	});
+	// The settings and the packages of the project directory, as a Pi session there with the saved trust has them.
+	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted: savedTrust(projectCwd, PI_TRUST) });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
 
@@ -134,12 +133,12 @@ export async function runHost(options: {
 		},
 	};
 
-	const entries = await loadEntries(stateDir, agentDir, settings, place, library, warn).catch((cause: unknown) => {
+	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, warn).catch((cause: unknown) => {
 		lock.close();
 		throw cause;
 	});
 
-	const envs = new Map<ConversationId, NodeExecutionEnv>();
+	const envs = new ConversationEnvs(project, projectCwd);
 	const startable = startableTasks(entries.tasks);
 	let base: Base;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
@@ -170,43 +169,20 @@ export async function runHost(options: {
 		harness = await Harness.open(
 			// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
 			// node:sqlite waits synchronously, so such a wait stops the event loop for as long as it lasts.
-			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: 60_000 }),
+			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: STORE_LOCK_WAIT_MS }),
 			{
 				models,
 				registry,
 				settings: piSettings(settings, selected),
-				env: async ({ conversationId, cwd, read }, envContext) => {
-					if (cwd === undefined) return undefined;
-					const cached = envs.get(conversationId);
-
-					if (cached !== undefined) return cached;
-					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-
-					// An undefined MEMORY_DIR removes the host's own value from the shell.
-					const shellEnv: NodeJS.ProcessEnv = {
-						PI_SESSION_ID: String(conversationId),
-						HARNESS_PROJECT: project,
-						MEMORY_DIR: memoryDir(project, projectCwd),
-					};
-
-					if (agent?.model !== undefined) {
-						shellEnv.PI_PROVIDER = agent.model.provider;
-						shellEnv.PI_MODEL = agent.model.modelId;
-					}
-
-					if (agent?.thinkingLevel !== undefined) shellEnv.PI_REASONING_LEVEL = agent.thinkingLevel;
-					const env = new NodeExecutionEnv({ cwd, shellEnv });
-					envs.set(conversationId, env);
-
-					return env;
-				},
+				env: (target, envContext) => envs.env(target, envContext),
 				onReport: warn,
 			},
 			context,
 		);
 
 		// A store from before the children library would mix children that it does not know with those it does.
-		// pi-durable refuses a stored version below the definition's with this message; any other error is not an old store.
+		// pi-durable's checkRecordVersion (documents.ts) refuses a stored version below the definition's with a plain Error,
+		// "Document <id> (<kind>) requires migration from version <n>"; any other error is not an old store.
 		try {
 			await harness.snapshot(Children, context);
 		} catch (error) {
@@ -224,7 +200,6 @@ export async function runHost(options: {
 		throw error;
 	}
 
-	harness.resume();
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
 	const root = await harness.root(context);
@@ -233,6 +208,8 @@ export async function runHost(options: {
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
 
 	base = { harness, place, owner, root, project, agent, startable, settings, push, cwd: projectCwd, warn };
+	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
+	harness.resume();
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
@@ -285,6 +262,7 @@ export async function runHost(options: {
 			resolveListen();
 		});
 	}).catch(async (cause: unknown) => {
+		push.close();
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
@@ -311,7 +289,7 @@ export async function runHost(options: {
 				await sandbox.close();
 				await harness.close(context);
 
-				for (const env of envs.values()) await env.cleanup(context);
+				await envs.cleanup(context);
 			} finally {
 				rmSync(socketPath, { force: true });
 				lock.close();
@@ -369,6 +347,10 @@ function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[
 async function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]> {
 	switch (request.type) {
 		case "hello":
+			if (request.version !== PROTOCOL_VERSION) {
+				throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
+			}
+
 			return { version: PROTOCOL_VERSION, pid: process.pid };
 		case "spawn":
 			return spawnChild(request, handler);

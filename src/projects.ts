@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { readJsonFile, updateJsonFile } from "./json-file.ts";
 
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
@@ -20,16 +21,7 @@ export function projectsPath(): string {
  */
 export function readProjects(): Record<string, string> {
 	const path = projectsPath();
-	let text: string;
-
-	try {
-		text = readFileSync(path, "utf8");
-	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
-		throw error;
-	}
-
-	const projects: unknown = JSON.parse(text);
+	const projects = readJsonFile(path);
 
 	if (!Value.Check(Type.Record(Type.String(), Type.Unknown()), projects)) {
 		throw new Error(`${path} is not an object of project names to directories`);
@@ -64,15 +56,12 @@ export function addProject(name: string, dir: string): string {
 	}
 
 	if (!statSync(real).isDirectory()) throw new Error(`Not a directory: ${dir}`);
-	const projects = readProjects();
 
-	if (Object.hasOwn(projects, name)) throw new Error(`The project ${name} exists (${projects[name]})`);
-	const path = projectsPath();
-	mkdirSync(dirname(path), { recursive: true });
-	// A temporary file, then a rename, so a stop in between does not truncate the projects.
-	const temporary = `${path}.${process.pid}.tmp`;
-	writeFileSync(temporary, `${JSON.stringify({ ...projects, [name]: real }, null, "\t")}\n`);
-	renameSync(temporary, path);
+	updateJsonFile(projectsPath(), readProjects, (projects) => {
+		if (Object.hasOwn(projects, name)) throw new Error(`The project ${name} exists (${projects[name]})`);
+
+		return { ...projects, [name]: real };
+	});
 
 	return real;
 }

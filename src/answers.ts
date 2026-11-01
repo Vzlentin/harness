@@ -3,7 +3,7 @@
  * module has no runtime import of Pi, chord or pi-durable, so the Pi extension can load it.
  */
 import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
-import type { Delivery } from "./protocol.ts";
+import { type Delivery, errorMessage } from "./protocol.ts";
 
 export type AnswersOptions = {
 	/** Whether the first try to connect starts the host when none runs. The later tries never do. */
@@ -13,21 +13,25 @@ export type AnswersOptions = {
 	 * Default 0, 2 and 5 s.
 	 */
 	readonly retryDelaysMs?: readonly number[];
+	/** Gets the error of each delivery that `onDelivery` threw. The next deliveries still come. */
+	readonly onError: (error: Error) => void;
 };
 
 /**
- * One open `answers` request of `caller`, on a connection of its own, that gives each answer to `onDelivery`. Until
- * `close()`, it connects again after each closed connection, and keeps trying while no host runs. Only the first try
- * can start a host.
+ * One open `answers` request of `caller`, on a connection of its own, that gives each answer to `onDelivery`, and each
+ * error that `onDelivery` throws to `onError`. Until `close()`, it connects again after each closed connection, and
+ * keeps trying while no host runs. Only the first try can start a host.
  */
 export class AnswerListener {
 	readonly #onDelivery: (delivery: Delivery) => void;
+	readonly #onError: (error: Error) => void;
 	readonly #retryDelaysMs: readonly number[];
 	readonly #closing = new AbortController();
 	#client: Client | undefined;
 
 	constructor(caller: string, onDelivery: (delivery: Delivery) => void, options: AnswersOptions) {
 		this.#onDelivery = onDelivery;
+		this.#onError = options.onError;
 		this.#retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
 		void this.#run(caller, options.start);
 	}
@@ -85,7 +89,13 @@ export class AnswerListener {
 
 			if (deliveries === undefined || this.#closing.signal.aborted) return;
 
-			for (const delivery of deliveries) this.#onDelivery(delivery);
+			for (const delivery of deliveries) {
+				try {
+					this.#onDelivery(delivery);
+				} catch (error) {
+					this.#onError(error instanceof Error ? error : new Error(errorMessage(error)));
+				}
+			}
 		}
 	}
 }

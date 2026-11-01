@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -18,7 +18,14 @@ import { type Client, connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, type ChildInfo, onLines, statePaths, type WatchLine } from "../src/protocol.ts";
+import {
+	AGENT_HANDLE,
+	type ChildInfo,
+	onLines,
+	PROTOCOL_VERSION,
+	statePaths,
+	type WatchLine,
+} from "../src/protocol.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
 	called,
@@ -225,6 +232,34 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--thinking", "low", "--prompt", "Environment"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low main\n`));
+	});
+
+	it("gives the child's bash its new model and thinking level after a configure", async () => {
+		const handle = handleOf(await cli(["spawn", "--thinking", "low", "--prompt", "Environment"]));
+		expect((await cli(["wait", handle])).stdout).toContain(" faux faux-1 low main\n");
+		await request({ type: "configure", handle, provider: "faux", model: "faux-2", thinking: "high" }, { start: false });
+		await cli(["send", handle, "Task:\nEnvironment"]);
+		expect((await cli(["wait", handle])).stdout).toContain(" faux faux-2 high main\n");
+	});
+
+	it("keeps a configure of the project agent that comes during its first set-up", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "setup-")));
+		expect((await cli(["create", "setup", "--cwd", dir])).code).toBe(0);
+		const host = await startHost("setup");
+
+		try {
+			const options = { project: "setup", start: false } as const;
+			// The first configure sets up the agent with faux-1 and then gives it faux-2.
+			expect(
+				await request({ type: "configure", handle: AGENT_HANDLE, provider: "faux", model: "faux-2" }, options),
+			).toMatchObject({ model: "faux-2" });
+			expect(await request({ type: "configure", handle: AGENT_HANDLE, thinking: "low" }, options)).toMatchObject({
+				model: "faux-2",
+				thinking: "low",
+			});
+		} finally {
+			await host?.close();
+		}
 	});
 
 	it("gives the children of a project its .optmem folder as MEMORY_DIR", async () => {
@@ -761,6 +796,23 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Task:\nSurvive")).toBe(2);
 	});
 
+	it("resumes a tool call of a child after the host restarts", async () => {
+		gates.set("Task:\nResume wait child", Promise.withResolvers());
+		const waiting = Promise.withResolvers<string>();
+		toolWaits.set("Task:\nResume wait", waiting);
+		const handle = handleOf(await cli(["spawn", "--prompt", "Resume wait"]));
+		const nested = await waiting.promise;
+		await until(() => called("Task:\nResume wait child") === 1);
+		// Let the wait reach the host before the restart.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await host?.close();
+		gates.delete("Task:\nResume wait child");
+		host = await startHost();
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\nTool said: ${nested} finished\n\nAnswer to Task:\nResume wait child\n`,
+		);
+	});
+
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
 		await expect(runHost({ stateDir, project: "a", cwd: stateDir, models })).rejects.toThrow(
@@ -873,6 +925,62 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
 		}
+	});
+
+	it("refuses a hello of another protocol version, as the client does", async () => {
+		const { pid } = process;
+		expect(await rawError(JSON.stringify({ type: "hello", version: 1 }))).toBe(
+			`This client uses harness protocol 1 and the host (pid ${pid}) uses ${PROTOCOL_VERSION}. Reload Pi with /reload, or use the harness CLI of the host's install`,
+		);
+		expect(await rawError(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION + 1 }))).toBe(
+			`The harness host (pid ${pid}) uses protocol ${PROTOCOL_VERSION}, not ${PROTOCOL_VERSION + 1}. The host is older: stop it with kill ${pid} and run the command again`,
+		);
+	});
+
+	it("warns about an entry whose module does not exist, and skips it", async () => {
+		const entries = join(root, "config", "harness", "entries.json");
+		const module = join(root, "gone", "entry.ts");
+		await mkdir(join(root, "config", "harness"), { recursive: true });
+		await writeFile(entries, JSON.stringify({ gone: module }));
+		process.env.XDG_STATE_HOME = join(root, "state-gone");
+		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+		try {
+			const gone = await startHost();
+			await gone?.close();
+			expect(gone).toBeDefined();
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+				`warning: The entry gone has no module at ${module}; the host skips it\n`,
+			);
+		} finally {
+			stderr.mockRestore();
+			process.env.XDG_STATE_HOME = join(root, "state");
+			await rm(entries);
+		}
+	});
+
+	it("sets up the agent with the default model of a trusted project's settings only", async () => {
+		const defaults = { defaultProvider: "faux", defaultModel: "faux-2", defaultThinkingLevel: "low" };
+		const agents: Record<string, ChildInfo | undefined> = {};
+
+		for (const name of ["trusted", "untrusted"]) {
+			const dir = realpathSync(await mkdtemp(join(root, `${name}-`)));
+			await mkdir(join(dir, ".pi"));
+			await writeFile(join(dir, ".pi", "settings.json"), JSON.stringify(defaults));
+			expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
+
+			if (name === "trusted") new ProjectTrustStore(join(root, "agent")).set(dir, true);
+			const projectHost = await startHost(name);
+
+			try {
+				agents[name] = (await request({ type: "watch", handle: AGENT_HANDLE }, { start: false, project: name }))?.child;
+			} finally {
+				await projectHost?.close();
+			}
+		}
+
+		expect(agents.trusted).toMatchObject({ provider: "faux", model: "faux-2", thinking: "low" });
+		expect(agents.untrusted).toMatchObject({ provider: "faux", model: "faux-1", thinking: "medium" });
 	});
 
 	it("warns about a package whose package.json is not an object or has an invalid piDurable field, and skips it", async () => {
@@ -1009,6 +1117,89 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 
 		await until(() => !existsSync(join(state, "harness", "main", "host.sock")));
+	});
+
+	it("starts the host again when the started host found the lock held, as when the last host closes", async () => {
+		const state = join(root, "state-restart");
+		const dir = join(state, "harness", "main");
+		await mkdir(dir, { recursive: true });
+		const lock = new DatabaseSync(join(dir, "lock.sqlite"));
+		lock.exec("BEGIN EXCLUSIVE");
+		process.env.XDG_STATE_HOME = state;
+		let pid: number | undefined;
+
+		try {
+			const connecting = connect({ start: true });
+			const log = join(dir, "host.log");
+			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another harness host runs"));
+			lock.close();
+			const client = await connecting;
+			client?.close();
+			pid = client?.pid;
+			expect(pid).toBeGreaterThan(0);
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+
+			if (lock.isOpen) lock.close();
+
+			if (pid !== undefined) process.kill(pid, "SIGTERM");
+		}
+
+		await until(() => !existsSync(join(dir, "host.sock")));
+	});
+
+	it("fails at once when the started host fails", async () => {
+		const stateDir = await childrenStore("state-failed", 1);
+		const dir = join(root, "state-failed-xdg", "harness", "main");
+		await mkdir(dir, { recursive: true });
+		await rename(join(stateDir, "durable.sqlite"), join(dir, "durable.sqlite"));
+		process.env.XDG_STATE_HOME = join(root, "state-failed-xdg");
+		const started = Date.now();
+
+		try {
+			await expect(connect({ start: true })).rejects.toThrow(
+				`The harness host exited with code 1; see ${join(dir, "host.log")}`,
+			);
+			expect(Date.now() - started).toBeLessThan(8000);
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
+	it("says that the host is still starting while it waits for the lock of its store", { timeout: 40_000 }, async () => {
+		const state = join(root, "state-slow");
+		const dir = join(state, "harness", "main");
+		await mkdir(dir, { recursive: true });
+		const store = new DatabaseSync(join(dir, "durable.sqlite"));
+		store.exec("BEGIN EXCLUSIVE");
+		process.env.XDG_STATE_HOME = state;
+
+		try {
+			await expect(connect({ start: true })).rejects.toThrow(
+				/^The harness host \(pid \d+\) is still starting: it can wait up to 60 s for the lock of durable\.sqlite\. Run the command again soon; see /,
+			);
+			store.close();
+
+			const client = await vi.waitFor(
+				async () => {
+					const found = await connect({ start: false });
+
+					if (found === undefined) throw new Error("no host yet");
+
+					return found;
+				},
+				{ timeout: 10_000, interval: 100 },
+			);
+
+			client.close();
+			process.kill(client.pid, "SIGTERM");
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+
+			if (store.isOpen) store.close();
+		}
+
+		await until(() => !existsSync(join(dir, "host.sock")));
 	});
 
 	it("stops waiting for the host to start when the request aborts", async () => {

@@ -14,8 +14,10 @@ import {
 	DefaultPackageManager,
 	formatSkillsForPrompt,
 	getAgentDir,
+	hasTrustRequiringProjectResources,
 	loadProjectContextFiles,
 	loadSkills,
+	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -28,7 +30,7 @@ import {
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
 import { errorMessage } from "./protocol.ts";
-import { savedTrust } from "./trust.ts";
+import { savedTrust, type TrustApi } from "./trust.ts";
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
 type PiTool<T extends TSchema> = {
@@ -62,6 +64,14 @@ function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegi
 	});
 }
 
+/** The trust functions of the pi-coding-agent of this install. */
+export const PI_TRUST: TrustApi = {
+	getAgentDir,
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	SettingsManager,
+};
+
 const resources = new Map<string, Promise<Resources>>();
 
 /**
@@ -72,7 +82,7 @@ const resources = new Map<string, Promise<Resources>>();
  */
 async function resourcesOf(cwd: string): Promise<Resources> {
 	try {
-		const trusted = savedTrust(cwd);
+		const trusted = savedTrust(cwd, PI_TRUST);
 		const key = `${trusted}:${cwd}`;
 		let found = resources.get(key);
 
