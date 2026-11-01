@@ -47,7 +47,14 @@ const Seen = defineDoc<SeenState>({
 });
 
 const Sessions = Type.Object({
-	sessions: Type.Array(Type.Object({ run: Type.String(), conversation: Type.Integer(), task: Type.Integer() })),
+	sessions: Type.Array(
+		Type.Object({
+			run: Type.String(),
+			conversation: Type.Integer(),
+			task: Type.Integer(),
+			label: Type.Optional(Type.String()),
+		}),
+	),
 });
 
 /** The sessions of a workflows root run, as workflows writes them. */
@@ -76,7 +83,7 @@ const RunResult = Type.Object({
 	lessons: Type.Optional(Type.Array(Type.Unknown())),
 });
 
-type Session = { run: string; conversation: number; key?: string };
+type Session = { run: string; conversation: number; key?: string; label?: string };
 
 /** One ended workflows run, as the entry gives it. */
 type RunFacts = Omit<Static<typeof RunResult>, "status" | "lessons"> & {
@@ -229,7 +236,7 @@ async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>): Promise<RunFa
 	return facts;
 }
 
-/** The sessions of the root run `rootRun`, with their lineage keys; nothing when they cannot be read. */
+/** The sessions of the root run `rootRun`, with their lineage keys and labels; nothing when they cannot be read. */
 async function sessionsOf(host: CatchUpHost, rootRun: string): Promise<Session[] | undefined> {
 	try {
 		const doc = await host.harness.snapshot(SessionsDoc, rootRun, context);
@@ -239,9 +246,14 @@ async function sessionsOf(host: CatchUpHost, rootRun: string): Promise<Session[]
 		if (!Value.Check(Sessions, doc)) throw new Error("unexpected shape");
 		const sessions: Session[] = [];
 
-		for (const { run, conversation } of doc.sessions) {
+		for (const { run, conversation, label } of doc.sessions) {
 			const lineage = await library.lineage(host.harness, String(conversation), context);
-			sessions.push(lineage === undefined ? { run, conversation } : { run, conversation, key: lineage.key });
+			const session: Session = { run, conversation };
+
+			if (lineage !== undefined) session.key = lineage.key;
+
+			if (label !== undefined) session.label = label;
+			sessions.push(session);
 		}
 
 		return sessions;
@@ -330,15 +342,20 @@ function runLine(facts: RunFacts): string {
 	return parts.join("; ");
 }
 
-/** `[run <run>: <key> #<conversation>, ...]`, one group for each run. */
+/**
+ * `[run <run>: <label> #<conversation>, ...]`, one group for each run. A session without a label gives
+ * `<key> #<conversation>`, and without a key `#<conversation>`.
+ */
 function sessionsText(sessions: readonly Session[]): string {
 	const byRun = Map.groupBy(sessions, (session) => session.run);
 
 	return [...byRun]
 		.map(([run, group]) => {
-			const named = group.map(({ conversation, key }) =>
-				key === undefined ? `#${conversation}` : `${key} #${conversation}`,
-			);
+			const named = group.map(({ conversation, key, label }) => {
+				const name = label ?? key;
+
+				return name === undefined ? `#${conversation}` : `${name} #${conversation}`;
+			});
 
 			return `[run ${run}: ${named.join(", ")}]`;
 		})
