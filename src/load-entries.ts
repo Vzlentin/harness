@@ -50,7 +50,8 @@ const Manifest = Type.Object({
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
  * `entries.json` (see `readEntries`), with the children library `children`, in one shared event bus, as one entry whose `close()` closes each of them and
  * passes its errors to `warn`. When an entry fails to load, the entries loaded before it close. Missing packages are
- * skipped, not installed, and so is an entry module that does not exist, such as one of an uninstalled package.
+ * skipped, not installed, and so is an entry module of `entries.json` that does not exist, such as one of an
+ * uninstalled package, with a warning.
  */
 export async function loadEntries(
 	cwd: string,
@@ -83,7 +84,11 @@ export async function loadEntries(
 		for (const path of manifest.piDurable?.extensions ?? []) modules.add(resolvePath(root, path));
 	}
 
-	for (const module of Object.values(readEntries())) if (existsSync(module)) modules.add(module);
+	for (const [name, module] of Object.entries(readEntries())) {
+		if (existsSync(module)) modules.add(module);
+		else warn(new Error(`The entry ${name} has no module at ${module}; the host skips it`));
+	}
+
 	const events = createEventBus();
 	const entries: Entry[] = [];
 

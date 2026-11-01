@@ -8,7 +8,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { type CatchUpHost, catchUp } from "../src/catchup.ts";
+import type { Write } from "../src/children.ts";
 import { type Client, connect, request } from "../src/client.ts";
 import { setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
@@ -28,6 +30,14 @@ const Seen = durable.defineDoc<{ mainSha: string | null; lastTaskId: number; pen
 	checkpointWhen: () => false,
 	fork: "initial",
 	initial: () => ({ mainSha: null, lastTaskId: 0, pending: [], catchups: 0 }),
+});
+
+const StartedTasks = durable.defineDoc<{ tasks: Record<string, number> }>({
+	kind: "harness.tasks",
+	version: 1,
+	scope: "session",
+	checkpointWhen: () => false,
+	initial: () => ({ tasks: {} }),
 });
 
 let host: Host | undefined;
@@ -77,6 +87,52 @@ async function input(message: string): Promise<void> {
 		watching.close();
 		connected.close();
 	}
+}
+
+async function openStore(): Promise<Harness> {
+	return Harness.open(
+		await openNodeSqliteStorage(join(statePaths(PROJECT).dir, "durable.sqlite")),
+		{ models, registry: durable.createRegistry() },
+		BACKGROUND_CONTEXT,
+	);
+}
+
+/** The data of each catch-up entry of the project agent in `store`. */
+async function catchUpData(store: Harness): Promise<unknown[]> {
+	const page = await store.commit(
+		(tx) => tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 1000),
+		BACKGROUND_CONTEXT,
+	);
+
+	return page.items.filter((entry) => entry.kind === "harness.catchup").map((entry) => entry.data);
+}
+
+/**
+ * Runs `use` with the store of the project, with the host closed, and a catch-up host on it whose warnings go to
+ * `warnings`.
+ */
+async function withStore(
+	use: (store: Harness, agent: CatchUpHost, warnings: string[]) => Promise<void>,
+): Promise<void> {
+	await host?.close();
+	host = undefined;
+	const store = await openStore();
+	const warnings: string[] = [];
+
+	try {
+		const root = await store.root(BACKGROUND_CONTEXT);
+		const warn = (cause: unknown) => warnings.push(String(cause));
+		await use(store, { harness: store, root, cwd: repo, warn }, warnings);
+	} finally {
+		await store.close(BACKGROUND_CONTEXT);
+	}
+}
+
+/** Writes an entry into the project agent's conversation, as the host does. */
+function writer(agent: CatchUpHost): (write: Write) => Promise<void> {
+	return async (write) => {
+		await agent.root.submit(write, BACKGROUND_CONTEXT);
+	};
 }
 
 async function startRun(key: string, values: Record<string, JsonValue>): Promise<TaskInfo> {
@@ -265,5 +321,152 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 		} finally {
 			await store.close(BACKGROUND_CONTEXT);
 		}
+	});
+
+	it("writes the entry of a catch-up that stopped after its commit, and the facts that came after it", async () => {
+		await withStore(async (store, agent, warnings) => {
+			const before = (await catchUpData(store)).length;
+			const write = writer(agent);
+			const late = await git("rev-parse", "--short", "HEAD");
+			let failing: ReturnType<typeof vi.spyOn> | undefined;
+
+			// The store fails at the first commit after the entry is written.
+			await catchUp(
+				agent,
+				async (entry) => {
+					await write(entry);
+					failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+						throw new Error("Store failed");
+					});
+				},
+				"direct-1",
+			);
+			failing?.mockRestore();
+			expect(warnings).toEqual(["catch-up: Store failed"]);
+
+			await git("commit", "--quiet", "--allow-empty", "-m", "Later change");
+			const later = await git("rev-parse", "--short", "HEAD");
+			await catchUp(agent, write, "direct-2");
+
+			// The write fails once: the next catch-up writes the planned entry.
+			await git("commit", "--quiet", "--allow-empty", "-m", "Third change");
+			const third = await git("rev-parse", "--short", "HEAD");
+
+			await catchUp(
+				agent,
+				async () => {
+					throw new Error("Write failed");
+				},
+				"direct-3",
+			);
+			await catchUp(agent, write, "direct-4");
+			expect(warnings).toEqual(["catch-up: Store failed", "catch-up: Write failed"]);
+
+			const commitsOf = (sha: string, subject: string) => ({
+				runs: [],
+				commits: { branch: "trunk", commits: [{ sha, subject }] },
+			});
+
+			expect((await catchUpData(store)).slice(before)).toEqual([
+				commitsOf(late, "Late change"),
+				commitsOf(later, "Later change"),
+				commitsOf(third, "Third change"),
+			]);
+			expect(await store.snapshot(Seen, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)).toEqual({
+				mainSha: await git("rev-parse", "HEAD"),
+				lastTaskId: expect.any(Number),
+				pending: [],
+				catchups: before + 3,
+			});
+		});
+	});
+
+	it("tells the agent when the default branch no longer contains the head that it saw", async () => {
+		await withStore(async (store, agent, warnings) => {
+			const before = (await catchUpData(store)).length;
+			const write = writer(agent);
+			const from = await git("rev-parse", "HEAD");
+			await git("commit", "--quiet", "--allow-empty", "--amend", "-m", "Rewritten change");
+			const head = await git("rev-parse", "HEAD");
+			await catchUp(agent, write, "direct-reset-1");
+
+			// A head that the repository does not have, as after a garbage collection.
+			const gone = "0".repeat(40);
+
+			await store.commit(async (tx) => {
+				(await tx.doc(Seen, ROOT_CONVERSATION_ID)).mainSha = gone;
+			}, BACKGROUND_CONTEXT);
+			await catchUp(agent, write, "direct-reset-2");
+
+			expect(warnings).toEqual([]);
+			expect((await catchUpData(store)).slice(before)).toEqual([
+				{ runs: [], reset: { branch: "trunk", from, head } },
+				{ runs: [], reset: { branch: "trunk", from: gone, head } },
+			]);
+			expect((await store.snapshot(Seen, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT))?.mainSha).toBe(head);
+		});
+	});
+
+	it("tells the agent about a run whose record is gone and a run whose input is not a workflows run input", async () => {
+		host = await openHost();
+		const bad = await startRun("bad", { runId: "run-bad", name: 42, result: { status: "finished" } });
+		expect(await waitRun("bad")).toMatchObject({ status: "terminal" });
+
+		await withStore(async (store, agent, warnings) => {
+			const before = (await catchUpData(store)).length;
+
+			await store.commit(async (tx) => {
+				(await tx.doc(StartedTasks)).tasks.gone = 999;
+				(await tx.doc(Seen, ROOT_CONVERSATION_ID)).pending.push(999);
+			}, BACKGROUND_CONTEXT);
+			await catchUp(agent, writer(agent), "direct-lost");
+
+			expect(warnings).toEqual([]);
+			expect((await catchUpData(store)).slice(before)).toEqual([
+				{
+					runs: [],
+					lost: [
+						{ task: bad.id, reason: "its input is not a workflows run input" },
+						{ task: 999, reason: "its task record is gone" },
+					],
+				},
+			]);
+			expect(await store.snapshot(Seen, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)).toMatchObject({
+				lastTaskId: 999,
+				pending: [],
+			});
+		});
+	});
+
+	it("gives each of two catch-ups at the same time its own entry", async () => {
+		await withStore(async (store, agent, warnings) => {
+			const write = writer(agent);
+			await catchUp(agent, write, "direct-together-0");
+			const before = (await catchUpData(store)).length;
+			await git("commit", "--quiet", "--allow-empty", "-m", "Seen by both");
+			const both = await git("rev-parse", "--short", "HEAD");
+
+			// A clone with one more commit on the default branch: the second catch-up sees a fact that the first does not.
+			const clone = join(root, "clone");
+			await execGit("git", ["clone", "--quiet", repo, clone]);
+			await execGit("git", ["commit", "--quiet", "--allow-empty", "-m", "Seen by the second"], { cwd: clone });
+			const second = (await execGit("git", ["rev-parse", "--short", "HEAD"], { cwd: clone })).stdout.trim();
+			const head = (await execGit("git", ["rev-parse", "HEAD"], { cwd: clone })).stdout.trim();
+
+			await Promise.all([
+				catchUp(agent, write, "direct-together-1"),
+				catchUp({ ...agent, cwd: clone }, write, "direct-together-2"),
+			]);
+
+			expect(warnings).toEqual([]);
+			expect((await catchUpData(store)).slice(before)).toEqual([
+				{ runs: [], commits: { branch: "trunk", commits: [{ sha: both, subject: "Seen by both" }] } },
+				{ runs: [], commits: { branch: "trunk", commits: [{ sha: second, subject: "Seen by the second" }] } },
+			]);
+			expect(await store.snapshot(Seen, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)).toMatchObject({
+				mainSha: head,
+				catchups: before + 2,
+			});
+		});
 	});
 });

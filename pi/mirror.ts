@@ -88,28 +88,47 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
 		},
 	});
 
+	// Outside Pi's interactive mode, a mirror session has no attachment, and its input must not go to Pi's own agent.
+	let refused = false;
+
 	pi.on("session_start", (event, ctx) => {
-		if (ctx.mode !== "tui") return;
 		const branch = ctx.sessionManager.getBranch();
+		const existing = mirrorEntry(harness, branch);
+		refused = false;
+
+		if (ctx.mode !== "tui") {
+			if (existing === undefined && !hasFlags(pi, harness)) return;
+			refused = true;
+			// Pi shows the error of a handler on stderr in print mode, and as an `extension_error` in RPC mode.
+			throw new Error("harness: a mirror session works only in Pi's interactive mode");
+		}
 
 		// Pi draws only the entries of this branch from now on. A /reload keeps the session, and its frames.
 		for (const id of frames.keys()) {
 			if (!branch.some((entry) => entry.id === id)) frames.delete(id);
 		}
 
-		const entry =
-			mirrorEntry(harness, branch) ?? (event.reason === "startup" ? flagEntry(pi, harness, ctx) : undefined);
+		// Pi keeps the flags across a /reload, so only the startup tells that they are not used.
+		if (existing !== undefined && event.reason === "startup" && hasFlags(pi, harness)) {
+			ctx.ui.notify("harness: the --harness flags are not used: the session is already a mirror session", "warning");
+		}
+
+		const entry = existing ?? (event.reason === "startup" ? flagEntry(pi, harness, ctx) : undefined);
 
 		if (entry !== undefined) attached = new Attachment(pi, harness, ctx, entry.id, entry.target, frameOf(entry.id));
 	});
 
-	pi.on("session_shutdown", () => {
-		attached?.close();
+	pi.on("session_shutdown", async () => {
+		refused = false;
+		const closing = attached?.close();
 		attached = undefined;
+		await closing;
 	});
 
 	// The agent of the host answers in a mirror session, so the input goes there and not to Pi's own agent.
 	pi.on("input", (event, ctx) => {
+		if (refused) return { action: "handled" };
+
 		if (attached === undefined) return undefined;
 
 		if (event.images !== undefined && event.images.length > 0) {
@@ -183,6 +202,11 @@ function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): M
 	pi.appendEntry(harness.mirror.MIRROR_ENTRY, target);
 
 	return mirrorEntry(harness, ctx.sessionManager.getBranch());
+}
+
+/** Whether Pi got one of the `--harness` flags. */
+function hasFlags(pi: ExtensionAPI, harness: Harness): boolean {
+	return Object.values(harness.mirror.PI_FLAGS).some((name) => pi.getFlag(name) !== undefined);
 }
 
 /** The value of the string flag `name`, or undefined when it is not given. */

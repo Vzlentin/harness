@@ -8,8 +8,24 @@ import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil
 import { type Static, type TProperties, Type } from "typebox";
 import type { ViewChange } from "./view-change.ts";
 
-/** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 11;
+/**
+ * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
+ * refuses the `hello` of a client with another version.
+ */
+export const PROTOCOL_VERSION = 12;
+
+/** How long the host waits for the lock of `durable.sqlite`, which a client such as the workflows CLI can hold. */
+export const STORE_LOCK_WAIT_MS = 60_000;
+
+/**
+ * The error of a client of protocol `client` and a host (process `pid`) of protocol `host`, which differ. A stopped host
+ * restarts from the installed code, so the side that is older must catch up.
+ */
+export function versionMismatch(client: number, host: number, pid: number): string {
+	return host > client
+		? `This client uses harness protocol ${client} and the host (pid ${pid}) uses ${host}. Reload Pi with /reload, or use the harness CLI of the host's install`
+		: `The harness host (pid ${pid}) uses protocol ${host}, not ${client}. The host is older: stop it with kill ${pid} and run the command again`;
+}
 
 /**
  * The handle of the project agent, the host's root conversation, in `watch`, `input`, `note`, `abort` and `configure`. It
@@ -17,7 +33,7 @@ export const PROTOCOL_VERSION = 11;
  */
 export const AGENT_HANDLE = "agent";
 
-export type ChildState = "busy" | "idle" | "error";
+export type ChildState = "busy" | "idle" | "error" | "closed";
 
 /**
  * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`

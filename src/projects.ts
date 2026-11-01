@@ -1,11 +1,27 @@
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { readJsonFile, updateJsonFile } from "./json-file.ts";
 
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
+
+/** The commands of the `harness` CLI, which a project cannot have as its name. */
+export const COMMAND_NAMES: ReadonlySet<string> = new Set([
+	"spawn",
+	"status",
+	"rename",
+	"send",
+	"wait",
+	"stop",
+	"list",
+	"attach",
+	"host",
+	"create",
+	"projects",
+]);
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -20,16 +36,7 @@ export function projectsPath(): string {
  */
 export function readProjects(): Record<string, string> {
 	const path = projectsPath();
-	let text: string;
-
-	try {
-		text = readFileSync(path, "utf8");
-	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
-		throw error;
-	}
-
-	const projects: unknown = JSON.parse(text);
+	const projects = readJsonFile(path);
 
 	if (!Value.Check(Type.Record(Type.String(), Type.Unknown()), projects)) {
 		throw new Error(`${path} is not an object of project names to directories`);
@@ -48,13 +55,13 @@ export function readProjects(): Record<string, string> {
 
 /**
  * Adds the project `name` with the real path of `dir` to the projects, and gives that path. It throws for an invalid or
- * existing name and for a directory that does not exist.
+ * existing name, for the name of a command and for a directory that does not exist.
  */
 export function addProject(name: string, dir: string): string {
 	if (!NAME.test(name))
 		throw new Error(`A project name has 1 to 32 characters: a-z first, then a-z, 0-9 or -: ${name}`);
 
-	if (name === MAIN_PROJECT) throw new Error(`A project cannot have the name ${name}`);
+	if (name === MAIN_PROJECT || COMMAND_NAMES.has(name)) throw new Error(`A project cannot have the name ${name}`);
 	let real: string;
 
 	try {
@@ -64,15 +71,12 @@ export function addProject(name: string, dir: string): string {
 	}
 
 	if (!statSync(real).isDirectory()) throw new Error(`Not a directory: ${dir}`);
-	const projects = readProjects();
 
-	if (Object.hasOwn(projects, name)) throw new Error(`The project ${name} exists (${projects[name]})`);
-	const path = projectsPath();
-	mkdirSync(dirname(path), { recursive: true });
-	// A temporary file, then a rename, so a stop in between does not truncate the projects.
-	const temporary = `${path}.${process.pid}.tmp`;
-	writeFileSync(temporary, `${JSON.stringify({ ...projects, [name]: real }, null, "\t")}\n`);
-	renameSync(temporary, path);
+	updateJsonFile(projectsPath(), readProjects, (projects) => {
+		if (Object.hasOwn(projects, name)) throw new Error(`The project ${name} exists (${projects[name]})`);
+
+		return { ...projects, [name]: real };
+	});
 
 	return real;
 }

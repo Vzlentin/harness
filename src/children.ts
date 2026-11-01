@@ -145,15 +145,17 @@ export type Child = {
 	readonly conversation: Conversation;
 	/**
 	 * Admits `input` and returns. A request ID admitted before is not admitted again, and a closed child refuses input.
-	 * A new request ID becomes the last request before the submit, so a crash between the two still finds it.
+	 * The commit after the submit makes the request the last request, unless a newer submission already is, and runs
+	 * `admitted`. A crash between the submit and that commit leaves the last request as it was; a repeat of the request
+	 * runs the commit. A close that comes between the submit and that commit aborts the new input, and the send fails.
 	 * A send while a schema ask runs turns `respond` off, so that ask gives `no-respond` unless `respond` already saved
 	 * its answer.
 	 */
-	send(input: Input, context: Context): Promise<void>;
+	send(input: Input, context: Context, options?: { readonly admitted?: (tx: Tx) => Promise<void> }): Promise<void>;
 	/**
 	 * Admits the passive entry `write` and returns. It starts no turn: an idle child places it at once, and a busy child
-	 * at its next boundary. A request ID admitted before is not admitted again, and a closed child refuses it. It does
-	 * not change the last request.
+	 * at its next boundary. A request ID admitted before is not admitted again, and a closed child refuses it, also when
+	 * the close comes during the submit. It does not change the last request.
 	 */
 	write(write: Write, context: Context): Promise<void>;
 	/**
@@ -181,10 +183,11 @@ export type Child = {
 	/** The spend of the child and everything under it, for reports. */
 	usage(context: Context): Promise<UsageState>;
 	/**
-	 * Withdraws the queued input of the child and its subtree, aborts them, background work included, and marks them
-	 * closed. Gives the conversations it closed, parents first. With `below`, it does this only for the subtree under
-	 * the child, and the child stays open. A turn of the child's conversation that a task outside the child's owner
-	 * sent, such as a later task of its group, is aborted only through `conversation.abort`.
+	 * Marks the child and its subtree closed in one commit, then withdraws their queued input and aborts them, background
+	 * work included. A repeat finishes the aborts of a close that stopped. Gives the conversations it closed, parents
+	 * first. With `below`, it does this only for the subtree under the child, and the child stays open. A turn of the
+	 * child's conversation that a task outside the child's owner sent, such as a later task of its group, is aborted only
+	 * through `conversation.abort`.
 	 */
 	close(context: Context, options?: { readonly below?: boolean }): Promise<ConversationId[]>;
 };
@@ -200,8 +203,8 @@ export type Children = {
 	/**
 	 * The child of `key`: created the first time `key` is seen, with its lineage, in one commit, and the same child after.
 	 * `setup` runs in the creating commit. Before creating anything, it refuses a spec whose model neither it nor the
-	 * owner's agent names, an unknown model or tool, and a parent at its depth limit. Keys are global in a store, so
-	 * callers prefix them.
+	 * owner's agent names, an unknown model or tool, a parent at its depth limit, and a closed parent. Keys are global in
+	 * a store, so callers prefix them.
 	 */
 	open(
 		place: Place,
@@ -233,16 +236,17 @@ export type Children = {
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
 	/**
-	 * The `send` and `state` of `Child` for any conversation: `read` gives its last request, and `write` records a new
-	 * request ID in the commit that admits it, before the submit. `state` is never `closed`.
+	 * The `send` and `state` of `Child` for any conversation, with its last request in `last`. As for `Child.send`, the
+	 * commit after the submit writes the request as the last request, unless a newer submission already is. `state` is
+	 * never `closed`.
 	 */
-	turn(
-		place: Place,
-		id: ConversationId,
-		conversation: Conversation,
-		read: (context: Context) => Promise<string | null | undefined>,
-		write: (tx: Tx, requestId: string) => Promise<void>,
-	): Turn;
+	turn(place: Place, id: ConversationId, conversation: Conversation, last: LastRequest): Turn;
+};
+
+/** Where `Children.turn` keeps the last request of a conversation. */
+export type LastRequest = {
+	read(tx: Tx): Promise<string | null>;
+	write(tx: Tx, requestId: string): Promise<void>;
 };
 
 /** The input and the state of one conversation, as `Children.turn` gives them. */
@@ -351,11 +355,11 @@ export function createChildren(durable: typeof Durable): Children {
 		return doc === undefined ? undefined : lineageOf(doc);
 	}
 
-	/** Reads through a commit, which returns nothing on a task's runtime. */
-	async function read<T>(place: Place, reader: (tx: Tx) => Promise<T>, context: Context): Promise<T> {
+	/** Commits `change` and gives back its value, because `Store.commit` returns nothing on a task's runtime. */
+	async function commitFor<T>(place: Place, change: (tx: Tx) => Promise<T>, context: Context): Promise<T> {
 		let result: { readonly value: T } | undefined;
 		await place.store.commit(async (tx) => {
-			result = { value: await reader(tx) };
+			result = { value: await change(tx) };
 
 			return undefined;
 		}, context);
@@ -407,24 +411,48 @@ export function createChildren(durable: typeof Durable): Children {
 		return { status: "ok", text, entry };
 	}
 
-	const turn: Children["turn"] = (place, id, conversation, readLast, write) => ({
+	/**
+	 * Makes the admitted `requestId` the last request of `id`, unless the current one has a newer submission, so a
+	 * repeat of an older request does not move it back.
+	 */
+	async function setLast(tx: Tx, id: ConversationId, last: LastRequest, requestId: string): Promise<void> {
+		const current = await last.read(tx);
+
+		if (current === requestId) return;
+		const now = current === null ? undefined : await tx.submissionByRequest(id, current);
+		const submission = await tx.submissionByRequest(id, requestId);
+
+		if (submission === undefined || (now !== undefined && now.id > submission.id)) return;
+		await last.write(tx, requestId);
+	}
+
+	const turn: Children["turn"] = (place, id, conversation, last) => ({
 		async send(input, context) {
+			await conversation.submit(input, context);
 			await place.store.commit(async (tx) => {
-				if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return undefined;
-				await write(tx, input.requestId);
+				await setLast(tx, id, last, input.requestId);
 
 				return undefined;
 			}, context);
-			await conversation.submit(input, context);
 		},
 		async state(context) {
 			const live = await place.store.snapshot(durable.LiveDoc, id, context);
 
 			if (live?.run !== undefined) return "busy";
-			const requestId = await readLast(context);
 
-			const settled =
-				requestId == null ? undefined : await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
+			// One commit for both reads: the store reads a submission by request ID only in a commit.
+			const settled = await commitFor(
+				place,
+				async (tx) => {
+					const requestId = await last.read(tx);
+
+					return requestId == null ? undefined : tx.submissionByRequest(id, requestId);
+				},
+				context,
+			);
+
+			// A request that is admitted and not answered yet makes the child busy before its run starts.
+			if (settled?.status === "queued" || settled?.status === "placed") return "busy";
 
 			// An aborted turn leaves the conversation idle.
 			return settled?.status === "unanswered" && settled.reason !== "aborted" ? "error" : "idle";
@@ -434,18 +462,69 @@ export function createChildren(durable: typeof Durable): Children {
 	function makeChild(place: Place, id: ConversationId, childLineage: Lineage, conversation: Conversation): Child {
 		const lastRequest = async (context: Context) => (await place.store.snapshot(ChildDoc, id, context))?.lastRequest;
 
-		const turns = turn(place, id, conversation, lastRequest, async (tx, requestId) => {
-			const doc = await tx.doc(ChildDoc, id);
+		const last: LastRequest = {
+			read: async (tx) => (await tx.doc(ChildDoc, id)).lastRequest,
+			write: async (tx, requestId) => {
+				(await tx.doc(ChildDoc, id)).lastRequest = requestId;
+			},
+		};
 
-			if (doc.closed) throw new Error(`The child ${id} is closed`);
-			await answers.prepare(tx, id, requestId);
-			doc.lastRequest = requestId;
-		});
+		const turns = turn(place, id, conversation, last);
+
+		const refuseClosed = async (tx: Tx) => {
+			if ((await tx.doc(ChildDoc, id)).closed) throw new Error(`The child ${id} is closed`);
+		};
+
+		/**
+		 * Admits `draft` in three steps: the commit `before` when given, the submit, and a commit that refuses a child
+		 * that a close reached during the submit and else runs `after`. pi-durable admits a submission in a commit of its
+		 * own, so the checks of `before` cannot share it. A close during the submit did not abort the new submission, so
+		 * the refusal aborts the child again.
+		 */
+		const admitToChild = async (
+			draft: Input | Write,
+			steps: { readonly before?: (tx: Tx) => Promise<void>; readonly after?: (tx: Tx) => Promise<void> },
+			context: Context,
+		) => {
+			const { before, after } = steps;
+
+			if (before !== undefined) {
+				await place.store.commit(async (tx) => {
+					await before(tx);
+
+					return undefined;
+				}, context);
+			}
+
+			await conversation.submit(draft, context);
+
+			const closed = await commitFor(
+				place,
+				async (tx) => {
+					if ((await tx.doc(ChildDoc, id)).closed) return true;
+					await after?.(tx);
+
+					return false;
+				},
+				context,
+			);
+
+			if (closed) {
+				await conversation.abort(context, { background: true });
+				throw new Error(`The child ${id} is closed`);
+			}
+		};
+
+		/** Makes `requestId` the last request and records its submission for the current ask. */
+		const recordAdmission = async (tx: Tx, requestId: string) => {
+			await setLast(tx, id, last, requestId);
+			await answers.recordSubmission(tx, id, requestId);
+		};
 
 		/** `answer` of the turn `attempt`, with the `respond` answer of a schema ask, or `no-respond` without one. */
 		const withRespond = async (answer: Answer, attempt: string, schema: JsonObject | undefined, context: Context) => {
 			if (schema === undefined || answer.status !== "ok") return answer;
-			const value = await read(place, (tx) => answers.valueIn(tx, id, attempt), context);
+			const value = await commitFor(place, (tx) => answers.valueIn(tx, id, attempt), context);
 
 			if (value === undefined) {
 				return { status: "failed", reason: "no-respond", text: answer.text, entry: answer.entry } as const;
@@ -458,7 +537,7 @@ export function createChildren(durable: typeof Durable): Children {
 			const requestId = request ?? (await lastRequest(context));
 
 			if (requestId == null) return { status: "failed", reason: "unanswered", cause: "no request" };
-			const record = await read(place, (tx) => tx.submissionByRequest(id, requestId), context);
+			const record = await commitFor(place, (tx) => tx.submissionByRequest(id, requestId), context);
 
 			if (record === undefined) return { status: "failed", reason: "unanswered", cause: "no request" };
 			const submission = await place.store.submission(record.id, context);
@@ -476,7 +555,7 @@ export function createChildren(durable: typeof Durable): Children {
 
 			context.abortSignal?.throwIfAborted();
 
-			return read(place, (tx) => answerIn(tx, id, requestId), context);
+			return commitFor(place, (tx) => answerIn(tx, id, requestId), context);
 		};
 
 		function ask(
@@ -512,20 +591,17 @@ export function createChildren(durable: typeof Durable): Children {
 					record = await tx.submissionByRequest(id, attempt);
 				}
 
-				const doc = await tx.doc(ChildDoc, id);
-
-				if (doc.closed) throw new Error(`The child ${id} is closed`);
+				await refuseClosed(tx);
 
 				// A request that is still pending keeps its ask.
-				if (record !== undefined) return undefined;
-				await answers.prepare(tx, id, attempt, schema);
-				doc.lastRequest = attempt;
+				if (record === undefined) await answers.prepare(tx, id, attempt, schema);
 
 				return undefined;
 			}, context);
 
 			if (saved !== undefined) return saved;
-			await conversation.submit({ ...input, requestId: attempt }, context);
+			const request = { ...input, requestId: attempt };
+			await admitToChild(request, { after: (tx) => recordAdmission(tx, request.requestId) }, context);
 
 			return withRespond(await settled(context, attempt), attempt, schema, context);
 		}
@@ -534,16 +610,26 @@ export function createChildren(durable: typeof Durable): Children {
 			id,
 			lineage: childLineage,
 			conversation,
-			send: turns.send,
+			async send(input, context, options) {
+				const before = async (tx: Tx) => {
+					if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return;
+					await refuseClosed(tx);
+					await answers.prepare(tx, id, input.requestId);
+				};
+
+				const after = async (tx: Tx) => {
+					await recordAdmission(tx, input.requestId);
+					await options?.admitted?.(tx);
+				};
+
+				await admitToChild(input, { before, after }, context);
+			},
 			async write(write, context) {
-				await place.store.commit(async (tx) => {
-					if ((await tx.submissionByRequest(id, write.requestId)) !== undefined) return undefined;
+				const before = async (tx: Tx) => {
+					if ((await tx.submissionByRequest(id, write.requestId)) === undefined) await refuseClosed(tx);
+				};
 
-					if ((await tx.doc(ChildDoc, id)).closed) throw new Error(`The child ${id} is closed`);
-
-					return undefined;
-				}, context);
-				await conversation.submit(write, context);
+				await admitToChild(write, { before }, context);
 			},
 			ask,
 			settled,
@@ -565,15 +651,25 @@ export function createChildren(durable: typeof Durable): Children {
 				return sum;
 			},
 			async close(context, options) {
-				const ids = (await subtree(place, id, context)).slice(options?.below === true ? 1 : 0);
+				// One commit reads the subtree and marks it, so a child that `open` adds under it is either marked or refused.
+				const ids = await commitFor(
+					place,
+					async (tx) => {
+						const members = [id];
+
+						// The loop also visits the IDs that it appends.
+						for (const member of members) members.push(...(await tx.doc(ChildDoc, member)).children);
+						const closing = members.slice(options?.below === true ? 1 : 0);
+
+						for (const member of closing) (await tx.doc(ChildDoc, member)).closed = true;
+
+						return closing;
+					},
+					context,
+				);
 
 				for (const member of ids) {
 					await (await place.store.conversation(member, context))?.abort(context, { background: true });
-					await place.store.commit(async (tx) => {
-						(await tx.doc(ChildDoc, member)).closed = true;
-
-						return undefined;
-					}, context);
 				}
 
 				return ids;
@@ -666,6 +762,11 @@ export function createChildren(durable: typeof Durable): Children {
 				const known = await tx.doc(Keys, key, null);
 
 				if (known.conversation !== 0) return undefined;
+
+				if (parent !== undefined && parentId !== undefined && (await tx.doc(ChildDoc, parentId)).closed) {
+					throw new Error(`The child ${parentId} is closed`);
+				}
+
 				const child = await tx.createConversation({ ownership: { kind: "task", taskId: ownerTask } });
 				let change: AgentChange = { model, thinkingLevel };
 

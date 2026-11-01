@@ -6,7 +6,7 @@ import { copyJson, type JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
 import { type AssistantMessage, type Message, Type, validateToolArguments } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { ConversationId, Extension, HookApi, JsonObject, Tx } from "@earendil-works/pi-durable";
+import type { ConversationId, Extension, HookApi, JsonObject, SubmissionId, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { errorMessage, Json } from "./protocol.ts";
 
@@ -16,14 +16,28 @@ import { errorMessage, Json } from "./protocol.ts";
  */
 export const REMINDER = "Answer with the respond tool, as the schema in answer_schema says.";
 
+/** The refusal of a `respond` call outside the run of a schema ask. */
+const NO_STRUCTURED_ANSWER = "This turn asks for no structured answer.";
+
 /** How many reminders one turn submission gets before its ask fails. */
 const MAX_REMINDERS = 2;
 
 /**
- * The JSON Schema of the current ask of a conversation, the request ID of the turn that sends it, and the answers that
- * `respond` checked and saved, by request ID. The schema is absent for an ask without one.
+ * The JSON Schema of the current ask of a conversation, the request ID of the turn that sends it, its submission once
+ * admitted, and the answers that `respond` checked and saved, by request ID. The schema is absent for an ask without
+ * one.
  */
-type AnswerState = { schema?: JsonObject; requestId?: string; answers: Record<string, JsonValue> };
+type AnswerState = {
+	schema?: JsonObject;
+	requestId?: string;
+	submission?: SubmissionId;
+	/**
+	 * The inputs of the run at the time of the ask, when it has no submission yet. A run with another input then is the
+	 * run of the ask, which the submission commit has not recorded yet.
+	 */
+	earlier?: SubmissionId[];
+	answers: Record<string, JsonValue>;
+};
 
 export type Answers = {
 	/**
@@ -36,6 +50,11 @@ export type Answers = {
 	 * with a schema. Keeps the saved answers and the other entries of the stored `modelTools`.
 	 */
 	prepare(tx: Tx, id: ConversationId, requestId: string, schema?: JsonObject): Promise<void>;
+	/**
+	 * Records the submission of `requestId` when it is the current ask of `id`, after its submit. `respond` and the
+	 * reminders act only in the run of that submission.
+	 */
+	recordSubmission(tx: Tx, id: ConversationId, requestId: string): Promise<void>;
 	/** The answer that `respond` saved in the turn `requestId` of `id`, if any. */
 	valueIn(tx: Tx, id: ConversationId, requestId: string): Promise<JsonValue | undefined>;
 };
@@ -51,7 +70,10 @@ export function createAnswers(durable: typeof Durable): Answers {
 		initial: () => ({ answers: {} }),
 	});
 
-	/** Saves a schema ask's answer, checked against the schema, and ends the turn. Only a schema ask offers it. */
+	/**
+	 * Saves a schema ask's answer, checked against the schema, and ends the turn. Only a schema ask offers it, and only
+	 * the run of the ask's own input can save it: a run of an earlier input refuses it.
+	 */
 	const respond = durable.defineTool({
 		name: "respond",
 		description: "Give the answer of this turn in the structured form the prompt asks for. This ends the turn.",
@@ -63,33 +85,35 @@ export function createAnswers(durable: typeof Durable): Answers {
 		callers: ["model"],
 		deferred: true,
 		execute: async (args, api, context) => {
-			const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
-			const requestId = doc?.requestId;
+			const result = await api.commit(async (tx): Promise<{ refused: true } | { error?: string }> => {
+				const doc = await tx.doc(AnswerDoc, api.conversationId);
+				const { schema, requestId } = doc;
 
-			if (doc?.schema === undefined || requestId === undefined) {
-				return { isError: true, output: [{ type: "text", text: "This turn asks for no structured answer." }] };
-			}
+				if (schema === undefined || requestId === undefined) return { refused: true };
+				// The submission by request ID, not `doc.submission`: the run can reach this call before the ask records it.
+				const submission = await tx.submissionByRequest(api.conversationId, requestId);
+				const run = (await tx.doc(durable.LiveDoc, api.conversationId)).run;
 
-			if (!Value.Check(Json, args.answer)) {
-				return { isError: true, output: [{ type: "text", text: "The answer must be a JSON value." }] };
-			}
+				if (submission === undefined || run === undefined || !run.inputs.includes(submission.id)) {
+					return { refused: true };
+				}
 
-			let answer: JsonValue;
+				if (!Value.Check(Json, args.answer)) return { error: "The answer must be a JSON value." };
 
-			try {
-				answer = checkedAnswer(doc.schema, args.answer, api.callId);
-			} catch (error) {
-				return {
-					isError: true,
-					output: [{ type: "text", text: errorMessage(error) }],
-				};
-			}
+				try {
+					doc.answers[requestId] = checkedAnswer(schema, args.answer, api.callId);
+				} catch (error) {
+					return { error: errorMessage(error) };
+				}
 
-			await api.commit(async (tx) => {
-				(await tx.doc(AnswerDoc, api.conversationId)).answers[requestId] = answer;
-
-				return undefined;
+				return {};
 			}, context);
+
+			if ("refused" in result) {
+				return { isError: true, output: [{ type: "text", text: NO_STRUCTURED_ANSWER }] };
+			}
+
+			if (result.error !== undefined) return { isError: true, output: [{ type: "text", text: result.error }] };
 
 			return { output: [{ type: "text", text: "Answer recorded." }], control: { terminate: true } };
 		},
@@ -113,11 +137,17 @@ export function createAnswers(durable: typeof Durable): Answers {
 		return undefined;
 	};
 
-	/** A reminder to call `respond`, when a schema ask got a complete answer without one and has reminders left. */
+	/**
+	 * A reminder to call `respond`, when a schema ask got a complete answer without one and has reminders left. Only the
+	 * run of the ask's own input gets it.
+	 */
 	const remind = async (answer: AssistantMessage, api: HookApi, context: Context) => {
 		const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
 
 		if (doc?.schema === undefined || doc.requestId === undefined) return undefined;
+		const run = (await api.snapshot(durable.LiveDoc, api.conversationId, context))?.run;
+
+		if (run === undefined || !isRunOfAsk(doc, run.inputs)) return undefined;
 
 		if (Object.hasOwn(doc.answers, doc.requestId) || !complete(answer.stopReason)) return undefined;
 		const count = (await api.memo<number>("reminders", context)) ?? 0;
@@ -146,6 +176,8 @@ export function createAnswers(durable: typeof Durable): Answers {
 			if (schema === undefined) delete doc.schema;
 			else doc.schema = schema;
 			doc.requestId = requestId;
+			delete doc.submission;
+			doc.earlier = [...((await tx.doc(durable.LiveDoc, id)).run?.inputs ?? [])];
 			const agent = await tx.doc(durable.AgentDoc, id);
 			const name = respond.name;
 			const tools = agent.modelTools;
@@ -162,6 +194,14 @@ export function createAnswers(durable: typeof Durable): Answers {
 				agent.modelTools = { ...tools, add: tools.add.filter((tool) => tool !== name) };
 			}
 		},
+		async recordSubmission(tx, id, requestId) {
+			const doc = await tx.doc(AnswerDoc, id);
+			const submission = doc.requestId === requestId ? await tx.submissionByRequest(id, requestId) : undefined;
+
+			if (submission === undefined) return;
+			doc.submission = submission.id;
+			delete doc.earlier;
+		},
 		async valueIn(tx, id, requestId) {
 			const { answers } = await tx.doc(AnswerDoc, id);
 
@@ -174,6 +214,17 @@ export function createAnswers(durable: typeof Durable): Answers {
 /** True when an answer with `stopReason` reached its end; any other answer is cut. */
 export function complete(stopReason: string): boolean {
 	return stopReason === "stop" || stopReason === "toolUse";
+}
+
+/**
+ * Whether the run with `inputs` is the run of the current ask of `doc`: it holds the ask's submission, or, before the
+ * submission is recorded, an input that the run did not have at the ask.
+ */
+function isRunOfAsk(doc: AnswerState, inputs: readonly SubmissionId[]): boolean {
+	if (doc.submission !== undefined) return inputs.includes(doc.submission);
+	const earlier = doc.earlier ?? [];
+
+	return inputs.some((input) => !earlier.includes(input));
 }
 
 /** The number of reminders at the end of `messages`, counting back to the first other user message. */

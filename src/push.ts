@@ -12,16 +12,16 @@ import {
 	Children,
 	childOf,
 	childTarget,
+	isPushRequest,
 	library,
 	markRead,
+	pushRequest,
 	type TargetHost,
 	target,
 } from "./targets.ts";
 import { isHeld, unreadAnswers, unreadNotify } from "./unread.ts";
 
 const context = BACKGROUND_CONTEXT;
-
-const PUSH_PREFIX = "push:";
 
 /** What the push uses of the host. */
 export type PushHost = TargetHost & {
@@ -45,6 +45,7 @@ type Listener = {
 	/** Resolves once the reply is written, with false when the write failed. */
 	readonly written: Promise<boolean>;
 	readonly resolve: (deliveries: readonly Delivery[]) => void;
+	readonly reject: (cause: Error) => void;
 };
 
 /** The answers of one child that a sweep takes. They become read up to `read`, and `main` is the last one. */
@@ -60,11 +61,19 @@ type NextSweep = { readonly ended: Promise<void>; readonly cancel: () => void };
 
 type Entry = readonly [handle: string, record: ChildRecord];
 
+/** The failed pushes of a child in a row, and when the next try may run. */
+type Failure = { readonly count: number; readonly retryAt: number };
+
+/** The wait after the first failed push of a child. It doubles after each other failure, up to `MAX_RETRY_MS`. */
+const FIRST_RETRY_MS = 1000;
+const MAX_RETRY_MS = 60_000;
+
 /**
  * Pushes the unread answers of each child that is done to its caller. A child is done when its own turn ended and no
  * child of its own holds it. A sweep runs at the start, after each commit that can end a turn or change a record, at
  * the end of each `wait` and `send`, and when an `answers` request opens or its reply is written. Calls for a sweep
- * while one runs give one more sweep.
+ * while one runs give one more sweep. After a push of a child fails, the sweeps skip that child for a time that doubles
+ * with each failure, and a timer sweeps again when it ends.
  */
 export class Push {
 	readonly #host: PushHost;
@@ -76,7 +85,11 @@ export class Push {
 	readonly #listeners = new Map<string, Listener>();
 	/** Called at the end of the next sweep. */
 	readonly #sweepEnds = new Set<() => void>();
+	/** The children whose last pushes failed. */
+	readonly #failures = new Map<string, Failure>();
 	readonly #unsubscribe: () => void;
+	/** The timer of the sweep at the end of the earliest wait of `#failures`. */
+	#retry: ReturnType<typeof setTimeout> | undefined;
 	#dirty = false;
 	#running = false;
 	#closed = false;
@@ -99,9 +112,10 @@ export class Push {
 
 	/** Schedules a sweep. */
 	schedule(): void {
+		if (this.#closed) return;
 		this.#dirty = true;
 
-		if (this.#running || this.#closed) return;
+		if (this.#running) return;
 		this.#running = true;
 		// Out of the commit listener, which must not call the store.
 		setImmediate(() => void this.#run());
@@ -125,7 +139,7 @@ export class Push {
 	/**
 	 * The last request of `child` and its answer, once the child is done: its own turn ended and none of its children
 	 * holds it. While its children hold it, the child gets their pushes, and the input of each push becomes its last
-	 * request.
+	 * request. It throws once the push closes.
 	 */
 	async done(child: Child, signal: AbortSignal): Promise<{ readonly main: string | null; readonly answer: Answer }> {
 		const waiting = withAbortSignal(signal, context);
@@ -152,12 +166,23 @@ export class Push {
 			}
 
 			signal.throwIfAborted();
+
+			if (this.#closed) throw new Error("The host is closing");
 		}
 	}
 
-	/** `ended` resolves at the end of the next sweep, or when `signal` aborts. `cancel()` stops listening. */
+	/**
+	 * `ended` resolves at the end of the next sweep, when `signal` aborts, or when the push closes, at once after it.
+	 * `cancel()` stops listening.
+	 */
 	#nextSweep(signal: AbortSignal): NextSweep {
 		const { promise, resolve } = Promise.withResolvers<void>();
+
+		if (this.#closed) {
+			resolve();
+
+			return { ended: promise, cancel: () => {} };
+		}
 
 		const end = () => {
 			signal.removeEventListener("abort", end);
@@ -179,19 +204,29 @@ export class Push {
 	/**
 	 * Opens the `answers` request of `caller` on `reply`, in place of an older one, and sweeps. The reply comes with the
 	 * next answers that a sweep pushes to the caller. Those answers become read only once the reply is written; when the
-	 * write fails, or `signal` aborts first, they stay unread for the next request or a `wait`.
+	 * write fails, or `signal` aborts first, they stay unread for the next request or a `wait`. The older request gets
+	 * an error reply.
 	 */
 	listen(caller: string, reply: Connection, signal: AbortSignal): Promise<readonly Delivery[]> {
 		const deliveries = Promise.withResolvers<readonly Delivery[]>();
 		const written = Promise.withResolvers<boolean>();
 		reply.afterReply(written.resolve);
-		const listener: Listener = { socket: reply.socket, written: written.promise, resolve: deliveries.resolve };
+
+		const listener: Listener = {
+			socket: reply.socket,
+			written: written.promise,
+			resolve: deliveries.resolve,
+			reject: deliveries.reject,
+		};
+
+		this.#listeners.get(caller)?.reject(new Error("A newer answers request of the same caller replaced this one"));
 		this.#listeners.set(caller, listener);
 		signal.addEventListener(
 			"abort",
 			() => {
 				if (this.#listeners.get(caller) === listener) this.#listeners.delete(caller);
-				deliveries.reject(new Error("The connection closed"));
+				// The host aborts with its reason when it closes.
+				deliveries.reject(signal.reason instanceof Error ? signal.reason : new Error("The connection closed"));
 			},
 			{ once: true },
 		);
@@ -205,16 +240,22 @@ export class Push {
 		return [...this.#listeners.values()].some((listener) => listener.socket === socket);
 	}
 
-	/** Stops the sweeps. */
+	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
 	close(): void {
 		this.#closed = true;
 		this.#unsubscribe();
+		clearTimeout(this.#retry);
+		const ends = [...this.#sweepEnds];
+		this.#sweepEnds.clear();
+
+		for (const end of ends) end();
 	}
 
 	async #run(): Promise<void> {
 		while (this.#dirty && !this.#closed) {
 			this.#dirty = false;
 			await this.#sweep().catch(this.#warn);
+			this.#setRetry();
 			const ends = [...this.#sweepEnds];
 			this.#sweepEnds.clear();
 
@@ -230,28 +271,65 @@ export class Push {
 		const entries: Entry[] = Object.entries(state?.children ?? {});
 		entries.sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
 		const done = new Map<string, Entry[]>();
+		const now = Date.now();
+
+		for (const handle of this.#failures.keys()) {
+			if (state?.children[handle] === undefined) this.#failures.delete(handle);
+		}
+
+		// The callers with an unread child that waits after a failed push: their later children wait too, to keep the order.
+		const blocked = new Set<string>();
 
 		for (const entry of entries) {
 			const [handle, record] = entry;
-			const skip = !unreadNotify(record) || this.#active.has(handle) || this.#writing.has(handle);
+
+			if (!unreadNotify(record)) continue;
+
+			if ((this.#failures.get(handle)?.retryAt ?? 0) > now) {
+				blocked.add(record.caller);
+				continue;
+			}
+
+			const skip = this.#active.has(handle) || this.#writing.has(handle) || blocked.has(record.caller);
 
 			if (!skip && !isHeld(state, record.conversationId))
 				done.set(record.caller, [...(done.get(record.caller) ?? []), entry]);
 		}
 
 		for (const [caller, children] of done) {
-			const destination = await this.#destination(caller, entries).catch(this.#warn);
+			let destination: Destination | undefined;
+
+			try {
+				destination = await this.#destination(caller, entries);
+			} catch (cause) {
+				this.#fail(
+					children.map(([handle]) => handle),
+					cause,
+				);
+
+				continue;
+			}
 
 			if (destination === undefined) continue;
 			const taken: Taken[] = [];
 
 			for (const [handle, record] of children) {
-				const one = await this.#take(handle, record).catch(this.#warn);
+				let one: Taken | undefined;
 
-				if (one !== undefined) taken.push(one);
+				try {
+					one = await this.#take(handle, record);
+				} catch (cause) {
+					this.#fail([handle], cause);
+
+					// The later children of this caller wait until this one is pushed, so their answers keep their order.
+					break;
+				}
+
+				if (one === undefined) this.#succeed(handle);
+				else taken.push(one);
 			}
 
-			if (taken.length > 0) await this.#deliver(caller, destination, taken).catch(this.#warn);
+			if (taken.length > 0) await this.#deliver(caller, destination, taken);
 		}
 	}
 
@@ -267,25 +345,70 @@ export class Push {
 		return send === undefined ? undefined : { kind: "input", send };
 	}
 
-	/** Delivers the answers that a sweep took for `caller` to `destination`, oldest child first, and marks them read. */
+	/**
+	 * Delivers the answers that a sweep took for `caller` to `destination`, oldest child first, and marks them read. It
+	 * stops at the first child whose delivery fails.
+	 */
 	async #deliver(caller: string, destination: Destination, taken: readonly Taken[]): Promise<void> {
 		switch (destination.kind) {
 			case "reply":
 				this.#reply(caller, taken);
 
+				for (const { handle } of taken) this.#succeed(handle);
+
 				return;
 			case "input":
 				for (const { delivery, handle, read, main } of taken) {
 					// The caller is busy with the input before the child stops holding it, and a repeated push finds the first one.
-					await destination.send({
-						type: "input",
-						content: deliveryText(delivery),
-						whenBusy: "followUp",
-						requestId: `${PUSH_PREFIX}${handle}:${read}`,
-					});
-					await markRead(this.#host.harness, handle, read, main);
+					try {
+						await destination.send({
+							type: "input",
+							content: deliveryText(delivery),
+							whenBusy: "followUp",
+							requestId: pushRequest(handle, read),
+						});
+						await markRead(this.#host.harness, handle, read, main);
+					} catch (cause) {
+						this.#fail([handle], cause);
+
+						// The later children of this caller wait until this one is pushed, so their answers keep their order.
+						return;
+					}
+
+					this.#succeed(handle);
 				}
 		}
+	}
+
+	/** Forgets the failed pushes of `handle`. */
+	#succeed(handle: string): void {
+		this.#failures.delete(handle);
+	}
+
+	/** Counts a failed push of each of `handles`, and writes `cause` as a warning. */
+	#fail(handles: readonly string[], cause: unknown): void {
+		const now = Date.now();
+
+		for (const handle of handles) {
+			const count = (this.#failures.get(handle)?.count ?? 0) + 1;
+			const wait = Math.min(FIRST_RETRY_MS * 2 ** (count - 1), MAX_RETRY_MS);
+			this.#failures.set(handle, { count, retryAt: now + wait });
+		}
+
+		this.#host.warn(cause);
+	}
+
+	/** Sets the timer of a sweep at the earliest wait of `#failures` that has not ended, in place of the last one. */
+	#setRetry(): void {
+		clearTimeout(this.#retry);
+		this.#retry = undefined;
+		const now = Date.now();
+		const next = Math.min(...[...this.#failures.values()].flatMap(({ retryAt }) => (retryAt > now ? [retryAt] : [])));
+
+		if (!Number.isFinite(next) || this.#closed) return;
+		this.#retry = setTimeout(() => this.schedule(), next - now);
+		// The timer alone does not keep the host running.
+		this.#retry.unref();
 	}
 
 	/** The input of `caller` when it is a conversation of the host. */
@@ -355,11 +478,6 @@ export class Push {
 
 		return { delivery, handle, read, main };
 	}
-}
-
-/** Whether `requestId` is the input of a push, which a child gets from its own children. */
-function isPushRequest(requestId: string): boolean {
-	return requestId.startsWith(PUSH_PREFIX);
 }
 
 /** Whether `change` can end a turn or change a record: a live document without a run, or the `Children` document. */

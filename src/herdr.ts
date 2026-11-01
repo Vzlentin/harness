@@ -14,13 +14,18 @@ const HERDR_SOURCE = "custom:harness";
  */
 const PANE_VARIABLE = "HARNESS_HERDR_PANE";
 
-/** The part of the output of `herdr tab create` that has the pane of the tab. */
-const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
+/** The part of the output of `herdr tab create` that has the pane of the tab, and the tab ID when Herdr gives it. */
+const TabCreated = Type.Object({
+	result: Type.Object({
+		root_pane: Type.Object({ pane_id: Type.String() }),
+		tab: Type.Optional(Type.Object({ tab_id: Type.Optional(Type.String()) })),
+	}),
+});
 
 /** The part of the output of `herdr pane split` that has the new pane. */
 const PaneSplit = Type.Object({ result: Type.Object({ pane: Type.Object({ pane_id: Type.String() }) }) });
 
-export type AgentReporter = { report(busy: boolean): void; release(): Promise<void> };
+export type AgentReporter = { report(busy: boolean): Promise<void>; release(): Promise<void> };
 
 /**
  * The words of the command that opens `target` in Pi, with this Node and this package's CLI, so it does not need the
@@ -106,8 +111,9 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
  * Opens the children library conversation `conversation` in Pi, on the project of `env` and this process's cwd: in a
  * new pane to the right of the Herdr pane `place.pane`, or in a new tab of the Herdr workspace `place.workspace`. The
  * pane or tab gets the key of the conversation as its label. For a conversation, `ChildInfo` gives the same ID in
- * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID, and then makes no more
- * calls.
+ * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID. When a call fails after the
+ * pane or tab exists, it closes that pane or tab first: the tab, or its pane when Herdr gives no tab ID. A failure of
+ * that close is ignored, and the rejection keeps the first error.
  */
 export async function openConversationPane(
 	conversation: ChildInfo,
@@ -134,8 +140,14 @@ export async function openConversationPane(
 
 		if (!Value.Check(PaneSplit, output)) throw new Error(`herdr pane split gave no pane ID: ${split.trim()}`);
 		const pane = output.result.pane.pane_id;
-		await herdr(["pane", "rename", pane, label], env);
-		await runOpen(pane, target, env);
+		await closeOnFailure(
+			async () => {
+				await herdr(["pane", "rename", pane, label], env);
+				await runOpen(pane, target, env);
+			},
+			["pane", "close", pane],
+			env,
+		);
 
 		return;
 	}
@@ -166,40 +178,82 @@ export async function openConversationPane(
 
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 
-	await runOpen(output.result.root_pane.pane_id, target, env);
+	const pane = output.result.root_pane.pane_id;
+	const tab = output.result.tab?.tab_id;
+
+	await closeOnFailure(
+		() => runOpen(pane, target, env),
+		tab === undefined ? ["pane", "close", pane] : ["tab", "close", tab],
+		env,
+	);
+}
+
+/** Runs `open`. When it fails, it runs `herdr` with `close`, ignores a failure of that call, and rejects with the first error. */
+async function closeOnFailure(
+	open: () => Promise<void>,
+	close: readonly string[],
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	try {
+		await open();
+	} catch (error) {
+		await herdr(close, env).catch(() => "");
+		throw error;
+	}
 }
 
 /**
  * Reports the state of the agent `label` to the Herdr pane of `HARNESS_HERDR_PANE`, with the command that opens
  * `target` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
- * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order.
+ * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order. A report of
+ * the state of the last report that waits or went through does nothing. After a failed last report, or after a
+ * release, the next report goes to Herdr again. `report` gives the end of its call, which never rejects.
  */
 export function agentReporter(env: NodeJS.ProcessEnv, label: string, target: MirrorTarget): AgentReporter {
 	const pane = env[PANE_VARIABLE] || undefined;
 	const resume = pane === undefined ? [] : ["--", ...openCommand(target)];
-	let calls: Promise<unknown> = Promise.resolve();
+	let calls: Promise<void> = Promise.resolve();
 	let seq = 0;
 	let reported: string | undefined;
 
-	const call = (command: string, options: readonly string[], resume: readonly string[]) => {
-		if (pane === undefined) return;
+	/** Queues one `herdr` call; `onFailure` runs with its `--seq` when it fails. */
+	const call = (
+		command: string,
+		options: readonly string[],
+		resume: readonly string[],
+		onFailure: (failed: number) => void,
+	) => {
+		if (pane === undefined) return calls;
 		seq = Math.max(Date.now(), seq + 1);
-		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(seq), pane];
+		const mine = seq;
+		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(mine), pane];
+
 		// A failed report never stops the caller.
-		calls = calls.then(() => herdr([...args, ...resume], env)).catch(() => {});
+		calls = calls.then(() =>
+			herdr([...args, ...resume], env).then(
+				() => {},
+				() => onFailure(mine),
+			),
+		);
+
+		return calls;
 	};
 
 	return {
 		report(busy) {
 			const state = busy ? "working" : "idle";
 
-			if (state === reported) return;
+			if (state === reported) return calls;
 			reported = state;
-			call("report-agent", ["--state", state], resume);
+
+			// Only the failure of the last call forgets the state: a later call has its own state, or a release.
+			return call("report-agent", ["--state", state], resume, (failed) => {
+				if (failed === seq) reported = undefined;
+			});
 		},
 		async release() {
-			call("release-agent", [], []);
-			await calls;
+			reported = undefined;
+			await call("release-agent", [], [], () => {});
 		},
 	};
 }

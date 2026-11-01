@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { REMINDER } from "../src/answer.ts";
 import { createChildren, type Owner, type Place } from "../src/children.ts";
 import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
@@ -283,6 +283,19 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(called("Revived")).toBe(0);
 	});
 
+	it("refuses a write and an ask to a closed child", async () => {
+		const child = await library.open(place, owner, "t:closed-input", { root: "test", ...faux, cwd: root }, context);
+		await child.close(context);
+		const model = [{ role: "user", content: "Written after the close", timestamp: Date.now() }] as const;
+		await expect(
+			child.write({ type: "write", requestId: "w1", entry: { kind: "test.note", model } }, context),
+		).rejects.toThrow(`The child ${child.id} is closed`);
+		await expect(
+			child.ask({ type: "input", content: "Asked after the close", requestId: "r1" }, context),
+		).rejects.toThrow(`The child ${child.id} is closed`);
+		expect(called("Asked after the close")).toBe(0);
+	});
+
 	it("refuses an explicit thinking level that the model does not have", async () => {
 		await expect(
 			library.open(place, owner, "t:loud", { root: "test", ...faux, thinking: "xhigh" }, context),
@@ -451,6 +464,90 @@ describe("children library", { timeout: 30_000 }, () => {
 		const child = await library.open(place, owner, "t:tools", spec, context);
 		const answer = await child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
 		expect(answer).toMatchObject({ status: "failed", reason: "no-respond" });
+	});
+
+	it("gives a schema ask queued behind another schema ask only its own respond answer", async () => {
+		const child = await library.open(place, owner, "t:ask-over-ask", { root: "test", ...faux, cwd: root }, context);
+		const gate = Promise.withResolvers<void>();
+		gates.set("Schema", gate);
+		const before = called("Schema");
+		const first = child.ask({ type: "input", content: "Schema", requestId: "r1" }, context, { schema });
+		await until(() => called("Schema") === before + 1);
+		const input = { type: "input", content: "No respond either", whenBusy: "followUp", requestId: "r2" } as const;
+		const second = child.ask(input, context, { schema });
+
+		while ((await harness.commit((tx) => tx.submissionByRequest(child.id, "r2"), context)) === undefined) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+
+		gate.resolve();
+		gates.delete("Schema");
+		expect(await first).toMatchObject({ status: "failed", reason: "no-respond" });
+		expect(await second).toMatchObject({ status: "failed", reason: "no-respond" });
+	});
+
+	it("keeps the last request when the submit of a send fails", async () => {
+		const child = await library.open(place, owner, "t:failed-submit", { root: "test", ...faux, cwd: root }, context);
+		await child.send({ type: "input", content: "Before", requestId: "r1" }, context);
+		await child.settled(context, "r1");
+		vi.spyOn(child.conversation, "submit").mockRejectedValueOnce(new Error("Stopped at submit"));
+		await expect(child.send({ type: "input", content: "Lost", requestId: "r2" }, context)).rejects.toThrow(
+			"Stopped at submit",
+		);
+		expect(await child.lastRequest(context)).toBe("r1");
+		expect(await child.settled(context)).toMatchObject({ status: "ok", text: "Answer to Before" });
+	});
+
+	it("refuses and aborts a send whose child closes during the submit", async () => {
+		const child = await library.open(place, owner, "t:close-race", { root: "test", ...faux, cwd: root }, context);
+		const submit = child.conversation.submit.bind(child.conversation);
+
+		vi.spyOn(child.conversation, "submit").mockImplementationOnce(async (...args) => {
+			await child.close(context);
+
+			return submit(...args);
+		});
+
+		gates.set("Raced", Promise.withResolvers());
+		await expect(child.send({ type: "input", content: "Raced", requestId: "r1" }, context)).rejects.toThrow(
+			`The child ${child.id} is closed`,
+		);
+		expect(await child.settled(context, "r1")).toMatchObject({ status: "failed", reason: "unanswered" });
+		gates.delete("Raced");
+	});
+
+	it("marks the whole subtree closed before it aborts any of it", async () => {
+		const parent = await library.open(place, owner, "t:atomic", { root: "test", ...faux, cwd: root }, context);
+		const child = await library.open(place, owner, "t:atomic-child", { parent: String(parent.id), ...faux }, context);
+		const states: string[] = [];
+
+		const watched: Place = {
+			...place,
+			store: {
+				commit: (change, commitContext) => harness.commit(change, commitContext),
+				snapshot: harness.snapshot.bind(harness),
+				submission: (id, lookupContext) => harness.submission(id, lookupContext),
+				conversation: async (id, lookupContext) => {
+					states.push(await child.state(context));
+
+					return harness.conversation(id, lookupContext);
+				},
+			},
+		};
+
+		const closing = await library.find(watched, owner, { id: String(parent.id) }, context);
+		states.length = 0;
+		await closing?.close(context);
+		expect(states).toEqual(["closed", "closed"]);
+	});
+
+	it("refuses a child of a closed parent", async () => {
+		const parent = await library.open(place, owner, "t:closed-parent", { root: "test", ...faux }, context);
+		await parent.close(context);
+		await expect(
+			library.open(place, owner, "t:orphan", { parent: String(parent.id), ...faux }, context),
+		).rejects.toThrow(`The child ${parent.id} is closed`);
+		expect(await library.find(place, owner, { key: "t:orphan" }, context)).toBeUndefined();
 	});
 
 	it("a send stops a running schema ask", async () => {

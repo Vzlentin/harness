@@ -88,12 +88,22 @@ export type MirrorOptions = {
 
 const HOST_CLOSED = "The harness host closed the connection";
 
-/** A message that waits until the host has it. It keeps its request ID when it goes again. */
+/**
+ * The error of a message that went to the host on a connection that closed before the host answered, when the mirror
+ * then failed: the host may have the message or not.
+ */
+export class PossiblySentError extends Error {}
+
+/**
+ * A message that waits until the host has it. It keeps its request ID when it goes again. `written` tells that it went
+ * on a connection once, so the host may have it.
+ */
 type Outgoing = {
 	readonly requestId: string;
 	readonly message: string;
 	readonly followUp: boolean;
 	readonly sent: PromiseWithResolvers<void>;
+	written: boolean;
 };
 
 type Watched = Awaited<ReturnType<Client["watch"]>> & { readonly client: Client };
@@ -102,8 +112,8 @@ type Watched = Awaited<ReturnType<Client["watch"]>> & { readonly client: Client 
  * A live copy of one conversation of a harness host, and the requests that act on it. It connects at once, which starts
  * the host when none runs, and connects again when the host closes the connection, with one try after each of
  * `retryDelaysMs`. It fails for good when the first connection fails, when all the tries fail, when the child is
- * stopped, and when the host closes a connection that was opened again less than 10 s before, so that a host that fails
- * at each start does not start again and again. `onChange` runs after each change of `status`, `view` and `child`, with
+ * stopped, when the host closes a connection that was opened again less than 10 s before, so that a host that fails
+ * at each start does not start again and again, and when it closes. `onChange` runs after each change of `status`, `view` and `child`, with
  * the status before the change.
  */
 export class Mirror {
@@ -155,13 +165,22 @@ export class Mirror {
 	 * Sends `message`: a new turn when the conversation is idle, else a steer, or a follow-up with `followUp`. It resolves
 	 * once the host has the message. The message waits while the mirror connects. When its connection closes before the
 	 * host answers, it goes again on the next connection with the same request ID, so that the host takes it once. It
-	 * rejects when the host refuses the message, and when the mirror fails or closes before the host has it.
+	 * rejects when the host refuses the message, and when the mirror fails or closes before the host has it. When the
+	 * mirror fails after the message went to the host without an answer, the error is a `PossiblySentError`.
 	 */
 	send(message: string, followUp: boolean): Promise<void> {
 		if (this.#status.kind === "failed") return Promise.reject(new Error(this.#status.reason));
 
 		if (this.#closing.signal.aborted) return Promise.reject(new Error("The mirror is closed"));
-		const outgoing = { requestId: randomUUID(), message, followUp, sent: Promise.withResolvers<void>() };
+
+		const outgoing = {
+			requestId: randomUUID(),
+			message,
+			followUp,
+			sent: Promise.withResolvers<void>(),
+			written: false,
+		};
+
 		this.#outgoing.push(outgoing);
 		void this.#flush();
 
@@ -192,11 +211,17 @@ export class Mirror {
 		this.#setChild(await client.request({ type: "configure", handle, ...change }));
 	}
 
-	/** Closes the connection and stops connecting. The conversation keeps running in the host. */
+	/**
+	 * Closes the connection and stops connecting. The status becomes failed with `The mirror is closed`, unless it failed
+	 * before, and `onChange` does not run: the caller knows. The conversation keeps running in the host.
+	 */
 	close(): void {
 		this.#closing.abort();
 		this.#client?.close();
-		this.#reject(new Error("The mirror is closed"));
+
+		for (const outgoing of this.#outgoing.splice(0)) outgoing.sent.reject(new Error("The mirror is closed"));
+
+		if (this.#status.kind !== "failed") this.#status = { kind: "failed", reason: "The mirror is closed" };
 	}
 
 	/** Connects, follows the watch, and connects again after the host closed the connection, until a failure or `close()`. */
@@ -291,6 +316,7 @@ export class Mirror {
 
 				if (client === undefined) return;
 				const { requestId, message, followUp } = next;
+				next.written ||= !client.ended;
 
 				try {
 					const reply = await client.request({
@@ -329,13 +355,11 @@ export class Mirror {
 	}
 
 	#fail(reason: string): void {
-		this.#reject(new Error(reason));
-		this.#setStatus({ kind: "failed", reason });
-	}
+		for (const outgoing of this.#outgoing.splice(0)) {
+			outgoing.sent.reject(outgoing.written ? new PossiblySentError(reason) : new Error(reason));
+		}
 
-	/** Rejects the waiting messages with `error`. */
-	#reject(error: Error): void {
-		for (const outgoing of this.#outgoing.splice(0)) outgoing.sent.reject(error);
+		this.#setStatus({ kind: "failed", reason });
 	}
 
 	#setStatus(status: MirrorStatus): void {

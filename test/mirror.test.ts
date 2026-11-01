@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../pi/chat.ts";
 import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
 import { ProgramStatusReport } from "../pi/program-status.ts";
+import { Client } from "../src/client.ts";
 import type { Host } from "../src/host.ts";
 import {
 	harnessArgs,
@@ -18,11 +19,12 @@ import {
 	type MirrorConfigure,
 	type MirrorOptions,
 	type MirrorTarget,
+	PossiblySentError,
 	piArgs,
 	targetTitle,
 } from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
-import { AGENT_HANDLE, childTitle, errorMessage } from "../src/protocol.ts";
+import { AGENT_HANDLE, type ChildInfo, childTitle, errorMessage } from "../src/protocol.ts";
 import * as viewState from "../src/view-state.ts";
 import { inboxOf } from "../src/view-state.ts";
 import {
@@ -253,6 +255,19 @@ describe("mirror", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("is failed once closed, and keeps the reason of an earlier failure", async () => {
+		const mirror = await opened(AGENT);
+		mirror.close();
+		expect(mirror.status).toEqual({ kind: "failed", reason: "The mirror is closed" });
+		expect(mirror.busy).toBe(false);
+		await expect(mirror.send("Closed mirror", false)).rejects.toThrow("The mirror is closed");
+
+		const unknown = new Mirror({ project: "main", handle: "fedcba" }, () => {}, { start: false });
+		await until(() => unknown.status.kind === "failed");
+		unknown.close();
+		expect(unknown.status).toEqual({ kind: "failed", reason: "Unknown subagent: fedcba" });
+	});
+
 	it("connects again when the host restarts, and then sends the message that waited, once", async () => {
 		const mirror = await opened(AGENT, { retryDelaysMs: [0, 500, 2000] });
 
@@ -296,7 +311,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 			await until(() => mirror.status.kind === "open");
 			await closeHost();
 			await until(() => mirror.status.kind === "reconnecting");
-			expect(reports.at(-1)).toEqual(idle);
+			expect(reports.at(-1)).toEqual({ state: "blocked", app: "harness", message: "main agent (connecting again)" });
 			await expect(mirror.send("Never sent", false)).rejects.toThrow(reason);
 			expect(mirror.status).toEqual({ kind: "failed", reason });
 			expect(reports.at(-1)).toEqual(idle);
@@ -307,6 +322,34 @@ describe("mirror", { timeout: 30_000 }, () => {
 		}
 
 		expect(called("Never sent")).toBe(0);
+	});
+
+	it("fails a message whose answer the closed connection lost as possibly sent", async () => {
+		const mirror = await opened(AGENT, { retryDelaysMs: [0] });
+		const reason = `${HOST_CLOSED}. Connecting again failed: Could not connect to the harness host`;
+		const request = Client.prototype.request;
+
+		// The input goes to the host, and its answer is lost.
+		const spy = vi.spyOn(Client.prototype, "request").mockImplementation(function (this: Client, sent) {
+			const reply = request.call(this, sent);
+
+			if (sent.type !== "input") return reply;
+			reply.catch((cause: unknown) => cause);
+
+			return new Promise(() => {});
+		});
+
+		try {
+			const sent = mirror.send("Possibly sent", false);
+			await until(() => spy.mock.calls.some(([sent]) => sent.type === "input"));
+			await closeHost();
+			await expect(sent).rejects.toBeInstanceOf(PossiblySentError);
+			await expect(sent).rejects.toThrow(reason);
+		} finally {
+			spy.mockRestore();
+			mirror.close();
+			host ??= await startHost();
+		}
 	});
 
 	it("draws the transcript of a child with Pi's message and tool components", async () => {
@@ -457,4 +500,73 @@ describe("model sync", { timeout: 30_000 }, () => {
 			mirror.close();
 		}
 	});
+
+	it("does not ask the host for the model that Pi takes from the agent, and follows a newer model of the agent", async () => {
+		const configure = vi.fn(async (_change: MirrorConfigure) => {});
+		const agent = { child: agentOn("faux-2"), configure };
+		const pi = new FakePi();
+		const sync = new ModelSync(pi, pi, agent, () => {});
+		const setModel = pi.setModel.bind(pi);
+
+		// Pi tells the extension the model that it takes, and the agent changes its model meanwhile.
+		pi.setModel = async (model) => {
+			agent.child = agentOn("faux-1");
+			const taken = await setModel(model);
+			sync.piSelected(model.provider, model.id);
+
+			return taken;
+		};
+
+		try {
+			sync.fromAgent(agent.child);
+			await until(() => pi.model?.id === "faux-1");
+			expect(configure).not.toHaveBeenCalled();
+		} finally {
+			sync.close();
+		}
+	});
+
+	it("tells the user once when Pi has no login for the agent's model", async () => {
+		const pi = new FakePi();
+		const errors: string[] = [];
+		const agent = { child: agentOn("faux-2"), configure: async () => {} };
+		const sync = new ModelSync(pi, pi, agent, (cause) => errors.push(errorMessage(cause)));
+		// Pi gives `false`, and does not throw, when it has no login for the model.
+		const setModel = vi.fn(async () => false);
+		pi.setModel = setModel;
+
+		try {
+			sync.fromAgent(agent.child);
+			await until(() => errors.length === 1);
+			// Each change of the mirror gives the agent again, with the same model.
+			sync.fromAgent(agent.child);
+			sync.fromAgent(agent.child);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(errors).toEqual(["Pi has no login for faux/faux-2"]);
+			expect(setModel).toHaveBeenCalledTimes(1);
+		} finally {
+			sync.close();
+		}
+	});
+
+	it("tells the user when Pi fails to take the agent's model", async () => {
+		const pi = new FakePi();
+		const errors: string[] = [];
+		const agent = { child: agentOn("faux-2"), configure: async () => {} };
+		const sync = new ModelSync(pi, pi, agent, (cause) => errors.push(errorMessage(cause)));
+		pi.setModel = async () => Promise.reject(new Error("No API key for faux/faux-2"));
+
+		try {
+			sync.fromAgent(agent.child);
+			await until(() => errors.length === 1);
+			expect(errors).toEqual(["No API key for faux/faux-2"]);
+		} finally {
+			sync.close();
+		}
+	});
 });
+
+/** The project agent on the model `faux/<model>`, as the host gives it. */
+function agentOn(model: string): ChildInfo {
+	return { handle: AGENT_HANDLE, state: "idle", provider: "faux", model, thinking: "off", cwd: root };
+}

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,7 +8,7 @@ import * as ai from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
-import { AssistantEntry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AssistantEntry, type ConversationId, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -18,8 +18,16 @@ import { type Client, connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, type ChildInfo, onLines, statePaths, type WatchLine } from "../src/protocol.ts";
-import { subagentTool } from "../src/tool.ts";
+import {
+	AGENT_HANDLE,
+	type ChildInfo,
+	onLines,
+	PROTOCOL_VERSION,
+	statePaths,
+	type WatchLine,
+} from "../src/protocol.ts";
+import { Children } from "../src/targets.ts";
+import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	called,
 	calls,
@@ -115,7 +123,11 @@ afterAll(async () => {
 
 describe("subagent", { timeout: 30_000 }, () => {
 	it("spawns, reports and waits for a child", async () => {
+		// The gate keeps the child busy until the spawn output is in.
+		gates.set("Task:\nSay hello", Promise.withResolvers());
 		const spawned = await cli(["spawn", "--name", "greeter", "--prompt", "Say hello"]);
+		gates.get("Task:\nSay hello")?.resolve();
+		gates.delete("Task:\nSay hello");
 		expect(spawned.stderr).toBe("");
 		const handle = handleOf(spawned);
 		expect(spawned.stdout).toBe(`Spawned greeter (${handle})\nState: busy\n`);
@@ -225,6 +237,34 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--thinking", "low", "--prompt", "Environment"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(new RegExp(`^${handle} finished\n\nTool said: \\d+ faux faux-1 low main\n`));
+	});
+
+	it("gives the child's bash its new model and thinking level after a configure", async () => {
+		const handle = handleOf(await cli(["spawn", "--thinking", "low", "--prompt", "Environment"]));
+		expect((await cli(["wait", handle])).stdout).toContain(" faux faux-1 low main\n");
+		await request({ type: "configure", handle, provider: "faux", model: "faux-2", thinking: "high" }, { start: false });
+		await cli(["send", handle, "Task:\nEnvironment"]);
+		expect((await cli(["wait", handle])).stdout).toContain(" faux faux-2 high main\n");
+	});
+
+	it("keeps a configure of the project agent that comes during its first set-up", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "setup-")));
+		expect((await cli(["create", "setup", "--cwd", dir])).code).toBe(0);
+		const host = await startHost("setup");
+
+		try {
+			const options = { project: "setup", start: false } as const;
+			// The first configure sets up the agent with faux-1 and then gives it faux-2.
+			expect(
+				await request({ type: "configure", handle: AGENT_HANDLE, provider: "faux", model: "faux-2" }, options),
+			).toMatchObject({ model: "faux-2" });
+			expect(await request({ type: "configure", handle: AGENT_HANDLE, thinking: "low" }, options)).toMatchObject({
+				model: "faux-2",
+				thinking: "low",
+			});
+		} finally {
+			await host?.close();
+		}
 	});
 
 	it("gives the children of a project its .optmem folder as MEMORY_DIR", async () => {
@@ -750,6 +790,482 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Between")).toBe(1);
 	});
 
+	it("replies to the requests in flight that the host is closing before it closes", async () => {
+		gates.set("Task:\nClosing gated", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closing gated"]));
+		await until(() => called("Task:\nClosing gated") === 1);
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+			const waiting = client.request({ type: "wait", handle, timeout: 60 });
+			const rejected = expect(waiting).rejects.toThrow("The host is closing");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			await host?.close();
+			await rejected;
+		} finally {
+			client?.close();
+			gates.get("Task:\nClosing gated")?.resolve();
+			gates.delete("Task:\nClosing gated");
+			host = await startHost();
+		}
+	});
+
+	it("gives the real state of the child when a spawn repeats", async () => {
+		const scope = {
+			caller: "replay-session",
+			callKey: "replay-call",
+			provider: "faux",
+			model: "faux-1",
+			thinking: "medium",
+			cwd: root,
+			send: sendToHost,
+			signal: undefined,
+		};
+
+		const spawn: ToolArgs = { action: "spawn", prompts: ["Replayed spawn"], key: "replay" };
+		const first = await runTool(spawn, scope);
+		const handle = handleOf({ code: 0, stdout: first.text, stderr: "" });
+		await runTool({ action: "wait", handle }, scope);
+		expect((await runTool(spawn, scope)).text).toBe(`Spawned ${handle}\nState: idle\n`);
+		expect(called("Task:\nReplayed spawn")).toBe(1);
+	});
+
+	it("waits longer before each new push of a child that fails, and tries again without a commit", async () => {
+		const store = await restartWithStore();
+		const handle = "backoff1";
+		// SAFETY: no conversation has this ID, so each push of the child fails.
+		const conversationId = 987_654_321 as ConversationId;
+		const warning = `Missing conversation ${conversationId}`;
+		const writes = vi.spyOn(process.stderr, "write");
+		const warnings = () => writes.mock.calls.filter(([text]) => String(text).includes(warning)).length;
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+			const pending = client.request({ type: "answers", caller: "backoff-session" });
+			pending.catch(() => undefined);
+			await store.commit(async (tx) => {
+				(await tx.doc(Children)).children[handle] = {
+					caller: "backoff-session",
+					createdAt: new Date().toISOString(),
+					conversationId,
+					sent: ["backoff-request"],
+				};
+			}, BACKGROUND_CONTEXT);
+			await until(() => warnings() === 1);
+
+			for (let rename = 0; rename < 5; rename++) {
+				await store.commit(async (tx) => {
+					const record = (await tx.doc(Children)).children[handle];
+
+					if (record !== undefined) record.name = `backoff-${rename}`;
+				}, BACKGROUND_CONTEXT);
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(warnings()).toBe(1);
+			await until(() => warnings() === 2);
+		} finally {
+			client?.close();
+			writes.mockRestore();
+			await store.commit(async (tx) => {
+				delete (await tx.doc(Children)).children[handle];
+			}, BACKGROUND_CONTEXT);
+		}
+	});
+
+	it("keeps the order of the answers to a caller when the push of the older child fails", async () => {
+		const store = await restartWithStore();
+		const parent = handleOf(await cli(["spawn", "--prompt", "Ordered parent"]));
+		await cli(["wait", parent]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		const pushed: string[] = [];
+		let refused = false;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const [draft] = submitted;
+					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
+
+					if (!refused && content.includes("Ordered older")) {
+						refused = true;
+						throw new Error("Input refused once");
+					}
+
+					if (content.includes("Ordered older")) pushed.push("older");
+
+					if (content.includes("Ordered younger")) pushed.push("younger");
+
+					return submit(...submitted);
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+
+			for (const name of ["older", "younger"]) {
+				await client.request({
+					type: "spawn",
+					requestId: `ordered-${name}`,
+					caller: String(id),
+					notify: true,
+					provider: "faux",
+					model: "faux-1",
+					callerThinking: "medium",
+					cwd: root,
+					prompt: `Ordered ${name}`,
+				});
+			}
+
+			await until(() => pushed.length === 2);
+			expect(refused).toBe(true);
+			expect(pushed).toEqual(["older", "younger"]);
+		} finally {
+			client?.close();
+			lookups.mockRestore();
+		}
+	});
+
+	it("keeps the order of the answers to a caller when the take of the older child fails", async () => {
+		const store = await restartWithStore();
+		const parent = handleOf(await cli(["spawn", "--prompt", "Taken parent"]));
+		await cli(["wait", parent]);
+
+		const idOf = async (handle: string) =>
+			(await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+
+		const id = await idOf(parent);
+		const conversation = store.conversation.bind(store);
+		const snapshot = store.snapshot.bind(store);
+		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+		const ids = new Map<string, ConversationId | undefined>();
+		const pushed: string[] = [];
+		let armed = false;
+		let refusedWhenReady = false;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const [draft] = submitted;
+					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
+
+					if (content.includes("Taken older")) pushed.push("older");
+
+					if (content.includes("Taken younger")) pushed.push("younger");
+
+					return submit(...submitted);
+				});
+			}
+
+			return found;
+		});
+
+		// The take of the older child fails until the younger child is done, then once more, with both answers ready.
+		const reads = vi.spyOn(store, "snapshot").mockImplementation(async (...args) => {
+			const [doc, of] = args;
+
+			if (armed && doc.definition.kind === "pi-subagent.child" && String(of) === String(ids.get("older"))) {
+				const younger = await createChildren(durable).find(
+					place,
+					owner,
+					{ id: String(ids.get("younger")) },
+					BACKGROUND_CONTEXT,
+				);
+
+				const ready = (await younger?.state(BACKGROUND_CONTEXT)) === "idle";
+
+				if (!ready) throw new Error("Take refused until the younger child is done");
+
+				if (!refusedWhenReady) {
+					refusedWhenReady = true;
+					throw new Error("Take refused once more");
+				}
+			}
+
+			return snapshot(...args);
+		});
+
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+
+			for (const name of ["older", "younger"] as const) {
+				gates.set(`Taken ${name}`, Promise.withResolvers());
+
+				const { handle } = await client.request({
+					type: "spawn",
+					requestId: `taken-${name}`,
+					caller: String(id),
+					notify: true,
+					provider: "faux",
+					model: "faux-1",
+					callerThinking: "medium",
+					cwd: root,
+					prompt: `Taken ${name}`,
+				});
+
+				ids.set(name, await idOf(handle));
+			}
+
+			armed = true;
+			gates.get("Taken older")?.resolve();
+			gates.get("Taken younger")?.resolve();
+
+			await until(() => pushed.length === 2);
+			expect(refusedWhenReady).toBe(true);
+			expect(pushed).toEqual(["older", "younger"]);
+		} finally {
+			client?.close();
+			reads.mockRestore();
+			lookups.mockRestore();
+			gates.delete("Taken older");
+			gates.delete("Taken younger");
+		}
+	});
+
+	it("shows a child that the library closed as closed, and refuses a wait and a send to it", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
+		await child?.close(BACKGROUND_CONTEXT);
+		expect((await cli(["status", handle])).stdout).toBe(`${handle}: closed (faux/faux-1, medium)\n`);
+		expect((await cli(["wait", handle])).stderr).toBe(`The child ${id} is closed\n`);
+		expect((await cli(["send", handle, "After the close"])).stderr).toBe(`The child ${id} is closed\n`);
+		expect(called("After the close")).toBe(0);
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+
+		try {
+			expect((await client.request({ type: "watch", handle })).child.state).toBe("closed");
+			await expect(
+				client.request({ type: "note", requestId: "note-closed", handle, text: "Noted after the close" }),
+			).rejects.toThrow(`The child ${id} is closed`);
+		} finally {
+			client.close();
+		}
+	});
+
+	it("repairs the record of a send that is retried after a crash between its submit and its next commit", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Before the crash"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && armed) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementationOnce(async (...submitted) => {
+					armed = false;
+					const submission = await submit(...submitted);
+					failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+						throw new Error("Store failed");
+					});
+
+					return submission;
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+
+		const send = {
+			type: "send",
+			requestId: "send-crash",
+			caller: "cli",
+			handle,
+			message: "Sent at the crash",
+			followUp: false,
+			notify: true,
+		} as const;
+
+		try {
+			await expect(client.request(send)).rejects.toThrow("Store failed");
+			lookups.mockRestore();
+			failing?.mockRestore();
+			await client.request(send);
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
+				answer: "Answer to Sent at the crash",
+			});
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+			client.close();
+		}
+
+		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toContain("send-crash");
+		expect(called("Sent at the crash")).toBe(1);
+	});
+
+	it("repairs the record of a spawn that is retried after a crash between its submit and its next commit", async () => {
+		const store = await restartWithStore();
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && armed && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const submission = await submit(...submitted);
+					const [draft] = submitted;
+
+					if (armed && draft.type === "input" && draft.content === "Spawned at the crash") {
+						armed = false;
+						failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+							throw new Error("Store failed");
+						});
+					}
+
+					return submission;
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+		const caller = "spawn-crasher";
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-crash",
+			caller,
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			callerThinking: "medium",
+			cwd: root,
+			prompt: "Spawned at the crash",
+		} as const;
+
+		try {
+			await expect(client.request(spawn)).rejects.toThrow("Store failed");
+			lookups.mockRestore();
+			failing?.mockRestore();
+			const { handle } = await client.request(spawn);
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
+				answer: "Answer to Spawned at the crash",
+			});
+			expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toEqual([
+				"spawn:spawn-crash",
+			]);
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+			client.close();
+		}
+
+		expect(called("Spawned at the crash")).toBe(1);
+	});
+
+	it("keeps a send whose submit fails out of the child's requests, with the error of the submit", async () => {
+		const store = await restartWithStore();
+		const handle = handleOf(await cli(["spawn", "--prompt", "Send fails"]));
+		await cli(["wait", handle]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		let armed = true;
+		let failing: { mockRestore(): void } | undefined;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && armed) {
+				vi.spyOn(found, "submit").mockImplementationOnce(async () => {
+					armed = false;
+					// The next commit fails too, so the error of the submit must not depend on it.
+					failing = vi.spyOn(store, "commit").mockImplementationOnce(async () => {
+						throw new Error("Store failed");
+					});
+					throw new Error("Stopped at submit");
+				});
+			}
+
+			return found;
+		});
+
+		try {
+			expect((await cli(["send", handle, "Lost"])).stderr).toBe("Stopped at submit\n");
+		} finally {
+			lookups.mockRestore();
+			failing?.mockRestore();
+		}
+
+		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toHaveLength(1);
+		expect((await cli(["status", handle])).stdout).toBe(`${handle}: idle (faux/faux-1, medium)\n`);
+		expect(called("Lost")).toBe(0);
+	});
+
+	it("spawns a new child for a repeated spawn of a child that was stopped", async () => {
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+		const caller = "stopper";
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-stopped",
+			caller,
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			callerThinking: "medium",
+			cwd: root,
+			prompt: "Stopped once",
+		} as const;
+
+		try {
+			const { handle } = await client.request(spawn);
+			await client.request({ type: "wait", handle, timeout: 10 });
+			await client.request({ type: "stop", caller, handle });
+			const again = await client.request(spawn);
+			expect(again.handle).not.toBe(handle);
+			expect(await client.request({ type: "wait", handle: again.handle, timeout: 10 })).toEqual({
+				answer: "Answer to Stopped once",
+			});
+			expect((await client.request(spawn)).handle).toBe(again.handle);
+			expect(await client.request({ type: "list", caller })).toMatchObject([{ handle: again.handle }]);
+		} finally {
+			client.close();
+		}
+
+		expect(called("Stopped once")).toBe(2);
+	});
+
 	it("finishes a turn after the host restarts", async () => {
 		gates.set("Task:\nSurvive", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--prompt", "Survive"]));
@@ -759,6 +1275,23 @@ describe("subagent", { timeout: 30_000 }, () => {
 		host = await startHost();
 		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nSurvive\n`);
 		expect(called("Task:\nSurvive")).toBe(2);
+	});
+
+	it("resumes a tool call of a child after the host restarts", async () => {
+		gates.set("Task:\nResume wait child", Promise.withResolvers());
+		const waiting = Promise.withResolvers<string>();
+		toolWaits.set("Task:\nResume wait", waiting);
+		const handle = handleOf(await cli(["spawn", "--prompt", "Resume wait"]));
+		const nested = await waiting.promise;
+		await until(() => called("Task:\nResume wait child") === 1);
+		// Let the wait reach the host before the restart.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await host?.close();
+		gates.delete("Task:\nResume wait child");
+		host = await startHost();
+		expect((await cli(["wait", handle])).stdout).toBe(
+			`${handle} finished\n\nTool said: ${nested} finished\n\nAnswer to Task:\nResume wait child\n`,
+		);
 	});
 
 	it("refuses a store from before the children library", async () => {
@@ -873,6 +1406,62 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
 		}
+	});
+
+	it("refuses a hello of another protocol version, as the client does", async () => {
+		const { pid } = process;
+		expect(await rawError(JSON.stringify({ type: "hello", version: 1 }))).toBe(
+			`This client uses harness protocol 1 and the host (pid ${pid}) uses ${PROTOCOL_VERSION}. Reload Pi with /reload, or use the harness CLI of the host's install`,
+		);
+		expect(await rawError(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION + 1 }))).toBe(
+			`The harness host (pid ${pid}) uses protocol ${PROTOCOL_VERSION}, not ${PROTOCOL_VERSION + 1}. The host is older: stop it with kill ${pid} and run the command again`,
+		);
+	});
+
+	it("warns about an entry whose module does not exist, and skips it", async () => {
+		const entries = join(root, "config", "harness", "entries.json");
+		const module = join(root, "gone", "entry.ts");
+		await mkdir(join(root, "config", "harness"), { recursive: true });
+		await writeFile(entries, JSON.stringify({ gone: module }));
+		process.env.XDG_STATE_HOME = join(root, "state-gone");
+		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+		try {
+			const gone = await startHost();
+			await gone?.close();
+			expect(gone).toBeDefined();
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+				`warning: The entry gone has no module at ${module}; the host skips it\n`,
+			);
+		} finally {
+			stderr.mockRestore();
+			process.env.XDG_STATE_HOME = join(root, "state");
+			await rm(entries);
+		}
+	});
+
+	it("sets up the agent with the default model of a trusted project's settings only", async () => {
+		const defaults = { defaultProvider: "faux", defaultModel: "faux-2", defaultThinkingLevel: "low" };
+		const agents: Record<string, ChildInfo | undefined> = {};
+
+		for (const name of ["trusted", "untrusted"]) {
+			const dir = realpathSync(await mkdtemp(join(root, `${name}-`)));
+			await mkdir(join(dir, ".pi"));
+			await writeFile(join(dir, ".pi", "settings.json"), JSON.stringify(defaults));
+			expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
+
+			if (name === "trusted") new ProjectTrustStore(join(root, "agent")).set(dir, true);
+			const projectHost = await startHost(name);
+
+			try {
+				agents[name] = (await request({ type: "watch", handle: AGENT_HANDLE }, { start: false, project: name }))?.child;
+			} finally {
+				await projectHost?.close();
+			}
+		}
+
+		expect(agents.trusted).toMatchObject({ provider: "faux", model: "faux-2", thinking: "low" });
+		expect(agents.untrusted).toMatchObject({ provider: "faux", model: "faux-1", thinking: "medium" });
 	});
 
 	it("warns about a package whose package.json is not an object or has an invalid piDurable field, and skips it", async () => {
@@ -1011,6 +1600,89 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await until(() => !existsSync(join(state, "harness", "main", "host.sock")));
 	});
 
+	it("starts the host again when the started host found the lock held, as when the last host closes", async () => {
+		const state = join(root, "state-restart");
+		const dir = join(state, "harness", "main");
+		await mkdir(dir, { recursive: true });
+		const lock = new DatabaseSync(join(dir, "lock.sqlite"));
+		lock.exec("BEGIN EXCLUSIVE");
+		process.env.XDG_STATE_HOME = state;
+		let pid: number | undefined;
+
+		try {
+			const connecting = connect({ start: true });
+			const log = join(dir, "host.log");
+			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another harness host runs"));
+			lock.close();
+			const client = await connecting;
+			client?.close();
+			pid = client?.pid;
+			expect(pid).toBeGreaterThan(0);
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+
+			if (lock.isOpen) lock.close();
+
+			if (pid !== undefined) process.kill(pid, "SIGTERM");
+		}
+
+		await until(() => !existsSync(join(dir, "host.sock")));
+	});
+
+	it("fails at once when the started host fails", async () => {
+		const stateDir = await childrenStore("state-failed", 1);
+		const dir = join(root, "state-failed-xdg", "harness", "main");
+		await mkdir(dir, { recursive: true });
+		await rename(join(stateDir, "durable.sqlite"), join(dir, "durable.sqlite"));
+		process.env.XDG_STATE_HOME = join(root, "state-failed-xdg");
+		const started = Date.now();
+
+		try {
+			await expect(connect({ start: true })).rejects.toThrow(
+				`The harness host exited with code 1; see ${join(dir, "host.log")}`,
+			);
+			expect(Date.now() - started).toBeLessThan(8000);
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
+	it("says that the host is still starting while it waits for the lock of its store", { timeout: 40_000 }, async () => {
+		const state = join(root, "state-slow");
+		const dir = join(state, "harness", "main");
+		await mkdir(dir, { recursive: true });
+		const store = new DatabaseSync(join(dir, "durable.sqlite"));
+		store.exec("BEGIN EXCLUSIVE");
+		process.env.XDG_STATE_HOME = state;
+
+		try {
+			await expect(connect({ start: true })).rejects.toThrow(
+				/^The harness host \(pid \d+\) is still starting: it can wait up to 60 s for the lock of durable\.sqlite\. Run the command again soon; see /,
+			);
+			store.close();
+
+			const client = await vi.waitFor(
+				async () => {
+					const found = await connect({ start: false });
+
+					if (found === undefined) throw new Error("no host yet");
+
+					return found;
+				},
+				{ timeout: 10_000, interval: 100 },
+			);
+
+			client.close();
+			process.kill(client.pid, "SIGTERM");
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+
+			if (store.isOpen) store.close();
+		}
+
+		await until(() => !existsSync(join(dir, "host.sock")));
+	});
+
 	it("stops waiting for the host to start when the request aborts", async () => {
 		const state = join(root, "state3");
 		await mkdir(join(state, "harness", "main"), { recursive: true });
@@ -1042,8 +1714,33 @@ async function setDepthLimit(limit: number | undefined): Promise<void> {
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
 }
 
-/** The `subagent.children` document of the host, to read a child's conversation ID. */
-const ChildrenDoc = durable.defineDoc<{ children: Record<string, { conversationId: number }> }>({
+/** Restarts the suite host and gives its store, for a test that reads it or makes it fail. */
+async function restartWithStore(): Promise<Harness> {
+	await host?.close();
+	const open = Harness.open.bind(Harness);
+	let store: Harness | undefined;
+
+	const opened = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
+		store = await open(...args);
+
+		return store;
+	});
+
+	try {
+		host = await startHost();
+	} finally {
+		opened.mockRestore();
+	}
+
+	if (store === undefined) throw new Error("no store");
+
+	return store;
+}
+
+/** The `subagent.children` document of the host, to read a child's conversation ID and requests. */
+const ChildrenDoc = durable.defineDoc<{
+	children: Record<string, { conversationId: ConversationId; sent?: string[] }>;
+}>({
 	kind: "subagent.children",
 	version: 2,
 	scope: "session",

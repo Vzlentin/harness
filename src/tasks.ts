@@ -41,13 +41,22 @@ export function startableTasks(tasks: readonly AnyTask[]): Extension {
 /**
  * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the project
  * agent's turn does not reach it. The key is written in the commit that creates the task, so a start after a crash
- * finds it.
+ * finds it. A repeat for a known key refuses another kind than the task's, and a version that the loaded definition
+ * does not have, as a first start does.
  */
 export async function startTask(host: TaskHost, request: Extract<Request, { type: "start" }>): Promise<TaskInfo> {
 	await host.root.commit(async (tx) => {
 		const state = await tx.doc(StartedTasks);
+		const known = Object.hasOwn(state.tasks, request.key) ? state.tasks[request.key] : undefined;
 
-		if (Object.hasOwn(state.tasks, request.key)) return;
+		if (known !== undefined) {
+			const record = await tx.task(known);
+
+			if (record !== undefined && record.kind !== request.kind) {
+				throw new Error(`The task ${request.key} is a ${record.kind} task, not ${request.kind}`);
+			}
+		}
+
 		const task = startableTask(host.startable, request.kind);
 
 		if (request.version !== undefined && task.definition.version !== request.version) {
@@ -56,6 +65,7 @@ export async function startTask(host: TaskHost, request: Extract<Request, { type
 			);
 		}
 
+		if (known !== undefined) return;
 		state.tasks[request.key] = await tx.createTask(task, request.input, {
 			ownership: { kind: "conversation" },
 			background: true,

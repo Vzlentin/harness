@@ -4,16 +4,16 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { getAgentDir, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
-	AgentDoc,
 	type Conversation,
-	type ConversationId,
+	type ConversationView,
 	createRegistry,
 	type DocumentWatch,
 	type Extension,
@@ -22,15 +22,14 @@ import {
 	type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { catchUp } from "./catchup.ts";
-import { type Place, resolveModel, type Spec } from "./children.ts";
-import { ChildContext } from "./context.ts";
+import { type Input, type Place, resolveModel, type Spec } from "./children.ts";
+import { ChildContext, PI_TRUST } from "./context.ts";
+import { ConversationEnvs } from "./conversation-envs.ts";
 import { loadEntries } from "./load-entries.ts";
-import { memoryDir } from "./projects.ts";
 import {
 	AGENT_HANDLE,
 	type ChildInfo,
@@ -41,7 +40,9 @@ import {
 	type Reply,
 	type Request,
 	RequestLine,
+	STORE_LOCK_WAIT_MS,
 	type Target,
+	versionMismatch,
 	type WatchLine,
 } from "./protocol.ts";
 import { type Connection, Push } from "./push.ts";
@@ -59,19 +60,24 @@ import {
 	markRead,
 	ownRecord,
 	recordOf,
-	removeSent,
+	type SendOptions,
 	type TargetHost,
 	target,
 	turnRunning,
 } from "./targets.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
+import { savedTrust } from "./trust.ts";
 import { type UnreadAnswers, unreadAnswers } from "./unread.ts";
 import { type ViewChange, viewChange } from "./view-change.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
+
+/** How long the close waits for the replies to reach clients that do not read them. */
+const REPLY_WRITE_MS = 2000;
+
 const context = BACKGROUND_CONTEXT;
 
 /** The requests that do not count as activity for the idle exit. */
@@ -113,9 +119,8 @@ export async function runHost(options: {
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
 
-	const settings = SettingsManager.create(stateDir, agentDir, {
-		projectTrusted: new ProjectTrustStore(agentDir).get(stateDir) === true,
-	});
+	// The settings and the packages of the project directory, as a Pi session there with the saved trust has them.
+	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted: savedTrust(projectCwd, PI_TRUST) });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
 
@@ -134,12 +139,12 @@ export async function runHost(options: {
 		},
 	};
 
-	const entries = await loadEntries(stateDir, agentDir, settings, place, library, warn).catch((cause: unknown) => {
+	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, warn).catch((cause: unknown) => {
 		lock.close();
 		throw cause;
 	});
 
-	const envs = new Map<ConversationId, NodeExecutionEnv>();
+	const envs = new ConversationEnvs(project, projectCwd);
 	const startable = startableTasks(entries.tasks);
 	let base: Base;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
@@ -170,43 +175,20 @@ export async function runHost(options: {
 		harness = await Harness.open(
 			// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
 			// node:sqlite waits synchronously, so such a wait stops the event loop for as long as it lasts.
-			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: 60_000 }),
+			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: STORE_LOCK_WAIT_MS }),
 			{
 				models,
 				registry,
 				settings: piSettings(settings, selected),
-				env: async ({ conversationId, cwd, read }, envContext) => {
-					if (cwd === undefined) return undefined;
-					const cached = envs.get(conversationId);
-
-					if (cached !== undefined) return cached;
-					const agent = await read.snapshot(AgentDoc, conversationId, envContext);
-
-					// An undefined MEMORY_DIR removes the host's own value from the shell.
-					const shellEnv: NodeJS.ProcessEnv = {
-						PI_SESSION_ID: String(conversationId),
-						HARNESS_PROJECT: project,
-						MEMORY_DIR: memoryDir(project, projectCwd),
-					};
-
-					if (agent?.model !== undefined) {
-						shellEnv.PI_PROVIDER = agent.model.provider;
-						shellEnv.PI_MODEL = agent.model.modelId;
-					}
-
-					if (agent?.thinkingLevel !== undefined) shellEnv.PI_REASONING_LEVEL = agent.thinkingLevel;
-					const env = new NodeExecutionEnv({ cwd, shellEnv });
-					envs.set(conversationId, env);
-
-					return env;
-				},
+				env: (target, envContext) => envs.env(target, envContext),
 				onReport: warn,
 			},
 			context,
 		);
 
 		// A store from before the children library would mix children that it does not know with those it does.
-		// pi-durable refuses a stored version below the definition's with this message; any other error is not an old store.
+		// pi-durable's checkRecordVersion (documents.ts) refuses a stored version below the definition's with a plain Error,
+		// "Document <id> (<kind>) requires migration from version <n>"; any other error is not an old store.
 		try {
 			await harness.snapshot(Children, context);
 		} catch (error) {
@@ -224,7 +206,6 @@ export async function runHost(options: {
 		throw error;
 	}
 
-	harness.resume();
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
 	const root = await harness.root(context);
@@ -233,10 +214,23 @@ export async function runHost(options: {
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
 
 	base = { harness, place, owner, root, project, agent, startable, settings, push, cwd: projectCwd, warn };
+	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
+	harness.resume();
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
+	/** The request chains in flight, which the close awaits. */
+	const inFlight = new Set<Promise<unknown>>();
+	/** The reply writes in flight, which the close awaits for at most `REPLY_WRITE_MS`. */
+	const writes = new Set<Promise<boolean>>();
 	let lastActivity = Date.now();
+	let closing: Promise<void> | undefined;
+
+	const track = (promise: Promise<unknown>) => {
+		const settle = () => inFlight.delete(promise);
+		inFlight.add(promise);
+		promise.then(settle, settle);
+	};
 
 	const server = createServer((socket) => {
 		connections.add(socket);
@@ -250,6 +244,8 @@ export async function runHost(options: {
 				const connection: Connection = { socket, afterReply: (run) => (afterReply = run) };
 
 				try {
+					// A line that comes while the host closes runs no handler.
+					if (closing !== undefined) throw new Error("The host is closing");
 					const request = parseRequest(line);
 
 					if (!PASSIVE_REQUESTS.has(request.type)) lastActivity = Date.now();
@@ -262,13 +258,24 @@ export async function runHost(options: {
 					reply = { ok: false, error: errorMessage(error) };
 				}
 
+				// A client that does not read never takes the reply, so the close bounds this wait, and a destroyed socket
+				// ends it.
 				const written = new Promise<boolean>((resolve) => {
-					if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`, (error) => resolve(error == null));
-					else resolve(false);
+					if (!socket.writable) return resolve(false);
+					const onClose = () => resolve(false);
+					socket.once("close", onClose);
+					socket.write(`${JSON.stringify(reply)}\n`, (error) => {
+						socket.off("close", onClose);
+						resolve(error == null);
+					});
 				});
 
+				writes.add(written);
+				const settle = () => writes.delete(written);
+				written.then(settle, settle);
 				afterReply?.(written);
 			});
+			track(queue);
 		});
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
@@ -285,6 +292,7 @@ export async function runHost(options: {
 			resolveListen();
 		});
 	}).catch(async (cause: unknown) => {
+		push.close();
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
@@ -292,26 +300,33 @@ export async function runHost(options: {
 		throw cause;
 	});
 
-	let closing: Promise<void> | undefined;
-
+	/**
+	 * Stops the requests with the error `The host is closing`, waits until their replies are written, and then closes
+	 * the sockets, the entries, the sandbox and the harness.
+	 */
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
 			push.close();
 			server.close();
+			const reason = new Error("The host is closing");
 
-			for (const socket of connections) socket.destroy();
-
-			for (const abort of aborts) abort.abort();
+			for (const abort of aborts) abort.abort(reason);
 
 			try {
+				// Each handler reads its signal or ends once the push closes, so this needs no timeout.
+				while (inFlight.size > 0) await Promise.allSettled(inFlight);
+				await waitAtMost(Promise.allSettled(writes), REPLY_WRITE_MS);
+
+				for (const socket of connections) socket.destroy();
+
 				// Entries close first: an entry may still need the open harness. The sandbox closes before the harness, so a
 				// script that runs gets no outcome and continues after a restart.
 				await entries.close();
 				await sandbox.close();
 				await harness.close(context);
 
-				for (const env of envs.values()) await env.cleanup(context);
+				await envs.cleanup(context);
 			} finally {
 				rmSync(socketPath, { force: true });
 				lock.close();
@@ -369,24 +384,24 @@ function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[
 async function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]> {
 	switch (request.type) {
 		case "hello":
+			if (request.version !== PROTOCOL_VERSION) {
+				throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
+			}
+
 			return { version: PROTOCOL_VERSION, pid: process.pid };
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send": {
-			const record = await ownRecord(handler.harness, request.handle, request.caller);
+			const { handle, requestId, notify } = request;
+			const record = await ownRecord(handler.harness, handle, request.caller);
 
-			// A sweep leaves the child while its request is in `sent` and not yet admitted.
-			return handler.push.whileActive(request.handle, async () => {
-				// Mark the request first: a wait that sees it as the last request must find it in `sent`.
-				const added = await addSent(handler.harness, request.handle, request.requestId, request);
-
-				try {
-					return await sendTo(request, await childTarget(handler, request.handle, record), handler.harness);
-				} catch (error) {
-					if (added) await removeSent(handler.harness, request.handle, request.requestId);
-					throw error;
-				}
-			});
+			return handler.push.whileActive(handle, async () =>
+				sendTo(request, await childTarget(handler, handle, record), handler.harness, {
+					// The request goes into `sent` in the commit that makes it the last request, so a wait that sees it as the
+					// last request finds it in `sent`.
+					admitted: (tx) => addSent(tx, handle, requestId, { notify }),
+				}),
+			);
 		}
 
 		case "input": {
@@ -465,25 +480,7 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 
 		case "stop": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
-			// Stopping a child stops the children it spawned, and removes them all.
-			const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
-			await handler.harness.commit(async (tx) => {
-				const state = await tx.doc(Children);
-
-				const removed = new Set(
-					Object.keys(state.children).filter((handle) => {
-						const child = state.children[handle];
-
-						return child !== undefined && closed.has(String(child.conversationId));
-					}),
-				);
-
-				for (const handle of removed) delete state.children[handle];
-
-				for (const [requestId, handle] of Object.entries(state.requests)) {
-					if (removed.has(handle)) delete state.requests[requestId];
-				}
-			}, context);
+			await stopChild(handler, record);
 
 			return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
 		}
@@ -503,11 +500,44 @@ function parseRequest(line: string): RequestLine {
 	);
 }
 
+/** Closes the child of `record` and the children it spawned, and removes their records. A repeat finishes a stop. */
+async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
+	const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
+	await handler.harness.commit(async (tx) => {
+		const state = await tx.doc(Children);
+
+		const removed = new Set(
+			Object.keys(state.children).filter((handle) => {
+				const child = state.children[handle];
+
+				return child !== undefined && closed.has(String(child.conversationId));
+			}),
+		);
+
+		for (const handle of removed) delete state.children[handle];
+
+		for (const [requestId, handle] of Object.entries(state.requests)) {
+			if (removed.has(handle)) delete state.requests[requestId];
+		}
+	}, context);
+}
+
 async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	if (!request.cwd) throw new Error("spawn requires a working directory");
 	const { harness, place } = handler;
 	const state = await harness.snapshot(Children, context);
 	let handle = state?.requests[request.requestId];
+
+	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
+	// finished, and the spawn opens a new child.
+	if (handle !== undefined) {
+		const found = await childRecord(harness, handle);
+
+		if ((await (await childOf(handler, found)).state(context)) === "closed") {
+			await stopChild(handler, found);
+			handle = undefined;
+		}
+	}
 
 	if (handle === undefined) {
 		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
@@ -530,28 +560,36 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 
 		if (request.tools !== undefined) spec = { ...spec, tools: request.tools };
 
-		// The record is written in the commit that creates the child.
-		await library.open(place, handler.owner, `sub:${request.requestId}`, spec, context, async (tx, id) => {
-			const current = await tx.doc(Children);
-			let fresh = randomBytes(3).toString("hex");
+		// A stopped child keeps its key, closed, and `stop` removed its record: a repeated spawn opens a child under the
+		// next key. The keys are in a fixed order, so a retry after a crash finds the child that the first try opened.
+		for (let attempt = 0; handle === undefined; attempt += 1) {
+			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
-			const record: ChildRecord = { caller: request.caller, createdAt: new Date().toISOString(), conversationId: id };
-			current.children[fresh] = request.name === undefined ? record : { name: request.name, ...record };
-			current.requests[request.requestId] = fresh;
-		});
-		handle = (await harness.snapshot(Children, context))?.requests[request.requestId];
+			// The record is written in the commit that creates the child.
+			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
+				const current = await tx.doc(Children);
+				let fresh = randomBytes(3).toString("hex");
 
-		if (handle === undefined) throw new Error(`Missing subagent of ${request.requestId}`);
+				while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
+				const record: ChildRecord = { caller: request.caller, createdAt: new Date().toISOString(), conversationId: id };
+				current.children[fresh] = request.name === undefined ? record : { name: request.name, ...record };
+				current.requests[request.requestId] = fresh;
+			});
+
+			handle = (await harness.snapshot(Children, context))?.requests[request.requestId];
+
+			if (handle === undefined && (await opened.state(context)) !== "closed")
+				throw new Error(`Missing subagent of ${request.requestId}`);
+		}
 	}
 
 	const record = await childRecord(harness, handle);
-	// The request ID makes a repeated spawn find the first submission, also after a crash before it.
-	await (await childOf(handler, record)).send(
-		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
-		context,
-	);
-	await addSent(harness, handle, `spawn:${request.requestId}`, request);
+	const requestId = `spawn:${request.requestId}`;
+	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
+	// the request goes into `sent` in the commit that makes it the last request.
+	await (await childOf(handler, record)).send({ type: "input", content: request.prompt, requestId }, context, {
+		admitted: (tx) => addSent(tx, handle, requestId, { notify: request.notify }),
+	});
 
 	return childInfo(handler, handle, record);
 }
@@ -562,16 +600,22 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
  */
 async function sendTo(
 	request: Extract<RequestLine, { type: "send" | "input" }>,
-	found: Pick<Found, "conversation" | "info" | "send">,
+	found: Pick<Found, "conversation" | "info"> & {
+		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
+	},
 	harness: Harness,
+	options?: SendOptions,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const busy = await turnRunning(harness, found.conversation.id);
-	await found.send({
-		type: "input",
-		content: request.message,
-		whenBusy: request.followUp ? "followUp" : "steer",
-		requestId: request.requestId,
-	});
+	await found.send(
+		{
+			type: "input",
+			content: request.message,
+			whenBusy: request.followUp ? "followUp" : "steer",
+			requestId: request.requestId,
+		},
+		options,
+	);
 
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
 }
@@ -609,8 +653,15 @@ async function waitChild(
 	const waiting = withAbortSignal(signal, context);
 	let text: UnreadAnswers;
 
+	const refuseClosed = async () => {
+		if ((await child.state(context)) === "closed") throw new Error(`The child ${child.id} is closed`);
+	};
+
 	try {
+		await refuseClosed();
 		const { main, answer } = await handler.push.done(child, signal);
+		// A close during the wait ends the turn with an abort, which is not the child's answer.
+		await refuseClosed();
 		// Read the record after the answer and after a push in flight: a send is in `sent` before it can be the last
 		// request, and a push marks its answers read only once its reply is written.
 		await handler.push.written(request.handle);
@@ -703,7 +754,7 @@ async function setUpAgent(
  * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
  * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
  * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
- * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets a `stopped` event and the connection ends; when the conversation
+ * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets one line of the whole view, then a `stopped` event, and the connection ends; when the conversation
  * watch ends for another reason, the connection ends.
  */
 async function serveWatch(handler: Handler, ref: Target, connection: Connection): Promise<Replies["watch"]> {
@@ -757,18 +808,35 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 		// this one chain, so a line never has older info than the line before it.
 		let queue: Promise<void> = Promise.resolve();
 
+		/** Writes the line of `change`, with the info of now. */
+		const writeLine = async (change: ViewChange) => {
+			// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
+			// line. A stopped child gives `closed` here, and its `stopped` line follows.
+			const child = await found.info().catch(() => undefined);
+
+			if (child === undefined || !socket.writable) return;
+
+			if (!write({ change, child })) await once(socket, "drain").catch(() => {});
+		};
+
 		const send = (change: ViewChange) => {
-			queue = queue.then(async () => {
-				// Some store reads per commit; cache the agent fields if streaming gets slow. A store failure drops this
-				// line. A stopped child still gives `idle` here, and its `stopped` line follows.
-				const child = await found.info().catch(() => undefined);
-
-				if (child === undefined || !socket.writable) return;
-
-				if (!write({ change, child })) await once(socket, "drain").catch(() => {});
-			});
+			queue = queue.then(() => writeLine(change));
 
 			return queue;
+		};
+
+		/**
+		 * The `stopped` line, after the lines before it. The conversation watch can still hold back the frames of the
+		 * last commits for a slow socket, so one line of the whole view always comes first. A client applies `{ view }`
+		 * as a full replacement, so this line is harmless when the view went out already.
+		 */
+		const stop = async () => {
+			const latest = socket.writable ? await currentView(found.conversation, watchContext) : undefined;
+
+			if (latest !== undefined) await writeLine({ view: latest });
+
+			if (socket.writable) write({ stopped: true });
+			end();
 		};
 
 		childrenWatch?.start(async (state) => {
@@ -776,8 +844,8 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 			const next = recordOf(state, handle);
 
 			if (next === undefined) {
-				write({ stopped: true });
-				end();
+				queue = queue.then(stop);
+				await queue;
 			} else if (next.name !== found.record?.name) {
 				found = { ...found, record: next, info: () => childInfo(handler, handle, next) };
 				await send({});
@@ -787,6 +855,26 @@ async function serveWatch(handler: Handler, ref: Target, connection: Connection)
 	});
 
 	return { view: conversation.value, child: last };
+}
+
+/** The view of `conversation` now, from a watch that never starts; nothing when it cannot be read. */
+async function currentView(conversation: Conversation, watchContext: Context): Promise<ConversationView | undefined> {
+	try {
+		const watch = await conversation.watch(watchContext);
+		await watch.stop();
+
+		return watch.value;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Waits for `promise`, or for `ms` at most. */
+async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+	let timer: NodeJS.Timeout | undefined;
+
+	await Promise.race([promise, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))]);
+	clearTimeout(timer);
 }
 
 /**

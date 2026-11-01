@@ -16,6 +16,9 @@ import { startedTaskIds } from "./tasks.ts";
 const context = BACKGROUND_CONTEXT;
 const execGit = promisify(execFile);
 
+/** How long a Git command of the catch-up may run. */
+const GIT_TIMEOUT_MS = 10_000;
+
 const RUN_KIND = "workflows.run";
 const ENTRY_KIND = "harness.catchup";
 
@@ -31,7 +34,28 @@ type SeenState = {
 	pending: number[];
 	/** How many catch-up entries the agent got: the request ID of the next one is `catchup:<catchups + 1>`. */
 	catchups: number;
+	/**
+	 * The catch-up entry that the commit of this state planned, until it is written. A catch-up writes it first, so a
+	 * crash after the commit loses no fact.
+	 */
+	entry?: PlannedEntry;
 };
+
+/** The data of a catch-up entry. */
+type CatchUpData = {
+	runs: RunFacts[];
+	lost?: LostRun[];
+	commits?: { branch: string; commits: Commit[] };
+	reset?: Reset;
+};
+
+type PlannedEntry = { requestId: string; text: string; data: CatchUpData };
+
+/** A workflows run that the catch-up cannot report: its record is gone, or its input is not a workflows run input. */
+type LostRun = { task: number; reason: string };
+
+/** The default branch `branch` moved from `from` to `head`, which does not contain `from`. */
+type Reset = { branch: string; from: string; head: string };
 
 const NOTHING_SEEN: Readonly<SeenState> = { mainSha: null, lastTaskId: 0, pending: [], catchups: 0 };
 
@@ -97,8 +121,11 @@ type RunFacts = Omit<Static<typeof RunResult>, "status" | "lessons"> & {
 
 type Commit = { sha: string; subject: string };
 
-/** The head of the default branch `branch`, and the commits on it since the last catch-up, newest first. */
-type HeadCommits = { head: string; branch: string; commits: Commit[] };
+/**
+ * The head of the default branch `branch`, and the commits on it since the last catch-up, newest first. With `reset`,
+ * the head does not contain the last head, so there are no commits.
+ */
+type HeadCommits = { head: string; branch: string; commits: Commit[]; reset?: Reset };
 
 /** Writes an entry into the project agent's conversation. */
 type WriteEntry = Found["write"];
@@ -113,16 +140,22 @@ export type CatchUpHost = {
 	readonly warn: (cause: unknown) => void;
 };
 
+/** The last catch-up of each conversation, so that the catch-ups of one conversation run one at a time. */
+const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
+
 /**
  * Writes the catch-up entry of the project agent with `write`, before the input `requestId`, when a workflows run ended
- * or the default branch moved since the last one. It never throws: a failure is a warning, and the input goes through.
+ * or the default branch moved since the last one. The catch-ups of one agent run one at a time. It never throws: a
+ * failure is a warning, and the input goes through.
  */
-export async function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string) {
-	try {
-		await placeCatchUp(host, write, requestId);
-	} catch (error) {
-		host.warn(`catch-up: ${errorMessage(error)}`);
-	}
+export function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string): Promise<void> {
+	const next = (lastCatchUps.get(host.root) ?? Promise.resolve()).then(() =>
+		placeCatchUp(host, write, requestId).catch((cause: unknown) => host.warn(`catch-up: ${errorMessage(cause)}`)),
+	);
+
+	lastCatchUps.set(host.root, next);
+
+	return next;
 }
 
 async function placeCatchUp(host: CatchUpHost, write: WriteEntry, requestId: string) {
@@ -131,45 +164,76 @@ async function placeCatchUp(host: CatchUpHost, write: WriteEntry, requestId: str
 	// A repeated input must not get an entry after its own first submission.
 	if ((await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context)) !== undefined) return;
 	const seen = await harness.snapshot(Seen, root.id, context);
+
+	// The entry of an earlier catch-up that stopped after its commit. Its request ID makes a repeat add nothing.
+	if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
 	const before = seen ?? NOTHING_SEEN;
 	const git = await headCommits(host, before.mainSha);
 	const started = await startedTaskIds(harness);
 	const lastTaskId = Math.max(before.lastTaskId, ...started.map(Number));
 	const runs: RunFacts[] = [];
+	const lost: LostRun[] = [];
 	const pending: number[] = [];
 
 	for (const id of started) {
-		if (!before.pending.includes(id) && id <= before.lastTaskId) continue;
-		const facts = await runFacts(host, id);
+		const known = before.pending.includes(id);
 
-		if (facts === "pending") pending.push(id);
-		else if (facts !== undefined) runs.push(facts);
+		if (!known && id <= before.lastTaskId) continue;
+		const found = await runFacts(host, id, known);
+
+		switch (found?.kind) {
+			case "pending":
+				pending.push(id);
+				break;
+			case "lost":
+				lost.push(found.lost);
+				break;
+			case "run":
+				runs.push(found.facts);
+				break;
+		}
 	}
 
+	const data: CatchUpData = { runs };
+
+	if (lost.length > 0) data.lost = lost;
+
+	if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
+
+	if (git?.reset !== undefined) data.reset = git.reset;
 	const mainSha = git === undefined ? before.mainSha : git.head;
 	const next: SeenState = { mainSha, lastTaskId, pending, catchups: before.catchups };
-	const commits = git?.commits ?? [];
-	const fresh = seen !== undefined && (runs.length > 0 || commits.length > 0);
+
+	const fresh =
+		seen !== undefined &&
+		(runs.length > 0 || data.lost !== undefined || data.commits !== undefined || data.reset !== undefined);
 
 	if (fresh) {
 		next.catchups += 1;
-		const text = catchUpText(runs, git);
-
-		const data =
-			git === undefined || git.commits.length === 0 ? { runs } : { runs, commits: { branch: git.branch, commits } };
-
-		const model = [{ role: "user", content: text, timestamp: Date.now() }] as const;
-		await write({ type: "write", requestId: `catchup:${next.catchups}`, entry: { kind: ENTRY_KIND, model, data } });
+		next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(data), data };
 	}
 
 	if (seen !== undefined && sameSeen(seen, next)) return;
 
-	// A concurrent catch-up that committed first keeps its state, so no fact is counted twice.
+	// The new state and its entry go in one commit; the entry is written after it.
 	await harness.commit(async (tx) => {
 		const doc = await tx.doc(Seen, root.id);
-
-		if (doc.catchups !== before.catchups) return;
+		delete doc.entry;
 		Object.assign(doc, next);
+	}, context);
+
+	if (next.entry !== undefined) await writePlanned(host, write, next.entry);
+}
+
+/** Writes the planned entry `entry`, then removes it from the `harness.seen` document. */
+async function writePlanned(host: CatchUpHost, write: WriteEntry, entry: PlannedEntry): Promise<void> {
+	const model = [{ role: "user", content: entry.text, timestamp: Date.now() }] as const;
+	await write({ type: "write", requestId: entry.requestId, entry: { kind: ENTRY_KIND, model, data: entry.data } });
+
+	await host.harness.commit(async (tx) => {
+		const doc = await tx.doc(Seen, host.root.id);
+
+		if (doc.entry?.requestId === entry.requestId) delete doc.entry;
 	}, context);
 }
 
@@ -183,11 +247,15 @@ function sameSeen(a: Readonly<SeenState>, b: Readonly<SeenState>): boolean {
 	);
 }
 
+/** What the catch-up reports of one task. */
+type RunState = { kind: "run"; facts: RunFacts } | { kind: "lost"; lost: LostRun } | { kind: "pending" };
+
 /**
  * The facts of the task `id` when it is a terminal workflows run, `pending` while it runs or cannot be read, and
- * nothing for another task.
+ * nothing for another task. A lost run is the task of a run whose input is not a workflows run input, or of a `known`
+ * run, which was pending, whose record is gone.
  */
-async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>): Promise<RunFacts | "pending" | undefined> {
+async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>, known: boolean): Promise<RunState | undefined> {
 	const { harness, warn } = host;
 	let record: Awaited<ReturnType<typeof harness.getTask<JsonValue>>>;
 
@@ -196,18 +264,20 @@ async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>): Promise<RunFa
 	} catch (error) {
 		warn(`catch-up: task ${id}: ${errorMessage(error)}`);
 
-		return "pending";
+		return { kind: "pending" };
 	}
 
-	if (record === undefined || record.kind !== RUN_KIND) return undefined;
+	if (record === undefined) {
+		return known ? { kind: "lost", lost: { task: id, reason: "its task record is gone" } } : undefined;
+	}
 
-	if (record.state.status !== "terminal") return "pending";
+	if (record.kind !== RUN_KIND) return undefined;
+
+	if (record.state.status !== "terminal") return { kind: "pending" };
 	const { input } = record;
 
 	if (!Value.Check(RunInput, input)) {
-		warn(`catch-up: task ${id} has an input that is not a workflows run`);
-
-		return undefined;
+		return { kind: "lost", lost: { task: id, reason: "its input is not a workflows run input" } };
 	}
 
 	const { outcome } = record.state;
@@ -233,7 +303,7 @@ async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>): Promise<RunFa
 
 	if (sessions !== undefined) facts.sessions = sessions;
 
-	return facts;
+	return { kind: "run", facts };
 }
 
 /** The sessions of the root run `rootRun`, with their lineage keys and labels; nothing when they cannot be read. */
@@ -278,6 +348,11 @@ async function headCommits(host: CatchUpHost, since: string | null): Promise<Hea
 
 		if (since === null || since === head) return { head, branch, commits: [] };
 
+		// A gone SHA, a force-push and a new default branch all leave a last head that the head does not contain.
+		if ((await gitOut(host.cwd, ["merge-base", "--is-ancestor", since, head])) === undefined) {
+			return { head, branch, commits: [], reset: { branch, from: since, head } };
+		}
+
 		const log = await execGit("git", ["log", `--format=%h${FIELD_SEPARATOR}%s`, `${since}..${head}`], {
 			cwd: host.cwd,
 		});
@@ -299,10 +374,17 @@ async function headCommits(host: CatchUpHost, since: string | null): Promise<Hea
 	}
 }
 
-/** The trimmed output of Git, or nothing when it exits with an error. It throws when Git does not start. */
+/**
+ * The trimmed output of Git, or nothing when it exits with an error. It throws when Git does not start or runs longer
+ * than 10 s.
+ */
 async function gitOut(cwd: string, args: readonly string[]): Promise<string | undefined> {
 	try {
-		return (await execGit("git", args, { cwd })).stdout.trim();
+		// Catch-ups run one at a time, so a Git that hangs would hold every later input: it gets a timeout, and asks for no
+		// login and takes no optional lock.
+		const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+
+		return (await execGit("git", args, { cwd, env, timeout: GIT_TIMEOUT_MS })).stdout.trim();
 	} catch (error) {
 		// A failed exit has an integer code; a spawn failure, such as ENOENT, has a string code.
 		if (Value.Check(Type.Object({ code: Type.Integer() }), error)) return undefined;
@@ -310,14 +392,30 @@ async function gitOut(cwd: string, args: readonly string[]): Promise<string | un
 	}
 }
 
-/** The text of the catch-up entry. */
-function catchUpText(runs: readonly RunFacts[], git: HeadCommits | undefined): string {
+/** The text of the catch-up entry with `data`. */
+function catchUpText({ runs, lost, commits, reset }: CatchUpData): string {
 	const lines = ["Catch-up since your last input."];
 
 	if (runs.length > 0) lines.push("Workflow runs that ended:", ...runs.map((facts) => `- ${runLine(facts)}`));
 
-	if (git !== undefined && git.commits.length > 0) {
-		lines.push(`New commits on ${git.branch}:`, ...git.commits.map(({ sha, subject }) => `- ${sha} ${subject}`));
+	if (lost !== undefined) {
+		lines.push(
+			"Workflow runs that cannot be reported:",
+			...lost.map(({ task, reason }) => `- task ${task}: ${reason}`),
+		);
+	}
+
+	if (commits !== undefined) {
+		lines.push(
+			`New commits on ${commits.branch}:`,
+			...commits.commits.map(({ sha, subject }) => `- ${sha} ${subject}`),
+		);
+	}
+
+	if (reset !== undefined) {
+		lines.push(
+			`${reset.branch} moved from ${reset.from} to ${reset.head}, which does not contain it: the new commits are not listed.`,
+		);
 	}
 
 	return lines.join("\n");

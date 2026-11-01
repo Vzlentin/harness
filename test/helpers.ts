@@ -76,6 +76,7 @@ const toolSpawns = new Map([
 	["Durable", "Durable child"],
 	["Durable spawn", "Durable spawned"],
 	["Task:\nNest tool", "Nest tool"],
+	["Task:\nResume wait", "Resume wait child"],
 	["No cwd", "No cwd child"],
 	["Task:\nSend and wait", "Send and wait child"],
 	["Agent spawn", "Agent child"],

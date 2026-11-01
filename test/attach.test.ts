@@ -58,15 +58,29 @@ function seqOf(line: string | undefined): number {
 /**
  * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, gives the pane `p1` to a new tab, and
  * the pane `p2` to a split. With `fail`, each call writes that text to stderr and exits with 1, after the log line.
+ * With `failOnce`, only the first call does that. With `failOn`, only the calls whose first two words are `failOn` do
+ * that.
  */
-async function fakeHerdr(fail?: string): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+async function fakeHerdr(
+	fail?: string,
+	failOnce = false,
+	failOn?: string,
+): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "herdr.log");
+	const flag = join(bin, "fail-once");
+
+	if (failOnce) await writeFile(flag, "");
+
+	const failure =
+		failOn === undefined
+			? `echo '${fail}' >&2; exit 1`
+			: `if [ "$1 $2" = "${failOn}" ]; then echo '${fail}' >&2; exit 1; fi`;
 
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-${fail === undefined ? "" : `echo '${fail}' >&2; exit 1`}
-if [ "$1 $2" = "tab create" ]; then echo '{"result":{"root_pane":{"pane_id":"p1"}}}'; fi
+${fail === undefined ? "" : failOnce ? `if [ -e "${flag}" ]; then rm "${flag}"; ${failure}; fi` : failure}
+if [ "$1 $2" = "tab create" ]; then echo '{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}'; fi
 if [ "$1 $2" = "pane split" ]; then echo '{"result":{"type":"pane_info","pane":{"pane_id":"p2"}}}'; fi
 `;
 
@@ -348,6 +362,26 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(logLines(herdr.log)).toHaveLength(6);
 	});
 
+	it("reports the state again after a failed report and after a release", async () => {
+		const herdr = await fakeHerdr("pane busy", true);
+
+		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-5" }, "retried", {
+			project: "main",
+			handle: "abc123",
+		});
+
+		await reporter.report(true);
+		await reporter.report(true);
+		await reporter.report(true);
+		await reporter.release();
+		await reporter.report(true);
+		await reporter.release();
+
+		const states = logLines(herdr.log).map((line) => /--state (\w+)|release-agent/.exec(line)?.[0]);
+
+		expect(states).toEqual(["--state working", "--state working", "release-agent", "--state working", "release-agent"]);
+	});
+
 	it("opens a child in Pi in a Herdr tab", async () => {
 		const herdr = await fakeHerdr();
 		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));
@@ -415,5 +449,17 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await expect(openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env)).rejects.toThrow("no such pane");
 		expect(logLines(herdr.log)).toHaveLength(1);
 		expect(logLines(herdr.log)[0]).toMatch(/^pane split /);
+	});
+
+	it("closes the new pane or tab when it cannot open the conversation there", async () => {
+		const herdr = await fakeHerdr("pane is gone", false, "pane run");
+		await expect(openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env)).rejects.toThrow("pane is gone");
+		expect(logLines(herdr.log).at(-1)).toBe("pane close p2");
+
+		const tab = await fakeHerdr("pane is gone", false, "pane run");
+		await expect(openConversationPane(conversationInfo(), { workspace: "w1" }, tab.env)).rejects.toThrow(
+			"pane is gone",
+		);
+		expect(logLines(tab.log).at(-1)).toBe("tab close t1");
 	});
 });

@@ -150,6 +150,25 @@ describe("push", { timeout: 30_000 }, () => {
 		await untilState(tree, "idle");
 	});
 
+	it("reports a delivery that fails, and gives the next ones", async () => {
+		const caller = "failing-session";
+
+		const answers = listenAnswers(caller, { start: false }, () => {
+			if (answers.deliveries.length === 1) throw new Error("The message did not show");
+		});
+
+		try {
+			const first = await spawnAs(caller, "Failed show");
+			await until(() => answers.deliveries.length === 1);
+			const second = await spawnAs(caller, "Shown");
+			await until(() => answers.deliveries.length === 2);
+			expect(answers.deliveries.map((delivery) => delivery.handle)).toEqual([first.handle, second.handle]);
+			expect(answers.errors).toEqual([new Error("The message did not show")]);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
 	it("gets the answers again after the host restarts", async () => {
 		const caller = "restart-session";
 		const answers = listenAnswers(caller, { start: false, retryDelaysMs: [0, 200, 500, 1000, 2000] });
@@ -182,6 +201,22 @@ describe("push", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("gives an answers request that a newer one of the same caller replaced an error", async () => {
+		const older = await connect({ start: false });
+		const newer = await connect({ start: false });
+
+		try {
+			if (older === undefined || newer === undefined) throw new Error("no host");
+			const replaced = older.request({ type: "answers", caller: "replaced-session" });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			void newer.request({ type: "answers", caller: "replaced-session" }).catch(() => {});
+			await expect(replaced).rejects.toThrow("A newer answers request of the same caller replaced this one");
+		} finally {
+			older?.close();
+			newer?.close();
+		}
+	});
+
 	it("exits when idle with only an answers request open", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "idle-")));
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
@@ -202,7 +237,7 @@ describe("push", { timeout: 30_000 }, () => {
 			if (client === undefined) throw new Error("no host");
 			const pending = client.request({ type: "answers", caller: "idle-session" });
 			await idle.closed;
-			await expect(pending).rejects.toThrow("The harness host closed the connection");
+			await expect(pending).rejects.toThrow("The host is closing");
 		} finally {
 			client?.close();
 			await idle.close();
@@ -240,13 +275,29 @@ async function untilState(handle: string, state: string): Promise<void> {
 	);
 }
 
-/** An `answers` listener, and every delivery that it gave. */
-type Answers = { readonly deliveries: Delivery[]; readonly listener: AnswerListener };
+/** An `answers` listener, every delivery that it gave, and every error of a delivery. */
+type Answers = { readonly deliveries: Delivery[]; readonly errors: Error[]; readonly listener: AnswerListener };
 
-/** The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. */
-function listenAnswers(caller: string, options?: AnswersOptions): Answers {
+/**
+ * The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. `onDelivery` runs
+ * after each delivery is kept.
+ */
+function listenAnswers(
+	caller: string,
+	options: Omit<AnswersOptions, "onError"> = { start: false },
+	onDelivery: (delivery: Delivery) => void = () => {},
+): Answers {
 	const deliveries: Delivery[] = [];
-	const listener = new AnswerListener(caller, (delivery) => deliveries.push(delivery), options ?? { start: false });
+	const errors: Error[] = [];
 
-	return { deliveries, listener };
+	const listener = new AnswerListener(
+		caller,
+		(delivery) => {
+			deliveries.push(delivery);
+			onDelivery(delivery);
+		},
+		{ ...options, onError: (error) => errors.push(error) },
+	);
+
+	return { deliveries, errors, listener };
 }
