@@ -444,6 +444,9 @@ export function createChildren(durable: typeof Durable): Children {
 			const settled =
 				requestId == null ? undefined : await commitFor(place, (tx) => tx.submissionByRequest(id, requestId), context);
 
+			// A request that is admitted and not answered yet makes the child busy before its run starts.
+			if (settled?.status === "queued" || settled?.status === "placed") return "busy";
+
 			// An aborted turn leaves the conversation idle.
 			return settled?.status === "unanswered" && settled.reason !== "aborted" ? "error" : "idle";
 		},

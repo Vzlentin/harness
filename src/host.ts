@@ -215,7 +215,16 @@ export async function runHost(options: {
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
+	/** The request chains and reply writes in flight, which the close awaits. */
+	const inFlight = new Set<Promise<unknown>>();
 	let lastActivity = Date.now();
+	let closing: Promise<void> | undefined;
+
+	const track = (promise: Promise<unknown>) => {
+		const settle = () => inFlight.delete(promise);
+		inFlight.add(promise);
+		promise.then(settle, settle);
+	};
 
 	const server = createServer((socket) => {
 		connections.add(socket);
@@ -229,6 +238,8 @@ export async function runHost(options: {
 				const connection: Connection = { socket, afterReply: (run) => (afterReply = run) };
 
 				try {
+					// A line that comes while the host closes runs no handler.
+					if (closing !== undefined) throw new Error("The host is closing");
 					const request = parseRequest(line);
 
 					if (!PASSIVE_REQUESTS.has(request.type)) lastActivity = Date.now();
@@ -246,8 +257,10 @@ export async function runHost(options: {
 					else resolve(false);
 				});
 
+				track(written);
 				afterReply?.(written);
 			});
+			track(queue);
 		});
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
@@ -272,19 +285,25 @@ export async function runHost(options: {
 		throw cause;
 	});
 
-	let closing: Promise<void> | undefined;
-
+	/**
+	 * Stops the requests with the error `The host is closing`, waits until their replies are written, and then closes
+	 * the sockets, the entries, the sandbox and the harness.
+	 */
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
 			push.close();
 			server.close();
+			const reason = new Error("The host is closing");
 
-			for (const socket of connections) socket.destroy();
-
-			for (const abort of aborts) abort.abort();
+			for (const abort of aborts) abort.abort(reason);
 
 			try {
+				// Each handler reads its signal or ends once the push closes, so this needs no timeout.
+				while (inFlight.size > 0) await Promise.allSettled(inFlight);
+
+				for (const socket of connections) socket.destroy();
+
 				// Entries close first: an entry may still need the open harness. The sandbox closes before the harness, so a
 				// script that runs gets no outcome and continues after a restart.
 				await entries.close();

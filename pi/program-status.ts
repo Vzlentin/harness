@@ -1,6 +1,7 @@
 /**
  * The state of the agent of a mirror session for the terminal, with the Program Status Protocol (OSC 7501): `working`
- * while it works, `error` when its last request failed, and `idle` in all other cases.
+ * while it works, `blocked` while the mirror connects again to the host, `error` when its last request failed, and `idle`
+ * in all other cases.
  */
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import type { Mirror, targetTitle } from "../dist/mirror.js";
@@ -34,6 +35,11 @@ function errorLine({ view }: Pick<Mirrored, "view">): string {
 
 /** The state of the agent of `mirror`. */
 function programStatus(titles: Titles, mirror: Mirrored): ProgramStatus {
+	// OSC 7501 has no state for a lost connection, and `working` would claim progress.
+	if (mirror.status.kind === "reconnecting") {
+		return { state: "blocked", app: APP, message: `${title(titles, mirror)} (connecting again)` };
+	}
+
 	if (mirror.busy) return { state: "working", app: APP, message: title(titles, mirror) };
 
 	if (mirror.status.kind === "open" && mirror.child?.state === "error") {

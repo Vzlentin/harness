@@ -167,8 +167,10 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let widgetContext: ExtensionContext | undefined;
 	let refreshing = false;
+	// Only a session that spawned children sees that the host is not running.
+	let spawned = false;
 
-	// The widget does not start the host: when none runs, it shows nothing.
+	// The widget does not start the host.
 	const refreshWidget = async (): Promise<void> => {
 		if (!widgetContext || refreshing) return;
 		refreshing = true;
@@ -176,32 +178,22 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		try {
 			const context = widgetContext;
 
-			const children = await client
-				.request({ type: "list", caller: context.sessionManager.getSessionId() }, { start: false })
-				.catch(() => undefined);
+			let lines: string[] | undefined;
 
-			if (context !== widgetContext) return;
+			try {
+				const children = await client.request(
+					{ type: "list", caller: context.sessionManager.getSessionId() },
+					{ start: false },
+				);
 
-			if (children === undefined || children.length === 0) {
-				context.ui.setWidget("subagents", undefined);
-
-				return;
+				if (children !== undefined && children.length > 0) spawned = true;
+				lines = widgetLines(context.ui.theme, children, spawned);
+			} catch (cause) {
+				lines = [context.ui.theme.fg("error", `subagents: ${protocol.errorMessage(cause).split("\n", 1)[0]}`)];
 			}
 
-			const theme = context.ui.theme;
-
-			const visible = children
-				.slice(0, 5)
-				.map(({ name, handle, state }: { name?: string; handle: string; state: string }) => {
-					const color = state === "busy" ? "warning" : state === "idle" ? "success" : "error";
-
-					return theme.fg(color, `${name ?? handle}:${state}`);
-				});
-
-			if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
-			context.ui.setWidget("subagents", [theme.fg("dim", "subagents: ") + visible.join(theme.fg("dim", " | "))], {
-				placement: "belowEditor",
-			});
+			if (context !== widgetContext) return;
+			context.ui.setWidget("subagents", lines, { placement: "belowEditor" });
 		} finally {
 			refreshing = false;
 		}
@@ -210,14 +202,16 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	pi.on("session_start", (_event, ctx) => {
 		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
 		listener?.close();
+		const spawnedBefore = hasSpawned(ctx);
 		// A write to stderr would break the TUI, so a delivery that fails is a notification.
 		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
-			start: hasSpawned(ctx),
+			start: spawnedBefore,
 			onError: (error) =>
 				ctx.ui.notify(`Could not show the answer of a subagent: ${protocol.errorMessage(error)}`, "error"),
 		});
 
 		if (!ctx.hasUI) return;
+		spawned = spawnedBefore;
 		widgetContext = ctx;
 		void refreshWidget();
 		widgetTimer = setInterval(() => void refreshWidget(), 1000);
@@ -233,6 +227,44 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		widgetContext = undefined;
 		ctx.ui.setWidget("subagents", undefined);
 	});
+}
+
+/**
+ * The lines of the subagents widget for `children`, the reply of `list`: nothing for no children, and a warning for no
+ * host (undefined) when the session `spawned` children.
+ */
+function widgetLines(
+	theme: ExtensionContext["ui"]["theme"],
+	children: readonly protocol.ChildInfo[] | undefined,
+	spawned: boolean,
+): string[] | undefined {
+	if (children === undefined) {
+		return spawned ? [theme.fg("warning", "subagents: the harness host is not running")] : undefined;
+	}
+
+	if (children.length === 0) return undefined;
+
+	const visible = children
+		.slice(0, 5)
+		.map(({ name, handle, state }) => theme.fg(stateColor(state), `${name ?? handle}:${state}`));
+
+	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
+
+	return [theme.fg("dim", "subagents: ") + visible.join(theme.fg("dim", " | "))];
+}
+
+/** The theme colour of a child in `state`. */
+function stateColor(state: protocol.ChildState): "warning" | "success" | "error" | "muted" {
+	switch (state) {
+		case "busy":
+			return "warning";
+		case "idle":
+			return "success";
+		case "error":
+			return "error";
+		case "closed":
+			return "muted";
+	}
 }
 
 /** Whether the session of `ctx` has a result of the `subagent` tool. */

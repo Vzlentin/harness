@@ -26,7 +26,8 @@ import {
 	statePaths,
 	type WatchLine,
 } from "../src/protocol.ts";
-import { subagentTool } from "../src/tool.ts";
+import { Children } from "../src/targets.ts";
+import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	called,
 	calls,
@@ -122,7 +123,11 @@ afterAll(async () => {
 
 describe("subagent", { timeout: 30_000 }, () => {
 	it("spawns, reports and waits for a child", async () => {
+		// The gate keeps the child busy until the spawn output is in.
+		gates.set("Task:\nSay hello", Promise.withResolvers());
 		const spawned = await cli(["spawn", "--name", "greeter", "--prompt", "Say hello"]);
+		gates.get("Task:\nSay hello")?.resolve();
+		gates.delete("Task:\nSay hello");
 		expect(spawned.stderr).toBe("");
 		const handle = handleOf(spawned);
 		expect(spawned.stdout).toBe(`Spawned greeter (${handle})\nState: busy\n`);
@@ -783,6 +788,255 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		expect(called("First prompt")).toBe(1);
 		expect(called("Between")).toBe(1);
+	});
+
+	it("replies to the requests in flight that the host is closing before it closes", async () => {
+		gates.set("Task:\nClosing gated", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "Closing gated"]));
+		await until(() => called("Task:\nClosing gated") === 1);
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+			const waiting = client.request({ type: "wait", handle, timeout: 60 });
+			const rejected = expect(waiting).rejects.toThrow("The host is closing");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			await host?.close();
+			await rejected;
+		} finally {
+			client?.close();
+			gates.get("Task:\nClosing gated")?.resolve();
+			gates.delete("Task:\nClosing gated");
+			host = await startHost();
+		}
+	});
+
+	it("gives the real state of the child when a spawn repeats", async () => {
+		const scope = {
+			caller: "replay-session",
+			callKey: "replay-call",
+			provider: "faux",
+			model: "faux-1",
+			thinking: "medium",
+			cwd: root,
+			send: sendToHost,
+			signal: undefined,
+		};
+
+		const spawn: ToolArgs = { action: "spawn", prompts: ["Replayed spawn"], key: "replay" };
+		const first = await runTool(spawn, scope);
+		const handle = handleOf({ code: 0, stdout: first.text, stderr: "" });
+		await runTool({ action: "wait", handle }, scope);
+		expect((await runTool(spawn, scope)).text).toBe(`Spawned ${handle}\nState: idle\n`);
+		expect(called("Task:\nReplayed spawn")).toBe(1);
+	});
+
+	it("waits longer before each new push of a child that fails, and tries again without a commit", async () => {
+		const store = await restartWithStore();
+		const handle = "backoff1";
+		// SAFETY: no conversation has this ID, so each push of the child fails.
+		const conversationId = 987_654_321 as ConversationId;
+		const warning = `Missing conversation ${conversationId}`;
+		const writes = vi.spyOn(process.stderr, "write");
+		const warnings = () => writes.mock.calls.filter(([text]) => String(text).includes(warning)).length;
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+			const pending = client.request({ type: "answers", caller: "backoff-session" });
+			pending.catch(() => undefined);
+			await store.commit(async (tx) => {
+				(await tx.doc(Children)).children[handle] = {
+					caller: "backoff-session",
+					createdAt: new Date().toISOString(),
+					conversationId,
+					sent: ["backoff-request"],
+				};
+			}, BACKGROUND_CONTEXT);
+			await until(() => warnings() === 1);
+
+			for (let rename = 0; rename < 5; rename++) {
+				await store.commit(async (tx) => {
+					const record = (await tx.doc(Children)).children[handle];
+
+					if (record !== undefined) record.name = `backoff-${rename}`;
+				}, BACKGROUND_CONTEXT);
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(warnings()).toBe(1);
+			await until(() => warnings() === 2);
+		} finally {
+			client?.close();
+			writes.mockRestore();
+			await store.commit(async (tx) => {
+				delete (await tx.doc(Children)).children[handle];
+			}, BACKGROUND_CONTEXT);
+		}
+	});
+
+	it("keeps the order of the answers to a caller when the push of the older child fails", async () => {
+		const store = await restartWithStore();
+		const parent = handleOf(await cli(["spawn", "--prompt", "Ordered parent"]));
+		await cli(["wait", parent]);
+		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		const pushed: string[] = [];
+		let refused = false;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const [draft] = submitted;
+					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
+
+					if (!refused && content.includes("Ordered older")) {
+						refused = true;
+						throw new Error("Input refused once");
+					}
+
+					if (content.includes("Ordered older")) pushed.push("older");
+
+					if (content.includes("Ordered younger")) pushed.push("younger");
+
+					return submit(...submitted);
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+
+			for (const name of ["older", "younger"]) {
+				await client.request({
+					type: "spawn",
+					requestId: `ordered-${name}`,
+					caller: String(id),
+					notify: true,
+					provider: "faux",
+					model: "faux-1",
+					callerThinking: "medium",
+					cwd: root,
+					prompt: `Ordered ${name}`,
+				});
+			}
+
+			await until(() => pushed.length === 2);
+			expect(refused).toBe(true);
+			expect(pushed).toEqual(["older", "younger"]);
+		} finally {
+			client?.close();
+			lookups.mockRestore();
+		}
+	});
+
+	it("keeps the order of the answers to a caller when the take of the older child fails", async () => {
+		const store = await restartWithStore();
+		const parent = handleOf(await cli(["spawn", "--prompt", "Taken parent"]));
+		await cli(["wait", parent]);
+
+		const idOf = async (handle: string) =>
+			(await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+
+		const id = await idOf(parent);
+		const conversation = store.conversation.bind(store);
+		const snapshot = store.snapshot.bind(store);
+		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+		const ids = new Map<string, ConversationId | undefined>();
+		const pushed: string[] = [];
+		let armed = false;
+		let refusedWhenReady = false;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
+				const submit = found.submit.bind(found);
+				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+					const [draft] = submitted;
+					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
+
+					if (content.includes("Taken older")) pushed.push("older");
+
+					if (content.includes("Taken younger")) pushed.push("younger");
+
+					return submit(...submitted);
+				});
+			}
+
+			return found;
+		});
+
+		// The take of the older child fails until the younger child is done, then once more, with both answers ready.
+		const reads = vi.spyOn(store, "snapshot").mockImplementation(async (...args) => {
+			const [doc, of] = args;
+
+			if (armed && doc.definition.kind === "pi-subagent.child" && String(of) === String(ids.get("older"))) {
+				const younger = await createChildren(durable).find(
+					place,
+					owner,
+					{ id: String(ids.get("younger")) },
+					BACKGROUND_CONTEXT,
+				);
+
+				const ready = (await younger?.state(BACKGROUND_CONTEXT)) === "idle";
+
+				if (!ready) throw new Error("Take refused until the younger child is done");
+
+				if (!refusedWhenReady) {
+					refusedWhenReady = true;
+					throw new Error("Take refused once more");
+				}
+			}
+
+			return snapshot(...args);
+		});
+
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+
+			for (const name of ["older", "younger"] as const) {
+				gates.set(`Taken ${name}`, Promise.withResolvers());
+
+				const { handle } = await client.request({
+					type: "spawn",
+					requestId: `taken-${name}`,
+					caller: String(id),
+					notify: true,
+					provider: "faux",
+					model: "faux-1",
+					callerThinking: "medium",
+					cwd: root,
+					prompt: `Taken ${name}`,
+				});
+
+				ids.set(name, await idOf(handle));
+			}
+
+			armed = true;
+			gates.get("Taken older")?.resolve();
+			gates.get("Taken younger")?.resolve();
+
+			await until(() => pushed.length === 2);
+			expect(refusedWhenReady).toBe(true);
+			expect(pushed).toEqual(["older", "younger"]);
+		} finally {
+			client?.close();
+			reads.mockRestore();
+			lookups.mockRestore();
+			gates.delete("Taken older");
+			gates.delete("Taken younger");
+		}
 	});
 
 	it("shows a child that the library closed as closed, and refuses a wait and a send to it", async () => {

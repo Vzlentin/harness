@@ -237,7 +237,7 @@ describe("push", { timeout: 30_000 }, () => {
 			if (client === undefined) throw new Error("no host");
 			const pending = client.request({ type: "answers", caller: "idle-session" });
 			await idle.closed;
-			await expect(pending).rejects.toThrow("The harness host closed the connection");
+			await expect(pending).rejects.toThrow("The host is closing");
 		} finally {
 			client?.close();
 			await idle.close();

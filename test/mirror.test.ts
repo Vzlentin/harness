@@ -311,7 +311,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 			await until(() => mirror.status.kind === "open");
 			await closeHost();
 			await until(() => mirror.status.kind === "reconnecting");
-			expect(reports.at(-1)).toEqual(idle);
+			expect(reports.at(-1)).toEqual({ state: "blocked", app: "harness", message: "main agent (connecting again)" });
 			await expect(mirror.send("Never sent", false)).rejects.toThrow(reason);
 			expect(mirror.status).toEqual({ kind: "failed", reason });
 			expect(reports.at(-1)).toEqual(idle);

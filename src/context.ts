@@ -78,7 +78,7 @@ const resources = new Map<string, Promise<Resources>>();
  * The project instructions and skills of `cwd`, as Pi loads them at startup. Project skills load only for a project
  * that Pi trusts now. They are loaded once per directory and trust. Missing packages are skipped, not installed. A
  * load that fails gives no resources, with a warning, as Pi skips a resource it cannot load, and the next request
- * tries again.
+ * tries again. A change to an `AGENTS.md` file or to a skill is seen only after the host restarts.
  */
 async function resourcesOf(cwd: string): Promise<Resources> {
 	try {

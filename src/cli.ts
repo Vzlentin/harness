@@ -9,7 +9,15 @@ import { Value } from "typebox/value";
 import { request } from "./client.ts";
 import { piEnv } from "./herdr.ts";
 import { type MirrorTarget, piArgs } from "./mirror.ts";
-import { addProject, checkProject, MAIN_PROJECT, projectDir, readProjects, resolveProject } from "./projects.ts";
+import {
+	addProject,
+	COMMAND_NAMES,
+	checkProject,
+	MAIN_PROJECT,
+	projectDir,
+	readProjects,
+	resolveProject,
+} from "./projects.ts";
 import { AGENT_HANDLE, errorMessage, statePaths, type Target } from "./protocol.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
@@ -145,28 +153,12 @@ function toolArgs(command: string | undefined, args: string[]): ToolArgs {
 	}
 }
 
-/** The commands, which a project cannot have as its name. */
-const COMMANDS = new Set([
-	"spawn",
-	"status",
-	"rename",
-	"send",
-	"wait",
-	"stop",
-	"list",
-	"attach",
-	"host",
-	"create",
-	"projects",
-]);
-
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
 function createCommand(args: string[]): void {
 	const [name, option, dir] = args;
 
 	if (args.length !== 3 || name === undefined || option !== "--cwd" || dir === undefined) usage();
 
-	if (COMMANDS.has(name)) fail(`A project cannot have the name ${name}`);
 	process.stdout.write(`Created ${name} (${addProject(name, dir)})\n`);
 }
 
@@ -286,7 +278,7 @@ async function main(): Promise<void> {
 	// A project alone opens its agent. Any other word goes to the usage.
 	if (
 		command !== undefined &&
-		!COMMANDS.has(command) &&
+		!COMMAND_NAMES.has(command) &&
 		args.length === 0 &&
 		(command === MAIN_PROJECT || Object.hasOwn(readProjects(), command))
 	) {

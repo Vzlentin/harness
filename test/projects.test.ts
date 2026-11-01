@@ -3,7 +3,7 @@ import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect } from "../src/client.ts";
-import { projectsPath, resolveProject } from "../src/projects.ts";
+import { addProject, projectsPath, resolveProject } from "../src/projects.ts";
 import { statePaths } from "../src/protocol.ts";
 import { cli, handleOf, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
@@ -46,6 +46,11 @@ describe("projects", { timeout: 30_000 }, () => {
 	it("prints the version of the package", async () => {
 		const { version } = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
 		expect(await cli(["--version"])).toEqual({ code: 0, stdout: `${version}\n`, stderr: "" });
+	});
+
+	it("refuses a project with the name of a command", () => {
+		expect(() => addProject("spawn", dirA)).toThrow("A project cannot have the name spawn");
+		expect(existsSync(projectsPath())).toBe(false);
 	});
 
 	it("creates a project and lists the projects", async () => {

@@ -11,7 +11,9 @@ import type {
 	ExtensionHandler,
 	SessionShutdownEvent,
 	SessionStartEvent,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client.ts";
@@ -178,15 +180,32 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 	return tool.call(args);
 }
 
-/** Calls the handlers of `event` with harness, for the session `session` without a UI and without entries. */
-async function sessionEvent(registered: Registered, event: SessionStartEvent | SessionShutdownEvent): Promise<void> {
+/** The lines of the subagents widget that the extension set, in order; undefined hides the widget. */
+type Widgets = (readonly string[] | undefined)[];
+
+/**
+ * Calls the handlers of `event` with harness, for the session `session` without entries. Without `widgets`, the
+ * session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and `widgets` gets each content
+ * of the subagents widget.
+ */
+async function sessionEvent(
+	registered: Registered,
+	event: SessionStartEvent | SessionShutdownEvent,
+	widgets?: Widgets,
+): Promise<void> {
 	const ctx: Pick<ExtensionContext, "hasUI"> & {
 		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntries" | "getBranch">;
-		readonly ui: Pick<ExtensionContext["ui"], "setWidget">;
+		readonly ui: Pick<ExtensionContext["ui"], "setWidget"> & { readonly theme: Pick<Theme, "fg"> };
 	} = {
-		hasUI: false,
+		hasUI: widgets !== undefined,
 		sessionManager: { getSessionId: () => "session", getEntries: () => [], getBranch: () => [] },
-		ui: { setWidget: () => {} },
+		ui: {
+			// The extension gives the widget lines, never a component.
+			setWidget: (key: string, content: string[] | ((...args: never[]) => Component) | undefined) => {
+				if (key === "subagents" && !(content instanceof Function)) widgets?.push(content);
+			},
+			theme: { fg: (color, text) => `<${color}>${text}` },
+		},
 	};
 
 	// SAFETY: with harness, the session handlers read only these fields of the context.
@@ -295,5 +314,44 @@ describe("the Pi extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(registered.messages).toHaveLength(1);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("shows in the widget the children, then that the host is not running, and nothing without children", async () => {
+		const registered = await load();
+		const quiet: Widgets = [];
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
+		await vi.waitFor(() => expect(quiet).toEqual([undefined]), { timeout: 10_000 });
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
+
+		host = await startHost();
+
+		const spawned = await request(
+			{
+				type: "spawn",
+				requestId: "widget",
+				caller: "session",
+				notify: false,
+				provider: "faux",
+				model: "faux-1",
+				callerThinking: "medium",
+				cwd: root,
+				prompt: "Task:\nWidget",
+			},
+			{ start: false },
+		);
+
+		const handle = spawned?.handle ?? "";
+		await untilIdle(handle);
+		const widgets: Widgets = [];
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([`<dim>subagents: <success>${handle}:idle`]), {
+			timeout: 10_000,
+		});
+		await host?.close();
+		host = undefined;
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["<warning>subagents: the harness host is not running"]), {
+			timeout: 10_000,
+		});
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 });

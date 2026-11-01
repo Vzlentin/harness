@@ -8,6 +8,21 @@ import { readJsonFile, updateJsonFile } from "./json-file.ts";
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
 
+/** The commands of the `harness` CLI, which a project cannot have as its name. */
+export const COMMAND_NAMES: ReadonlySet<string> = new Set([
+	"spawn",
+	"status",
+	"rename",
+	"send",
+	"wait",
+	"stop",
+	"list",
+	"attach",
+	"host",
+	"create",
+	"projects",
+]);
+
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The file of the projects: `$XDG_CONFIG_HOME/harness/projects.json`, default `~/.config/harness/projects.json`. */
@@ -40,13 +55,13 @@ export function readProjects(): Record<string, string> {
 
 /**
  * Adds the project `name` with the real path of `dir` to the projects, and gives that path. It throws for an invalid or
- * existing name and for a directory that does not exist.
+ * existing name, for the name of a command and for a directory that does not exist.
  */
 export function addProject(name: string, dir: string): string {
 	if (!NAME.test(name))
 		throw new Error(`A project name has 1 to 32 characters: a-z first, then a-z, 0-9 or -: ${name}`);
 
-	if (name === MAIN_PROJECT) throw new Error(`A project cannot have the name ${name}`);
+	if (name === MAIN_PROJECT || COMMAND_NAMES.has(name)) throw new Error(`A project cannot have the name ${name}`);
 	let real: string;
 
 	try {

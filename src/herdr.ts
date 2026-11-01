@@ -14,8 +14,13 @@ const HERDR_SOURCE = "custom:harness";
  */
 const PANE_VARIABLE = "HARNESS_HERDR_PANE";
 
-/** The part of the output of `herdr tab create` that has the pane of the tab. */
-const TabCreated = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
+/** The part of the output of `herdr tab create` that has the pane of the tab, and the tab ID when Herdr gives it. */
+const TabCreated = Type.Object({
+	result: Type.Object({
+		root_pane: Type.Object({ pane_id: Type.String() }),
+		tab: Type.Optional(Type.Object({ tab_id: Type.Optional(Type.String()) })),
+	}),
+});
 
 /** The part of the output of `herdr pane split` that has the new pane. */
 const PaneSplit = Type.Object({ result: Type.Object({ pane: Type.Object({ pane_id: Type.String() }) }) });
@@ -106,8 +111,9 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
  * Opens the children library conversation `conversation` in Pi, on the project of `env` and this process's cwd: in a
  * new pane to the right of the Herdr pane `place.pane`, or in a new tab of the Herdr workspace `place.workspace`. The
  * pane or tab gets the key of the conversation as its label. For a conversation, `ChildInfo` gives the same ID in
- * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID, and then makes no more
- * calls.
+ * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID. When a call fails after the
+ * pane or tab exists, it closes that pane or tab first: the tab, or its pane when Herdr gives no tab ID. A failure of
+ * that close is ignored, and the rejection keeps the first error.
  */
 export async function openConversationPane(
 	conversation: ChildInfo,
@@ -134,8 +140,14 @@ export async function openConversationPane(
 
 		if (!Value.Check(PaneSplit, output)) throw new Error(`herdr pane split gave no pane ID: ${split.trim()}`);
 		const pane = output.result.pane.pane_id;
-		await herdr(["pane", "rename", pane, label], env);
-		await runOpen(pane, target, env);
+		await closeOnFailure(
+			async () => {
+				await herdr(["pane", "rename", pane, label], env);
+				await runOpen(pane, target, env);
+			},
+			["pane", "close", pane],
+			env,
+		);
 
 		return;
 	}
@@ -166,7 +178,28 @@ export async function openConversationPane(
 
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 
-	await runOpen(output.result.root_pane.pane_id, target, env);
+	const pane = output.result.root_pane.pane_id;
+	const tab = output.result.tab?.tab_id;
+
+	await closeOnFailure(
+		() => runOpen(pane, target, env),
+		tab === undefined ? ["pane", "close", pane] : ["tab", "close", tab],
+		env,
+	);
+}
+
+/** Runs `open`. When it fails, it runs `herdr` with `close`, ignores a failure of that call, and rejects with the first error. */
+async function closeOnFailure(
+	open: () => Promise<void>,
+	close: readonly string[],
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	try {
+		await open();
+	} catch (error) {
+		await herdr(close, env).catch(() => "");
+		throw error;
+	}
 }
 
 /**

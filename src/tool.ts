@@ -129,7 +129,7 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 		case "spawn": {
 			const child = await send(spawnRequest(args, scope, requestId), signal);
 
-			return { text: `Spawned ${runDisplayName(child)}\nState: busy\n`, data: { action, value: child } };
+			return { text: `Spawned ${runDisplayName(child)}\nState: ${child.state}\n`, data: { action, value: child } };
 		}
 
 		case "send": {
