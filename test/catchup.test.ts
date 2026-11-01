@@ -146,6 +146,7 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 			name: "fix",
 			worktree: { branch: "fix/lexer" },
 			release,
+			labels: ["planner", "reviewer"],
 			result: { status: "finished", subject: "Fix the lexer" },
 		});
 
@@ -176,12 +177,14 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 		await input("Third");
 		const third = contexts.get("Third") ?? [];
 		expect(third.slice(0, 3)).toEqual(second);
-		const conversationB = /wf:run-b\/planner #(\d+)/.exec(third[3] ?? "")?.[1];
+		const [, planner, reviewer] = /\[run run-b: planner #(\d+), reviewer #(\d+)\]/.exec(third[3] ?? "") ?? [];
+		expect(planner).toBeDefined();
+		expect(reviewer).toBeDefined();
 		expect(third.slice(3)).toEqual([
 			[
 				"Catch-up since your last input.",
 				"Workflow runs that ended:",
-				`- run-b (fix): finished; subject: Fix the lexer; branch: fix/lexer; sessions: [run run-b: wf:run-b/planner #${conversationB}]`,
+				`- run-b (fix): finished; subject: Fix the lexer; branch: fix/lexer; sessions: [run run-b: planner #${planner}, reviewer #${reviewer}]`,
 			].join("\n"),
 			"Third",
 		]);
@@ -245,7 +248,10 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 							status: "finished",
 							subject: "Fix the lexer",
 							branch: "fix/lexer",
-							sessions: [{ run: "run-b", conversation: Number(conversationB), key: "wf:run-b/planner" }],
+							sessions: [
+								{ run: "run-b", conversation: Number(planner), key: "wf:run-b/planner", label: "planner" },
+								{ run: "run-b", conversation: Number(reviewer), key: "wf:run-b/reviewer", label: "reviewer" },
+							],
 						},
 					],
 				},
