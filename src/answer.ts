@@ -31,6 +31,11 @@ type AnswerState = {
 	schema?: JsonObject;
 	requestId?: string;
 	submission?: SubmissionId;
+	/**
+	 * The inputs of the run at the time of the ask, when it has no submission yet. A run with another input then is the
+	 * run of the ask, which the submission commit has not recorded yet.
+	 */
+	earlier?: SubmissionId[];
 	answers: Record<string, JsonValue>;
 };
 
@@ -139,10 +144,10 @@ export function createAnswers(durable: typeof Durable): Answers {
 	const remind = async (answer: AssistantMessage, api: HookApi, context: Context) => {
 		const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
 
-		if (doc?.schema === undefined || doc.requestId === undefined || doc.submission === undefined) return undefined;
+		if (doc?.schema === undefined || doc.requestId === undefined) return undefined;
 		const run = (await api.snapshot(durable.LiveDoc, api.conversationId, context))?.run;
 
-		if (run === undefined || !run.inputs.includes(doc.submission)) return undefined;
+		if (run === undefined || !isRunOfAsk(doc, run.inputs)) return undefined;
 
 		if (Object.hasOwn(doc.answers, doc.requestId) || !complete(answer.stopReason)) return undefined;
 		const count = (await api.memo<number>("reminders", context)) ?? 0;
@@ -172,6 +177,7 @@ export function createAnswers(durable: typeof Durable): Answers {
 			else doc.schema = schema;
 			doc.requestId = requestId;
 			delete doc.submission;
+			doc.earlier = [...((await tx.doc(durable.LiveDoc, id)).run?.inputs ?? [])];
 			const agent = await tx.doc(durable.AgentDoc, id);
 			const name = respond.name;
 			const tools = agent.modelTools;
@@ -192,7 +198,9 @@ export function createAnswers(durable: typeof Durable): Answers {
 			const doc = await tx.doc(AnswerDoc, id);
 			const submission = doc.requestId === requestId ? await tx.submissionByRequest(id, requestId) : undefined;
 
-			if (submission !== undefined) doc.submission = submission.id;
+			if (submission === undefined) return;
+			doc.submission = submission.id;
+			delete doc.earlier;
 		},
 		async valueIn(tx, id, requestId) {
 			const { answers } = await tx.doc(AnswerDoc, id);
@@ -206,6 +214,17 @@ export function createAnswers(durable: typeof Durable): Answers {
 /** True when an answer with `stopReason` reached its end; any other answer is cut. */
 export function complete(stopReason: string): boolean {
 	return stopReason === "stop" || stopReason === "toolUse";
+}
+
+/**
+ * Whether the run with `inputs` is the run of the current ask of `doc`: it holds the ask's submission, or, before the
+ * submission is recorded, an input that the run did not have at the ask.
+ */
+function isRunOfAsk(doc: AnswerState, inputs: readonly SubmissionId[]): boolean {
+	if (doc.submission !== undefined) return inputs.includes(doc.submission);
+	const earlier = doc.earlier ?? [];
+
+	return inputs.some((input) => !earlier.includes(input));
 }
 
 /** The number of reminders at the end of `messages`, counting back to the first other user message. */

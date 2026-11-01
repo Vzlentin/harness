@@ -29,6 +29,8 @@ export class ModelSync {
 	 * works. Pi tells the extension the model that it takes, and that is not a choice of the user.
 	 */
 	#setting: { readonly provider: string; readonly model: string } | undefined;
+	/** The last model that Pi did not take, so the next change of the agent with the same model does not ask again. */
+	#refused: { readonly provider: string; readonly model: string } | undefined;
 	#closed = false;
 
 	constructor(pi: PiModels, ctx: PiSession, mirror: MirroredAgent, notify: (cause: unknown) => void) {
@@ -42,8 +44,13 @@ export class ModelSync {
 	fromAgent(child: ChildInfo): void {
 		if (this.#closed) return;
 		const model = this.#ctx.modelRegistry.find(child.provider, child.model);
+		const refused = this.#refused;
 
-		if (model !== undefined && !this.#piHasModel(child) && this.#setting === undefined) {
+		if (refused !== undefined && (refused.provider !== child.provider || refused.model !== child.model)) {
+			this.#refused = undefined;
+		}
+
+		if (model !== undefined && !this.#piHasModel(child) && this.#setting === undefined && this.#refused === undefined) {
 			const setting = { provider: child.provider, model: child.model };
 			this.#setting = setting;
 			// Pi sets its own thinking level when it takes a model, so the agent's level follows once Pi has the model.
@@ -51,8 +58,9 @@ export class ModelSync {
 			this.#pi
 				.setModel(model)
 				.then((taken) => {
-					if (!taken && !this.#closed)
-						this.#notify(new Error(`Pi has no login for ${setting.provider}/${setting.model}`));
+					if (taken || this.#closed) return;
+					this.#refused = setting;
+					this.#notify(new Error(`Pi has no login for ${setting.provider}/${setting.model}`));
 				})
 				.catch((cause: unknown) => {
 					if (!this.#closed) this.#notify(cause);

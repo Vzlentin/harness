@@ -439,10 +439,17 @@ export function createChildren(durable: typeof Durable): Children {
 			const live = await place.store.snapshot(durable.LiveDoc, id, context);
 
 			if (live?.run !== undefined) return "busy";
-			const requestId = await commitFor(place, (tx) => last.read(tx), context);
 
-			const settled =
-				requestId == null ? undefined : await commitFor(place, (tx) => tx.submissionByRequest(id, requestId), context);
+			// One commit for both reads: the store reads a submission by request ID only in a commit.
+			const settled = await commitFor(
+				place,
+				async (tx) => {
+					const requestId = await last.read(tx);
+
+					return requestId == null ? undefined : tx.submissionByRequest(id, requestId);
+				},
+				context,
+			);
 
 			// A request that is admitted and not answered yet makes the child busy before its run starts.
 			if (settled?.status === "queued" || settled?.status === "placed") return "busy";

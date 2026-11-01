@@ -5,16 +5,16 @@ import { memoryDir } from "./projects.ts";
 
 /**
  * The envs of the conversations of the host of `project`, whose directory is `projectCwd`. A conversation keeps its env
- * while its cwd and shell values stay the same; a configure gives it a new env. Every env is cleaned up only at close,
- * because a cleanup kills the commands that run in it.
+ * while its cwd and shell values stay the same; a configure gives it a new env. An env is cleaned up only at close,
+ * because a cleanup kills the commands that run in it. A replaced env with no command that runs is dropped instead.
  */
 export class ConversationEnvs {
 	readonly #project: string;
 	readonly #projectCwd: string;
 	/** The current env of each conversation, with the values that made it. */
-	readonly #current = new Map<ConversationId, { readonly key: string; readonly env: NodeExecutionEnv }>();
-	/** Every env that this made. */
-	readonly #made: NodeExecutionEnv[] = [];
+	readonly #current = new Map<ConversationId, { readonly key: string; readonly env: CountingEnv }>();
+	/** The envs that this made and that are current or run a command. */
+	#made: CountingEnv[] = [];
 
 	constructor(project: string, projectCwd: string) {
 		this.#project = project;
@@ -40,17 +40,33 @@ export class ConversationEnvs {
 
 		if (agent?.thinkingLevel !== undefined) shellEnv.PI_REASONING_LEVEL = agent.thinkingLevel;
 		const key = JSON.stringify({ cwd, shellEnv });
-		const current = this.#current.get(conversationId);
+		const known = this.#current.get(conversationId);
 
-		if (current?.key === key) return current.env;
-		const env = new NodeExecutionEnv({ cwd, shellEnv });
+		if (known?.key === key) return known.env;
+		const env = new CountingEnv({ cwd, shellEnv });
 		this.#current.set(conversationId, { key, env });
-		this.#made.push(env);
+		const current = new Set([...this.#current.values()].map((entry) => entry.env));
+		this.#made = [...this.#made.filter((made) => current.has(made) || made.running > 0), env];
 
 		return env;
 	}
 
 	async cleanup(cleanupContext: Context): Promise<void> {
 		for (const env of this.#made) await env.cleanup(cleanupContext);
+	}
+}
+
+/** A `NodeExecutionEnv` that counts the commands that run in it. */
+class CountingEnv extends NodeExecutionEnv {
+	running = 0;
+
+	override async exec(...args: Parameters<NodeExecutionEnv["exec"]>): ReturnType<NodeExecutionEnv["exec"]> {
+		this.running += 1;
+
+		try {
+			return await super.exec(...args);
+		} finally {
+			this.running -= 1;
+		}
 	}
 }

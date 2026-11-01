@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readEntries } from "../src/entries.ts";
+import { entriesPath, readEntries } from "../src/entries.ts";
 import { readProjects } from "../src/projects.ts";
 import { root, setUp, tearDown } from "./helpers.ts";
 
@@ -62,5 +62,18 @@ describe("registry files", { timeout: 30_000 }, () => {
 			for (let i = 0; i < ${WRITES}; i++) addProject(\`w\${process.env.WORKER}-\${i}\`, ${JSON.stringify(dirs)} + \`/\${process.env.WORKER}-\${i}\`);`,
 		);
 		expect(Object.keys(readProjects())).toHaveLength(WORKERS * WRITES);
+	});
+	it("removes a lock with no process ID or of a process that does not run, while processes set entries", async () => {
+		for (const [round, holder] of ["", "999999999"].entries()) {
+			await writeFile(`${entriesPath()}.lock`, holder);
+			await inWorkers(
+				`import { setEntry } from ${source("entries")};
+				for (let i = 0; i < ${WRITES}; i++) setEntry(\`s${round}-\${process.env.WORKER}-\${i}\`, "/m.ts");`,
+			);
+		}
+
+		expect(Object.keys(readEntries()).filter((name) => name.startsWith("s"))).toHaveLength(2 * WORKERS * WRITES);
+		// No lock and no temporary file is left.
+		expect((await readdir(dirname(entriesPath()))).filter((name) => name.includes(".lock"))).toEqual([]);
 	});
 });

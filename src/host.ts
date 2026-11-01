@@ -74,6 +74,10 @@ import { type ViewChange, viewChange } from "./view-change.ts";
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
+
+/** How long the close waits for the replies to reach clients that do not read them. */
+const REPLY_WRITE_MS = 2000;
+
 const context = BACKGROUND_CONTEXT;
 
 /** The requests that do not count as activity for the idle exit. */
@@ -215,8 +219,10 @@ export async function runHost(options: {
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
-	/** The request chains and reply writes in flight, which the close awaits. */
+	/** The request chains in flight, which the close awaits. */
 	const inFlight = new Set<Promise<unknown>>();
+	/** The reply writes in flight, which the close awaits for at most `REPLY_WRITE_MS`. */
+	const writes = new Set<Promise<boolean>>();
 	let lastActivity = Date.now();
 	let closing: Promise<void> | undefined;
 
@@ -252,12 +258,21 @@ export async function runHost(options: {
 					reply = { ok: false, error: errorMessage(error) };
 				}
 
+				// A client that does not read never takes the reply, so the close bounds this wait, and a destroyed socket
+				// ends it.
 				const written = new Promise<boolean>((resolve) => {
-					if (socket.writable) socket.write(`${JSON.stringify(reply)}\n`, (error) => resolve(error == null));
-					else resolve(false);
+					if (!socket.writable) return resolve(false);
+					const onClose = () => resolve(false);
+					socket.once("close", onClose);
+					socket.write(`${JSON.stringify(reply)}\n`, (error) => {
+						socket.off("close", onClose);
+						resolve(error == null);
+					});
 				});
 
-				track(written);
+				writes.add(written);
+				const settle = () => writes.delete(written);
+				written.then(settle, settle);
 				afterReply?.(written);
 			});
 			track(queue);
@@ -301,6 +316,7 @@ export async function runHost(options: {
 			try {
 				// Each handler reads its signal or ends once the push closes, so this needs no timeout.
 				while (inFlight.size > 0) await Promise.allSettled(inFlight);
+				await waitAtMost(Promise.allSettled(writes), REPLY_WRITE_MS);
 
 				for (const socket of connections) socket.destroy();
 
@@ -464,25 +480,7 @@ async function handleRequest(request: RequestLine, handler: Handler): Promise<Re
 
 		case "stop": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
-			// Stopping a child stops the children it spawned, and removes them all.
-			const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
-			await handler.harness.commit(async (tx) => {
-				const state = await tx.doc(Children);
-
-				const removed = new Set(
-					Object.keys(state.children).filter((handle) => {
-						const child = state.children[handle];
-
-						return child !== undefined && closed.has(String(child.conversationId));
-					}),
-				);
-
-				for (const handle of removed) delete state.children[handle];
-
-				for (const [requestId, handle] of Object.entries(state.requests)) {
-					if (removed.has(handle)) delete state.requests[requestId];
-				}
-			}, context);
+			await stopChild(handler, record);
 
 			return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
 		}
@@ -502,11 +500,44 @@ function parseRequest(line: string): RequestLine {
 	);
 }
 
+/** Closes the child of `record` and the children it spawned, and removes their records. A repeat finishes a stop. */
+async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
+	const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
+	await handler.harness.commit(async (tx) => {
+		const state = await tx.doc(Children);
+
+		const removed = new Set(
+			Object.keys(state.children).filter((handle) => {
+				const child = state.children[handle];
+
+				return child !== undefined && closed.has(String(child.conversationId));
+			}),
+		);
+
+		for (const handle of removed) delete state.children[handle];
+
+		for (const [requestId, handle] of Object.entries(state.requests)) {
+			if (removed.has(handle)) delete state.requests[requestId];
+		}
+	}, context);
+}
+
 async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	if (!request.cwd) throw new Error("spawn requires a working directory");
 	const { harness, place } = handler;
 	const state = await harness.snapshot(Children, context);
 	let handle = state?.requests[request.requestId];
+
+	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
+	// finished, and the spawn opens a new child.
+	if (handle !== undefined) {
+		const found = await childRecord(harness, handle);
+
+		if ((await (await childOf(handler, found)).state(context)) === "closed") {
+			await stopChild(handler, found);
+			handle = undefined;
+		}
+	}
 
 	if (handle === undefined) {
 		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
@@ -836,6 +867,14 @@ async function currentView(conversation: Conversation, watchContext: Context): P
 	} catch {
 		return undefined;
 	}
+}
+
+/** Waits for `promise`, or for `ms` at most. */
+async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+	let timer: NodeJS.Timeout | undefined;
+
+	await Promise.race([promise, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))]);
+	clearTimeout(timer);
 }
 
 /**

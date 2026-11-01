@@ -1,8 +1,20 @@
 /**
- * A JSON file that several processes change, such as `entries.json`. It is synchronous and uses only `node:fs` and
- * typebox, so the Pi extension can load it, and a caller such as workflows can set an entry without `await`.
+ * A JSON file that several processes change, such as `entries.json`. It is synchronous and uses only Node's own modules
+ * and typebox, so the Pi extension can load it, and a caller such as workflows can set an entry without `await`.
  */
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+	closeSync,
+	fstatSync,
+	linkSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -60,60 +72,90 @@ export function updateJsonFile<T>(path: string, read: () => T, change: (value: T
 function withFileLock<T>(path: string, run: () => T): T {
 	const lock = `${path}.lock`;
 	const deadline = Date.now() + WAIT_MS;
+	let own = tryLock(lock);
 
-	while (!tryLock(lock)) {
+	while (own === undefined) {
 		const holder = holderOf(lock);
 
-		// The holder removed the lock since the try.
-		if (holder === undefined) continue;
-
-		// A lock with no ID yet is one that its holder is writing.
-		if (Number.isInteger(holder) && !runs(holder)) {
-			rmSync(lock, { force: true });
-			continue;
-		}
-
-		if (Date.now() > deadline) {
+		// A lock with no process ID is not one of a live process: a lock file gets its ID before it has its name.
+		if (holder !== undefined && !(Number.isInteger(holder.pid) && runs(holder.pid))) breakLock(lock, holder.ino);
+		else if (holder !== undefined && Date.now() > deadline) {
 			throw new Error(`Could not lock ${path}: another process holds ${lock}. Remove it if no harness command runs`);
-		}
+		} else if (holder !== undefined) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
 
-		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
+		own = tryLock(lock);
 	}
 
 	try {
 		return run();
 	} finally {
-		rmSync(lock, { force: true });
+		// Only this process's own lock: one that another process took as stale is not removed.
+		if (holderOf(lock)?.ino === own) rmSync(lock, { force: true });
 	}
 }
 
-/** Whether this process made the lock file `lock`. */
-function tryLock(lock: string): boolean {
+/**
+ * Takes the lock file `lock`, and gives the inode of the file, or undefined when another process holds it. The file is
+ * written under another name and then linked as `lock`, so the lock never exists without its process ID.
+ */
+function tryLock(lock: string): number | undefined {
+	const temporary = `${lock}.${process.pid}.${randomUUID()}`;
+	writeFileSync(temporary, String(process.pid), { mode: 0o600 });
+
+	try {
+		linkSync(temporary, lock);
+
+		return statSync(temporary).ino;
+	} catch (error) {
+		if (hasCode(error, "EEXIST")) return undefined;
+		throw error;
+	} finally {
+		rmSync(temporary, { force: true });
+	}
+}
+
+/**
+ * Removes the stale lock file `lock` with the inode `ino`. It moves the file away first and checks that the file it
+ * moved is that one: when another process removed the stale lock and took a new one meanwhile, it puts that one back.
+ */
+function breakLock(lock: string, ino: number): void {
+	const moved = `${lock}.stale.${process.pid}.${randomUUID()}`;
+
+	try {
+		renameSync(lock, moved);
+	} catch (error) {
+		if (hasCode(error, "ENOENT")) return;
+		throw error;
+	}
+
+	try {
+		if (statSync(moved).ino !== ino) linkSync(moved, lock);
+	} catch (error) {
+		// A third process took the free lock before it was put back; that process holds it now.
+		if (!hasCode(error, "EEXIST")) throw error;
+	} finally {
+		rmSync(moved, { force: true });
+	}
+}
+
+/**
+ * The process ID in the lock file `lock` and the file's inode, or undefined when the file does not exist. The ID is NaN
+ * when the file has none.
+ */
+function holderOf(lock: string): { readonly pid: number; readonly ino: number } | undefined {
 	let fd: number;
 
 	try {
-		fd = openSync(lock, "wx", 0o600);
-	} catch (error) {
-		if (hasCode(error, "EEXIST")) return false;
-		throw error;
-	}
-
-	try {
-		writeSync(fd, String(process.pid));
-	} finally {
-		closeSync(fd);
-	}
-
-	return true;
-}
-
-/** The process ID in the lock file `lock`, NaN when it has none yet, or undefined when the file does not exist. */
-function holderOf(lock: string): number | undefined {
-	try {
-		return Number.parseInt(readFileSync(lock, "utf8"), 10);
+		fd = openSync(lock, "r");
 	} catch (error) {
 		if (hasCode(error, "ENOENT")) return undefined;
 		throw error;
+	}
+
+	try {
+		return { pid: Number.parseInt(readFileSync(fd, "utf8"), 10), ino: fstatSync(fd).ino };
+	} finally {
+		closeSync(fd);
 	}
 }
 

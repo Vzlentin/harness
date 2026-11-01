@@ -16,6 +16,9 @@ import { startedTaskIds } from "./tasks.ts";
 const context = BACKGROUND_CONTEXT;
 const execGit = promisify(execFile);
 
+/** How long a Git command of the catch-up may run. */
+const GIT_TIMEOUT_MS = 10_000;
+
 const RUN_KIND = "workflows.run";
 const ENTRY_KIND = "harness.catchup";
 
@@ -371,10 +374,17 @@ async function headCommits(host: CatchUpHost, since: string | null): Promise<Hea
 	}
 }
 
-/** The trimmed output of Git, or nothing when it exits with an error. It throws when Git does not start. */
+/**
+ * The trimmed output of Git, or nothing when it exits with an error. It throws when Git does not start or runs longer
+ * than 10 s.
+ */
 async function gitOut(cwd: string, args: readonly string[]): Promise<string | undefined> {
 	try {
-		return (await execGit("git", args, { cwd })).stdout.trim();
+		// Catch-ups run one at a time, so a Git that hangs would hold every later input: it gets a timeout, and asks for no
+		// login and takes no optional lock.
+		const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+
+		return (await execGit("git", args, { cwd, env, timeout: GIT_TIMEOUT_MS })).stdout.trim();
 	} catch (error) {
 		// A failed exit has an integer code; a spawn failure, such as ENOENT, has a string code.
 		if (Value.Check(Type.Object({ code: Type.Integer() }), error)) return undefined;

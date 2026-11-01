@@ -526,18 +526,24 @@ describe("model sync", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("tells the user when Pi has no login for the agent's model", async () => {
+	it("tells the user once when Pi has no login for the agent's model", async () => {
 		const pi = new FakePi();
 		const errors: string[] = [];
 		const agent = { child: agentOn("faux-2"), configure: async () => {} };
 		const sync = new ModelSync(pi, pi, agent, (cause) => errors.push(errorMessage(cause)));
 		// Pi gives `false`, and does not throw, when it has no login for the model.
-		pi.setModel = async () => false;
+		const setModel = vi.fn(async () => false);
+		pi.setModel = setModel;
 
 		try {
 			sync.fromAgent(agent.child);
 			await until(() => errors.length === 1);
+			// Each change of the mirror gives the agent again, with the same model.
+			sync.fromAgent(agent.child);
+			sync.fromAgent(agent.child);
+			await new Promise((resolve) => setTimeout(resolve, 10));
 			expect(errors).toEqual(["Pi has no login for faux/faux-2"]);
+			expect(setModel).toHaveBeenCalledTimes(1);
 		} finally {
 			sync.close();
 		}
