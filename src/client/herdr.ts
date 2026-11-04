@@ -5,6 +5,7 @@ import { childLabel } from "../protocol/labels.ts";
 import { cliPath } from "../protocol/paths.ts";
 import { resolveProject } from "../protocol/projects.ts";
 import type { ChildInfo } from "../protocol/requests.ts";
+import { parseTarget } from "../protocol/target.ts";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
 
 const HERDR_SOURCE = "custom:harness";
@@ -106,7 +107,7 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
 
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 
-	await runOpen(output.result.root_pane.pane_id, { project, handle: child.handle }, env);
+	await runOpen(output.result.root_pane.pane_id, { project, target: parseTarget({ handle: child.handle }) }, env);
 }
 
 /**
@@ -123,7 +124,7 @@ export async function openConversationPane(
 	env: NodeJS.ProcessEnv,
 ): Promise<void> {
 	const project = resolveProject(env, process.cwd());
-	const target = { project, conversation: conversation.handle };
+	const target: MirrorTarget = { project, target: { kind: "conversation", id: conversation.handle } };
 	const label = childLabel(conversation);
 
 	if (place.pane !== undefined) {

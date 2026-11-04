@@ -9,7 +9,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { runDisplayName } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
-import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
+import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
 import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
 import { inboxOf, withdrawnTexts } from "./view-state.ts";
@@ -17,20 +17,30 @@ import { inboxOf, withdrawnTexts } from "./view-state.ts";
 /** The `customType` of the session entry that holds the target of a mirror session. */
 export const MIRROR_ENTRY = "harness-mirror";
 
+/** The conversation that a mirror session shows, in the host of `project`. */
+export type MirrorTarget = { readonly project: string; readonly target: Target };
+
 /**
- * The conversation that a mirror session shows, in the host of `project`: the child or project agent `handle`, or the
- * conversation `conversation` that the children library opened. Each refuses the other key.
+ * The data of the session entry of a mirror session: the project, and the handle of a child or the project agent, or
+ * the ID of a conversation that the children library opened. Each refuses the other key.
  */
-export const MirrorTarget = Type.Union([
-	Type.Object({ project: Type.String(), handle: Type.String(), conversation: Type.Optional(Type.Never()) }),
-	Type.Object({ project: Type.String(), conversation: Type.String(), handle: Type.Optional(Type.Never()) }),
-]);
+const MirrorEntryData = Type.Union(withTarget({ project: Type.String() }));
 
-export type MirrorTarget = Static<typeof MirrorTarget>;
+export type MirrorEntryData = Static<typeof MirrorEntryData>;
 
-/** Whether the data of a session entry is a mirror target. */
-export function isMirrorTarget(data: unknown): data is MirrorTarget {
-	return Value.Check(MirrorTarget, data);
+/** Whether the data of a session entry is the data of a mirror entry. */
+export function isMirrorEntry(data: unknown): data is MirrorEntryData {
+	return Value.Check(MirrorEntryData, data);
+}
+
+/** The target in the data of a mirror entry. */
+export function fromMirrorEntry(data: MirrorEntryData): MirrorTarget {
+	return { project: data.project, target: parseTarget(data) };
+}
+
+/** The data of the session entry of `target`. */
+export function toMirrorEntry(target: MirrorTarget): MirrorEntryData {
+	return { project: target.project, ...targetRef(target.target) };
 }
 
 /**
@@ -41,37 +51,49 @@ export const PI_FLAGS = { project: "harness", child: "harness-child", conversati
 
 /** The arguments of `pi` that open a mirror session of `target`. */
 export function piArgs(target: MirrorTarget): string[] {
-	const child =
-		target.conversation !== undefined
-			? [`--${PI_FLAGS.conversation}`, target.conversation]
-			: target.handle === AGENT_HANDLE
-				? []
-				: [`--${PI_FLAGS.child}`, target.handle];
+	return [`--${PI_FLAGS.project}`, target.project, ...piTargetArgs(target.target)];
+}
 
-	return [`--${PI_FLAGS.project}`, target.project, ...child];
+function piTargetArgs(target: Target): string[] {
+	switch (target.kind) {
+		case "agent":
+			return [];
+		case "child":
+			return [`--${PI_FLAGS.child}`, target.handle];
+		case "conversation":
+			return [`--${PI_FLAGS.conversation}`, target.id];
+	}
 }
 
 /**
  * The arguments of the `harness` CLI that open `target` in Pi: `<project>` for the project agent, `--project <project>
  * attach <handle>` for a child, and `--project <project> attach --conversation <id>` for a conversation.
  */
-export function harnessArgs(target: MirrorTarget): string[] {
-	if (target.conversation !== undefined) {
-		return ["--project", target.project, "attach", "--conversation", target.conversation];
+export function harnessArgs({ project, target }: MirrorTarget): string[] {
+	switch (target.kind) {
+		case "agent":
+			return [project];
+		case "child":
+			return ["--project", project, "attach", target.handle];
+		case "conversation":
+			return ["--project", project, "attach", "--conversation", target.id];
 	}
-
-	return target.handle === AGENT_HANDLE ? [target.project] : ["--project", target.project, "attach", target.handle];
 }
 
 /** The title of the agent of `target` before the host gives its name: the handle or the conversation ID of a child. */
-export function targetTitle(target: MirrorTarget): string {
-	if (target.conversation !== undefined) return target.conversation;
-
-	return target.handle === AGENT_HANDLE ? `${target.project} agent` : target.handle;
+export function targetTitle({ project, target }: MirrorTarget): string {
+	switch (target.kind) {
+		case "agent":
+			return `${project} agent`;
+		case "child":
+			return target.handle;
+		case "conversation":
+			return target.id;
+	}
 }
 
 /** A change of the model or the thinking level of the mirrored conversation. */
-export type MirrorConfigure = Omit<Extract<Request, { type: "configure" }>, "type" | "handle">;
+export type MirrorConfigure = Omit<Extract<Request, { type: "configure" }>, "type" | "handle" | "conversation">;
 
 /**
  * The connection of a mirror: before the first one, open, connecting again after the host closed it, or failed for
@@ -120,8 +142,6 @@ type Watched = Awaited<ReturnType<Client["watch"]>> & { readonly client: Client 
  */
 export class Mirror {
 	readonly target: MirrorTarget;
-	/** The target of the requests: the handle or the conversation of `target`, without the project. */
-	readonly #ref: Target;
 	readonly #onChange: (previous: MirrorStatus) => void;
 	readonly #retryDelaysMs: readonly number[];
 	readonly #start: boolean;
@@ -137,7 +157,6 @@ export class Mirror {
 
 	constructor(target: MirrorTarget, onChange: (previous: MirrorStatus) => void, options: MirrorOptions = {}) {
 		this.target = target;
-		this.#ref = target.conversation === undefined ? { handle: target.handle } : { conversation: target.conversation };
 		this.#onChange = onChange;
 		this.#retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
 		this.#start = options.start ?? true;
@@ -193,7 +212,7 @@ export class Mirror {
 	async abort(): Promise<string[]> {
 		const { client, view } = this.#connection();
 		const texts = withdrawnTexts(inboxOf(view));
-		this.#setChild(await client.request({ type: "abort", ...this.#ref }));
+		this.#setChild(await client.request({ type: "abort", ...targetRef(this.target.target) }));
 
 		return texts;
 	}
@@ -203,14 +222,14 @@ export class Mirror {
 	 * conversation of the children library refuses it without a request.
 	 */
 	async configure(change: MirrorConfigure): Promise<void> {
-		const { handle } = this.target;
+		const { target } = this.target;
 
-		if (handle === undefined) {
+		if (target.kind === "conversation") {
 			throw new Error("A conversation of the children library keeps its model and thinking level");
 		}
 
 		const { client } = this.#connection();
-		this.#setChild(await client.request({ type: "configure", handle, ...change }));
+		this.#setChild(await client.request({ type: "configure", ...targetRef(target), ...change }));
 	}
 
 	/**
@@ -278,7 +297,7 @@ export class Mirror {
 			if (client === undefined) throw new Error("Could not connect to the harness host");
 
 			try {
-				return { ...(await client.watch(this.#ref)), client };
+				return { ...(await client.watch(this.target.target)), client };
 			} catch (cause) {
 				client.close();
 				throw cause;
@@ -324,7 +343,7 @@ export class Mirror {
 					const reply = await client.request({
 						type: "input",
 						requestId,
-						...this.#ref,
+						...targetRef(this.target.target),
 						message,
 						followUp,
 					});

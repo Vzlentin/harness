@@ -1,8 +1,8 @@
 import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
-import { type Static, type TProperties, Type } from "typebox";
-import type { Target } from "./target.ts";
+import { type Static, Type } from "typebox";
+import { withTarget } from "./target.ts";
 import type { ViewChange } from "./view-change.ts";
 
 /**
@@ -72,128 +72,22 @@ export const Json = Type.Cyclic(
 	"Json",
 );
 
-/** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
-export type Request =
-	| { readonly type: "hello"; readonly version: number }
-	| {
-			readonly type: "spawn";
-			readonly requestId: string;
-			readonly caller: string;
-			/** Whether the host pushes the answers of this request to the caller. */
-			readonly notify: boolean;
-			readonly name?: string;
-			readonly provider: string;
-			readonly model: string;
-			/** The level the caller asks for; the host refuses it when the model does not have it. */
-			readonly thinking?: string;
-			/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
-			readonly callerThinking: string;
-			readonly cwd: string;
-			readonly tools?: readonly string[];
-			readonly prompt: string;
-	  }
-	| {
-			readonly type: "send";
-			readonly requestId: string;
-			readonly caller: string;
-			readonly handle: string;
-			readonly message: string;
-			readonly followUp: boolean;
-			/** As for `spawn`. */
-			readonly notify: boolean;
-	  }
-	| { readonly type: "wait"; readonly handle: string; readonly timeout: number }
-	| { readonly type: "status"; readonly handle: string }
-	| { readonly type: "list"; readonly caller: string }
-	/**
-	 * Waits until the host has answers of the children of `caller` to push, marks them read and replies with them. A
-	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
-	 */
-	| { readonly type: "answers"; readonly caller: string }
-	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
-	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
-	/**
-	 * The stream of the child for a mirror session of the Pi extension: the reply, then one `{ event: WatchLine }` line
-	 * after each commit to the child's conversation and after each rename. Every other line on the connection stays a
-	 * reply, in request order. A connection carries one watch.
-	 */
-	| ({ readonly type: "watch" } & Target)
-	/** Stops the child's current turn. A mirror session sends it. */
-	| ({ readonly type: "abort" } & Target)
-	/**
-	 * A mirror session's change of the child's model or thinking level. It has no caller. A new model keeps the thinking level
-	 * when the model has it, and takes the nearest level that it has otherwise. The host refuses a level that the model
-	 * does not have.
-	 */
-	| {
-			readonly type: "configure";
-			readonly handle: string;
-			readonly provider?: string;
-			readonly model?: string;
-			readonly thinking?: ModelThinkingLevel;
-	  }
-	/** A mirror session's message to the child. It has no caller. A conversation takes it only while it works, as a steer. */
-	| ({
-			readonly type: "input";
-			readonly requestId: string;
-			readonly message: string;
-			readonly followUp: boolean;
-	  } & Target)
-	/**
-	 * A passive message for the conversation's transcript: a user message of the entry kind `kind` (default
-	 * `harness.note`), with `data`. It starts no turn. An idle conversation places it at once, and a busy one at its next
-	 * boundary, so the model reads it on its next request. The request ID is in the scope `note:`, and a repeated one adds
-	 * nothing. A kind that starts with `pi.` is refused.
-	 */
-	| ({
-			readonly type: "note";
-			readonly requestId: string;
-			readonly text: string;
-			readonly kind?: string;
-			readonly data?: JsonValue;
-	  } & Target)
-	/**
-	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
-	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
-	 * whose definition of `kind` has another version refuses before it creates anything.
-	 */
-	| {
-			readonly type: "start";
-			readonly kind: string;
-			readonly input: JsonValue;
-			readonly key: string;
-			readonly version?: number;
-	  }
-	| { readonly type: "task"; readonly key: string }
-	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
-	| { readonly type: "wait-task"; readonly key: string }
-	/** Aborts the task and the work that it owns. */
-	| { readonly type: "abort-task"; readonly key: string };
+/** The thinking levels of a model, as pi-ai names them. */
+export const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ModelThinkingLevel[];
+
+export const ThinkingLevel = Type.Enum(THINKING_LEVELS);
 
 /**
- * The request objects of `type` with `fields` and a target: one with `handle`, one with `conversation`. Each refuses the
- * other key, because an object schema accepts extra keys.
- */
-function targeted<T extends string, F extends TProperties>(type: T, fields: F) {
-	return Type.Union([
-		Type.Object({
-			...fields,
-			type: Type.Literal(type),
-			handle: Type.String(),
-			conversation: Type.Optional(Type.Never()),
-		}),
-		Type.Object({
-			...fields,
-			type: Type.Literal(type),
-			conversation: Type.String(),
-			handle: Type.Optional(Type.Never()),
-		}),
-	]);
-}
-
-/**
- * The check of a request line on the host. It is looser than `Request`, so the host answers a spawn without `cwd` and an
- * unknown thinking level with its own errors.
+ * One request line, as the host checks it. The caller is `PI_SESSION_ID`, or `cli` without one. Unknown extra keys are
+ * allowed.
  */
 export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("hello"), version: Type.Number() }),
@@ -201,13 +95,16 @@ export const RequestLine = Type.Union([
 		type: Type.Literal("spawn"),
 		requestId: Type.String(),
 		caller: Type.String(),
+		/** Whether the host pushes the answers of this request to the caller. */
 		notify: Type.Boolean(),
 		name: Type.Optional(Type.String()),
 		provider: Type.String(),
 		model: Type.String(),
-		thinking: Type.Optional(Type.String()),
+		/** The level the caller asks for; the host refuses it when the model does not have it. */
+		thinking: Type.Optional(ThinkingLevel),
+		/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
 		callerThinking: Type.String(),
-		cwd: Type.Optional(Type.String()),
+		cwd: Type.String({ minLength: 1 }),
 		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
 		prompt: Type.String(),
 	}),
@@ -218,30 +115,65 @@ export const RequestLine = Type.Union([
 		handle: Type.String(),
 		message: Type.String(),
 		followUp: Type.Boolean(),
+		/** As for `spawn`. */
 		notify: Type.Boolean(),
 	}),
 	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
 	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
+	/**
+	 * Waits until the host has answers of the children of `caller` to push, marks them read and replies with them. A
+	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
+	 */
 	Type.Object({ type: Type.Literal("answers"), caller: Type.String() }),
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
-	targeted("watch", {}),
-	targeted("abort", {}),
+	/**
+	 * The stream of the child for a mirror session of the Pi extension: the reply, then one `{ event: WatchLine }` line
+	 * after each commit to the child's conversation and after each rename. Every other line on the connection stays a
+	 * reply, in request order. A connection carries one watch.
+	 */
+	...withTarget({ type: Type.Literal("watch") }),
+	/** Stops the child's current turn. A mirror session sends it. */
+	...withTarget({ type: Type.Literal("abort") }),
+	/**
+	 * A mirror session's change of the child's model or thinking level. It has no caller, and it takes a handle, not a
+	 * conversation. A new model keeps the thinking level when the model has it, and takes the nearest level that it has
+	 * otherwise. The host refuses a level that the model does not have.
+	 */
 	Type.Object({
 		type: Type.Literal("configure"),
 		handle: Type.String(),
+		conversation: Type.Optional(Type.Never()),
 		provider: Type.Optional(Type.String()),
 		model: Type.Optional(Type.String()),
-		thinking: Type.Optional(Type.String()),
+		thinking: Type.Optional(ThinkingLevel),
 	}),
-	targeted("input", { requestId: Type.String(), message: Type.String(), followUp: Type.Boolean() }),
-	targeted("note", {
+	/** A mirror session's message to the child. It has no caller. A conversation takes it only while it works, as a steer. */
+	...withTarget({
+		type: Type.Literal("input"),
+		requestId: Type.String(),
+		message: Type.String(),
+		followUp: Type.Boolean(),
+	}),
+	/**
+	 * A passive message for the conversation's transcript: a user message of the entry kind `kind` (default
+	 * `harness.note`), with `data`. It starts no turn. An idle conversation places it at once, and a busy one at its next
+	 * boundary, so the model reads it on its next request. The request ID is in the scope `note:`, and a repeated one adds
+	 * nothing. A kind that starts with `pi.` is refused, because pi-durable does not check the kind of a write.
+	 */
+	...withTarget({
+		type: Type.Literal("note"),
 		requestId: Type.String(),
 		text: Type.String(),
-		kind: Type.Optional(Type.String({ minLength: 1 })),
+		kind: Type.Optional(Type.String({ minLength: 1, pattern: "^(?!pi\\.)" })),
 		data: Type.Optional(Json),
 	}),
+	/**
+	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
+	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
+	 * whose definition of `kind` has another version refuses before it creates anything.
+	 */
 	Type.Object({
 		type: Type.Literal("start"),
 		kind: Type.String(),
@@ -250,11 +182,13 @@ export const RequestLine = Type.Union([
 		version: Type.Optional(Type.Number()),
 	}),
 	Type.Object({ type: Type.Literal("task"), key: Type.String() }),
+	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
 	Type.Object({ type: Type.Literal("wait-task"), key: Type.String() }),
+	/** Aborts the task and the work that it owns. */
 	Type.Object({ type: Type.Literal("abort-task"), key: Type.String() }),
 ]);
 
-export type RequestLine = Static<typeof RequestLine>;
+export type Request = Static<typeof RequestLine>;
 
 /** The value of the reply to each request type. */
 export type Replies = {

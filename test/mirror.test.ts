@@ -12,8 +12,9 @@ import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
 import { ProgramStatusReport } from "../pi/program-status.ts";
 import { Client } from "../src/client/client.ts";
 import {
+	fromMirrorEntry,
 	harnessArgs,
-	isMirrorTarget,
+	isMirrorEntry,
 	Mirror,
 	type MirrorConfigure,
 	type MirrorOptions,
@@ -44,7 +45,7 @@ import {
 	until,
 } from "./helpers.ts";
 
-const AGENT: MirrorTarget = { project: "main", handle: AGENT_HANDLE };
+const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
 
 const HOST_CLOSED = "The harness host closed the connection";
 
@@ -150,17 +151,19 @@ afterAll(async () => {
 
 describe("mirror", { timeout: 30_000 }, () => {
 	it("gives the Pi and harness arguments of each kind of target, and refuses a target with both keys", () => {
-		const conversation: MirrorTarget = { project: "work", conversation: "42" };
+		const conversation: MirrorTarget = { project: "work", target: { kind: "conversation", id: "42" } };
 		expect(piArgs(conversation)).toEqual(["--harness", "work", "--harness-conversation", "42"]);
 		expect(harnessArgs(conversation)).toEqual(["--project", "work", "attach", "--conversation", "42"]);
-		const child: MirrorTarget = { project: "work", handle: "abc123" };
+		const child: MirrorTarget = { project: "work", target: { kind: "child", handle: "abc123" } };
 		expect(piArgs(child)).toEqual(["--harness", "work", "--harness-child", "abc123"]);
 		expect(harnessArgs(child)).toEqual(["--project", "work", "attach", "abc123"]);
 		expect(piArgs(AGENT)).toEqual(["--harness", "main"]);
 		expect(harnessArgs(AGENT)).toEqual(["main"]);
-		expect(isMirrorTarget(conversation)).toBe(true);
-		expect(isMirrorTarget(child)).toBe(true);
-		expect(isMirrorTarget({ project: "work", handle: "abc123", conversation: "42" })).toBe(false);
+		expect(fromMirrorEntry({ project: "work", conversation: "42" })).toEqual(conversation);
+		expect(fromMirrorEntry({ project: "work", handle: "abc123" })).toEqual(child);
+		expect(fromMirrorEntry({ project: "main", handle: AGENT_HANDLE })).toEqual(AGENT);
+		expect(isMirrorEntry({ project: "work", conversation: "42" })).toBe(true);
+		expect(isMirrorEntry({ project: "work", handle: "abc123", conversation: "42" })).toBe(false);
 	});
 
 	it("shows the project agent and its answer to a message", async () => {
@@ -220,7 +223,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 		const web = await startHost("web");
 
 		try {
-			const mirror = await opened({ project: "web", handle: AGENT_HANDLE });
+			const mirror = await opened({ project: "web", target: { kind: "agent" } });
 
 			try {
 				expect(mirror.child).toMatchObject({ name: "web agent", cwd: dir });
@@ -235,8 +238,9 @@ describe("mirror", { timeout: 30_000 }, () => {
 	});
 
 	it("fails at once for an unknown project or child", async () => {
-		const project = new Mirror({ project: "nope", handle: AGENT_HANDLE }, () => {}, { start: false });
-		const child = new Mirror({ project: "main", handle: "abcdef" }, () => {}, { start: false });
+		const project = new Mirror({ project: "nope", target: { kind: "agent" } }, () => {}, { start: false });
+		const missing: MirrorTarget = { project: "main", target: { kind: "child", handle: "abcdef" } };
+		const child = new Mirror(missing, () => {}, { start: false });
 		await until(() => project.status.kind === "failed" && child.status.kind === "failed");
 		expect(project.status).toEqual({ kind: "failed", reason: "Unknown harness project: nope" });
 		expect(child.status).toEqual({ kind: "failed", reason: "Unknown subagent: abcdef" });
@@ -246,7 +250,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 	it("fails when the child is stopped", async () => {
 		const handle = handleOf(await cli(["spawn", "--name", "doomed", "--prompt", "Doomed"]));
 		await cli(["wait", handle]);
-		const mirror = await opened({ project: "main", handle });
+		const mirror = await opened({ project: "main", target: { kind: "child", handle } });
 
 		try {
 			expect((await cli(["stop", handle])).code).toBe(0);
@@ -264,7 +268,9 @@ describe("mirror", { timeout: 30_000 }, () => {
 		expect(mirror.busy).toBe(false);
 		await expect(mirror.send("Closed mirror", false)).rejects.toThrow("The mirror is closed");
 
-		const unknown = new Mirror({ project: "main", handle: "fedcba" }, () => {}, { start: false });
+		const unknownTarget: MirrorTarget = { project: "main", target: { kind: "child", handle: "fedcba" } };
+		const unknown = new Mirror(unknownTarget, () => {}, { start: false });
+
 		await until(() => unknown.status.kind === "failed");
 		unknown.close();
 		expect(unknown.status).toEqual({ kind: "failed", reason: "Unknown subagent: fedcba" });
@@ -358,7 +364,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 		coding.initTheme();
 		const cwd = await mkdtemp(join(root, "drawn-"));
 		const handle = handleOf(await cli(["spawn", "--cwd", cwd, "--prompt", "Use a tool"]));
-		const mirror = await opened({ project: "main", handle });
+		const mirror = await opened({ project: "main", target: { kind: "child", handle } });
 		const chat = new ChatView(new TuiMainScreen(new FakeTerminal()), cwd, (_name, text) => text, viewState);
 
 		const drawn = () => {
@@ -409,7 +415,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 	it("reports the new title of a renamed child", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Report rename"]));
 		await cli(["wait", handle]);
-		const { mirror, reports } = reportedMirror({ project: "main", handle });
+		const { mirror, reports } = reportedMirror({ project: "main", target: { kind: "child", handle } });
 
 		try {
 			await until(() => mirror.status.kind === "open");

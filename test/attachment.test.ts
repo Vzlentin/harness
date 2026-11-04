@@ -15,7 +15,13 @@ import { registerMirror } from "../pi/mirror.ts";
 import type { AgentReporter } from "../src/client/herdr.ts";
 import * as herdr from "../src/client/herdr.ts";
 import * as mirror from "../src/client/mirror.ts";
-import { MIRROR_ENTRY, type MirrorStatus, type MirrorTarget, PossiblySentError } from "../src/client/mirror.ts";
+import {
+	MIRROR_ENTRY,
+	type MirrorStatus,
+	type MirrorTarget,
+	PossiblySentError,
+	toMirrorEntry,
+} from "../src/client/mirror.ts";
 import * as viewState from "../src/client/view-state.ts";
 import * as protocol from "../src/protocol/index.ts";
 import * as projects from "../src/protocol/projects.ts";
@@ -23,7 +29,7 @@ import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { FakeTerminal, until } from "./helpers.ts";
 
-const AGENT: MirrorTarget = { project: "main", handle: AGENT_HANDLE };
+const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
 
 const CHILD: ChildInfo = {
 	handle: AGENT_HANDLE,
@@ -151,7 +157,14 @@ function answerEntry(id: number, message: Answer): EntryRecord {
 
 /** The mirror entry with `target`, as Pi keeps it in the session. */
 function mirrorEntry(target: MirrorTarget): coding.SessionEntry {
-	return { type: "custom", customType: MIRROR_ENTRY, data: target, id: "mirror-1", parentId: null, timestamp: "" };
+	return {
+		type: "custom",
+		customType: MIRROR_ENTRY,
+		data: toMirrorEntry(target),
+		id: "mirror-1",
+		parentId: null,
+		timestamp: "",
+	};
 }
 
 /** An event that the tests give to a handler of the mirror. */

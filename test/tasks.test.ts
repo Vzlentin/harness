@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect, request } from "../src/client/client.ts";
-import { Mirror } from "../src/client/mirror.ts";
+import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
 import { inboxOf } from "../src/client/view-state.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
@@ -171,7 +171,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		if (client === undefined) throw new Error("no host");
 
 		try {
-			const watched = await client.watch({ conversation: ids.child });
+			const watched = await client.watch({ kind: "conversation", id: ids.child });
 			const lines: WatchLine[] = [];
 
 			void (async () => {
@@ -228,21 +228,24 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 		// Both targets at once: the type refuses it, so the line goes through JSON.
 		const both = JSON.parse(JSON.stringify({ type: "watch", handle: AGENT_HANDLE, conversation: ids.child }));
-		await expect(request(both, { start: false })).rejects.toThrow("Unknown or invalid request: watch");
+		await expect(request(both, { start: false })).rejects.toThrow("Invalid watch request: conversation is not allowed");
 
-		// `configure` takes only a handle, also with an extra `conversation` key.
+		// `configure` takes only a handle, and refuses a `conversation` key.
 		const configure = JSON.parse(
 			JSON.stringify({ type: "configure", handle: "nosuch", conversation: ids.child, thinking: "high" }),
 		);
 
-		await expect(request(configure, { start: false })).rejects.toThrow("Unknown subagent: nosuch");
+		await expect(request(configure, { start: false })).rejects.toThrow(
+			"Invalid configure request: conversation is not allowed",
+		);
 	});
 
 	it("mirrors a task's child by conversation: steers it while it works, aborts it, and refuses configure", async () => {
 		gates.set("Fixture mirrored", Promise.withResolvers());
 		const ids = await startWithIds("mirrored", "Fixture mirrored");
 		const { id } = await taskRequest("task", "mirrored");
-		const mirror = new Mirror({ project: MAIN_PROJECT, conversation: ids.child }, () => {}, { start: false });
+		const target: MirrorTarget = { project: MAIN_PROJECT, target: { kind: "conversation", id: ids.child } };
+		const mirror = new Mirror(target, () => {}, { start: false });
 
 		try {
 			await until(() => mirror.status.kind !== "connecting");

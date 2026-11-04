@@ -20,7 +20,7 @@ import {
 	resolveProject,
 } from "./protocol/projects.ts";
 import { errorMessage } from "./protocol/requests.ts";
-import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
+import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
@@ -203,17 +203,17 @@ async function attachCommand(args: string[]): Promise<void> {
 	const [first, id] = args;
 	let ref: Target;
 
-	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = { handle: first };
-	else if (args.length === 2 && first === "--conversation" && id) ref = { conversation: id };
+	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = parseTarget({ handle: first });
+	else if (args.length === 2 && first === "--conversation" && id) ref = parseTarget({ conversation: id });
 	else usage();
 
-	await openInPi({ project: resolveProject(process.env, process.cwd()), ...ref });
+	await openInPi({ project: resolveProject(process.env, process.cwd()), target: ref });
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	await openInPi({ project: name, handle: AGENT_HANDLE });
+	await openInPi({ project: name, target: { kind: "agent" } });
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
@@ -230,8 +230,7 @@ function userPath(): string {
  * project agent without a model.
  */
 async function openInPi(target: MirrorTarget): Promise<void> {
-	const ref = target.conversation === undefined ? { handle: target.handle } : { conversation: target.conversation };
-	await request({ type: "watch", ...ref }, { start: true, project: target.project });
+	await request({ type: "watch", ...targetRef(target.target) }, { start: true, project: target.project });
 
 	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",

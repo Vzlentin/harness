@@ -9,15 +9,8 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
-import {
-	type ChildInfo,
-	PROTOCOL_VERSION,
-	type Replies,
-	type Request,
-	type RequestLine,
-	versionMismatch,
-} from "../protocol/requests.ts";
-import { AGENT_HANDLE } from "../protocol/target.ts";
+import { type ChildInfo, PROTOCOL_VERSION, type Replies, type Request, versionMismatch } from "../protocol/requests.ts";
+import { parseTarget, type Target } from "../protocol/target.ts";
 import { catchUp } from "./agent.ts";
 import type { Connection, Push } from "./push.ts";
 import {
@@ -77,12 +70,12 @@ export type Handler = Base &
 		readonly connection?: Connection;
 	};
 
+/** Handles `request`. The target of a request that has one is parsed here, once. */
 export function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
 	handler: Handler,
 ): Promise<Replies[T]>;
-export function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]>;
-export async function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]> {
+export async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
 	switch (request.type) {
 		case "hello":
 			return hello(request);
@@ -91,9 +84,9 @@ export async function handleRequest(request: RequestLine, handler: Handler): Pro
 		case "send":
 			return send(request, handler);
 		case "input":
-			return input(request, handler);
+			return input(request, parseTarget(request), handler);
 		case "note":
-			return noteTo(request, handler);
+			return noteTo(request, parseTarget(request), handler);
 		case "wait":
 			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
 		case "answers":
@@ -101,11 +94,11 @@ export async function handleRequest(request: RequestLine, handler: Handler): Pro
 		case "status":
 			return childInfo(handler, request.handle);
 		case "abort":
-			return abortChild(request, handler);
+			return abortChild(parseTarget(request), handler);
 		case "configure":
-			return configureChild(request, handler);
+			return configureChild(request, parseTarget(request), handler);
 		case "watch":
-			return watch(request, handler);
+			return watch(parseTarget(request), handler);
 		case "start":
 			return start(request, handler);
 		case "task":
@@ -123,7 +116,7 @@ export async function handleRequest(request: RequestLine, handler: Handler): Pro
 	}
 }
 
-function hello(request: Extract<RequestLine, { type: "hello" }>): Replies["hello"] {
+function hello(request: Extract<Request, { type: "hello" }>): Replies["hello"] {
 	if (request.version !== PROTOCOL_VERSION) {
 		throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
 	}
@@ -131,7 +124,7 @@ function hello(request: Extract<RequestLine, { type: "hello" }>): Replies["hello
 	return { version: PROTOCOL_VERSION, pid: process.pid };
 }
 
-async function send(request: Extract<RequestLine, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
+async function send(request: Extract<Request, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
 	const { handle, requestId, notify } = request;
 	const record = await ownRecord(handler.harness, handle, request.caller);
 
@@ -144,28 +137,32 @@ async function send(request: Extract<RequestLine, { type: "send" }>, handler: Ha
 	);
 }
 
-async function input(request: Extract<RequestLine, { type: "input" }>, handler: Handler): Promise<Replies["input"]> {
-	const found = await target(handler, request);
+async function input(
+	request: Extract<Request, { type: "input" }>,
+	ref: Target,
+	handler: Handler,
+): Promise<Replies["input"]> {
+	const found = await target(handler, ref);
 
-	if (request.handle === AGENT_HANDLE) await catchUp(handler, found.write, request.requestId);
+	if (ref.kind === "agent") await catchUp(handler, found.write, request.requestId);
 
 	// A conversation takes input only while it works, so its input is always a steer.
-	return sendTo(request.conversation === undefined ? request : { ...request, followUp: false }, found, handler.harness);
+	return sendTo(ref.kind === "conversation" ? { ...request, followUp: false } : request, found, handler.harness);
 }
 
-function answers(request: Extract<RequestLine, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
+function answers(request: Extract<Request, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
 	if (handler.connection === undefined) throw new Error("answers needs a connection");
 
 	return handler.push.listen(request.caller, handler.connection, handler.signal);
 }
 
-function watch(request: Extract<RequestLine, { type: "watch" }>, handler: Handler): Promise<Replies["watch"]> {
+function watch(ref: Target, handler: Handler): Promise<Replies["watch"]> {
 	if (handler.connection === undefined) throw new Error("A watch needs a connection");
 
-	return serveWatch(handler, request, handler.connection);
+	return serveWatch(handler, ref, handler.connection);
 }
 
-async function start(request: Extract<RequestLine, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
+async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
 	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
 	// for the agent, the task still starts: its children may name their own.
 	await handler.agent().catch(() => undefined);
@@ -173,7 +170,7 @@ async function start(request: Extract<RequestLine, { type: "start" }>, handler: 
 	return startTask(handler, request);
 }
 
-async function list(request: Extract<RequestLine, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
+async function list(request: Extract<Request, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
 	const state = await handler.harness.snapshot(ChildRecords, context);
 
 	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
@@ -191,14 +188,14 @@ async function list(request: Extract<RequestLine, { type: "list" }>, handler: Ha
 	return infos.filter((info) => info !== undefined);
 }
 
-async function rename(request: Extract<RequestLine, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
+async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
 	await ownRecord(handler.harness, request.handle, request.caller);
 	await renameRecord(handler.harness, request.handle, request.name);
 
 	return childInfo(handler, request.handle);
 }
 
-async function stop(request: Extract<RequestLine, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
+async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
 	const record = await ownRecord(handler.harness, request.handle, request.caller);
 	await stopChild(handler, record);
 
@@ -211,8 +208,7 @@ async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
 	await removeRecords(handler.harness, closed);
 }
 
-async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
-	if (!request.cwd) throw new Error("spawn requires a working directory");
+async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
 	let handle = await spawnedHandle(harness, request.requestId);
 
@@ -281,7 +277,7 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
  * children hold is prompted.
  */
 async function sendTo(
-	request: Extract<RequestLine, { type: "send" | "input" }>,
+	request: Extract<Request, { type: "send" | "input" }>,
 	found: Pick<Found, "conversation" | "info"> & {
 		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
 	},
@@ -304,14 +300,12 @@ async function sendTo(
 
 /** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
 async function noteTo(
-	request: Extract<RequestLine, { type: "note" }>,
+	request: Extract<Request, { type: "note" }>,
+	ref: Target,
 	handler: Handler,
 ): Promise<{ child: ChildInfo }> {
 	const kind = request.kind ?? "harness.note";
-
-	// pi-durable does not check the kind of a write.
-	if (kind.startsWith("pi.")) throw new Error(`A note kind cannot start with "pi.": ${kind}`);
-	const found = await target(handler, request);
+	const found = await target(handler, ref);
 	const model = [{ role: "user", content: request.text, timestamp: Date.now() }] as const;
 	const entry: durable.EntryDraft = request.data === undefined ? { kind, model } : { kind, model, data: request.data };
 	// The scope keeps a note from taking the request ID of an input to the same conversation.
@@ -324,10 +318,7 @@ function sendVerb(busy: boolean, followUp: boolean): string {
 	return !busy ? "Prompted" : followUp ? "Queued follow-up for" : "Steered";
 }
 
-async function waitChild(
-	request: Extract<RequestLine, { type: "wait" }>,
-	handler: Handler,
-): Promise<{ answer: string }> {
+async function waitChild(request: Extract<Request, { type: "wait" }>, handler: Handler): Promise<{ answer: string }> {
 	const record = await childRecord(handler.harness, request.handle);
 	const child = await childOf(handler, record);
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
@@ -374,8 +365,8 @@ async function depthLimit(settings: SettingsManager): Promise<number> {
 	return Value.Check(DepthSetting, global) ? global.agentDepthLimit : DEPTH_LIMIT;
 }
 
-async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
-	const found = await target(handler, request);
+async function abortChild(ref: Target, handler: Handler): Promise<ChildInfo> {
+	const found = await target(handler, ref);
 	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
 	await found.conversation.abort(context);
 
@@ -383,11 +374,11 @@ async function abortChild(request: Extract<RequestLine, { type: "abort" }>, hand
 }
 
 async function configureChild(
-	request: Extract<RequestLine, { type: "configure" }>,
+	request: Extract<Request, { type: "configure" }>,
+	ref: Target,
 	handler: Handler,
 ): Promise<ChildInfo> {
-	// Only the handle: the schema of `configure` does not refuse an extra `conversation` key.
-	const found = await target(handler, { handle: request.handle });
+	const found = await target(handler, ref);
 	const agent = await found.conversation.agent(context);
 	await found.conversation.configure(resolveModel(handler.place.models, agent, request), context);
 

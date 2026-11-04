@@ -8,7 +8,6 @@ import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/p
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import type { Delivery } from "../protocol/requests.ts";
-import { AGENT_HANDLE } from "../protocol/target.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -417,7 +416,7 @@ export class Push {
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
 
-		if (caller === String(this.#host.root.id)) return (await target(this.#host, { handle: AGENT_HANDLE })).send;
+		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
 		const conversation = (await library.inspect(this.#host.place, caller, context))?.conversation;
 
 		if (conversation === undefined) return undefined;

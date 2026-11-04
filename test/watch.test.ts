@@ -33,7 +33,7 @@ describe("watch", { timeout: 30_000 }, () => {
 		const client = new Client(socket);
 
 		try {
-			const watched = await client.watch(handle);
+			const watched = await client.watch({ kind: "child", handle });
 			const events: WatchLine[] = [];
 
 			const ended = (async () => {

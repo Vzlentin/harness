@@ -69,9 +69,9 @@ describe("info", () => {
 	it("refuses a conversation without a working directory or without a model", async () => {
 		const host = { harness, place, owner, project: "main", agent: async () => owner.root };
 		const child = await library.open(place, owner, "t:no-cwd", { root: "test", ...faux }, context);
-		const found = await target(host, { conversation: String(child.id) });
+		const found = await target(host, { kind: "conversation", id: String(child.id) });
 		await expect(found.info()).rejects.toThrow(`The conversation ${child.id} has no working directory`);
-		const agent = await target(host, { handle: "agent" });
+		const agent = await target(host, { kind: "agent" });
 		await expect(agent.info()).rejects.toThrow(`The conversation ${owner.root.id} has no model`);
 	});
 });

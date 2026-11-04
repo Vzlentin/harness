@@ -15,7 +15,7 @@ import { childInfo, type Found, type TargetHost, target } from "./targets.ts";
 const context = BACKGROUND_CONTEXT;
 
 /**
- * Opens a watch of `handle` on `connection` and returns the reply, with the view and the child. After the reply, each
+ * Opens a watch of `ref` on `connection` and returns the reply, with the view and the child. After the reply, each
  * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
  * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
  * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
@@ -27,7 +27,6 @@ export async function serveWatch(
 	ref: Target,
 	connection: Connection,
 ): Promise<Replies["watch"]> {
-	const handle = ref.conversation ?? ref.handle;
 	const { harness } = handler;
 	const { socket } = connection;
 	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
@@ -42,7 +41,8 @@ export async function serveWatch(
 	};
 
 	let found: Found;
-	let children: DocumentWatch<ChildrenState> | undefined;
+	/** The `ChildRecords` watch of a child target, and its handle. */
+	let children: { readonly watch: DocumentWatch<ChildrenState>; readonly handle: string } | undefined;
 	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
 	let last: ChildInfo;
 
@@ -51,12 +51,14 @@ export async function serveWatch(
 
 		// The project agent and a conversation target have no record and no `ChildRecords` watch: they are never renamed
 		// or stopped.
-		if (found.record !== undefined) {
+		if (ref.kind === "child") {
+			const { handle } = ref;
 			// The `ChildRecords` watch opens before the info, so it gets each later rename and stop of the child.
-			children = await harness.watchDoc(ChildRecords, watchContext);
-			const record = recordOf(children?.value, handle);
+			const watch = await harness.watchDoc(ChildRecords, watchContext);
+			const record = recordOf(watch?.value, handle);
 
-			if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+			if (watch === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
+			children = { watch, handle };
 			found = { ...found, record, info: () => childInfo(handler, handle, record) };
 		}
 
@@ -108,18 +110,23 @@ export async function serveWatch(
 			end();
 		};
 
-		childrenWatch?.start(async (state) => {
-			if (!socket.writable) return;
-			const next = recordOf(state, handle);
+		if (childrenWatch !== undefined) {
+			const { watch, handle } = childrenWatch;
 
-			if (next === undefined) {
-				queue = queue.then(stop);
-				await queue;
-			} else if (next.name !== found.record?.name) {
-				found = { ...found, record: next, info: () => childInfo(handler, handle, next) };
-				await send({});
-			}
-		});
+			watch.start(async (state) => {
+				if (!socket.writable) return;
+				const next = recordOf(state, handle);
+
+				if (next === undefined) {
+					queue = queue.then(stop);
+					await queue;
+				} else if (next.name !== found.record?.name) {
+					found = { ...found, record: next, info: () => childInfo(handler, handle, next) };
+					await send({});
+				}
+			});
+		}
+
 		conversation.start((view, ops) => send(viewChange(view, ops)));
 	});
 

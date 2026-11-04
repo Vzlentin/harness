@@ -38,14 +38,22 @@ const AgentState = defineDoc<{ lastRequest: string | null }>({
 export const library = createChildren(durable);
 
 /**
- * The conversation of `ref`: a child or the project agent by handle, or a conversation of the children library by ID,
+ * The conversation of `ref`: a child by handle, the project agent, or a conversation of the children library by ID,
  * with its info, its input, and the record of a child.
  */
 export async function target(handler: TargetHost, ref: Target) {
-	if (ref.conversation !== undefined) return conversationTarget(handler, ref.conversation);
-	const { handle } = ref;
+	switch (ref.kind) {
+		case "child":
+			return childTarget(handler, ref.handle, await childRecord(handler.harness, ref.handle));
+		case "conversation":
+			return conversationTarget(handler, ref.id);
+		case "agent":
+			return agentTarget(handler);
+	}
+}
 
-	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
+/** The target of the project agent. It has no record. */
+async function agentTarget(handler: TargetHost) {
 	const root = await handler.agent();
 	const { place, project } = handler;
 
@@ -60,7 +68,7 @@ export async function target(handler: TargetHost, ref: Target) {
 		conversation: root,
 		info: async (): Promise<ChildInfo> => ({
 			...(await agentFields(root)),
-			handle,
+			handle: AGENT_HANDLE,
 			name: `${project} agent`,
 			state: await turn.state(context),
 		}),

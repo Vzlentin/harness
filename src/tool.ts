@@ -5,11 +5,10 @@ import type * as Ai from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
-import type { Replies, Request } from "./protocol/requests.ts";
-
-const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+import { type Replies, type Request, ThinkingLevel } from "./protocol/requests.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
@@ -191,7 +190,7 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 
 	if (!model) throw new Error("No model specified and the caller has no model");
 
-	if (!THINKING_LEVELS.has(thinking)) throw new Error(`Invalid thinking level: ${thinking}`);
+	if (!Value.Check(ThinkingLevel, thinking)) throw new Error(`Invalid thinking level: ${thinking}`);
 	const base = scope.cwd;
 
 	if (base === undefined) throw new Error("spawn requires a caller with a working directory");
@@ -227,7 +226,7 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 
 	if (name !== undefined) request = { ...request, name };
 
-	if (args.thinking !== undefined) request = { ...request, thinking: args.thinking };
+	if (args.thinking !== undefined) request = { ...request, thinking };
 
 	if (tools !== undefined) request = { ...request, tools };
 

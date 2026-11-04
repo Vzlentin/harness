@@ -67,7 +67,7 @@ async function input(message: string): Promise<void> {
 	const connected = await client();
 
 	try {
-		const first = await watching.watch(AGENT_HANDLE);
+		const first = await watching.watch({ kind: "agent" });
 		const events: WatchLine[] = [];
 
 		void (async () => {

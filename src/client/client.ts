@@ -17,7 +17,7 @@ import {
 	versionMismatch,
 	type WatchLine,
 } from "../protocol/requests.ts";
-import type { Target } from "../protocol/target.ts";
+import { type Target, targetRef } from "../protocol/target.ts";
 
 const START_TIMEOUT_MS = 10_000;
 
@@ -139,15 +139,14 @@ export class Client {
 	}
 
 	/**
-	 * Sends the `watch` request of `target`, a handle or a conversation ID. Its `lines` are the events of the watch, and
-	 * end when the connection closes. Other requests can follow on this client. Call it once.
+	 * Sends the `watch` request of `target`. Its `lines` are the events of the watch, and end when the connection closes.
+	 * Other requests can follow on this client. Call it once.
 	 */
-	async watch(target: string | Target): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
+	async watch(target: Target): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
 		const lines = new Readable({ objectMode: true, read() {} });
 		this.#lines = lines;
-		const ref = target instanceof Object ? target : { handle: target };
 
-		const reply = await this.request({ type: "watch", ...ref });
+		const reply = await this.request({ type: "watch", ...targetRef(target) });
 
 		return { ...reply, lines };
 	}

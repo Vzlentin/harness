@@ -348,7 +348,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Note kind"]));
 		await cli(["wait", handle]);
 		const note = { type: "note", requestId: "kind", handle, text: "Bad", kind: "pi.user" } as const;
-		await expect(request(note, { start: false })).rejects.toThrow('A note kind cannot start with "pi.": pi.user');
+		await expect(request(note, { start: false })).rejects.toThrow("Invalid note request: kind is not valid");
 	});
 
 	it("queues a follow-up, renames and stops a child", async () => {
@@ -699,7 +699,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				prompt: "Nowhere",
 			};
 
-			expect(await rawError(JSON.stringify(spawn))).toBe("spawn requires a working directory");
+			expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: cwd is required");
 			expect(await client.request({ type: "list", caller })).toEqual([]);
 		} finally {
 			client.close();
@@ -707,9 +707,31 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a request line that does not match the protocol", async () => {
-		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown or invalid request: nope");
-		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Unknown or invalid request: status");
+		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown request: nope");
+		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Invalid status request: handle is required");
 		expect(await rawError("[]")).toBe("Invalid request");
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-huge",
+			caller: "cli-huge",
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			thinking: "huge",
+			callerThinking: "medium",
+			cwd: process.cwd(),
+			prompt: "Huge",
+		};
+
+		expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: thinking is not valid");
+
+		const note = { type: "note", requestId: "pi-kind", handle: "abc123", text: "Bad", kind: "pi.x" };
+		expect(await rawError(JSON.stringify(note))).toBe("Invalid note request: kind is not valid");
+
+		const conversationNote = { type: "note", requestId: "pi-kind", conversation: "c1", text: "Bad", kind: "pi.x" };
+		expect(await rawError(JSON.stringify(conversationNote))).toBe("Invalid note request: kind is not valid");
+		expect(await rawError(JSON.stringify({ type: "watch" }))).toBe("Invalid watch request: handle is required");
 	});
 
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {
@@ -1843,7 +1865,7 @@ async function watchAgent(): Promise<{
 	const client = await connect({ start: false });
 
 	if (client === undefined) throw new Error("no host");
-	const first = await client.watch(AGENT_HANDLE);
+	const first = await client.watch({ kind: "agent" });
 	const events: WatchLine[] = [];
 	void (async () => {
 		for await (const line of first.lines) events.push(line);

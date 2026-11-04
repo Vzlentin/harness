@@ -22,6 +22,7 @@ import {
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
+import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import { ChildContext, PI_TRUST } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
@@ -48,6 +49,9 @@ const context = BACKGROUND_CONTEXT;
 
 /** The requests that do not count as activity for the idle exit. */
 const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set(["hello", "list", "status", "answers"]);
+
+/** A JSON object with a string `type`, which names the request that a line meant. */
+const Typed = Type.Object({ type: Type.String() });
 
 export type Host = {
 	/** Resolves once the host has closed, by `close()`, the idle exit, or a store failure. */
@@ -316,17 +320,37 @@ export async function runHost(options: {
 	return { closed, close };
 }
 
-/** The request of a line from a client, checked against the protocol. */
-function parseRequest(line: string): RequestLine {
+/**
+ * The request of a line from a client, checked against the protocol. A line that fails names its request type and the
+ * first field that is wrong.
+ */
+function parseRequest(line: string): Request {
 	const request: unknown = JSON.parse(line);
 
 	if (Value.Check(RequestLine, request)) return request;
 
-	throw new Error(
-		Value.Check(Type.Object({ type: Type.String() }), request)
-			? `Unknown or invalid request: ${request.type}`
-			: "Invalid request",
-	);
+	if (!Value.Check(Typed, request)) throw new Error("Invalid request");
+
+	// The branch of the request's type with the fewest errors names the field; on a tie, the first one wins.
+	const [best] = RequestLine.anyOf
+		.map((schema) => [...Value.Errors(schema, request)])
+		.filter((errors) => errors.every((error) => error.instancePath !== "/type"))
+		.sort((a, b) => a.length - b.length);
+
+	if (best === undefined) throw new Error(`Unknown request: ${request.type}`);
+
+	// SAFETY: Value.Check refused every branch, so each branch, and the best one, has at least one error.
+	const [error] = best as [TLocalizedValidationError, ...TLocalizedValidationError[]];
+
+	throw new Error(`Invalid ${request.type} request: ${requestError(error)}`);
+}
+
+/** The field of a request error, and what is wrong with it. */
+function requestError(error: TLocalizedValidationError): string {
+	if (error.keyword === "required") return `${error.params.requiredProperties[0]} is required`;
+	const field = error.instancePath.split("/")[1];
+
+	return error.keyword === "not" ? `${field} is not allowed` : `${field} is not valid`;
 }
 
 /** Waits for `promise`, or for `ms` at most. */
