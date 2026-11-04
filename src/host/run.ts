@@ -178,7 +178,20 @@ export async function runHost(options: {
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
 
-	base = { harness, place, owner, root, project, agent, startable, settings, push, cwd: projectCwd, warn };
+	base = {
+		harness,
+		place,
+		owner,
+		root,
+		project,
+		agent,
+		startable,
+		settings,
+		push,
+		cwd: projectCwd,
+		catchUps: entries.catchUps,
+		warn,
+	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
 

@@ -208,6 +208,17 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("refuses a note to a closed conversation", async () => {
+		const idFile = join(root, "closed.ids.json");
+		const input = { cwd: root, prompt: "Fixture closed", idFile, close: true };
+		await request({ type: "start", kind: KIND, key: "closed", input }, { start: false });
+		expect(await taskRequest("wait-task", "closed")).toMatchObject({ outcome: { status: "completed" } });
+		const ids: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
+		const note = { type: "note", requestId: "closed-note", text: "Too late", conversation: ids.child } as const;
+
+		await expect(request(note, { start: false })).rejects.toThrow(`The conversation ${ids.child} is closed`);
+	});
+
 	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {
 		gates.set("Fixture aborted", Promise.withResolvers());
 		const ids = await startWithIds("aborted", "Fixture aborted");

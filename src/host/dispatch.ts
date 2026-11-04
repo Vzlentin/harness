@@ -4,14 +4,14 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type * as durable from "@earendil-works/pi-durable";
-import type { Conversation, Harness } from "@earendil-works/pi-durable";
+import type { Harness } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
 import { type ChildInfo, PROTOCOL_VERSION, type Replies, type Request, versionMismatch } from "../protocol/requests.ts";
 import { parseTarget, type Target } from "../protocol/target.ts";
-import { catchUp } from "./agent.ts";
+import { type CatchUpHost, catchUp } from "./agent.ts";
 import type { Connection, Push } from "./push.ts";
 import {
 	addRecord,
@@ -53,15 +53,11 @@ const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 
 /** What every request of the host uses. */
 export type Base = Omit<TaskHost, "signal"> &
-	TargetHost & {
-		/** The root conversation, which owns the host's children and is the project agent. */
-		readonly root: Conversation;
+	TargetHost &
+	CatchUpHost & {
 		/** Pi's settings, for the depth limit of the subagent tree. */
 		readonly settings: SettingsManager;
 		readonly push: Push;
-		/** The project directory. */
-		readonly cwd: string;
-		readonly warn: (cause: unknown) => void;
 	};
 
 export type Handler = Base &

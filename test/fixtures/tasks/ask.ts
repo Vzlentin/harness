@@ -1,7 +1,7 @@
 /**
  * A `piDurable` entry with a task that asks a child it owns one question and completes with the answer. With `idFile`,
  * the task writes the conversation IDs of its child and its root there as JSON, after it opens the child. `overlay` and
- * `limit` go to the child's spec.
+ * `limit` go to the child's spec. With `close`, the task closes its child after the answer.
  */
 import { writeFile } from "node:fs/promises";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -18,7 +18,15 @@ export default function askEntry({
 	readonly place: Place;
 }) {
 	const Ask = durable.defineTask<
-		{ cwd: string; prompt: string; agentModel?: boolean; idFile?: string; overlay?: Overlay; limit?: number },
+		{
+			cwd: string;
+			prompt: string;
+			agentModel?: boolean;
+			idFile?: string;
+			overlay?: Overlay;
+			limit?: number;
+			close?: boolean;
+		},
 		{ phase: "ask" },
 		string
 	>({
@@ -42,6 +50,8 @@ export default function askEntry({
 				}
 
 				const answer = await child.ask({ type: "input", content: task.input.prompt, requestId: "q" }, context);
+
+				if (task.input.close === true) await child.close(context);
 				await runtime.commit(
 					() => ({
 						status: "terminal",

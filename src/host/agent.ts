@@ -1,7 +1,7 @@
 /**
  * The project agent, which is the root conversation: its set-up at its first use, and its catch-up, before a user
- * input, one entry with the workflows runs that ended and the commits on the default branch since the agent last saw
- * them.
+ * input, one entry with the facts of the entries' catch-up hooks and the commits on the default branch since the agent
+ * last saw them.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -9,13 +9,14 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { type Conversation, defineDoc, defineDocFamily, type Harness, type TaskId } from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveModel } from "../children/model.ts";
 import { errorMessage } from "../protocol/requests.ts";
-import { type Found, library } from "./targets.ts";
-import { startedTaskIds } from "./tasks.ts";
+import type { CatchUpHook, CatchUpPart } from "./entries.ts";
+import { Json } from "./json.ts";
+import type { Found } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 const execGit = promisify(execFile);
@@ -23,7 +24,6 @@ const execGit = promisify(execFile);
 /** How long a Git command of the catch-up may run. */
 const GIT_TIMEOUT_MS = 10_000;
 
-const RUN_KIND = "workflows.run";
 const ENTRY_KIND = "harness.catchup";
 
 /** Between the short SHA and the subject of a commit in the `git log` output. */
@@ -32,12 +32,10 @@ const FIELD_SEPARATOR = "\u001f";
 type SeenState = {
 	/** The head of the default branch at the last catch-up; null without a repository or a branch. */
 	mainSha: string | null;
-	/** The highest started task ID at the last catch-up. */
-	lastTaskId: number;
-	/** The workflows runs that were not terminal at the last catch-up, by task ID. */
-	pending: number[];
 	/** How many catch-up entries the agent got: the request ID of the next one is `catchup:<catchups + 1>`. */
 	catchups: number;
+	/** What each catch-up hook said the agent saw at the last catch-up, by hook kind. */
+	hooks: Record<string, JsonValue>;
 	/**
 	 * The catch-up entry that the commit of this state planned, until it is written. A catch-up writes it first, so a
 	 * crash after the commit loses no fact.
@@ -47,81 +45,50 @@ type SeenState = {
 
 /** The data of a catch-up entry. */
 type CatchUpData = {
-	runs: RunFacts[];
-	lost?: LostRun[];
 	commits?: { branch: string; commits: Commit[] };
 	reset?: Reset;
+	/** The data of each catch-up hook that gave lines, by hook kind. */
+	hooks?: Record<string, JsonValue>;
 };
 
-type PlannedEntry = { requestId: string; text: string; data: CatchUpData };
-
-/** A workflows run that the catch-up cannot report: its record is gone, or its input is not a workflows run input. */
-type LostRun = { task: number; reason: string };
+/** A planned entry. Its data is JSON, because a version 1 state kept data of another shape. */
+type PlannedEntry = { requestId: string; text: string; data: JsonValue };
 
 /** The default branch `branch` moved from `from` to `head`, which does not contain `from`. */
 type Reset = { branch: string; from: string; head: string };
 
-const NOTHING_SEEN: Readonly<SeenState> = { mainSha: null, lastTaskId: 0, pending: [], catchups: 0 };
+const NOTHING_SEEN: Readonly<SeenState> = { mainSha: null, catchups: 0, hooks: {} };
 
-/** What the project agent has seen. Undefined until its first input. */
+const PlannedEntryV1 = Type.Object({
+	requestId: Type.String(),
+	text: Type.String(),
+	data: Json,
+});
+
+const SeenV1 = Type.Object({
+	mainSha: Type.Union([Type.String(), Type.Null()]),
+	catchups: Type.Integer(),
+	entry: Type.Optional(PlannedEntryV1),
+});
+
+/**
+ * What the project agent has seen. Undefined until its first input. The migration from version 1 drops its workflows
+ * facts, `lastTaskId` and `pending`, and starts each catch-up hook with nothing seen.
+ */
 const Seen = defineDoc<SeenState>({
 	kind: "harness.seen",
-	version: 1,
+	version: 2,
 	scope: "conversation",
 	history: "latest",
 	checkpointWhen: () => false,
 	fork: "initial",
-	initial: () => ({ ...NOTHING_SEEN, pending: [] }),
+	initial: () => ({ ...NOTHING_SEEN, hooks: {} }),
+	migrate: (value) => {
+		const { mainSha, catchups, entry } = Value.Parse(SeenV1, value);
+
+		return entry === undefined ? { mainSha, catchups, hooks: {} } : { mainSha, catchups, hooks: {}, entry };
+	},
 });
-
-const Sessions = Type.Object({
-	sessions: Type.Array(
-		Type.Object({
-			run: Type.String(),
-			conversation: Type.Integer(),
-			task: Type.Integer(),
-			label: Type.Optional(Type.String()),
-		}),
-	),
-});
-
-/** The sessions of a workflows root run, as workflows writes them. */
-const SessionsDoc = defineDocFamily<Static<typeof Sessions>, null>({
-	kind: "workflows.sessions",
-	version: 1,
-	scope: "session",
-	family: true,
-	checkpointWhen: () => false,
-	initial: () => ({ sessions: [] }),
-});
-
-const RunInput = Type.Object({
-	name: Type.String(),
-	runId: Type.String(),
-	root: Type.Optional(Type.String()),
-	worktree: Type.Optional(Type.Object({ branch: Type.String() })),
-});
-
-const RunResult = Type.Object({
-	status: Type.Optional(Type.String()),
-	subject: Type.Optional(Type.String()),
-	branch: Type.Optional(Type.String()),
-	head: Type.Optional(Type.String()),
-	divergence: Type.Optional(Type.String()),
-	lessons: Type.Optional(Type.Array(Type.Unknown())),
-});
-
-type Session = { run: string; conversation: number; key?: string; label?: string };
-
-/** One ended workflows run, as the entry gives it. */
-type RunFacts = Omit<Static<typeof RunResult>, "status" | "lessons"> & {
-	task: number;
-	runId: string;
-	workflow: string;
-	status: string;
-	lessons?: JsonValue[];
-	sessions?: Session[];
-};
 
 type Commit = { sha: string; subject: string };
 
@@ -137,10 +104,12 @@ type WriteEntry = Found["write"];
 /** What `catchUp` uses of the host. */
 export type CatchUpHost = {
 	readonly harness: Harness;
-	/** The root conversation: the project agent. */
+	/** The root conversation, which owns the host's children and is the project agent. */
 	readonly root: Conversation;
 	/** The project directory, for Git. */
 	readonly cwd: string;
+	/** The catch-up hooks of the entries, in load order. */
+	readonly catchUps: readonly CatchUpHook[];
 	readonly warn: (cause: unknown) => void;
 };
 
@@ -185,8 +154,8 @@ export async function setUpAgent(
 const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
 
 /**
- * Writes the catch-up entry of the project agent with `write`, before the input `requestId`, when a workflows run ended
- * or the default branch moved since the last one. The catch-ups of one agent run one at a time. It never throws: a
+ * Writes the catch-up entry of the project agent with `write`, before the input `requestId`, when a catch-up hook gave
+ * lines or the default branch moved since the last one. The catch-ups of one agent run one at a time. It never throws: a
  * failure is a warning, and the input goes through.
  */
 export function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string): Promise<void> {
@@ -202,48 +171,32 @@ export function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string)
 			if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
 			const before = seen ?? NOTHING_SEEN;
 			const git = await headCommits(host, before.mainSha);
-			const started = await startedTaskIds(harness);
-			const lastTaskId = Math.max(before.lastTaskId, ...started.map(Number));
-			const runs: RunFacts[] = [];
-			const lost: LostRun[] = [];
-			const pending: number[] = [];
+			const mainSha = git === undefined ? before.mainSha : git.head;
+			const next: SeenState = { mainSha, catchups: before.catchups, hooks: { ...before.hooks } };
+			const data: CatchUpData = {};
+			const lines: string[] = [];
 
-			for (const id of started) {
-				const known = before.pending.includes(id);
+			for (const hook of host.catchUps) {
+				const part = await hookPart(host, hook, before.hooks[hook.kind]);
 
-				if (!known && id <= before.lastTaskId) continue;
-				const found = await runFacts(host, id, known);
+				if (part === undefined) continue;
+				next.hooks[hook.kind] = part.seen;
 
-				switch (found?.kind) {
-					case "pending":
-						pending.push(id);
-						break;
-					case "lost":
-						lost.push(found.lost);
-						break;
-					case "run":
-						runs.push(found.facts);
-						break;
-				}
+				if (part.lines.length === 0) continue;
+				lines.push(...part.lines);
+
+				if (part.data !== undefined) data.hooks = { ...data.hooks, [hook.kind]: part.data };
 			}
-
-			const data: CatchUpData = { runs };
-
-			if (lost.length > 0) data.lost = lost;
 
 			if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
 
 			if (git?.reset !== undefined) data.reset = git.reset;
-			const mainSha = git === undefined ? before.mainSha : git.head;
-			const next: SeenState = { mainSha, lastTaskId, pending, catchups: before.catchups };
 
-			const fresh =
-				seen !== undefined &&
-				(runs.length > 0 || data.lost !== undefined || data.commits !== undefined || data.reset !== undefined);
+			const fresh = seen !== undefined && (lines.length > 0 || data.commits !== undefined || data.reset !== undefined);
 
 			if (fresh) {
 				next.catchups += 1;
-				next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(data), data };
+				next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(lines, data), data };
 			}
 
 			if (seen !== undefined && sameSeen(seen, next)) return;
@@ -277,97 +230,22 @@ async function writePlanned(host: CatchUpHost, write: WriteEntry, entry: Planned
 }
 
 function sameSeen(a: Readonly<SeenState>, b: Readonly<SeenState>): boolean {
-	return (
-		a.mainSha === b.mainSha &&
-		a.lastTaskId === b.lastTaskId &&
-		a.catchups === b.catchups &&
-		a.pending.length === b.pending.length &&
-		a.pending.every((id, index) => b.pending[index] === id)
-	);
+	return a.mainSha === b.mainSha && a.catchups === b.catchups && Value.Equal(a.hooks, b.hooks);
 }
-
-/** What the catch-up reports of one task. */
-type RunState = { kind: "run"; facts: RunFacts } | { kind: "lost"; lost: LostRun } | { kind: "pending" };
 
 /**
- * The facts of the task `id` when it is a terminal workflows run, `pending` while it runs or cannot be read, and
- * nothing for another task. A lost run is the task of a run whose input is not a workflows run input, or of a `known`
- * run, which was pending, whose record is gone.
+ * The part of the catch-up hook `hook`, which gets `seen`, what it said the agent saw at the last catch-up. A hook
+ * that throws, such as for an invalid part, gives a warning and nothing, so it keeps its last `seen`.
  */
-async function runFacts(host: CatchUpHost, id: TaskId<JsonValue>, known: boolean): Promise<RunState | undefined> {
-	const { harness, warn } = host;
-	let record: Awaited<ReturnType<typeof harness.getTask<JsonValue>>>;
-
+async function hookPart(
+	host: CatchUpHost,
+	hook: CatchUpHook,
+	seen: JsonValue | undefined,
+): Promise<CatchUpPart | undefined> {
 	try {
-		record = await harness.getTask(id, context);
+		return await hook.run(host.harness, seen);
 	} catch (error) {
-		warn(`catch-up: task ${id}: ${errorMessage(error)}`);
-
-		return { kind: "pending" };
-	}
-
-	if (record === undefined) {
-		return known ? { kind: "lost", lost: { task: id, reason: "its task record is gone" } } : undefined;
-	}
-
-	if (record.kind !== RUN_KIND) return undefined;
-
-	if (record.state.status !== "terminal") return { kind: "pending" };
-	const { input } = record;
-
-	if (!Value.Check(RunInput, input)) {
-		return { kind: "lost", lost: { task: id, reason: "its input is not a workflows run input" } };
-	}
-
-	const { outcome } = record.state;
-	const result = outcome.result !== undefined && Value.Check(RunResult, outcome.result) ? outcome.result : {};
-	const status = outcome.status === "completed" && result.status !== undefined ? result.status : outcome.status;
-	const facts: RunFacts = { task: id, runId: input.runId, workflow: input.name, status };
-
-	if (result.subject !== undefined) facts.subject = result.subject;
-	const branch = result.branch ?? input.worktree?.branch;
-
-	if (branch !== undefined) facts.branch = branch;
-
-	if (result.head !== undefined) facts.head = result.head;
-
-	if (result.divergence !== undefined) facts.divergence = result.divergence;
-
-	if (result.lessons !== undefined) {
-		// SAFETY: the result is stored JSON, so each lesson is JSON.
-		facts.lessons = result.lessons as JsonValue[];
-	}
-
-	const sessions = await sessionsOf(host, input.root ?? input.runId);
-
-	if (sessions !== undefined) facts.sessions = sessions;
-
-	return { kind: "run", facts };
-}
-
-/** The sessions of the root run `rootRun`, with their lineage keys and labels; nothing when they cannot be read. */
-async function sessionsOf(host: CatchUpHost, rootRun: string): Promise<Session[] | undefined> {
-	try {
-		const doc = await host.harness.snapshot(SessionsDoc, rootRun, context);
-
-		if (doc === undefined) return [];
-
-		if (!Value.Check(Sessions, doc)) throw new Error("unexpected shape");
-		const sessions: Session[] = [];
-
-		for (const { run, conversation, label } of doc.sessions) {
-			const lineage = await library.lineage(host.harness, String(conversation), context);
-			const session: Session = { run, conversation };
-
-			if (lineage !== undefined) session.key = lineage.key;
-
-			if (label !== undefined) session.label = label;
-			sessions.push(session);
-		}
-
-		return sessions;
-	} catch (error) {
-		host.warn(`catch-up: sessions of ${rootRun}: ${errorMessage(error)}`);
+		host.warn(`catch-up: ${hook.kind}: ${errorMessage(error)}`);
 
 		return undefined;
 	}
@@ -431,18 +309,9 @@ async function gitOut(cwd: string, args: readonly string[]): Promise<string | un
 	}
 }
 
-/** The text of the catch-up entry with `data`. */
-function catchUpText({ runs, lost, commits, reset }: CatchUpData): string {
-	const lines = ["Catch-up since your last input."];
-
-	if (runs.length > 0) lines.push("Workflow runs that ended:", ...runs.map((facts) => `- ${runLine(facts)}`));
-
-	if (lost !== undefined) {
-		lines.push(
-			"Workflow runs that cannot be reported:",
-			...lost.map(({ task, reason }) => `- task ${task}: ${reason}`),
-		);
-	}
+/** The text of the catch-up entry with the lines of the hooks `hookLines`, then the commits of `data`. */
+function catchUpText(hookLines: readonly string[], { commits, reset }: CatchUpData): string {
+	const lines = ["Catch-up since your last input.", ...hookLines];
 
 	if (commits !== undefined) {
 		lines.push(
@@ -458,43 +327,4 @@ function catchUpText({ runs, lost, commits, reset }: CatchUpData): string {
 	}
 
 	return lines.join("\n");
-}
-
-function runLine(facts: RunFacts): string {
-	const parts = [`${facts.runId} (${facts.workflow}): ${facts.status}`];
-
-	if (facts.subject !== undefined) parts.push(`subject: ${facts.subject}`);
-
-	if (facts.branch !== undefined || facts.head !== undefined) {
-		parts.push(`branch: ${[facts.branch, facts.head].filter((part) => part !== undefined).join(" @ ")}`);
-	}
-
-	if (facts.divergence !== undefined) parts.push(`divergence: ${facts.divergence}`);
-
-	if (facts.lessons !== undefined) parts.push(`lessons: ${JSON.stringify(facts.lessons)}`);
-
-	if (facts.sessions !== undefined && facts.sessions.length > 0)
-		parts.push(`sessions: ${sessionsText(facts.sessions)}`);
-
-	return parts.join("; ");
-}
-
-/**
- * `[run <run>: <label> #<conversation>, ...]`, one group for each run. A session without a label gives
- * `<key> #<conversation>`, and without a key `#<conversation>`.
- */
-function sessionsText(sessions: readonly Session[]): string {
-	const byRun = Map.groupBy(sessions, (session) => session.run);
-
-	return [...byRun]
-		.map(([run, group]) => {
-			const named = group.map(({ conversation, key, label }) => {
-				const name = label ?? key;
-
-				return name === undefined ? `#${conversation}` : `${name} #${conversation}`;
-			});
-
-			return `[run ${run}: ${named.join(", ")}]`;
-		})
-		.join(" ");
 }

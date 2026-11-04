@@ -1,11 +1,12 @@
 /**
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
- * entry is a module whose default export gives extensions and tasks to the host.
+ * entry is a module whose default export gives extensions, tasks and a catch-up hook to the host.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { JsonValue } from "@earendil-works/chord";
 import * as ai from "@earendil-works/pi-ai";
 import {
 	createEventBus,
@@ -13,19 +14,61 @@ import {
 	type EventBus,
 	type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AnyTask, Extension } from "@earendil-works/pi-durable";
+import type { AnyTask, Extension, Harness } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
+import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { createChildren, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
+import { Json } from "./json.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 
-/** What the default export of an entry returns: its extensions, the tasks that `start` runs, and `close`. */
-export type Entry = {
+/**
+ * What a catch-up hook gives for one catch-up: `seen`, what the agent has seen now, which the next catch-up gives the
+ * hook back; `lines`, the facts for the agent, none when nothing is new; and `data`, the same facts for the entry.
+ */
+export const CatchUpPart = Type.Object({
+	seen: Json,
+	lines: Type.Array(Type.String()),
+	data: Type.Optional(Json),
+});
+
+export type CatchUpPart = Static<typeof CatchUpPart>;
+
+/**
+ * The catch-up hook of an entry. Before each input of the project agent, the host calls `run` with what the hook said
+ * the agent saw at the last catch-up, or nothing the first time. `kind` names the hook's state and data. The hooks of
+ * `loadEntries` check the part of `run`: an invalid part throws.
+ */
+const CatchUpHook = Type.Object({
+	kind: Type.String({ minLength: 1 }),
+	run: Type.Unsafe<(harness: Harness, seen: JsonValue | undefined) => Promise<CatchUpPart>>(
+		Type.Function([Type.Unknown(), Type.Unknown()], Type.Unknown()),
+	),
+});
+
+export type CatchUpHook = Static<typeof CatchUpHook>;
+
+/**
+ * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, and
+ * `close`.
+ */
+const EntryResult = Type.Object({
+	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
+	tasks: Type.Optional(Type.Unsafe<readonly AnyTask[]>(Type.Array(Type.Unknown()))),
+	catchUp: Type.Optional(CatchUpHook),
+	close: Type.Unsafe<() => Promise<void>>(Type.Function([], Type.Unknown())),
+});
+
+export type Entry = Static<typeof EntryResult>;
+
+/** The entries that the host loaded, as one: their extensions, tasks and catch-up hooks in load order, and `close`. */
+export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
-	readonly tasks?: readonly AnyTask[];
+	readonly tasks: readonly AnyTask[];
+	readonly catchUps: readonly CatchUpHook[];
 	close(): Promise<void>;
 };
 
@@ -49,9 +92,9 @@ const Manifest = Type.Object({
 /**
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
  * `entries.json` (see `readEntries`), with the children library `children`, in one shared event bus, as one entry whose `close()` closes each of them and
- * passes its errors to `warn`. When an entry fails to load, the entries loaded before it close. Missing packages are
- * skipped, not installed, and so is an entry module of `entries.json` that does not exist, such as one of an
- * uninstalled package, with a warning.
+ * passes its errors to `warn`. When an entry fails to load, returns an invalid result, or gives the kind of catch-up
+ * hook of an earlier entry, the entries loaded before it close. Missing packages are skipped, not installed, and so is
+ * an entry module of `entries.json` that does not exist, such as one of an uninstalled package, with a warning.
  */
 export async function loadEntries(
 	cwd: string,
@@ -60,7 +103,7 @@ export async function loadEntries(
 	place: Place,
 	children: ChildrenLibrary,
 	warn: (cause: unknown) => void,
-): Promise<Required<Entry>> {
+): Promise<LoadedEntries> {
 	const modules = new Set<string>();
 
 	const roots = new DefaultPackageManager({ cwd, agentDir, settingsManager })
@@ -91,6 +134,8 @@ export async function loadEntries(
 
 	const events = createEventBus();
 	const entries: Entry[] = [];
+	/** The module of each catch-up hook, by kind. */
+	const hookModules = new Map<string, string>();
 
 	const close = async () => {
 		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
@@ -101,7 +146,25 @@ export async function loadEntries(
 	try {
 		for (const module of modules) {
 			const entry = await importEntry(module);
-			entries.push(await entry.default({ durable, ai, events, children, place }));
+			const result: unknown = await entry.default({ durable, ai, events, children, place });
+
+			if (!Value.Check(EntryResult, result)) {
+				throw new Error(
+					`The entry ${module} returned an invalid result: ${invalidReason(Value.Errors(EntryResult, result))}`,
+				);
+			}
+
+			entries.push(result);
+			const kind = result.catchUp?.kind;
+
+			if (kind === undefined) continue;
+			const other = hookModules.get(kind);
+
+			if (other !== undefined) {
+				throw new Error(`The entries ${other} and ${module} both give the catch-up hook ${kind}`);
+			}
+
+			hookModules.set(kind, module);
 		}
 	} catch (error) {
 		await close();
@@ -111,8 +174,30 @@ export async function loadEntries(
 	return {
 		extensions: entries.flatMap((entry) => entry.extensions),
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
+		catchUps: entries.flatMap((entry) => (entry.catchUp === undefined ? [] : [checkedHook(entry.catchUp)])),
 		close,
 	};
+}
+
+/** The catch-up hook `hook`, whose `run` throws `invalid result: <path> <message>` for an invalid part. */
+function checkedHook(hook: CatchUpHook): CatchUpHook {
+	return {
+		kind: hook.kind,
+		run: async (harness, seen) => {
+			const part: unknown = await hook.run(harness, seen);
+
+			if (!Value.Check(CatchUpPart, part)) {
+				throw new Error(`invalid result: ${invalidReason(Value.Errors(CatchUpPart, part))}`);
+			}
+
+			return part;
+		},
+	};
+}
+
+/** Why a value does not match its schema: the path and the message of its first error in `errors`. */
+function invalidReason([error]: readonly TLocalizedValidationError[]): string {
+	return [error?.instancePath, error?.message].filter((part) => part).join(" ");
 }
 
 /**

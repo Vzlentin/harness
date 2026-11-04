@@ -1550,6 +1550,24 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("refuses to start with an entry that returns an invalid result", async () => {
+		const entries = join(root, "config", "harness", "entries.json");
+		const module = join(root, "bad-entry.mjs");
+		await mkdir(join(root, "config", "harness"), { recursive: true });
+		await writeFile(module, 'export default () => ({ extensions: "x", close: async () => {} });\n');
+		await writeFile(entries, JSON.stringify({ bad: module }));
+		process.env.XDG_STATE_HOME = join(root, "state-bad");
+
+		try {
+			await expect(startHost()).rejects.toThrow(
+				`The entry ${module} returned an invalid result: /extensions must be array`,
+			);
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+			await rm(entries);
+		}
+	});
+
 	it("sets up the agent with the default model of a trusted project's settings only", async () => {
 		const defaults = { defaultProvider: "faux", defaultModel: "faux-2", defaultThinkingLevel: "low" };
 		const agents: Record<string, ChildInfo | undefined> = {};

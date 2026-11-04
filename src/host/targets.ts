@@ -113,7 +113,7 @@ async function conversationTarget(handler: TargetHost, id: string) {
 			await conversation.submit({ ...input, whenBusy: "steer" }, context);
 		},
 		write: async (write: Write) => {
-			if ((await child.state(context)) === "closed") throw new Error(`${lineage.key} takes input only while it works`);
+			if ((await child.state(context)) === "closed") throw new Error(`The conversation ${id} is closed`);
 			await conversation.submit(write, context);
 		},
 		record: undefined,
