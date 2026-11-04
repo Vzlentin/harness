@@ -2,8 +2,9 @@
  * The answers that the host pushes to a caller that is not a conversation of the host, such as a Pi session. This
  * module has no runtime import of Pi, chord or pi-durable, so the Pi extension can load it.
  */
+
+import { type Delivery, errorMessage } from "../protocol/requests.ts";
 import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
-import { type Delivery, errorMessage } from "./protocol/requests.ts";
 
 export type AnswersOptions = {
 	/** Whether the first try to connect starts the host when none runs. The later tries never do. */

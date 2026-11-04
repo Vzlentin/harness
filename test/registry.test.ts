@@ -3,8 +3,8 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { entriesPath, readEntries } from "../src/entries.ts";
-import { readProjects } from "../src/projects.ts";
+import { entriesPath, readEntries } from "../src/client/entries.ts";
+import { readProjects } from "../src/client/projects.ts";
 import { root, setUp, tearDown } from "./helpers.ts";
 
 const WORKERS = 4;
@@ -36,9 +36,9 @@ async function inWorkers(code: string): Promise<void> {
 	);
 }
 
-/** The module `src/<name>.ts` as an import specifier. */
+/** The module `src/client/<name>.ts` as an import specifier. */
 function source(name: string): string {
-	return JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "src", `${name}.ts`)).href);
+	return JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "src", "client", `${name}.ts`)).href);
 }
 
 describe("registry files", { timeout: 30_000 }, () => {

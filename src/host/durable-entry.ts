@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type * as Ai from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import { sendToHost, subagentTool } from "./tool.ts";
+import { sendToHost, subagentTool } from "../tool.ts";
 
 /**
  * The entry for a pi-durable host. The caller is `<store>:<conversation ID>`, where the store is a random ID that the store keeps,

@@ -6,10 +6,10 @@ import { readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { request } from "./client.ts";
-import { piEnv } from "./herdr.ts";
-import { type MirrorTarget, piArgs } from "./mirror.ts";
-import { statePaths } from "./paths.ts";
+import { request } from "./client/client.ts";
+import { piEnv } from "./client/herdr.ts";
+import { type MirrorTarget, piArgs } from "./client/mirror.ts";
+import { statePaths } from "./client/paths.ts";
 import {
 	addProject,
 	COMMAND_NAMES,
@@ -18,7 +18,7 @@ import {
 	projectDir,
 	readProjects,
 	resolveProject,
-} from "./projects.ts";
+} from "./client/projects.ts";
 import { errorMessage } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
@@ -178,7 +178,7 @@ function projectsCommand(args: string[]): void {
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
 	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
-	const { runHost } = await import("./host.ts");
+	const { runHost } = await import("./host/run.ts");
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
 
 	const host = await runHost({

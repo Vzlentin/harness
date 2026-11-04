@@ -16,15 +16,15 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type * as answers from "../dist/answers.js";
 import type * as trust from "../dist/children/trust.js";
-import type * as client from "../dist/client.js";
-import type * as herdr from "../dist/herdr.js";
-import type * as mirror from "../dist/mirror.js";
-import type * as projects from "../dist/projects.js";
+import type * as answers from "../dist/client/answers.js";
+import type * as client from "../dist/client/client.js";
+import type * as herdr from "../dist/client/herdr.js";
+import type * as mirror from "../dist/client/mirror.js";
+import type * as projects from "../dist/client/projects.js";
+import type * as viewState from "../dist/client/view-state.js";
 import type * as protocol from "../dist/protocol-subpath.js";
 import type * as tool from "../dist/tool.js";
-import type * as viewState from "../dist/view-state.js";
 import { registerMirror } from "./mirror.ts";
 
 /** The modules of the harness install that the extension uses. */

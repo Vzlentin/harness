@@ -1,0 +1,395 @@
+/**
+ * The requests of the host: one handler per request type, on the host's store, children and push.
+ */
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import type * as durable from "@earendil-works/pi-durable";
+import type { Conversation, Harness } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import type { Input, Spec } from "../children/library.ts";
+import { resolveModel } from "../children/model.ts";
+import {
+	type ChildInfo,
+	PROTOCOL_VERSION,
+	type Replies,
+	type Request,
+	type RequestLine,
+	versionMismatch,
+} from "../protocol/requests.ts";
+import { AGENT_HANDLE } from "../protocol/target.ts";
+import { catchUp } from "./agent.ts";
+import type { Connection, Push } from "./push.ts";
+import {
+	addRecord,
+	addSent,
+	type ChildRecord,
+	ChildRecords,
+	childRecord,
+	markRead,
+	ownRecord,
+	recordsByAge,
+	removeRecords,
+	renameRecord,
+	spawnedHandle,
+	type UnreadAnswers,
+	unreadAnswers,
+} from "./records.ts";
+import {
+	childInfo,
+	childOf,
+	childTarget,
+	type Found,
+	library,
+	type SendOptions,
+	type TargetHost,
+	target,
+	turnRunning,
+} from "./targets.ts";
+import { abortTask, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
+import { serveWatch } from "./watch.ts";
+
+const context = BACKGROUND_CONTEXT;
+
+/** The depth limit of the subagent tree when Pi's global settings have no valid `agentDepthLimit`. */
+const DEPTH_LIMIT = 4;
+const DepthSetting = Type.Object({ agentDepthLimit: Type.Integer({ minimum: 1 }) });
+
+/** The answer of a `wait` for a turn whose answer a push already gave. */
+const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
+
+/** What every request of the host uses. */
+export type Base = Omit<TaskHost, "signal"> &
+	TargetHost & {
+		/** The root conversation, which owns the host's children and is the project agent. */
+		readonly root: Conversation;
+		/** Pi's settings, for the depth limit of the subagent tree. */
+		readonly settings: SettingsManager;
+		readonly push: Push;
+		/** The project directory. */
+		readonly cwd: string;
+		readonly warn: (cause: unknown) => void;
+	};
+
+export type Handler = Base &
+	TaskHost & {
+		/** The socket of the request, and its hook after the reply. The in-process tool has none. */
+		readonly connection?: Connection;
+	};
+
+export function handleRequest<T extends Request["type"]>(
+	request: Extract<Request, { type: T }>,
+	handler: Handler,
+): Promise<Replies[T]>;
+export function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]>;
+export async function handleRequest(request: RequestLine, handler: Handler): Promise<Replies[RequestLine["type"]]> {
+	switch (request.type) {
+		case "hello":
+			return hello(request);
+		case "spawn":
+			return spawnChild(request, handler);
+		case "send":
+			return send(request, handler);
+		case "input":
+			return input(request, handler);
+		case "note":
+			return noteTo(request, handler);
+		case "wait":
+			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
+		case "answers":
+			return answers(request, handler);
+		case "status":
+			return childInfo(handler, request.handle);
+		case "abort":
+			return abortChild(request, handler);
+		case "configure":
+			return configureChild(request, handler);
+		case "watch":
+			return watch(request, handler);
+		case "start":
+			return start(request, handler);
+		case "task":
+			return taskInfo(handler.harness, request.key);
+		case "wait-task":
+			return waitTask(handler, request.key);
+		case "abort-task":
+			return abortTask(handler.harness, request.key);
+		case "list":
+			return list(request, handler);
+		case "rename":
+			return rename(request, handler);
+		case "stop":
+			return stop(request, handler);
+	}
+}
+
+function hello(request: Extract<RequestLine, { type: "hello" }>): Replies["hello"] {
+	if (request.version !== PROTOCOL_VERSION) {
+		throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
+	}
+
+	return { version: PROTOCOL_VERSION, pid: process.pid };
+}
+
+async function send(request: Extract<RequestLine, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
+	const { handle, requestId, notify } = request;
+	const record = await ownRecord(handler.harness, handle, request.caller);
+
+	return handler.push.whileActive(handle, async () =>
+		sendTo(request, await childTarget(handler, handle, record), handler.harness, {
+			// The request goes into `sent` in the commit that makes it the last request, so a wait that sees it as the
+			// last request finds it in `sent`.
+			admitted: (tx) => addSent(tx, handle, requestId, { notify }),
+		}),
+	);
+}
+
+async function input(request: Extract<RequestLine, { type: "input" }>, handler: Handler): Promise<Replies["input"]> {
+	const found = await target(handler, request);
+
+	if (request.handle === AGENT_HANDLE) await catchUp(handler, found.write, request.requestId);
+
+	// A conversation takes input only while it works, so its input is always a steer.
+	return sendTo(request.conversation === undefined ? request : { ...request, followUp: false }, found, handler.harness);
+}
+
+function answers(request: Extract<RequestLine, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
+	if (handler.connection === undefined) throw new Error("answers needs a connection");
+
+	return handler.push.listen(request.caller, handler.connection, handler.signal);
+}
+
+function watch(request: Extract<RequestLine, { type: "watch" }>, handler: Handler): Promise<Replies["watch"]> {
+	if (handler.connection === undefined) throw new Error("A watch needs a connection");
+
+	return serveWatch(handler, request, handler.connection);
+}
+
+async function start(request: Extract<RequestLine, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
+	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
+	// for the agent, the task still starts: its children may name their own.
+	await handler.agent().catch(() => undefined);
+
+	return startTask(handler, request);
+}
+
+async function list(request: Extract<RequestLine, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
+	const state = await handler.harness.snapshot(ChildRecords, context);
+
+	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
+
+	// A child that the library closed outside `stop`, such as a subagent of a workflow session when its run ends, keeps
+	// its record until a `stop`, and is not listed.
+	const infos = await Promise.all(
+		own.map(async ([handle, record]) =>
+			(await (await childOf(handler, record)).state(context)) === "closed"
+				? undefined
+				: childInfo(handler, handle, record),
+		),
+	);
+
+	return infos.filter((info) => info !== undefined);
+}
+
+async function rename(request: Extract<RequestLine, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
+	await ownRecord(handler.harness, request.handle, request.caller);
+	await renameRecord(handler.harness, request.handle, request.name);
+
+	return childInfo(handler, request.handle);
+}
+
+async function stop(request: Extract<RequestLine, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
+	const record = await ownRecord(handler.harness, request.handle, request.caller);
+	await stopChild(handler, record);
+
+	return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
+}
+
+/** Closes the child of `record` and the children it spawned, and removes their records. A repeat finishes a stop. */
+async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
+	const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
+	await removeRecords(handler.harness, closed);
+}
+
+async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+	if (!request.cwd) throw new Error("spawn requires a working directory");
+	const { harness, place } = handler;
+	let handle = await spawnedHandle(harness, request.requestId);
+
+	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
+	// finished, and the spawn opens a new child.
+	if (handle !== undefined) {
+		const found = await childRecord(harness, handle);
+
+		if ((await (await childOf(handler, found)).state(context)) === "closed") {
+			await stopChild(handler, found);
+			handle = undefined;
+		}
+	}
+
+	if (handle === undefined) {
+		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
+		const parent =
+			(await library.lineage(harness, request.caller, context)) !== undefined ||
+			request.caller === String(handler.root.id)
+				? request.caller
+				: undefined;
+
+		let spec: Spec = {
+			...(parent === undefined ? { root: request.caller } : { parent }),
+			provider: request.provider,
+			model: request.model,
+			fallbackThinking: request.callerThinking,
+			cwd: request.cwd,
+			limit: await depthLimit(handler.settings),
+		};
+
+		if (request.thinking !== undefined) spec = { ...spec, thinking: request.thinking };
+
+		if (request.tools !== undefined) spec = { ...spec, tools: request.tools };
+
+		// A stopped child keeps its key, closed, and `stop` removed its record: a repeated spawn opens a child under the
+		// next key. The keys are in a fixed order, so a retry after a crash finds the child that the first try opened.
+		for (let attempt = 0; handle === undefined; attempt += 1) {
+			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
+
+			// The record is written in the commit that creates the child.
+			const opened = await library.open(place, handler.owner, key, spec, context, (tx, id) =>
+				addRecord(tx, request.requestId, { caller: request.caller, conversationId: id, name: request.name }),
+			);
+
+			handle = await spawnedHandle(harness, request.requestId);
+
+			if (handle === undefined && (await opened.state(context)) !== "closed")
+				throw new Error(`Missing subagent of ${request.requestId}`);
+		}
+	}
+
+	const record = await childRecord(harness, handle);
+	const requestId = `spawn:${request.requestId}`;
+	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
+	// the request goes into `sent` in the commit that makes it the last request.
+	await (await childOf(handler, record)).send({ type: "input", content: request.prompt, requestId }, context, {
+		admitted: (tx) => addSent(tx, handle, requestId, { notify: request.notify }),
+	});
+
+	return childInfo(handler, handle, record);
+}
+
+/**
+ * Sends the input of `request` to `found`. The verb comes from the conversation's own turn, so a child that only its
+ * children hold is prompted.
+ */
+async function sendTo(
+	request: Extract<RequestLine, { type: "send" | "input" }>,
+	found: Pick<Found, "conversation" | "info"> & {
+		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
+	},
+	harness: Harness,
+	options?: SendOptions,
+): Promise<{ verb: string; child: ChildInfo }> {
+	const busy = await turnRunning(harness, found.conversation.id);
+	await found.send(
+		{
+			type: "input",
+			content: request.message,
+			whenBusy: request.followUp ? "followUp" : "steer",
+			requestId: request.requestId,
+		},
+		options,
+	);
+
+	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
+}
+
+/** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
+async function noteTo(
+	request: Extract<RequestLine, { type: "note" }>,
+	handler: Handler,
+): Promise<{ child: ChildInfo }> {
+	const kind = request.kind ?? "harness.note";
+
+	// pi-durable does not check the kind of a write.
+	if (kind.startsWith("pi.")) throw new Error(`A note kind cannot start with "pi.": ${kind}`);
+	const found = await target(handler, request);
+	const model = [{ role: "user", content: request.text, timestamp: Date.now() }] as const;
+	const entry: durable.EntryDraft = request.data === undefined ? { kind, model } : { kind, model, data: request.data };
+	// The scope keeps a note from taking the request ID of an input to the same conversation.
+	await found.write({ type: "write", requestId: `note:${request.requestId}`, entry });
+
+	return { child: await found.info() };
+}
+
+function sendVerb(busy: boolean, followUp: boolean): string {
+	return !busy ? "Prompted" : followUp ? "Queued follow-up for" : "Steered";
+}
+
+async function waitChild(
+	request: Extract<RequestLine, { type: "wait" }>,
+	handler: Handler,
+): Promise<{ answer: string }> {
+	const record = await childRecord(handler.harness, request.handle);
+	const child = await childOf(handler, record);
+	const timeout = AbortSignal.timeout(request.timeout * 1000);
+	const signal = AbortSignal.any([timeout, handler.signal]);
+	const waiting = withAbortSignal(signal, context);
+	let text: UnreadAnswers;
+
+	const refuseClosed = async () => {
+		if ((await child.state(context)) === "closed") throw new Error(`The child ${child.id} is closed`);
+	};
+
+	try {
+		await refuseClosed();
+		const { main, answer } = await handler.push.done(child, signal);
+		// A close during the wait ends the turn with an abort, which is not the child's answer.
+		await refuseClosed();
+		// Read the record after the answer and after a push in flight: a send is in `sent` before it can be the last
+		// request, and a push marks its answers read only once its reply is written.
+		await handler.push.written(request.handle);
+		const latest = await childRecord(handler.harness, request.handle);
+
+		if (main !== null && main === latest.pushed) return { answer: NO_NEW_ANSWERS };
+		text = await unreadAnswers(child, request.handle, latest, main, answer, record.sent ?? [], waiting);
+		await markRead(handler.harness, request.handle, text.read);
+	} catch (error) {
+		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);
+		throw error;
+	}
+
+	// A failed last turn is an error that still gives the earlier answers.
+	if (text.failed) throw new Error(text.text);
+
+	return { answer: text.text };
+}
+
+/**
+ * The depth limit of a new subagent tree: `agentDepthLimit` in Pi's global settings, read again at each spawn. A child
+ * of a child keeps the limit of its tree.
+ */
+async function depthLimit(settings: SettingsManager): Promise<number> {
+	await settings.reload();
+	const global = settings.getGlobalSettings();
+
+	return Value.Check(DepthSetting, global) ? global.agentDepthLimit : DEPTH_LIMIT;
+}
+
+async function abortChild(request: Extract<RequestLine, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
+	const found = await target(handler, request);
+	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
+	await found.conversation.abort(context);
+
+	return found.info();
+}
+
+async function configureChild(
+	request: Extract<RequestLine, { type: "configure" }>,
+	handler: Handler,
+): Promise<ChildInfo> {
+	// Only the handle: the schema of `configure` does not refuse an extra `conversation` key.
+	const found = await target(handler, { handle: request.handle });
+	const agent = await found.conversation.agent(context);
+	await found.conversation.configure(resolveModel(handler.place.models, agent, request), context);
+
+	return found.info();
+}

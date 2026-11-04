@@ -4,9 +4,9 @@
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { AnyTask, Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
+import type { Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import type { Request, TaskInfo } from "./protocol/requests.ts";
+import type { Request, TaskInfo } from "../protocol/requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -27,19 +27,11 @@ export type TaskHost = {
 	readonly harness: Harness;
 	/** The root conversation, which owns the started tasks. */
 	readonly root: Conversation;
-	/** The tasks that `start` can create, from `startableTasks`. */
+	/** The tasks that `start` can create: the tasks of the entries. */
 	readonly startable: Extension;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
 };
-
-/**
- * The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The
- * registry refuses a task name that two entries give.
- */
-export function startableTasks(tasks: readonly AnyTask[]): Extension {
-	return durable.defineExtension({ name: "harness-entry-tasks", tasks });
-}
 
 /**
  * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the project

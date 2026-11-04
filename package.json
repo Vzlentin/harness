@@ -16,44 +16,44 @@
 			"default": "./dist/children/respond.js"
 		},
 		"./answers": {
-			"types": "./dist/answers.d.ts",
-			"default": "./dist/answers.js"
+			"types": "./dist/client/answers.d.ts",
+			"default": "./dist/client/answers.js"
 		},
 		"./children": {
 			"types": "./dist/children/library.d.ts",
 			"default": "./dist/children/library.js"
 		},
 		"./client": {
-			"types": "./dist/client.d.ts",
-			"default": "./dist/client.js"
+			"types": "./dist/client/client.d.ts",
+			"default": "./dist/client/client.js"
 		},
 		"./durable-entry": {
-			"types": "./dist/durable-entry.d.ts",
-			"default": "./dist/durable-entry.js"
+			"types": "./dist/host/durable-entry.d.ts",
+			"default": "./dist/host/durable-entry.js"
 		},
 		"./entries": {
-			"types": "./dist/entries.d.ts",
-			"default": "./dist/entries.js"
+			"types": "./dist/client/entries.d.ts",
+			"default": "./dist/client/entries.js"
 		},
 		"./herdr": {
-			"types": "./dist/herdr.d.ts",
-			"default": "./dist/herdr.js"
+			"types": "./dist/client/herdr.d.ts",
+			"default": "./dist/client/herdr.js"
 		},
 		"./host": {
-			"types": "./dist/host.d.ts",
-			"default": "./dist/host.js"
+			"types": "./dist/host/run.d.ts",
+			"default": "./dist/host/run.js"
 		},
 		"./mirror": {
-			"types": "./dist/mirror.d.ts",
-			"default": "./dist/mirror.js"
+			"types": "./dist/client/mirror.d.ts",
+			"default": "./dist/client/mirror.js"
 		},
 		"./overlay": {
 			"types": "./dist/children/overlay.d.ts",
 			"default": "./dist/children/overlay.js"
 		},
 		"./projects": {
-			"types": "./dist/projects.d.ts",
-			"default": "./dist/projects.js"
+			"types": "./dist/client/projects.d.ts",
+			"default": "./dist/client/projects.js"
 		},
 		"./protocol": {
 			"types": "./dist/protocol-subpath.d.ts",
@@ -68,8 +68,8 @@
 			"default": "./dist/children/trust.js"
 		},
 		"./view-state": {
-			"types": "./dist/view-state.d.ts",
-			"default": "./dist/view-state.js"
+			"types": "./dist/client/view-state.d.ts",
+			"default": "./dist/client/view-state.js"
 		},
 		"./package.json": "./package.json"
 	},

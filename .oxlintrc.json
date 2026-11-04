@@ -53,6 +53,23 @@
 					}
 				]
 			}
+		},
+		{
+			"files": ["src/host/durable-entry.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["@earendil-works/*"],
+								"allowTypeImports": true,
+								"message": "The durable entry runs on the host's pi-durable and pi-ai: import their types only, and take the modules from the options."
+							}
+						]
+					}
+				]
+			}
 		}
 	]
 }

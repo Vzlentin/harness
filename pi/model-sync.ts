@@ -4,7 +4,7 @@
  * to the host. When the host refuses it, Pi goes back to the agent's model and level.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Mirror, MirrorConfigure } from "../dist/mirror.js";
+import type { Mirror, MirrorConfigure } from "../dist/client/mirror.js";
 import type { ChildInfo } from "../dist/protocol-subpath.js";
 
 /** What the sync uses of Pi's extension API. */

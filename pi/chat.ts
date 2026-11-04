@@ -21,7 +21,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import type * as viewState from "../dist/view-state.js";
+import type * as viewState from "../dist/client/view-state.js";
 
 // Pi's tool definitions differ in their schemas.
 type AnyDefinition = ToolDefinition<any, any>;

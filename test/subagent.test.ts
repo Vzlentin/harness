@@ -14,15 +14,15 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createChildren } from "../src/children/library.ts";
-import { type Client, connect, request } from "../src/client.ts";
-import subagentEntry from "../src/durable-entry.ts";
-import { type Host, runHost } from "../src/host.ts";
-import { statePaths } from "../src/paths.ts";
-import { projectDir } from "../src/projects.ts";
+import { type Client, connect, request } from "../src/client/client.ts";
+import { statePaths } from "../src/client/paths.ts";
+import { projectDir } from "../src/client/projects.ts";
+import subagentEntry from "../src/host/durable-entry.ts";
+import { ChildRecords } from "../src/host/records.ts";
+import { type Host, runHost } from "../src/host/run.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { type ChildInfo, PROTOCOL_VERSION, type WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import { Children } from "../src/targets.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	called,
@@ -842,7 +842,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const pending = client.request({ type: "answers", caller: "backoff-session" });
 			pending.catch(() => undefined);
 			await store.commit(async (tx) => {
-				(await tx.doc(Children)).children[handle] = {
+				(await tx.doc(ChildRecords)).children[handle] = {
 					caller: "backoff-session",
 					createdAt: new Date().toISOString(),
 					conversationId,
@@ -853,7 +853,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 			for (let rename = 0; rename < 5; rename++) {
 				await store.commit(async (tx) => {
-					const record = (await tx.doc(Children)).children[handle];
+					const record = (await tx.doc(ChildRecords)).children[handle];
 
 					if (record !== undefined) record.name = `backoff-${rename}`;
 				}, BACKGROUND_CONTEXT);
@@ -866,7 +866,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			client?.close();
 			writes.mockRestore();
 			await store.commit(async (tx) => {
-				delete (await tx.doc(Children)).children[handle];
+				delete (await tx.doc(ChildRecords)).children[handle];
 			}, BACKGROUND_CONTEXT);
 		}
 	});

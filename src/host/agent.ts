@@ -1,15 +1,19 @@
 /**
- * The catch-up of the project agent: before a user input, one entry with the workflows runs that ended and the commits
- * on the default branch since the agent last saw them.
+ * The project agent, which is the root conversation: its set-up at its first use, and its catch-up, before a user
+ * input, one entry with the workflows runs that ended and the commits on the default branch since the agent last saw
+ * them.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Models } from "@earendil-works/pi-ai/models";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type Conversation, defineDoc, defineDocFamily, type Harness, type TaskId } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { errorMessage } from "./protocol/requests.ts";
+import { resolveModel } from "../children/model.ts";
+import { errorMessage } from "../protocol/requests.ts";
 import { type Found, library } from "./targets.ts";
 import { startedTaskIds } from "./tasks.ts";
 
@@ -140,6 +144,43 @@ export type CatchUpHost = {
 	readonly warn: (cause: unknown) => void;
 };
 
+/**
+ * The root conversation as the agent of `project`. The first time, it gets Pi's default model when it has a login, else
+ * the first model with a login, Pi's default thinking level, and the directory `cwd`. Without a model with a login, it
+ * throws.
+ */
+export async function setUpAgent(
+	root: Conversation,
+	models: Models,
+	settings: SettingsManager,
+	project: string,
+	cwd: string,
+): Promise<Conversation> {
+	if ((await root.agent(context)).model !== undefined) return root;
+	// A default set after the host started applies.
+	await settings.reload();
+	const available = await models.getAvailable();
+	const provider = settings.getDefaultProvider();
+	const modelId = settings.getDefaultModel();
+	const model = available.find((found) => found.provider === provider && found.id === modelId) ?? available[0];
+
+	if (model === undefined) {
+		throw new Error(
+			`No model for the ${project} agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`,
+		);
+	}
+
+	const resolved = resolveModel(models, undefined, {
+		provider: model.provider,
+		model: model.id,
+		fallbackThinking: settings.getDefaultThinkingLevel() ?? "medium",
+	});
+
+	await root.configure({ ...resolved, cwd }, context);
+
+	return root;
+}
+
 /** The last catch-up of each conversation, so that the catch-ups of one conversation run one at a time. */
 const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
 
@@ -149,80 +190,78 @@ const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
  * failure is a warning, and the input goes through.
  */
 export function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string): Promise<void> {
-	const next = (lastCatchUps.get(host.root) ?? Promise.resolve()).then(() =>
-		placeCatchUp(host, write, requestId).catch((cause: unknown) => host.warn(`catch-up: ${errorMessage(cause)}`)),
-	);
+	const done = (lastCatchUps.get(host.root) ?? Promise.resolve())
+		.then(async () => {
+			const { harness, root } = host;
 
-	lastCatchUps.set(host.root, next);
+			// A repeated input must not get an entry after its own first submission.
+			if ((await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context)) !== undefined) return;
+			const seen = await harness.snapshot(Seen, root.id, context);
 
-	return next;
-}
+			// The entry of an earlier catch-up that stopped after its commit. Its request ID makes a repeat add nothing.
+			if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
+			const before = seen ?? NOTHING_SEEN;
+			const git = await headCommits(host, before.mainSha);
+			const started = await startedTaskIds(harness);
+			const lastTaskId = Math.max(before.lastTaskId, ...started.map(Number));
+			const runs: RunFacts[] = [];
+			const lost: LostRun[] = [];
+			const pending: number[] = [];
 
-async function placeCatchUp(host: CatchUpHost, write: WriteEntry, requestId: string) {
-	const { harness, root } = host;
+			for (const id of started) {
+				const known = before.pending.includes(id);
 
-	// A repeated input must not get an entry after its own first submission.
-	if ((await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context)) !== undefined) return;
-	const seen = await harness.snapshot(Seen, root.id, context);
+				if (!known && id <= before.lastTaskId) continue;
+				const found = await runFacts(host, id, known);
 
-	// The entry of an earlier catch-up that stopped after its commit. Its request ID makes a repeat add nothing.
-	if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
-	const before = seen ?? NOTHING_SEEN;
-	const git = await headCommits(host, before.mainSha);
-	const started = await startedTaskIds(harness);
-	const lastTaskId = Math.max(before.lastTaskId, ...started.map(Number));
-	const runs: RunFacts[] = [];
-	const lost: LostRun[] = [];
-	const pending: number[] = [];
+				switch (found?.kind) {
+					case "pending":
+						pending.push(id);
+						break;
+					case "lost":
+						lost.push(found.lost);
+						break;
+					case "run":
+						runs.push(found.facts);
+						break;
+				}
+			}
 
-	for (const id of started) {
-		const known = before.pending.includes(id);
+			const data: CatchUpData = { runs };
 
-		if (!known && id <= before.lastTaskId) continue;
-		const found = await runFacts(host, id, known);
+			if (lost.length > 0) data.lost = lost;
 
-		switch (found?.kind) {
-			case "pending":
-				pending.push(id);
-				break;
-			case "lost":
-				lost.push(found.lost);
-				break;
-			case "run":
-				runs.push(found.facts);
-				break;
-		}
-	}
+			if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
 
-	const data: CatchUpData = { runs };
+			if (git?.reset !== undefined) data.reset = git.reset;
+			const mainSha = git === undefined ? before.mainSha : git.head;
+			const next: SeenState = { mainSha, lastTaskId, pending, catchups: before.catchups };
 
-	if (lost.length > 0) data.lost = lost;
+			const fresh =
+				seen !== undefined &&
+				(runs.length > 0 || data.lost !== undefined || data.commits !== undefined || data.reset !== undefined);
 
-	if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
+			if (fresh) {
+				next.catchups += 1;
+				next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(data), data };
+			}
 
-	if (git?.reset !== undefined) data.reset = git.reset;
-	const mainSha = git === undefined ? before.mainSha : git.head;
-	const next: SeenState = { mainSha, lastTaskId, pending, catchups: before.catchups };
+			if (seen !== undefined && sameSeen(seen, next)) return;
 
-	const fresh =
-		seen !== undefined &&
-		(runs.length > 0 || data.lost !== undefined || data.commits !== undefined || data.reset !== undefined);
+			// The new state and its entry go in one commit; the entry is written after it.
+			await harness.commit(async (tx) => {
+				const doc = await tx.doc(Seen, root.id);
+				delete doc.entry;
+				Object.assign(doc, next);
+			}, context);
 
-	if (fresh) {
-		next.catchups += 1;
-		next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(data), data };
-	}
+			if (next.entry !== undefined) await writePlanned(host, write, next.entry);
+		})
+		.catch((cause: unknown) => host.warn(`catch-up: ${errorMessage(cause)}`));
 
-	if (seen !== undefined && sameSeen(seen, next)) return;
+	lastCatchUps.set(host.root, done);
 
-	// The new state and its entry go in one commit; the entry is written after it.
-	await harness.commit(async (tx) => {
-		const doc = await tx.doc(Seen, root.id);
-		delete doc.entry;
-		Object.assign(doc, next);
-	}, context);
-
-	if (next.entry !== undefined) await writePlanned(host, write, next.entry);
+	return done;
 }
 
 /** Writes the planned entry `entry`, then removes it from the `harness.seen` document. */

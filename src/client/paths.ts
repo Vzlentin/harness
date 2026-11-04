@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
  * modules, or `cli.ts` in a checkout, which Node runs with type stripping.
  */
 export function cliPath(): string {
-	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
+	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js", import.meta.url));
 }
 
 export type StatePaths = { dir: string; socket: string; log: string };

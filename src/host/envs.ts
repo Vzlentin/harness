@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type EnvTarget } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { memoryDir } from "./projects.ts";
+import { memoryDir } from "../client/projects.ts";
 
 /**
  * The envs of the conversations of the host of `project`, whose directory is `projectCwd`. A conversation keeps its env

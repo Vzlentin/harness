@@ -5,8 +5,9 @@ import { type ConversationId, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Owner, Place } from "../src/children/library.ts";
-import { Push } from "../src/push.ts";
-import { type ChildRecord, Children, library, markRead } from "../src/targets.ts";
+import { Push } from "../src/host/push.ts";
+import { type ChildRecord, ChildRecords, markRead } from "../src/host/records.ts";
+import { library } from "../src/host/targets.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";
 
 const faux = { provider: "faux", model: "faux-1" } as const;
@@ -35,15 +36,15 @@ afterAll(async () => {
 	await tearDown();
 });
 
-/** Writes the record of `handle` in the `Children` document. */
+/** Writes the record of `handle` in the `ChildRecords` document. */
 async function putRecord(handle: string, record: ChildRecord): Promise<void> {
 	await harness.commit(async (tx) => {
-		(await tx.doc(Children)).children[handle] = record;
+		(await tx.doc(ChildRecords)).children[handle] = record;
 	}, context);
 }
 
 async function recordOf(handle: string): Promise<ChildRecord | undefined> {
-	return (await harness.snapshot(Children, context))?.children[handle];
+	return (await harness.snapshot(ChildRecords, context))?.children[handle];
 }
 
 describe("read marks", () => {

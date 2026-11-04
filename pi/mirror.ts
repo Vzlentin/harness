@@ -14,7 +14,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import type { MirrorTarget } from "../dist/mirror.js";
+import type { MirrorTarget } from "../dist/client/mirror.js";
 import { Attachment } from "./attachment.ts";
 import type { Harness } from "./index.ts";
 

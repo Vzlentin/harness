@@ -1,5 +1,5 @@
 /** The `@vzlentin/harness/protocol` entry: what the CLI, Pi and the host agree, and the files of a host. */
-export * from "./paths.ts";
+export * from "./client/paths.ts";
 
 export * from "./protocol/labels.ts";
 

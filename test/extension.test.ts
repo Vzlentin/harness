@@ -16,8 +16,8 @@ import type {
 import type { Component } from "@earendil-works/pi-tui";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type extension from "../pi/index.ts";
-import { request } from "../src/client.ts";
-import type { Host } from "../src/host.ts";
+import { request } from "../src/client/client.ts";
+import type { Host } from "../src/host/run.ts";
 import { TOOL_DESCRIPTION } from "../src/tool.ts";
 import { gates, root, setUp, startHost, tearDown } from "./helpers.ts";
 

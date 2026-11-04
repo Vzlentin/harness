@@ -5,7 +5,7 @@ import type * as Ai from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { request } from "./client.ts";
+import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import type { Replies, Request } from "./protocol/requests.ts";
 
