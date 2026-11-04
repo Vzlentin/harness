@@ -1,11 +1,8 @@
-import type { Socket } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, type TProperties, Type } from "typebox";
+import type { Target } from "./target.ts";
 import type { ViewChange } from "./view-change.ts";
 
 /**
@@ -26,12 +23,6 @@ export function versionMismatch(client: number, host: number, pid: number): stri
 		? `This client uses harness protocol ${client} and the host (pid ${pid}) uses ${host}. Reload Pi with /reload, or use the harness CLI of the host's install`
 		: `The harness host (pid ${pid}) uses protocol ${host}, not ${client}. The host is older: stop it with kill ${pid} and run the command again`;
 }
-
-/**
- * The handle of the project agent, the host's root conversation, in `watch`, `input`, `note`, `abort` and `configure`. It
- * is not hex, so no child has it.
- */
-export const AGENT_HANDLE = "agent";
 
 export type ChildState = "busy" | "idle" | "error" | "closed";
 
@@ -80,14 +71,6 @@ export const Json = Type.Cyclic(
 	},
 	"Json",
 );
-
-/**
- * The target of `watch`, `input` and `abort`: a handle, or the ID of a conversation that the children library opened,
- * such as a child of a task.
- */
-export type Target =
-	| { readonly handle: string; readonly conversation?: never }
-	| { readonly conversation: string; readonly handle?: never };
 
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
 export type Request =
@@ -314,88 +297,10 @@ export type Delivery = {
 	readonly failed: boolean;
 };
 
-/** The text of the message that brings `delivery` to its caller. */
-export function deliveryText(delivery: Delivery): string {
-	return `subagent ${runDisplayName(delivery)} ${delivery.failed ? "failed" : "finished"}\n\n${delivery.text}`;
-}
-
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
-
-/** The files of the host of `project`: `$XDG_STATE_HOME/harness/<project>/`, default `~/.local/state/harness/<project>/`. */
-/**
- * The CLI of this install, which the host start and the Herdr tabs run with this Node: `cli.js` next to the built
- * modules, or `cli.ts` in a checkout, which Node runs with type stripping.
- */
-export function cliPath(): string {
-	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
-}
-
-export type StatePaths = { dir: string; socket: string; log: string };
-
-export function statePaths(project: string): StatePaths {
-	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", project);
-
-	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
-}
-
-export function isValidRunName(value: string): boolean {
-	return (
-		value.length > 0 && value.length <= 64 && value.trim() === value && !Array.from(value).some(isControlCharacter)
-	);
-}
-
-/** U+0000 to U+001F and U+007F. */
-function isControlCharacter(character: string): boolean {
-	const code = character.charCodeAt(0);
-
-	return code <= 0x1f || code === 0x7f;
-}
-
-type Labeled = {
-	readonly handle: string;
-	readonly name?: string | undefined;
-	readonly conversation?: string | undefined;
-};
-
-/** The label of a child: its name, or its handle when it has no name. */
-export function childLabel(child: Labeled): string {
-	return child.name ?? child.handle;
-}
-
-export function runDisplayName(metadata: { readonly handle: string; readonly name?: string | undefined }): string {
-	return metadata.name ? `${metadata.name} (${metadata.handle})` : metadata.handle;
-}
-
-/**
- * The title of a child in a client: `<name> (<handle>)`, or only the name for the project agent, which says what it is,
- * and for a conversation, whose name is its key.
- */
-export function childTitle(child: Labeled): string {
-	return child.handle === AGENT_HANDLE || child.conversation !== undefined ? childLabel(child) : runDisplayName(child);
-}
 
 /** The message of a thrown value. */
 export function errorMessage(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);
-}
-
-/** The line of one child in a list. */
-export function childLine(child: ChildInfo): string {
-	return `${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`;
-}
-
-/** Calls `onLine` with each line that arrives on `socket`, without its newline. */
-export function onLines(socket: Socket, onLine: (line: string) => void): void {
-	let buffer = "";
-	socket.setEncoding("utf8");
-	socket.on("data", (chunk: string) => {
-		buffer += chunk;
-
-		for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
-			const line = buffer.slice(0, end);
-			buffer = buffer.slice(end + 1);
-			onLine(line);
-		}
-	});
 }

@@ -5,8 +5,10 @@
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
-import type { Answer, Child, Input } from "./children.ts";
-import { AGENT_HANDLE, type Delivery, deliveryText } from "./protocol.ts";
+import type { Answer, Child, Input } from "./children/library.ts";
+import { deliveryText } from "./protocol/labels.ts";
+import type { Delivery } from "./protocol/requests.ts";
+import { AGENT_HANDLE } from "./protocol/target.ts";
 import {
 	type ChildRecord,
 	Children,

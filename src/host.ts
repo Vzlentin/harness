@@ -26,25 +26,27 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { catchUp } from "./catchup.ts";
-import { type Input, type Place, resolveModel, type Spec } from "./children.ts";
-import { ChildContext, PI_TRUST } from "./context.ts";
+import { ChildContext, PI_TRUST } from "./children/context.ts";
+import type { Input, Place, Spec } from "./children/library.ts";
+import { resolveModel } from "./children/model.ts";
+import { savedTrust } from "./children/trust.ts";
 import { ConversationEnvs } from "./conversation-envs.ts";
 import { loadEntries } from "./load-entries.ts";
+import { onLines } from "./protocol/lines.ts";
 import {
-	AGENT_HANDLE,
 	type ChildInfo,
 	errorMessage,
-	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Reply,
 	type Request,
 	RequestLine,
 	STORE_LOCK_WAIT_MS,
-	type Target,
 	versionMismatch,
 	type WatchLine,
-} from "./protocol.ts";
+} from "./protocol/requests.ts";
+import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
+import { type ViewChange, viewChange } from "./protocol/view-change.ts";
 import { type Connection, Push } from "./push.ts";
 import {
 	addSent,
@@ -67,9 +69,7 @@ import {
 } from "./targets.ts";
 import { abortTask, startableTasks, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
 import { subagentTool } from "./tool.ts";
-import { savedTrust } from "./trust.ts";
 import { type UnreadAnswers, unreadAnswers } from "./unread.ts";
-import { type ViewChange, viewChange } from "./view-change.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;

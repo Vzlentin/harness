@@ -5,20 +5,19 @@ import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { cliPath, statePaths } from "./paths.ts";
 import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
+import { onLines } from "./protocol/lines.ts";
 import {
-	cliPath,
 	errorMessage,
-	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Request,
 	STORE_LOCK_WAIT_MS,
-	statePaths,
-	type Target,
 	versionMismatch,
 	type WatchLine,
-} from "./protocol.ts";
+} from "./protocol/requests.ts";
+import type { Target } from "./protocol/target.ts";
 
 const START_TIMEOUT_MS = 10_000;
 

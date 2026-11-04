@@ -7,8 +7,11 @@ import { connect, request } from "../src/client.ts";
 import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
 import { Mirror } from "../src/mirror.ts";
+import { statePaths } from "../src/paths.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, childTitle, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
+import { childTitle } from "../src/protocol/labels.ts";
+import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { inboxOf } from "../src/view-state.ts";
 import {
 	aborted,

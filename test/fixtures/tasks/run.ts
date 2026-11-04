@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import type { JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { Children, Place } from "../../../src/children.ts";
+import type { Children, Place } from "../../../src/children/library.ts";
 
 type RunInput = {
 	runId: string;

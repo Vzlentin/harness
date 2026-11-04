@@ -8,8 +8,10 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
-import { AGENT_HANDLE, type ChildInfo, type Request, runDisplayName, type Target, type WatchLine } from "./protocol.ts";
-import { applyChange } from "./view-change.ts";
+import { runDisplayName } from "./protocol/labels.ts";
+import type { ChildInfo, Request, WatchLine } from "./protocol/requests.ts";
+import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
+import { applyChange } from "./protocol/view-change.ts";
 import { inboxOf, withdrawnTexts } from "./view-state.ts";
 
 /** The `customType` of the session entry that holds the target of a mirror session. */

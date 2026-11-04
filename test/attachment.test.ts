@@ -17,8 +17,9 @@ import * as herdr from "../src/herdr.ts";
 import * as mirror from "../src/mirror.ts";
 import { MIRROR_ENTRY, type MirrorStatus, type MirrorTarget, PossiblySentError } from "../src/mirror.ts";
 import * as projects from "../src/projects.ts";
-import * as protocol from "../src/protocol.ts";
-import { AGENT_HANDLE, type ChildInfo } from "../src/protocol.ts";
+import type { ChildInfo } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import * as protocol from "../src/protocol-subpath.ts";
 import * as viewState from "../src/view-state.ts";
 import { FakeTerminal, until } from "./helpers.ts";
 

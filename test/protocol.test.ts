@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidRunName } from "../src/protocol.ts";
+import { isValidRunName } from "../src/protocol/labels.ts";
 
 describe("isValidRunName", () => {
 	it("refuses U+0000 to U+001F and U+007F in a name", () => {

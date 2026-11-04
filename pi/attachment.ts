@@ -16,7 +16,7 @@ import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import type { AgentReporter } from "../dist/herdr.js";
 import type { Mirror, MirrorStatus, MirrorTarget } from "../dist/mirror.js";
-import type { ChildInfo } from "../dist/protocol.js";
+import type { ChildInfo } from "../dist/protocol-subpath.js";
 import { ChatView } from "./chat.ts";
 import type { Harness } from "./index.ts";
 import { ModelSync } from "./model-sync.ts";

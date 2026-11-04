@@ -1,7 +1,7 @@
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { applyChange, viewChange } from "../src/view-change.ts";
+import { applyChange, viewChange } from "../src/protocol/view-change.ts";
 
 const before: ConversationView = JSON.parse(
 	JSON.stringify({

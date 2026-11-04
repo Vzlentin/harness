@@ -9,6 +9,7 @@ import { Value } from "typebox/value";
 import { request } from "./client.ts";
 import { piEnv } from "./herdr.ts";
 import { type MirrorTarget, piArgs } from "./mirror.ts";
+import { statePaths } from "./paths.ts";
 import {
 	addProject,
 	COMMAND_NAMES,
@@ -18,7 +19,8 @@ import {
 	readProjects,
 	resolveProject,
 } from "./projects.ts";
-import { AGENT_HANDLE, errorMessage, statePaths, type Target } from "./protocol.ts";
+import { errorMessage } from "./protocol/requests.ts";
+import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {

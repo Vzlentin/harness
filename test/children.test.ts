@@ -5,8 +5,8 @@ import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { REMINDER } from "../src/answer.ts";
-import { createChildren, type Owner, type Place } from "../src/children.ts";
+import { createChildren, type Owner, type Place } from "../src/children/library.ts";
+import { REMINDER } from "../src/children/respond.ts";
 import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);

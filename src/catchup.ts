@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Conversation, defineDoc, defineDocFamily, type Harness, type TaskId } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { errorMessage } from "./protocol.ts";
+import { errorMessage } from "./protocol/requests.ts";
 import { type Found, library } from "./targets.ts";
 import { startedTaskIds } from "./tasks.ts";
 

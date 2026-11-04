@@ -13,19 +13,15 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createChildren } from "../src/children.ts";
+import { createChildren } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
 import { type Host, runHost } from "../src/host.ts";
+import { statePaths } from "../src/paths.ts";
 import { projectDir } from "../src/projects.ts";
-import {
-	AGENT_HANDLE,
-	type ChildInfo,
-	onLines,
-	PROTOCOL_VERSION,
-	statePaths,
-	type WatchLine,
-} from "../src/protocol.ts";
+import { onLines } from "../src/protocol/lines.ts";
+import { type ChildInfo, PROTOCOL_VERSION, type WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { Children } from "../src/targets.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {

@@ -4,7 +4,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { type ConversationId, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Owner, Place } from "../src/children.ts";
+import type { Owner, Place } from "../src/children/library.ts";
 import { Push } from "../src/push.ts";
 import { type ChildRecord, Children, library, markRead } from "../src/targets.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";

@@ -3,7 +3,8 @@ import { createConnection } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client, request } from "../src/client.ts";
 import type { Host } from "../src/host.ts";
-import { statePaths, type WatchLine } from "../src/protocol.ts";
+import { statePaths } from "../src/paths.ts";
+import type { WatchLine } from "../src/protocol/requests.ts";
 import { cli, handleOf, setUp, startHost, tearDown } from "./helpers.ts";
 
 let host: Host | undefined;

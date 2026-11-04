@@ -3,7 +3,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "../src/client.ts";
-import { onLines } from "../src/protocol.ts";
+import { onLines } from "../src/protocol/lines.ts";
 
 let server: Server | undefined;
 let dir: string | undefined;

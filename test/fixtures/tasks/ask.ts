@@ -5,8 +5,8 @@
  */
 import { writeFile } from "node:fs/promises";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { Children, Place, Spec } from "../../../src/children.ts";
-import type { Overlay } from "../../../src/overlay.ts";
+import type { Children, Place, Spec } from "../../../src/children/library.ts";
+import type { Overlay } from "../../../src/children/overlay.ts";
 
 export default function askEntry({
 	durable,

@@ -10,12 +10,14 @@ import { Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type CatchUpHost, catchUp } from "../src/catchup.ts";
-import type { Write } from "../src/children.ts";
+import type { Write } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client.ts";
 import { setEntry } from "../src/entries.ts";
 import { type Host, runHost } from "../src/host.ts";
+import { statePaths } from "../src/paths.ts";
 import { projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
+import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, contexts, models, root, setUp, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");

@@ -2,8 +2,10 @@ import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
+import { cliPath } from "./paths.ts";
 import { resolveProject } from "./projects.ts";
-import { type ChildInfo, childLabel, cliPath } from "./protocol.ts";
+import { childLabel } from "./protocol/labels.ts";
+import type { ChildInfo } from "./protocol/requests.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
@@ -37,7 +39,7 @@ function openCommand(target: MirrorTarget): string[] {
 
 /** The `--env` flags of `herdr` that give `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set. */
 function envFlags(env: NodeJS.ProcessEnv): string[] {
-	// The new pane must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in
+	// The new pane must find the same host and projects as `statePaths()` in paths.ts and `projectsPath()` in
 	// projects.ts.
 	const state = env.XDG_STATE_HOME;
 	const config = env.XDG_CONFIG_HOME;

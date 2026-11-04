@@ -8,7 +8,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { Answer, Child } from "./children.ts";
+import type { Answer, Child } from "./children/library.ts";
 import type { ChildRecord, ChildrenState } from "./targets.ts";
 
 /** The `detail` of a failed turn that is an error object. */

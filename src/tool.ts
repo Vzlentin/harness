@@ -6,7 +6,8 @@ import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { request } from "./client.ts";
-import { childLine, isValidRunName, type Replies, type Request, runDisplayName } from "./protocol.ts";
+import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
+import type { Replies, Request } from "./protocol/requests.ts";
 
 const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 

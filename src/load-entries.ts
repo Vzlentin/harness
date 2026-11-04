@@ -17,7 +17,7 @@ import type { AnyTask, Extension } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { createChildren, Place } from "./children.ts";
+import type { createChildren, Place } from "./children/library.ts";
 import { readEntries } from "./entries.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;

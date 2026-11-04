@@ -11,9 +11,65 @@
 		"harness": "dist/cli.js"
 	},
 	"exports": {
-		"./*": {
-			"types": "./dist/*.d.ts",
-			"default": "./dist/*.js"
+		"./answer": {
+			"types": "./dist/children/respond.d.ts",
+			"default": "./dist/children/respond.js"
+		},
+		"./answers": {
+			"types": "./dist/answers.d.ts",
+			"default": "./dist/answers.js"
+		},
+		"./children": {
+			"types": "./dist/children/library.d.ts",
+			"default": "./dist/children/library.js"
+		},
+		"./client": {
+			"types": "./dist/client.d.ts",
+			"default": "./dist/client.js"
+		},
+		"./durable-entry": {
+			"types": "./dist/durable-entry.d.ts",
+			"default": "./dist/durable-entry.js"
+		},
+		"./entries": {
+			"types": "./dist/entries.d.ts",
+			"default": "./dist/entries.js"
+		},
+		"./herdr": {
+			"types": "./dist/herdr.d.ts",
+			"default": "./dist/herdr.js"
+		},
+		"./host": {
+			"types": "./dist/host.d.ts",
+			"default": "./dist/host.js"
+		},
+		"./mirror": {
+			"types": "./dist/mirror.d.ts",
+			"default": "./dist/mirror.js"
+		},
+		"./overlay": {
+			"types": "./dist/children/overlay.d.ts",
+			"default": "./dist/children/overlay.js"
+		},
+		"./projects": {
+			"types": "./dist/projects.d.ts",
+			"default": "./dist/projects.js"
+		},
+		"./protocol": {
+			"types": "./dist/protocol-subpath.d.ts",
+			"default": "./dist/protocol-subpath.js"
+		},
+		"./tool": {
+			"types": "./dist/tool.d.ts",
+			"default": "./dist/tool.js"
+		},
+		"./trust": {
+			"types": "./dist/children/trust.d.ts",
+			"default": "./dist/children/trust.js"
+		},
+		"./view-state": {
+			"types": "./dist/view-state.d.ts",
+			"default": "./dist/view-state.js"
 		},
 		"./package.json": "./package.json"
 	},

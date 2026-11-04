@@ -45,7 +45,7 @@
 					{
 						"patterns": [
 							{
-								"group": ["../dist/*"],
+								"group": ["../dist/**"],
 								"allowTypeImports": true,
 								"message": "pi/ is published without dist/: import its types only, and take the modules from the Harness object."
 							}

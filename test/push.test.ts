@@ -5,7 +5,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AnswerListener, type AnswersOptions } from "../src/answers.ts";
 import { connect, request } from "../src/client.ts";
 import { type Host, runHost } from "../src/host.ts";
-import { type ChildInfo, type Delivery, deliveryText, statePaths } from "../src/protocol.ts";
+import { statePaths } from "../src/paths.ts";
+import { deliveryText } from "../src/protocol/labels.ts";
+import type { ChildInfo, Delivery } from "../src/protocol/requests.ts";
 import { called, calls, cli, gates, models, root, setUp, spawnedBy, startHost, tearDown, until } from "./helpers.ts";
 
 let host: Host | undefined;

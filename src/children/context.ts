@@ -28,8 +28,8 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { errorMessage } from "../protocol/requests.ts";
 import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
-import { errorMessage } from "./protocol.ts";
 import { savedTrust, type TrustApi } from "./trust.ts";
 
 /** The part of a Pi coding agent tool that a durable tool needs. */

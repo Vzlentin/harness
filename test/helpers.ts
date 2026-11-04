@@ -19,8 +19,8 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { type Host, runHost } from "../src/host.ts";
+import { statePaths } from "../src/paths.ts";
 import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { statePaths } from "../src/protocol.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 

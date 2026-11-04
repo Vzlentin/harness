@@ -5,8 +5,9 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { type Conversation, type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "./children.ts";
-import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
+import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "./children/library.ts";
+import type { ChildInfo, ChildState } from "./protocol/requests.ts";
+import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
 import { isHeld } from "./unread.ts";
 
 const context = BACKGROUND_CONTEXT;

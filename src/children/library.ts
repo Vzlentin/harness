@@ -4,12 +4,9 @@
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { type Context, withCancel } from "@earendil-works/chord/context";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
-import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
+import type { Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {
-	Agent,
 	AgentChange,
 	Conversation,
 	ConversationId,
@@ -17,7 +14,6 @@ import type {
 	EntryId,
 	Extension,
 	JsonObject,
-	ModelRef,
 	RegistrySnapshot,
 	Submission,
 	SubmissionId,
@@ -26,8 +22,12 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
-import { complete, createAnswers } from "./answer.ts";
+import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
+import { complete, createAnswers } from "./respond.ts";
+import { addUsageState } from "./usage.ts";
+
+export { type ResolvedModel, resolveModel } from "./model.ts";
 
 /** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -831,91 +831,10 @@ export function createChildren(durable: typeof Durable): Children {
 	};
 }
 
-/** The model and the thinking level of a child. */
-export type ResolvedModel = { model: ModelRef; thinkingLevel: ModelThinkingLevel };
-
-/**
- * The model and thinking level of `request`; a field left out comes from `fallback`. An explicit `thinking` that the
- * model does not have is refused. Without it, the level is `fallbackThinking`, else the fallback's, clamped to the
- * nearest level that the model has.
- */
-export function resolveModel(
-	models: Models,
-	fallback: Pick<Agent, "model" | "thinkingLevel"> | undefined,
-	request: {
-		readonly provider?: string | undefined;
-		readonly model?: string | undefined;
-		readonly thinking?: string | undefined;
-		readonly fallbackThinking?: string | undefined;
-	},
-): ResolvedModel {
-	const provider = request.provider ?? fallback?.model?.provider;
-	const modelId = request.model ?? fallback?.model?.modelId;
-
-	if (provider === undefined || modelId === undefined) {
-		throw new Error("No model: neither the spec nor the owner's agent names one");
-	}
-
-	const model = models.getModel(provider, modelId);
-
-	if (model === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
-	const levels = getSupportedThinkingLevels(model);
-
-	if (request.thinking !== undefined) {
-		const thinkingLevel = levels.find((level) => level === request.thinking);
-
-		if (thinkingLevel === undefined)
-			throw new Error(`${provider}/${modelId} has no thinking level ${request.thinking}`);
-
-		return { model: { provider, modelId }, thinkingLevel };
-	}
-
-	const inherited = request.fallbackThinking ?? fallback?.thinkingLevel ?? "off";
-	const known = MODEL_THINKING_LEVELS.find((level) => level === inherited);
-
-	// `clampThinkingLevel` gives the model's first level for a name that it does not know.
-	return {
-		model: { provider, modelId },
-		thinkingLevel: known === undefined ? (levels[0] ?? "off") : clampThinkingLevel(model, known),
-	};
-}
-
 /** The conversation ID that `value` spells, as callers write it; nothing for another caller, such as a Pi session. */
 function conversationIdOf(value: string): ConversationId | undefined {
 	if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) return undefined;
 
 	// SAFETY: a conversation ID is a positive safe integer, and the callers look up the conversation of this one.
 	return Number(value) as ConversationId;
-}
-
-/** Adds every counter of `state` to `sum`. A counter that one side leaves out counts as 0. */
-function addUsageState(sum: UsageState, state: Readonly<UsageState>): void {
-	for (const bucket of ["models", "tools"] as const) {
-		const totals = sum[bucket];
-
-		for (const [key, usage] of Object.entries(state[bucket])) {
-			const total = Object.hasOwn(totals, key) ? totals[key] : undefined;
-
-			if (total === undefined) {
-				// Define rather than assign: assigning a tool named `__proto__` would set the prototype.
-				Object.defineProperty(totals, key, { value: structuredClone(usage), enumerable: true, writable: true });
-				continue;
-			}
-
-			total.input += usage.input;
-			total.output += usage.output;
-			total.cacheRead += usage.cacheRead;
-			total.cacheWrite += usage.cacheWrite;
-			total.totalTokens += usage.totalTokens;
-
-			if (usage.cacheWrite1h !== undefined) total.cacheWrite1h = (total.cacheWrite1h ?? 0) + usage.cacheWrite1h;
-
-			if (usage.reasoning !== undefined) total.reasoning = (total.reasoning ?? 0) + usage.reasoning;
-			total.cost.input += usage.cost.input;
-			total.cost.output += usage.cost.output;
-			total.cost.cacheRead += usage.cost.cacheRead;
-			total.cost.cacheWrite += usage.cost.cacheWrite;
-			total.cost.total += usage.cost.total;
-		}
-	}
 }

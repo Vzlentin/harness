@@ -6,7 +6,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { AnyTask, Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import type { Request, TaskInfo } from "./protocol.ts";
+import type { Request, TaskInfo } from "./protocol/requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 

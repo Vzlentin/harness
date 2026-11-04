@@ -9,8 +9,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client.ts";
 import { agentReporter, openChildTab, openConversationPane } from "../src/herdr.ts";
 import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
-import { applyChange } from "../src/view-change.ts";
+import { statePaths } from "../src/paths.ts";
+import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { applyChange } from "../src/protocol/view-change.ts";
 import {
 	CLI,
 	called,

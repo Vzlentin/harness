@@ -24,7 +24,9 @@ import {
 	targetTitle,
 } from "../src/mirror.ts";
 import { addProject } from "../src/projects.ts";
-import { AGENT_HANDLE, type ChildInfo, childTitle, errorMessage } from "../src/protocol.ts";
+import { childTitle } from "../src/protocol/labels.ts";
+import { type ChildInfo, errorMessage } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import * as viewState from "../src/view-state.ts";
 import { inboxOf } from "../src/view-state.ts";
 import {

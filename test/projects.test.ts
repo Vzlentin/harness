@@ -3,8 +3,8 @@ import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect } from "../src/client.ts";
+import { statePaths } from "../src/paths.ts";
 import { addProject, projectsPath, resolveProject } from "../src/projects.ts";
-import { statePaths } from "../src/protocol.ts";
 import { cli, handleOf, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 let dirA: string;
