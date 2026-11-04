@@ -63,11 +63,18 @@ export type Owner =
 	| { readonly kind: "detached"; readonly root: Conversation };
 
 /** What a child runs with. JSON only, so a socket can carry it. A field left out comes from the owner's agent. */
-export type Spec = {
-	/** The root of the tree, for a child of a caller outside this store: a Pi session, a caller name. */
-	readonly root?: string;
-	/** The conversation in this store that spawns the child. */
-	readonly parent?: string;
+export type Spec = (
+	| {
+			/** The root of the tree, for a child of a caller outside this store: a Pi session, a caller name. */
+			readonly root: string;
+			readonly parent?: never;
+	  }
+	| {
+			/** The conversation in this store that spawns the child. */
+			readonly parent: string;
+			readonly root?: never;
+	  }
+) & {
 	readonly provider?: string;
 	readonly model?: string;
 	readonly thinking?: string;
@@ -294,14 +301,14 @@ export function createChildren(durable: typeof Durable): Children {
 
 	const OverlayDoc = overlayDoc(durable);
 
-	/** The conversation of each key; 0 before it exists. */
-	const Keys = durable.defineDocFamily<{ conversation: ConversationId | 0 }, null>({
+	/** The conversation of each key; null before it exists. */
+	const Keys = durable.defineDocFamily<{ conversation: ConversationId | null }, null>({
 		kind: "pi-subagent.key",
 		version: 1,
 		scope: "session",
 		checkpointWhen: () => false,
 		family: true,
-		initial: () => ({ conversation: 0 }),
+		initial: () => ({ conversation: null }),
 	});
 
 	/**
@@ -342,15 +349,9 @@ export function createChildren(durable: typeof Durable): Children {
 		return doc.parent === null ? found : { ...found, parent: doc.parent };
 	};
 
-	async function childDoc(store: Pick<Store, "snapshot">, id: ConversationId, context: Context) {
-		const doc = await store.snapshot(ChildDoc, id, context);
-
-		return doc === undefined || doc.key === "" ? undefined : doc;
-	}
-
 	async function lineage(store: Pick<Store, "snapshot">, id: string, context: Context) {
 		const conversation = conversationIdOf(id);
-		const doc = conversation === undefined ? undefined : await childDoc(store, conversation, context);
+		const doc = conversation === undefined ? undefined : await store.snapshot(ChildDoc, conversation, context);
 
 		return doc === undefined ? undefined : lineageOf(doc);
 	}
@@ -375,7 +376,7 @@ export function createChildren(durable: typeof Durable): Children {
 
 		// The loop also visits the IDs that it appends.
 		for (const member of ids) {
-			const doc = await childDoc(place.store, member, context);
+			const doc = await place.store.snapshot(ChildDoc, member, context);
 
 			for (const child of doc?.children ?? []) ids.push(child);
 		}
@@ -688,8 +689,8 @@ export function createChildren(durable: typeof Durable): Children {
 				? (await place.store.snapshot(Keys, which.key, context))?.conversation
 				: conversationIdOf(which.id);
 
-		if (id === undefined || id === 0) return undefined;
-		const doc = await childDoc(place.store, id, context);
+		if (id === undefined || id === null) return undefined;
+		const doc = await place.store.snapshot(ChildDoc, id, context);
 		const conversation = await place.store.conversation(id, context);
 
 		if (doc === undefined || conversation === undefined) return undefined;
@@ -754,14 +755,12 @@ export function createChildren(durable: typeof Durable): Children {
 			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 
 			if (depth > limit) throw new Error("Nested subagents are disabled");
-			const root = parent?.root ?? spec.root ?? spec.parent;
-
-			if (root === undefined) throw new Error("A child needs a root or a parent");
+			const root = spec.parent === undefined ? spec.root : (parent?.root ?? spec.parent);
 
 			const create = async (tx: Tx, ownerTask: TaskId) => {
 				const known = await tx.doc(Keys, key, null);
 
-				if (known.conversation !== 0) return undefined;
+				if (known.conversation !== null) return undefined;
 
 				if (parent !== undefined && parentId !== undefined && (await tx.doc(ChildDoc, parentId)).closed) {
 					throw new Error(`The child ${parentId} is closed`);
@@ -813,7 +812,7 @@ export function createChildren(durable: typeof Durable): Children {
 
 			if (owner.kind === "detached") {
 				await owner.root.commit(async (tx) => {
-					if ((await tx.doc(Keys, key, null)).conversation !== 0) return undefined;
+					if ((await tx.doc(Keys, key, null)).conversation !== null) return undefined;
 					const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
 
 					return create(tx, anchor);

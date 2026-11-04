@@ -464,16 +464,16 @@ export class Push {
 
 		if (state === "busy" || state === "closed") return undefined;
 		const last = await child.lastRequest(context);
-		const sent = record.sent ?? [];
+		const ids = record.requests.map((request) => request.id);
 
 		if (last === null) return undefined;
-		const main = sent.includes(last) || isPushRequest(last) ? last : sent.at(-1);
+		const main = ids.includes(last) || isPushRequest(last) ? last : ids.at(-1);
 
 		if (main === undefined) return undefined;
 		const answer = await child.settled(context, main);
-		const { text, failed, read } = await unreadAnswers(child, handle, record, main, answer, sent, context);
+		const { text, failed, read } = await unreadAnswers(child, handle, record, main, answer, record.requests, context);
 
-		if (read <= (record.read ?? 0)) return undefined;
+		if (read <= record.read) return undefined;
 		const delivery = record.name === undefined ? { handle, text, failed } : { handle, name: record.name, text, failed };
 
 		return { delivery, handle, read, main };

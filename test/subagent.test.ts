@@ -18,6 +18,7 @@ import { type Client, connect, request } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { library } from "../src/host/targets.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { projectDir } from "../src/protocol/projects.ts";
@@ -846,7 +847,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 					caller: "backoff-session",
 					createdAt: new Date().toISOString(),
 					conversationId,
-					sent: ["backoff-request"],
+					requests: [{ id: "backoff-request", notify: true }],
+					read: 0,
 				};
 			}, BACKGROUND_CONTEXT);
 			await until(() => warnings() === 1);
@@ -875,7 +877,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const parent = handleOf(await cli(["spawn", "--prompt", "Ordered parent"]));
 		await cli(["wait", parent]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		const pushed: string[] = [];
 		let refused = false;
@@ -939,7 +941,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await cli(["wait", parent]);
 
 		const idOf = async (handle: string) =>
-			(await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+			(await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 
 		const id = await idOf(parent);
 		const conversation = store.conversation.bind(store);
@@ -1039,7 +1041,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const place = { store, models, registry: durable.createRegistry().snapshot() };
 		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
 		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
@@ -1066,7 +1068,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Before the crash"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		let armed = true;
 		let failing: { mockRestore(): void } | undefined;
@@ -1118,7 +1120,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 			client.close();
 		}
 
-		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toContain("send-crash");
+		expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toContainEqual({
+			id: "send-crash",
+			notify: true,
+		});
 		expect(called("Sent at the crash")).toBe(1);
 	});
 
@@ -1176,8 +1181,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
 				answer: "Answer to Spawned at the crash",
 			});
-			expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toEqual([
-				"spawn:spawn-crash",
+			expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toEqual([
+				{ id: "spawn:spawn-crash", notify: true },
 			]);
 		} finally {
 			lookups.mockRestore();
@@ -1192,7 +1197,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Send fails"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		let armed = true;
 		let failing: { mockRestore(): void } | undefined;
@@ -1221,7 +1226,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			failing?.mockRestore();
 		}
 
-		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toHaveLength(1);
+		expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toHaveLength(1);
 		expect((await cli(["status", handle])).stdout).toBe(`${handle}: idle (faux/faux-1, medium)\n`);
 		expect(called("Lost")).toBe(0);
 	});
@@ -1297,10 +1302,98 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 	});
 
+	it("keeps the children and the requests of a store from version 2", async () => {
+		process.env.XDG_STATE_HOME = join(root, "state-v2");
+		const stateDir = statePaths("main").dir;
+		const caller = "v2-session";
+
+		try {
+			await mkdir(stateDir, { recursive: true });
+			const registry = durable.createRegistry();
+			registry.install(library.extension);
+			registry.install(library.answerExtension);
+
+			const store = await Harness.open(
+				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+				{ models, registry },
+				BACKGROUND_CONTEXT,
+			);
+
+			const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+			const place = { store, models, registry: registry.snapshot() };
+			const spec = { root: caller, provider: "faux", model: "faux-1", cwd: root };
+			const child = await library.open(place, owner, "v2:child", spec, BACKGROUND_CONTEXT);
+
+			const ChildrenV2 = durable.defineDoc<{
+				children: Record<string, durable.JsonObject>;
+				requests: Record<string, string>;
+			}>({
+				kind: "subagent.children",
+				version: 2,
+				scope: "session",
+				checkpointWhen: () => false,
+				initial: () => ({ children: {}, requests: {} }),
+			});
+
+			await store.commit(async (tx) => {
+				const state = await tx.doc(ChildrenV2);
+
+				state.children.v2kid = {
+					caller,
+					createdAt: new Date().toISOString(),
+					conversationId: child.id,
+					sent: ["spawn:x", "q"],
+					quiet: ["q"],
+					read: 1,
+					pushed: "spawn:x",
+				};
+				state.requests.x = "v2kid";
+			}, BACKGROUND_CONTEXT);
+			await store.close(BACKGROUND_CONTEXT);
+
+			const migrated = await runHost({ stateDir, project: "main", cwd: projectDir("main"), models });
+
+			try {
+				const children = await request({ type: "list", caller }, { start: false });
+				expect(children?.map((info) => info.handle)).toEqual(["v2kid"]);
+			} finally {
+				await migrated?.close();
+			}
+
+			const reopened = await Harness.open(
+				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+				{ models, registry: durable.createRegistry() },
+				BACKGROUND_CONTEXT,
+			);
+
+			try {
+				expect(await reopened.snapshot(ChildRecords, BACKGROUND_CONTEXT)).toMatchObject({
+					children: {
+						v2kid: {
+							caller,
+							conversationId: child.id,
+							requests: [
+								{ id: "spawn:x", notify: true },
+								{ id: "q", notify: false },
+							],
+							read: 1,
+							pushed: "spawn:x",
+						},
+					},
+					requests: { x: "v2kid" },
+				});
+			} finally {
+				await reopened.close(BACKGROUND_CONTEXT);
+			}
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 3);
+		const stateDir = await childrenStore("new-state", 4);
 		const refusal = runHost({ stateDir, project: "a", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 4 than 3");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
@@ -1511,7 +1604,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 
 		try {
-			const state = await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT);
+			const state = await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
 			const id = String(state?.children[handle ?? ""]?.conversationId);
 			expect(await createChildren(durable).lineage(store, id, BACKGROUND_CONTEXT)).toMatchObject({
 				root: caller,
@@ -1732,17 +1825,6 @@ async function restartWithStore(): Promise<Harness> {
 
 	return store;
 }
-
-/** The `subagent.children` document of the host, to read a child's conversation ID and requests. */
-const ChildrenDoc = durable.defineDoc<{
-	children: Record<string, { conversationId: ConversationId; sent?: string[] }>;
-}>({
-	kind: "subagent.children",
-	version: 2,
-	scope: "session",
-	checkpointWhen: () => false,
-	initial: () => ({ children: {} }),
-});
 
 /** The text of each user and assistant message of `view`. */
 function textsOf(view: Awaited<ReturnType<Client["watch"]>>["view"] | undefined): string[] {

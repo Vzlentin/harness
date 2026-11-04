@@ -34,7 +34,7 @@ import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { type Connection, Push } from "./push.ts";
-import { ChildRecords } from "./records.ts";
+import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { library } from "./targets.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
@@ -147,18 +147,16 @@ export async function runHost(options: {
 			context,
 		);
 
-		// A store from before the children library would mix children that it does not know with those it does.
-		// pi-durable's checkRecordVersion (documents.ts) refuses a stored version below the definition's with a plain Error,
-		// "Document <id> (<kind>) requires migration from version <n>"; any other error is not an old store.
+		// A store from before the children library would mix children that it does not know with those it does. The
+		// migration of `ChildRecords` refuses it with an `OldChildRecordsError`; any other error is not an old store.
 		try {
 			await harness.snapshot(ChildRecords, context);
 		} catch (error) {
 			await harness.close(context);
-			const message = errorMessage(error);
 
-			if (!message.includes("(subagent.children) requires migration from version")) throw error;
+			if (!(error instanceof OldChildRecordsError)) throw error;
 			throw new Error(
-				`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent (${message}). Stop the host, remove the file and run the command again.`,
+				`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent (${error.message}). Stop the host, remove the file and run the command again.`,
 			);
 		}
 	} catch (error) {

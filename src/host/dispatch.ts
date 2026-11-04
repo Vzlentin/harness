@@ -22,7 +22,7 @@ import { catchUp } from "./agent.ts";
 import type { Connection, Push } from "./push.ts";
 import {
 	addRecord,
-	addSent,
+	addRequest,
 	type ChildRecord,
 	ChildRecords,
 	childRecord,
@@ -137,9 +137,9 @@ async function send(request: Extract<RequestLine, { type: "send" }>, handler: Ha
 
 	return handler.push.whileActive(handle, async () =>
 		sendTo(request, await childTarget(handler, handle, record), handler.harness, {
-			// The request goes into `sent` in the commit that makes it the last request, so a wait that sees it as the
-			// last request finds it in `sent`.
-			admitted: (tx) => addSent(tx, handle, requestId, { notify }),
+			// The request goes into the record's `requests` in the commit that makes it the last request, so a wait
+			// that sees it as the last request finds it there.
+			admitted: (tx) => addRequest(tx, handle, requestId, { notify }),
 		}),
 	);
 }
@@ -268,9 +268,9 @@ async function spawnChild(request: Extract<RequestLine, { type: "spawn" }>, hand
 	const record = await childRecord(harness, handle);
 	const requestId = `spawn:${request.requestId}`;
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
-	// the request goes into `sent` in the commit that makes it the last request.
+	// the request goes into the record's `requests` in the commit that makes it the last request.
 	await (await childOf(handler, record)).send({ type: "input", content: request.prompt, requestId }, context, {
-		admitted: (tx) => addSent(tx, handle, requestId, { notify: request.notify }),
+		admitted: (tx) => addRequest(tx, handle, requestId, { notify: request.notify }),
 	});
 
 	return childInfo(handler, handle, record);
@@ -344,13 +344,13 @@ async function waitChild(
 		const { main, answer } = await handler.push.done(child, signal);
 		// A close during the wait ends the turn with an abort, which is not the child's answer.
 		await refuseClosed();
-		// Read the record after the answer and after a push in flight: a send is in `sent` before it can be the last
+		// Read the record after the answer and after a push in flight: a send is in `requests` before it can be the last
 		// request, and a push marks its answers read only once its reply is written.
 		await handler.push.written(request.handle);
 		const latest = await childRecord(handler.harness, request.handle);
 
 		if (main !== null && main === latest.pushed) return { answer: NO_NEW_ANSWERS };
-		text = await unreadAnswers(child, request.handle, latest, main, answer, record.sent ?? [], waiting);
+		text = await unreadAnswers(child, request.handle, latest, main, answer, record.requests, waiting);
 		await markRead(handler.harness, request.handle, text.read);
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);

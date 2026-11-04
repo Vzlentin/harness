@@ -156,14 +156,13 @@ async function agentFields(
 	conversation: Conversation,
 ): Promise<Pick<ChildInfo, "provider" | "model" | "thinking" | "cwd">> {
 	const agent = await conversation.agent(context);
+	const { model, cwd } = agent;
 
-	return {
-		provider: agent.model?.provider ?? "",
-		model: agent.model?.modelId ?? "",
-		thinking: agent.thinkingLevel,
-		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
-		cwd: agent.cwd ?? "",
-	};
+	if (model === undefined) throw new Error(`The conversation ${conversation.id} has no model`);
+
+	if (cwd === undefined) throw new Error(`The conversation ${conversation.id} has no working directory`);
+
+	return { provider: model.provider, model: model.modelId, thinking: agent.thinkingLevel, cwd };
 }
 
 /** Whether the conversation `id` runs a turn of its own, whatever its children do. */

@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 
@@ -18,29 +18,67 @@ export type ChildRecord = {
 	caller: string;
 	createdAt: string;
 	conversationId: ConversationId;
-	/** The request IDs of the spawn and of each `send` of the caller, in order. */
-	sent?: string[];
-	/** How many requests of `sent` a `wait` or a push gave the answer of. */
-	read?: number;
+	/** The spawn and each `send` of the caller, in order. */
+	requests: ChildRequest[];
+	/** How many of `requests` a `wait` or a push gave the answer of. */
+	read: number;
 	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
 	pushed?: string;
-	/** The request IDs of `sent` with `notify: false`, whose answers are not pushed and do not hold the caller. */
-	quiet?: string[];
 };
+
+/** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
+export type ChildRequest = { id: string; notify: boolean };
 
 export type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
 
+/** The error of a store from before the children library, whose children the library does not know. */
+export class OldChildRecordsError extends Error {}
+
+/** A record of version 2: the request IDs in `sent`, and those without `notify` in `quiet`. */
+const RecordV2 = Type.Object({
+	name: Type.Optional(Type.String()),
+	caller: Type.String(),
+	createdAt: Type.String(),
+	conversationId: Type.Unsafe<ConversationId>(Type.Integer()),
+	sent: Type.Optional(Type.Array(Type.String())),
+	read: Type.Optional(Type.Number()),
+	pushed: Type.Optional(Type.String()),
+	quiet: Type.Optional(Type.Array(Type.String())),
+});
+
+const ChildrenV2 = Type.Object({
+	children: Type.Record(Type.String(), RecordV2),
+	requests: Type.Record(Type.String(), Type.String()),
+});
+
 /**
- * The children by handle, and the handle of each spawn request ID. Version 2 leaves each child's last request to the
- * children library; a store with version 1 has children that the library does not know.
+ * The children by handle, and the handle of each spawn request ID. Version 3 keeps the requests of a child in one list;
+ * version 2 kept their IDs in `sent` and those without `notify` in `quiet`. Version 2 leaves each child's last request
+ * to the children library; a store with version 1 has children that the library does not know.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
-	version: 2,
+	version: 3,
 	scope: "session",
 	checkpointWhen: () => false,
 	initial: () => ({ children: {}, requests: {} }),
+	migrate: (value, fromVersion) => {
+		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
+
+		return migrateV2(Value.Parse(ChildrenV2, value));
+	},
 });
+
+function migrateV2(state: Static<typeof ChildrenV2>): ChildrenState {
+	const children = Object.fromEntries(
+		Object.entries(state.children).map(([handle, { sent = [], quiet = [], read = 0, ...rest }]) => [
+			handle,
+			{ ...rest, requests: sent.map((id) => ({ id, notify: !quiet.includes(id) })), read },
+		]),
+	);
+
+	return { children, requests: state.requests };
+}
 
 export async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
 	const state = await harness.snapshot(ChildRecords, context);
@@ -80,6 +118,8 @@ export async function addRecord(
 		caller: child.caller,
 		createdAt: new Date().toISOString(),
 		conversationId: child.conversationId,
+		requests: [],
+		read: 0,
 	};
 
 	current.children[fresh] = child.name === undefined ? record : { name: child.name, ...record };
@@ -123,37 +163,32 @@ export function recordsByAge(state: Readonly<ChildrenState> | null | undefined):
 /**
  * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, in `tx`, the commit that makes it the
  * child's last request. Without `notify`, its answer is not pushed. A repeated request is not added. It is the only
- * writer of `sent` and `quiet`.
+ * writer of `requests` of a record.
  */
-export async function addSent(
+export async function addRequest(
 	tx: Tx,
 	handle: string,
 	requestId: string,
 	options: { readonly notify: boolean },
 ): Promise<void> {
 	const record = (await tx.doc(ChildRecords)).children[handle];
-	const sent = record?.sent ?? [];
 
-	if (record === undefined || sent.includes(requestId)) return;
-	record.sent = [...sent, requestId];
-
-	if (!options.notify) record.quiet = [...(record.quiet ?? []), requestId];
+	if (record === undefined || record.requests.some((request) => request.id === requestId)) return;
+	record.requests.push({ id: requestId, notify: options.notify });
 }
 
 /**
- * Marks the requests of `handle` up to `read` as read; `read` never passes the length of `sent`. After a push, `pushed`
- * is the request whose answer the push gave last, so that a `wait` for it gives no new answer. It is kept only for a
- * request of `sent` or the input of a push.
+ * Marks the requests of `handle` up to `read` as read; `read` never moves back. After a push, `pushed` is the request
+ * whose answer the push gave last, so that a `wait` for it gives no new answer.
  */
 export async function markRead(harness: Harness, handle: string, read: number, pushed?: string): Promise<void> {
 	await harness.commit(async (tx) => {
 		const record = (await tx.doc(ChildRecords)).children[handle];
 
 		if (record === undefined) return;
-		const sent = record.sent ?? [];
-		record.read = Math.min(Math.max(record.read ?? 0, read), sent.length);
+		record.read = Math.max(record.read, read);
 
-		if (pushed !== undefined && (sent.includes(pushed) || isPushRequest(pushed))) record.pushed = pushed;
+		if (pushed !== undefined) record.pushed = pushed;
 	}, context);
 }
 
@@ -179,9 +214,7 @@ const ErrorDetail = Type.Object({ message: Type.String() });
 
 /** Whether `record` has a request with `notify` whose answer no `wait` and no push gave. */
 export function unreadNotify(record: Readonly<ChildRecord>): boolean {
-	const quiet = record.quiet ?? [];
-
-	return (record.sent ?? []).slice(record.read ?? 0).some((requestId) => !quiet.includes(requestId));
+	return record.requests.slice(record.read).some((request) => request.notify);
 }
 
 /**
@@ -202,7 +235,7 @@ export type UnreadAnswers = { readonly text: string; readonly failed: boolean; r
 
 /**
  * The unread answers of `record` that a wait for `main` gives, oldest first. `answer` is the answer to `main`, and
- * `atStart` the requests of `sent` when the wait started.
+ * `atStart` the requests of the record when the wait started.
  */
 export async function unreadAnswers(
 	child: Child,
@@ -210,10 +243,10 @@ export async function unreadAnswers(
 	record: Readonly<ChildRecord>,
 	main: string | null,
 	answer: Answer,
-	atStart: readonly string[],
+	atStart: readonly ChildRequest[],
 	waiting: Context,
 ): Promise<UnreadAnswers> {
-	const unread = unreadBefore(record.sent ?? [], record.read ?? 0, main, atStart);
+	const unread = unreadBefore(record.requests, record.read, main, atStart);
 	const earlier: Answer[] = [];
 
 	for (const requestId of unread.ids) {
@@ -242,18 +275,23 @@ export async function unreadAnswers(
 type Unread = { readonly ids: readonly string[]; readonly read: number };
 
 /**
- * The requests of `sent` from `read` on that a wait for `main` gives before the answer to `main`, and the new `read`.
+ * The requests of `requests` from `read` on that a wait for `main` gives before the answer to `main`, and the new `read`.
  * When `main` is a request of the caller, they are the ones before it, and `main` counts as read; a send after it
  * stays unread. Otherwise, such as for the input of a mirror session, they are the caller's requests known when the wait started.
  */
-function unreadBefore(sent: readonly string[], read: number, main: string | null, atStart: readonly string[]): Unread {
-	const index = main === null ? -1 : sent.indexOf(main);
+function unreadBefore(
+	requests: readonly ChildRequest[],
+	read: number,
+	main: string | null,
+	atStart: readonly ChildRequest[],
+): Unread {
+	const index = main === null ? -1 : requests.findIndex((request) => request.id === main);
 
-	if (index >= read) return { ids: sent.slice(read, index), read: index + 1 };
+	if (index >= read) return { ids: requests.slice(read, index).map((request) => request.id), read: index + 1 };
 
 	if (index >= 0) return { ids: [], read };
 
-	return { ids: atStart.slice(read), read: Math.max(read, atStart.length) };
+	return { ids: atStart.slice(read).map((request) => request.id), read: Math.max(read, atStart.length) };
 }
 
 /** The text of `answer`, or the failure of a turn with no answer. A cut answer still gives its text. */
