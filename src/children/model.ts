@@ -1,12 +1,7 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
-import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import type { Agent, ModelRef } from "@earendil-works/pi-durable";
-
-/** Whether `value` is one of pi-ai's thinking levels. */
-export function isThinkingLevel(value: string): value is ModelThinkingLevel {
-	return MODEL_THINKING_LEVELS.some((level) => level === value);
-}
+import { isThinkingLevel } from "../protocol/requests.ts";
 
 /** The model and the thinking level of a child. */
 export type ResolvedModel = { model: ModelRef; thinkingLevel: ModelThinkingLevel };

@@ -11,10 +11,6 @@
 		"harness": "dist/cli.js"
 	},
 	"exports": {
-		"./answer": {
-			"types": "./dist/children/respond.d.ts",
-			"default": "./dist/children/respond.js"
-		},
 		"./answers": {
 			"types": "./dist/client/answers.d.ts",
 			"default": "./dist/client/answers.js"
@@ -58,6 +54,10 @@
 		"./protocol": {
 			"types": "./dist/protocol/index.d.ts",
 			"default": "./dist/protocol/index.js"
+		},
+		"./respond": {
+			"types": "./dist/children/respond.d.ts",
+			"default": "./dist/children/respond.js"
 		},
 		"./tool": {
 			"types": "./dist/tool.d.ts",

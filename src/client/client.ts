@@ -10,6 +10,7 @@ import { cliPath, statePaths } from "../protocol/paths.ts";
 import { MAIN_PROJECT, projectOf } from "../protocol/projects.ts";
 import {
 	errorMessage,
+	HOST_CLOSING,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Request,
@@ -18,6 +19,16 @@ import {
 	type WatchLine,
 } from "../protocol/requests.ts";
 import { type Target, targetRef } from "../protocol/target.ts";
+
+/** The error of each request of a client whose connection closed. */
+export const HOST_CLOSED = "The harness host closed the connection";
+
+/**
+ * Whether `error` failed a request because its host stopped: the host was closing, or the connection closed.
+ */
+export function hostStopped(error: unknown): error is Error {
+	return error instanceof Error && (error.message === HOST_CLOSING || error.message === HOST_CLOSED);
+}
 
 const START_TIMEOUT_MS = 10_000;
 
@@ -127,7 +138,7 @@ export class Client {
 	}
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
-		if (this.#ended) return Promise.reject(new Error("The harness host closed the connection"));
+		if (this.#ended) return Promise.reject(new Error(HOST_CLOSED));
 
 		const reply = Promise.withResolvers<unknown>();
 		this.#pending.push(reply);
@@ -161,7 +172,7 @@ export class Client {
 		this.#socket.destroy();
 	}
 
-	#end(cause: unknown = new Error("The harness host closed the connection")): void {
+	#end(cause: unknown = new Error(HOST_CLOSED)): void {
 		if (!this.#ended) this.#lines?.push(null);
 		this.#ended = true;
 

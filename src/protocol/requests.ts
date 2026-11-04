@@ -11,6 +11,31 @@ import type { ViewChange } from "./view-change.ts";
  */
 export const PROTOCOL_VERSION = 12;
 
+/** The error of each open request of a host that stops. */
+export const HOST_CLOSING = "The host is closing";
+
+/**
+ * pi-ai's thinking levels, in its order. pi-ai exports them only from a module that the protocol must not load at run
+ * time, so this is a copy, and a test checks it against pi-ai's `MODEL_THINKING_LEVELS`.
+ */
+export const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ModelThinkingLevel[];
+
+/** One of pi-ai's thinking levels. */
+export const ThinkingLevel = Type.Enum(THINKING_LEVELS);
+
+/** Whether `value` is one of pi-ai's thinking levels. */
+export function isThinkingLevel(value: string): value is ModelThinkingLevel {
+	return THINKING_LEVELS.some((level) => level === value);
+}
+
 /** How long the host waits for the lock of `durable.sqlite`, which a client such as the workflows CLI can hold. */
 export const STORE_LOCK_WAIT_MS = 60_000;
 
@@ -101,8 +126,8 @@ export const RequestLine = Type.Union([
 		name: Type.Optional(Type.String()),
 		provider: Type.String(),
 		model: Type.String(),
-		/** The level the caller asks for: one of pi-ai's levels, which the host checks because this module does not load pi-ai. The host refuses a level that the model does not have. */
-		thinking: Type.Optional(Type.String()),
+		/** The level the caller asks for. The host refuses a level that the model does not have. */
+		thinking: Type.Optional(ThinkingLevel),
 		/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
 		callerThinking: Type.String(),
 		cwd: Type.String({ minLength: 1 }),
@@ -148,8 +173,8 @@ export const RequestLine = Type.Union([
 		conversation: Type.Optional(Type.Never()),
 		provider: Type.Optional(Type.String()),
 		model: Type.Optional(Type.String()),
-		/** The level the caller asks for: one of pi-ai's levels, which the host checks because this module does not load pi-ai. The host refuses a level that the model does not have. */
-		thinking: Type.Optional(Type.String()),
+		/** The level the caller asks for. The host refuses a level that the model does not have. */
+		thinking: Type.Optional(ThinkingLevel),
 	}),
 	/** A mirror session's message to the child. It has no caller. A conversation takes it only while it works, as a steer. */
 	...withTarget({

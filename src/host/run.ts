@@ -26,10 +26,16 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import { ChildContext, PI_TRUST } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
-import { isThinkingLevel } from "../children/model.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
-import { errorMessage, type Reply, type Request, RequestLine, STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
+import {
+	errorMessage,
+	HOST_CLOSING,
+	type Reply,
+	type Request,
+	RequestLine,
+	STORE_LOCK_WAIT_MS,
+} from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
 import { subagentTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
@@ -223,7 +229,7 @@ export async function runHost(options: {
 
 				try {
 					// A line that comes while the host closes runs no handler.
-					if (closing !== undefined) throw new Error("The host is closing");
+					if (closing !== undefined) throw new Error(HOST_CLOSING);
 					const request = parseRequest(line);
 
 					if (!PASSIVE_REQUESTS.has(request.type)) lastActivity = Date.now();
@@ -287,7 +293,7 @@ export async function runHost(options: {
 			clearInterval(timer);
 			push.close();
 			server.close();
-			const reason = new Error("The host is closing");
+			const reason = new Error(HOST_CLOSING);
 
 			for (const abort of aborts) abort.abort(reason);
 
@@ -342,17 +348,7 @@ export async function runHost(options: {
 function parseRequest(line: string): Request {
 	const request: unknown = JSON.parse(line);
 
-	if (Value.Check(RequestLine, request)) {
-		if (
-			(request.type === "spawn" || request.type === "configure") &&
-			request.thinking !== undefined &&
-			!isThinkingLevel(request.thinking)
-		) {
-			throw new Error(`Invalid ${request.type} request: thinking is not valid`);
-		}
-
-		return request;
-	}
+	if (Value.Check(RequestLine, request)) return request;
 
 	if (!Value.Check(Typed, request)) throw new Error("Invalid request");
 

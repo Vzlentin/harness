@@ -11,7 +11,7 @@ import { runDisplayName } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
 import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
-import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
+import { type Client, connect, HOST_CLOSED, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
 import { inboxOf, withdrawnTexts } from "./view-state.ts";
 
 /** The `customType` of the session entry that holds the target of a mirror session. */
@@ -109,8 +109,6 @@ export type MirrorOptions = {
 	/** Whether a connection starts the host when none runs. Default true. */
 	readonly start?: boolean;
 };
-
-const HOST_CLOSED = "The harness host closed the connection";
 
 /**
  * The error of a message that went to the host on a connection that closed before the host answered, when the mirror

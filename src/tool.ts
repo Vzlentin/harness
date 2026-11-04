@@ -7,7 +7,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
-import { CHILD_STATES, type Replies, type Request } from "./protocol/requests.ts";
+import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
@@ -22,12 +22,10 @@ Calls in one message run one after another, in message order, so a \`wait\` afte
 Children persist after a turn. Stop each child when you no longer need it.`;
 
 /**
- * The parameters and the output schema of the tool, built with the `Type` and the thinking levels of the caller's
- * pi-ai.
+ * The parameters and the output schema of the tool, built with the `Type` of the caller's pi-ai.
  */
-export function toolSchemas(ai: Pick<typeof Ai, "Type" | "getSupportedThinkingLevels">) {
+export function toolSchemas(ai: Pick<typeof Ai, "Type">) {
 	const { Type } = ai;
-	const levels = thinkingLevels(ai);
 	const text = (description: string) => Type.Optional(Type.String({ description }));
 	const texts = (description: string) => Type.Optional(Type.Array(Type.String(), { description }));
 
@@ -48,7 +46,9 @@ export function toolSchemas(ai: Pick<typeof Ai, "Type" | "getSupportedThinkingLe
 		provider: text("spawn: the provider; default yours"),
 		model: text("spawn: the model; default yours"),
 		thinking: Type.Optional(
-			Type.Enum(levels, { description: `spawn: ${levels.slice(0, -1).join(", ")} or ${levels.at(-1)}; default yours` }),
+			Type.Enum(THINKING_LEVELS, {
+				description: `spawn: ${THINKING_LEVELS.slice(0, -1).join(", ")} or ${THINKING_LEVELS.at(-1)}; default yours`,
+			}),
 		),
 		cwd: text("spawn: the child's working directory; default yours"),
 		tools: texts(
@@ -90,20 +90,6 @@ export function toolSchemas(ai: Pick<typeof Ai, "Type" | "getSupportedThinkingLe
 	]);
 
 	return { parameters, output };
-}
-
-/**
- * Every thinking level of `ai`, in its order: the levels of a reasoning model that maps each level. No pi-ai entry
- * exports the list itself.
- */
-function thinkingLevels(ai: Pick<typeof Ai, "getSupportedThinkingLevels">): Ai.ModelThinkingLevel[] {
-	const everyLevel: Pick<Ai.Model<Ai.Api>, "reasoning" | "thinkingLevelMap"> = {
-		reasoning: true,
-		thinkingLevelMap: new Proxy({}, { get: () => "" }),
-	};
-
-	// SAFETY: getSupportedThinkingLevels reads only `reasoning` and `thinkingLevelMap` of the model.
-	return ai.getSupportedThinkingLevels(everyLevel as Ai.Model<Ai.Api>);
 }
 
 type Schemas = ReturnType<typeof toolSchemas>;

@@ -7,7 +7,6 @@ import { delimiter, join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { isThinkingLevel } from "./children/model.ts";
 import { request } from "./client/client.ts";
 import { piEnv } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
@@ -21,7 +20,7 @@ import {
 	projectOf,
 	readProjects,
 } from "./protocol/projects.ts";
-import { errorMessage } from "./protocol/requests.ts";
+import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { runTool, type ToolArgs } from "./tool.ts";
 

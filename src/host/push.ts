@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
-import type { Delivery } from "../protocol/requests.ts";
+import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -167,7 +167,7 @@ export class Push {
 
 			signal.throwIfAborted();
 
-			if (this.#closed) throw new Error("The host is closing");
+			if (this.#closed) throw new Error(HOST_CLOSING);
 		}
 	}
 

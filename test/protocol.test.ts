@@ -1,5 +1,13 @@
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { describe, expect, it } from "vitest";
 import { isValidRunName } from "../src/protocol/labels.ts";
+import { THINKING_LEVELS } from "../src/protocol/requests.ts";
+
+describe("THINKING_LEVELS", () => {
+	it("has pi-ai's thinking levels, in pi-ai's order", () => {
+		expect(THINKING_LEVELS).toEqual(MODEL_THINKING_LEVELS);
+	});
+});
 
 describe("isValidRunName", () => {
 	it("refuses U+0000 to U+001F and U+007F in a name", () => {

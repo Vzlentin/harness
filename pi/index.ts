@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { getSupportedThinkingLevels, Type } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -89,7 +89,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		);
 	};
 
-	const { parameters, output } = tool.toolSchemas({ Type, getSupportedThinkingLevels });
+	const { parameters, output } = tool.toolSchemas({ Type });
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
