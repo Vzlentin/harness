@@ -18,7 +18,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { createChildren, Place } from "../children/library.ts";
-import { readEntries } from "../client/entries.ts";
+import { readEntries } from "../protocol/entries.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 

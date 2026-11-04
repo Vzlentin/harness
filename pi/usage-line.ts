@@ -3,7 +3,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type * as viewState from "../dist/client/view-state.js";
-import type { ChildInfo, childTitle } from "../dist/protocol-subpath.js";
+import type { ChildInfo, childTitle } from "../dist/protocol/index.js";
 
 /** The functions of harness that the usage line uses. */
 type UsageFunctions = { readonly childTitle: typeof childTitle } & Pick<

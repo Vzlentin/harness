@@ -32,8 +32,8 @@
 			"default": "./dist/host/durable-entry.js"
 		},
 		"./entries": {
-			"types": "./dist/client/entries.d.ts",
-			"default": "./dist/client/entries.js"
+			"types": "./dist/protocol/entries.d.ts",
+			"default": "./dist/protocol/entries.js"
 		},
 		"./herdr": {
 			"types": "./dist/client/herdr.d.ts",
@@ -52,20 +52,20 @@
 			"default": "./dist/children/overlay.js"
 		},
 		"./projects": {
-			"types": "./dist/client/projects.d.ts",
-			"default": "./dist/client/projects.js"
+			"types": "./dist/protocol/projects.d.ts",
+			"default": "./dist/protocol/projects.js"
 		},
 		"./protocol": {
-			"types": "./dist/protocol-subpath.d.ts",
-			"default": "./dist/protocol-subpath.js"
+			"types": "./dist/protocol/index.d.ts",
+			"default": "./dist/protocol/index.js"
 		},
 		"./tool": {
 			"types": "./dist/tool.d.ts",
 			"default": "./dist/tool.js"
 		},
 		"./trust": {
-			"types": "./dist/children/trust.d.ts",
-			"default": "./dist/children/trust.js"
+			"types": "./dist/protocol/trust.d.ts",
+			"default": "./dist/protocol/trust.js"
 		},
 		"./view-state": {
 			"types": "./dist/client/view-state.d.ts",

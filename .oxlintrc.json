@@ -45,9 +45,77 @@
 					{
 						"patterns": [
 							{
-								"group": ["../dist/**"],
+								"regex": "^\\.\\./dist/",
 								"allowTypeImports": true,
 								"message": "pi/ is published without dist/: import its types only, and take the modules from the Harness object."
+							},
+							{
+								"group": ["../dist/**", "!../dist/protocol/**", "!../dist/client/**", "!../dist/tool.js"],
+								"message": "pi/ loads only protocol/, client/ and tool.ts."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["src/protocol/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**"],
+								"message": "protocol/ imports nothing else from src/."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["src/children/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**", "!../protocol/**"],
+								"message": "children/ imports only protocol/ from src/."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["src/client/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**", "!../protocol/**"],
+								"message": "client/ imports only protocol/ from src/."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["src/host/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**", "!../protocol/**", "!../children/**", "!../tool.ts"],
+								"message": "host/ imports only protocol/, children/ and tool.ts."
 							}
 						]
 					}
@@ -62,9 +130,29 @@
 					{
 						"patterns": [
 							{
+								"group": ["../**", "!../protocol/**", "!../children/**", "!../tool.ts"],
+								"message": "host/ imports only protocol/, children/ and tool.ts."
+							},
+							{
 								"group": ["@earendil-works/*"],
 								"allowTypeImports": true,
 								"message": "The durable entry runs on the host's pi-durable and pi-ai: import their types only, and take the modules from the options."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["src/tool.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["./**", "../**", "!./protocol/**", "!./client/**"],
+								"message": "tool.ts imports only protocol/ and client/."
 							}
 						]
 					}

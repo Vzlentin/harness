@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { connect, request } from "../src/client/client.ts";
-import { statePaths } from "../src/client/paths.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import type { ChildInfo, Delivery } from "../src/protocol/requests.ts";
 import { called, calls, cli, gates, models, root, setUp, spawnedBy, startHost, tearDown, until } from "./helpers.ts";
 

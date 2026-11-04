@@ -6,6 +6,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { onLines } from "../protocol/lines.ts";
+import { cliPath, statePaths } from "../protocol/paths.ts";
+import { checkProject, MAIN_PROJECT, resolveProject } from "../protocol/projects.ts";
 import {
 	errorMessage,
 	PROTOCOL_VERSION,
@@ -16,8 +18,6 @@ import {
 	type WatchLine,
 } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";
-import { cliPath, statePaths } from "./paths.ts";
-import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
 
 const START_TIMEOUT_MS = 10_000;
 

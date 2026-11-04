@@ -2,8 +2,8 @@ import { once } from "node:events";
 import { createConnection } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client, request } from "../src/client/client.ts";
-import { statePaths } from "../src/client/paths.ts";
 import type { Host } from "../src/host/run.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import type { WatchLine } from "../src/protocol/requests.ts";
 import { cli, handleOf, setUp, startHost, tearDown } from "./helpers.ts";
 

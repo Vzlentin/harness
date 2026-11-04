@@ -13,8 +13,8 @@ import { ChildContext } from "../src/children/context.ts";
 import { createChildren, type Owner, type Place } from "../src/children/library.ts";
 import { overlayDoc } from "../src/children/overlay.ts";
 import { request } from "../src/client/client.ts";
-import { setEntry } from "../src/client/entries.ts";
 import type { Host } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import { models, requests, root, setUp, startHost, tearDown } from "./helpers.ts";
 
 const library = createChildren(durable);

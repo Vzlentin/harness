@@ -2,10 +2,10 @@ import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childLabel } from "../protocol/labels.ts";
+import { cliPath } from "../protocol/paths.ts";
+import { resolveProject } from "../protocol/projects.ts";
 import type { ChildInfo } from "../protocol/requests.ts";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
-import { cliPath } from "./paths.ts";
-import { resolveProject } from "./projects.ts";
 
 const HERDR_SOURCE = "custom:harness";
 

@@ -11,11 +11,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Write } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
-import { setEntry } from "../src/client/entries.ts";
-import { statePaths } from "../src/client/paths.ts";
-import { projectDir } from "../src/client/projects.ts";
 import { type CatchUpHost, catchUp } from "../src/host/agent.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { projectDir } from "../src/protocol/projects.ts";
 import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, contexts, models, root, setUp, tearDown, until } from "./helpers.ts";

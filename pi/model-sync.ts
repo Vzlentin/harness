@@ -5,7 +5,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Mirror, MirrorConfigure } from "../dist/client/mirror.js";
-import type { ChildInfo } from "../dist/protocol-subpath.js";
+import type { ChildInfo } from "../dist/protocol/index.js";
 
 /** What the sync uses of Pi's extension API. */
 export type PiModels = Pick<ExtensionAPI, "setModel" | "getThinkingLevel" | "setThinkingLevel">;

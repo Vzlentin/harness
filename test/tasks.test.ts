@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connect, request } from "../src/client/client.ts";
-import { entriesPath, readEntries, setEntry } from "../src/client/entries.ts";
 import { Mirror } from "../src/client/mirror.ts";
-import { statePaths } from "../src/client/paths.ts";
-import { MAIN_PROJECT, projectDir } from "../src/client/projects.ts";
 import { inboxOf } from "../src/client/view-state.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
 import { childTitle } from "../src/protocol/labels.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {

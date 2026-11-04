@@ -16,11 +16,11 @@ import type { AgentReporter } from "../src/client/herdr.ts";
 import * as herdr from "../src/client/herdr.ts";
 import * as mirror from "../src/client/mirror.ts";
 import { MIRROR_ENTRY, type MirrorStatus, type MirrorTarget, PossiblySentError } from "../src/client/mirror.ts";
-import * as projects from "../src/client/projects.ts";
 import * as viewState from "../src/client/view-state.ts";
+import * as protocol from "../src/protocol/index.ts";
+import * as projects from "../src/protocol/projects.ts";
 import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import * as protocol from "../src/protocol-subpath.ts";
 import { FakeTerminal, until } from "./helpers.ts";
 
 const AGENT: MirrorTarget = { project: "main", handle: AGENT_HANDLE };

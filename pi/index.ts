@@ -16,14 +16,14 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type * as trust from "../dist/children/trust.js";
 import type * as answers from "../dist/client/answers.js";
 import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";
 import type * as mirror from "../dist/client/mirror.js";
-import type * as projects from "../dist/client/projects.js";
 import type * as viewState from "../dist/client/view-state.js";
-import type * as protocol from "../dist/protocol-subpath.js";
+import type * as protocol from "../dist/protocol/index.js";
+import type * as projects from "../dist/protocol/projects.js";
+import type * as trust from "../dist/protocol/trust.js";
 import type * as tool from "../dist/tool.js";
 import { registerMirror } from "./mirror.ts";
 

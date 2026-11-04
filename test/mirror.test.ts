@@ -22,11 +22,11 @@ import {
 	piArgs,
 	targetTitle,
 } from "../src/client/mirror.ts";
-import { addProject } from "../src/client/projects.ts";
 import * as viewState from "../src/client/view-state.ts";
 import { inboxOf } from "../src/client/view-state.ts";
 import type { Host } from "../src/host/run.ts";
 import { childTitle } from "../src/protocol/labels.ts";
+import { addProject } from "../src/protocol/projects.ts";
 import { type ChildInfo, errorMessage } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {

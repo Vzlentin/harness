@@ -29,8 +29,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { errorMessage } from "../protocol/requests.ts";
+import { savedTrust, type TrustApi } from "../protocol/trust.ts";
 import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
-import { savedTrust, type TrustApi } from "./trust.ts";
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
 type PiTool<T extends TSchema> = {

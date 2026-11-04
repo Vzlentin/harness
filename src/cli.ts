@@ -9,7 +9,7 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { piEnv } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
-import { statePaths } from "./client/paths.ts";
+import { statePaths } from "./protocol/paths.ts";
 import {
 	addProject,
 	COMMAND_NAMES,
@@ -18,7 +18,7 @@ import {
 	projectDir,
 	readProjects,
 	resolveProject,
-} from "./client/projects.ts";
+} from "./protocol/projects.ts";
 import { errorMessage } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "./protocol/target.ts";
 import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
