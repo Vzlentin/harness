@@ -21,7 +21,7 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { createChildren, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
-import { Json } from "./json.ts";
+import { Json } from "../protocol/requests.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 

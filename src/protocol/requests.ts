@@ -60,7 +60,14 @@ export type TaskInfo = {
 	readonly outcome?: TaskOutcome<JsonValue>;
 };
 
-/** Any JSON value. A request line is JSON, so `start` takes any input. */
+/** The prototypes of a plain object, which JSON gives and the store takes. */
+const PLAIN_PROTOTYPES: readonly unknown[] = [Object.prototype, null];
+
+/**
+ * A JSON value: null, a boolean, a finite number, a string, or an array or a plain object of JSON values. A value with
+ * `undefined`, a function or a class instance in it is not JSON. A request line is JSON, so `start` takes any input,
+ * and the host checks with it the values that entries give for the store.
+ */
 export const Json = Type.Cyclic(
 	{
 		Json: Type.Union([
@@ -69,7 +76,11 @@ export const Json = Type.Cyclic(
 			Type.Number(),
 			Type.String(),
 			Type.Array(Type.Ref("Json")),
-			Type.Record(Type.String(), Type.Ref("Json")),
+			Type.Refine(
+				Type.Record(Type.String(), Type.Ref("Json")),
+				(value) => PLAIN_PROTOTYPES.includes(Object.getPrototypeOf(value)),
+				() => "must be a plain object",
+			),
 		]),
 	},
 	"Json",

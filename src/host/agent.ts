@@ -13,9 +13,8 @@ import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-d
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveModel } from "../children/model.ts";
-import { errorMessage } from "../protocol/requests.ts";
+import { errorMessage, Json } from "../protocol/requests.ts";
 import type { CatchUpHook, CatchUpPart } from "./entries.ts";
-import { Json } from "./json.ts";
 import type { Found } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
