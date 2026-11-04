@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Type } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -89,7 +89,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		);
 	};
 
-	const { parameters, output } = tool.toolSchemas(Type);
+	const { parameters, output } = tool.toolSchemas({ Type, getSupportedThinkingLevels });
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -125,7 +125,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	pi.registerCommand("subagent", {
 		description: "Open a subagent spawned by this session in Pi, in a new Herdr tab",
 		handler: async (_args, ctx) => {
-			const children = await client.request(
+			const children: readonly protocol.ChildInfo[] = await client.request(
 				{ type: "list", caller: ctx.sessionManager.getSessionId() },
 				{ start: true },
 			);
@@ -140,11 +140,8 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 
 			// A name can start with the display name of another child, so the longest match is the chosen child.
 			const child = children
-				.filter((c: { handle: string; name?: string }) => chosen?.startsWith(`${protocol.runDisplayName(c)}  `))
-				.sort(
-					(a: { handle: string; name?: string }, b: { handle: string; name?: string }) =>
-						protocol.runDisplayName(b).length - protocol.runDisplayName(a).length,
-				)[0];
+				.filter((c) => chosen?.startsWith(`${protocol.runDisplayName(c)}  `))
+				.sort((a, b) => protocol.runDisplayName(b).length - protocol.runDisplayName(a).length)[0];
 
 			if (child === undefined) return;
 			const command = `harness attach ${child.handle}`;
@@ -246,26 +243,20 @@ function widgetLines(
 
 	const visible = children
 		.slice(0, 5)
-		.map(({ name, handle, state }) => theme.fg(stateColor(state), `${name ?? handle}:${state}`));
+		.map(({ name, handle, state }) => theme.fg(STATE_COLORS[state], `${name ?? handle}:${state}`));
 
 	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
 
 	return [theme.fg("dim", "subagents: ") + visible.join(theme.fg("dim", " | "))];
 }
 
-/** The theme colour of a child in `state`. */
-function stateColor(state: protocol.ChildState): "warning" | "success" | "error" | "muted" {
-	switch (state) {
-		case "busy":
-			return "warning";
-		case "idle":
-			return "success";
-		case "error":
-			return "error";
-		case "closed":
-			return "muted";
-	}
-}
+/** The theme colour of a child in each state. */
+const STATE_COLORS: Record<protocol.ChildState, "warning" | "success" | "error" | "muted"> = {
+	busy: "warning",
+	idle: "success",
+	error: "error",
+	closed: "muted",
+};
 
 /** Whether the session of `ctx` has a result of the `subagent` tool. */
 function hasSpawned(ctx: ExtensionContext): boolean {

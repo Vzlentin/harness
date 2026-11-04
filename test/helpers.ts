@@ -19,7 +19,6 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { type Host, runHost } from "../src/host/run.ts";
-import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
@@ -276,7 +275,7 @@ export function handleOf(result: Result): string {
  * while the test host was down, because the tests would then run against a host without the faux provider.
  */
 export async function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
-	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+	const host = await runHost({ project, cwd: projectDir(project), models });
 
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 

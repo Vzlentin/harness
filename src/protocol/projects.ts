@@ -8,8 +8,7 @@ import { readJsonFile, updateJsonFile } from "./json-file.ts";
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
 
-/** The commands of the `harness` CLI, which a project cannot have as its name. */
-export const COMMAND_NAMES: ReadonlySet<string> = new Set([
+const COMMANDS = [
 	"spawn",
 	"status",
 	"rename",
@@ -21,7 +20,13 @@ export const COMMAND_NAMES: ReadonlySet<string> = new Set([
 	"host",
 	"create",
 	"projects",
-]);
+] as const;
+
+/** A command of the `harness` CLI. */
+export type CommandName = (typeof COMMANDS)[number];
+
+/** The commands of the `harness` CLI, which a project cannot have as its name. */
+export const COMMAND_NAMES: ReadonlySet<string> = new Set(COMMANDS);
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 

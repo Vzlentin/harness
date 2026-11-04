@@ -6,7 +6,6 @@ import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
-import { statePaths } from "../src/protocol/paths.ts";
 import type { ChildInfo, Delivery } from "../src/protocol/requests.ts";
 import { called, calls, cli, gates, models, root, setUp, spawnedBy, startHost, tearDown, until } from "./helpers.ts";
 
@@ -224,7 +223,6 @@ describe("push", { timeout: 30_000 }, () => {
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
 
 		const idle = await runHost({
-			stateDir: statePaths("idle").dir,
 			project: "idle",
 			cwd: dir,
 			models,

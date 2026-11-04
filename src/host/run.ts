@@ -26,7 +26,9 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import { ChildContext, PI_TRUST } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
+import { isThinkingLevel } from "../children/model.ts";
 import { onLines } from "../protocol/lines.ts";
+import { statePaths } from "../protocol/paths.ts";
 import { errorMessage, type Reply, type Request, RequestLine, STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
 import { subagentTool } from "../tool.ts";
@@ -60,23 +62,23 @@ export type Host = {
 };
 
 /**
- * Runs the host of `project` in this process: the store in `stateDir`, the children's models from `models`, the
- * project agent in `cwd`, and the socket. It is undefined when another host holds the lock.
+ * Runs the host of `project` in this process: the store and the socket in the project's state directory
+ * (`statePaths`), the children's models from `models`, and the project agent in `cwd`. It is undefined when another
+ * host holds the lock.
  */
 export async function runHost(options: {
-	readonly stateDir: string;
 	readonly project: string;
 	readonly cwd: string;
 	readonly models: Models;
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
 	readonly idleExitMs?: number;
 }): Promise<Host | undefined> {
-	const { stateDir, project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS } = options;
+	const { project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS } = options;
+	const { dir: stateDir, socket: socketPath } = statePaths(project);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
 	if (lock === undefined) return undefined;
-	const socketPath = join(stateDir, "host.sock");
 	rmSync(socketPath, { force: true });
 
 	const registry = createRegistry();
@@ -327,7 +329,17 @@ export async function runHost(options: {
 function parseRequest(line: string): Request {
 	const request: unknown = JSON.parse(line);
 
-	if (Value.Check(RequestLine, request)) return request;
+	if (Value.Check(RequestLine, request)) {
+		if (
+			(request.type === "spawn" || request.type === "configure") &&
+			request.thinking !== undefined &&
+			!isThinkingLevel(request.thinking)
+		) {
+			throw new Error(`Invalid ${request.type} request: thinking is not valid`);
+		}
+
+		return request;
+	}
 
 	if (!Value.Check(Typed, request)) throw new Error("Invalid request");
 

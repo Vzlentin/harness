@@ -24,7 +24,10 @@ export function versionMismatch(client: number, host: number, pid: number): stri
 		: `The harness host (pid ${pid}) uses protocol ${host}, not ${client}. The host is older: stop it with kill ${pid} and run the command again`;
 }
 
-export type ChildState = "busy" | "idle" | "error" | "closed";
+/** The states of a child, as the host reports them. */
+export const CHILD_STATES = ["busy", "idle", "error", "closed"] as const;
+
+export type ChildState = (typeof CHILD_STATES)[number];
 
 /**
  * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`
@@ -72,19 +75,6 @@ export const Json = Type.Cyclic(
 	"Json",
 );
 
-/** The thinking levels of a model, as pi-ai names them. */
-export const THINKING_LEVELS = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const satisfies readonly ModelThinkingLevel[];
-
-export const ThinkingLevel = Type.Enum(THINKING_LEVELS);
-
 /**
  * One request line, as the host checks it. The caller is `PI_SESSION_ID`, or `cli` without one. Unknown extra keys are
  * allowed.
@@ -100,8 +90,8 @@ export const RequestLine = Type.Union([
 		name: Type.Optional(Type.String()),
 		provider: Type.String(),
 		model: Type.String(),
-		/** The level the caller asks for; the host refuses it when the model does not have it. */
-		thinking: Type.Optional(ThinkingLevel),
+		/** The level the caller asks for: one of pi-ai's levels, which the host checks because this module does not load pi-ai. The host refuses a level that the model does not have. */
+		thinking: Type.Optional(Type.String()),
 		/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
 		callerThinking: Type.String(),
 		cwd: Type.String({ minLength: 1 }),
@@ -147,7 +137,8 @@ export const RequestLine = Type.Union([
 		conversation: Type.Optional(Type.Never()),
 		provider: Type.Optional(Type.String()),
 		model: Type.Optional(Type.String()),
-		thinking: Type.Optional(ThinkingLevel),
+		/** The level the caller asks for: one of pi-ai's levels, which the host checks because this module does not load pi-ai. The host refuses a level that the model does not have. */
+		thinking: Type.Optional(Type.String()),
 	}),
 	/** A mirror session's message to the child. It has no caller. A conversation takes it only while it works, as a steer. */
 	...withTarget({

@@ -1,6 +1,6 @@
 /**
- * Pi's project trust, apart from the rest of the context. It takes Pi's functions as a parameter and has no runtime
- * import, so a Pi extension can read the trust with Pi's own modules.
+ * Pi's project trust. The host (`PI_TRUST` in children/context.ts, with this install's pi-coding-agent) and the Pi
+ * extension (with Pi's own modules) share it. It takes Pi's functions as a parameter and has no runtime import.
  */
 import type * as pi from "@earendil-works/pi-coding-agent";
 

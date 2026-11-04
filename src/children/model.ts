@@ -3,6 +3,11 @@ import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@ea
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import type { Agent, ModelRef } from "@earendil-works/pi-durable";
 
+/** Whether `value` is one of pi-ai's thinking levels. */
+export function isThinkingLevel(value: string): value is ModelThinkingLevel {
+	return MODEL_THINKING_LEVELS.some((level) => level === value);
+}
+
 /** The model and the thinking level of a child. */
 export type ResolvedModel = { model: ModelRef; thinkingLevel: ModelThinkingLevel };
 
@@ -43,11 +48,10 @@ export function resolveModel(
 	}
 
 	const inherited = request.fallbackThinking ?? fallback?.thinkingLevel ?? "off";
-	const known = MODEL_THINKING_LEVELS.find((level) => level === inherited);
 
 	// `clampThinkingLevel` gives the model's first level for a name that it does not know.
 	return {
 		model: { provider, modelId },
-		thinkingLevel: known === undefined ? (levels[0] ?? "off") : clampThinkingLevel(model, known),
+		thinkingLevel: isThinkingLevel(inherited) ? clampThinkingLevel(model, inherited) : (levels[0] ?? "off"),
 	};
 }

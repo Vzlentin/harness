@@ -1319,7 +1319,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ stateDir, project: "a", cwd: stateDir, models })).rejects.toThrow(
+		await expect(runHost({ project: "old-state", cwd: stateDir, models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
@@ -1373,7 +1373,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			}, BACKGROUND_CONTEXT);
 			await store.close(BACKGROUND_CONTEXT);
 
-			const migrated = await runHost({ stateDir, project: "main", cwd: projectDir("main"), models });
+			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
 
 			try {
 				const children = await request({ type: "list", caller }, { start: false });
@@ -1414,7 +1414,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
 		const stateDir = await childrenStore("new-state", 4);
-		const refusal = runHost({ stateDir, project: "a", cwd: stateDir, models });
+		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
 		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 4 than 3");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
@@ -1500,7 +1500,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env.XDG_STATE_HOME = join(root, "state-empty");
 
 			const empty = await runHost({
-				stateDir: statePaths("main").dir,
 				project: "main",
 				cwd: projectDir("main"),
 				models: createModels(),
@@ -1895,10 +1894,13 @@ async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
 	);
 }
 
-/** A state directory whose store has a `subagent.children` document at `version`, as another pi-subagent writes it. */
+/**
+ * The state directory of the project `name`, whose store has a `subagent.children` document at `version`, as another
+ * pi-subagent writes it.
+ */
 async function childrenStore(name: string, version: number): Promise<string> {
-	const stateDir = join(root, name);
-	await mkdir(stateDir);
+	const stateDir = statePaths(name).dir;
+	await mkdir(stateDir, { recursive: true });
 
 	const Children = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
 		kind: "subagent.children",

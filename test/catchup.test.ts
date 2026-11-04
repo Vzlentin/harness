@@ -50,7 +50,7 @@ async function git(...args: string[]): Promise<string> {
 }
 
 function openHost(): Promise<Host | undefined> {
-	return runHost({ stateDir: statePaths(PROJECT).dir, project: PROJECT, cwd: projectDir(PROJECT), models });
+	return runHost({ project: PROJECT, cwd: projectDir(PROJECT), models });
 }
 
 async function client(): Promise<Client> {

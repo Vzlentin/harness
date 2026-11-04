@@ -22,6 +22,7 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
+import type { ChildState } from "../protocol/requests.ts";
 import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 import { complete, createAnswers } from "./respond.ts";
@@ -107,8 +108,6 @@ export type Lineage = {
 	/** The deepest depth of the tree. */
 	readonly limit: number;
 };
-
-export type ChildState = "busy" | "idle" | "error" | "closed";
 
 /**
  * What a turn returns: its text, or a named failure. `cut` stopped before its end, such as at its length limit, and

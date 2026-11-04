@@ -9,7 +9,6 @@ import { inboxOf } from "../src/client/view-state.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
 import { childTitle } from "../src/protocol/labels.ts";
-import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
@@ -330,10 +329,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 	it("keeps the host running while a started task is live", async () => {
 		await host?.close();
-		const { dir } = statePaths(MAIN_PROJECT);
 
 		const idle = await runHost({
-			stateDir: dir,
 			project: MAIN_PROJECT,
 			cwd: projectDir(MAIN_PROJECT),
 			models,
@@ -367,10 +364,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		// The child's turn resumes in the next host; it must end, so only the blocked task is left.
 		gates.delete("Fixture blocked");
 		await writeFile(entriesPath(), "{}");
-		const { dir } = statePaths(MAIN_PROJECT);
 
 		const idle = await runHost({
-			stateDir: dir,
 			project: MAIN_PROJECT,
 			cwd: projectDir(MAIN_PROJECT),
 			models,
@@ -441,7 +436,6 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
 
 		const bare = await runHost({
-			stateDir: statePaths("bare").dir,
 			project: "bare",
 			cwd: root,
 			models: createModels(),
