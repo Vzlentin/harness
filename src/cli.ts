@@ -11,18 +11,19 @@ import { isThinkingLevel } from "./children/model.ts";
 import { request } from "./client/client.ts";
 import { piEnv } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
+import { HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL, PI_SESSION_ID } from "./protocol/env.ts";
 import {
 	addProject,
 	type CommandName,
 	checkProject,
 	MAIN_PROJECT,
 	projectDir,
+	projectOf,
 	readProjects,
-	resolveProject,
 } from "./protocol/projects.ts";
 import { errorMessage } from "./protocol/requests.ts";
 import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
-import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
+import { runTool, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -40,7 +41,7 @@ function usage(): never {
 	fail(`Usage:
   harness <project>
 ${lines.join("\n")}
-Any command but harness <project> takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
+Any command but harness <project> takes --project <name> before it; without it, the project is ${HARNESS_PROJECT}, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -195,7 +196,7 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 }
 
 /** Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. */
-async function attachCommand(args: string[]): Promise<void> {
+async function attachCommand(args: string[], project: string | undefined): Promise<void> {
 	const [first, id] = args;
 	let ref: Target;
 
@@ -203,7 +204,7 @@ async function attachCommand(args: string[]): Promise<void> {
 	else if (args.length === 2 && first === "--conversation" && id) ref = parseTarget({ conversation: id });
 	else usage();
 
-	await openInPi({ project: resolveProject(process.env, process.cwd()), target: ref });
+	await openInPi({ project: projectOf(project, process.env, process.cwd()), target: ref });
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
@@ -256,27 +257,20 @@ function toolCommand(lines: readonly string[], parse: (args: string[]) => ToolAr
 	return {
 		usage: lines,
 		async run(args, project) {
-			setProject(project);
-
 			const { text } = await runTool(parse(args), {
-				caller: process.env.PI_SESSION_ID || "cli",
+				caller: process.env[PI_SESSION_ID] || "cli",
 				callKey: randomUUID(),
-				provider: process.env.PI_PROVIDER,
-				model: process.env.PI_MODEL,
-				thinking: process.env.PI_REASONING_LEVEL || "medium",
+				provider: process.env[PI_PROVIDER],
+				model: process.env[PI_MODEL],
+				thinking: process.env[PI_REASONING_LEVEL] || "medium",
 				cwd: process.cwd(),
-				send: sendToHost,
+				send: (message, signal) => request(message, { start: true, signal, project }),
 				signal: undefined,
 			});
 
 			process.stdout.write(text);
 		},
 	};
-}
-
-/** Every connection resolves the project from the env, so `--project` goes there. */
-function setProject(project: string | undefined): void {
-	if (project !== undefined) process.env.HARNESS_PROJECT = checkProject(project);
 }
 
 /** The commands of the CLI, in the order of the usage. */
@@ -297,11 +291,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		list: toolCommand(["  harness list"], listArgs),
 		attach: {
 			usage: ["  harness attach <handle>", "  harness attach --conversation <id>"],
-			run(args, project) {
-				setProject(project);
-
-				return attachCommand(args);
-			},
+			run: attachCommand,
 		},
 		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },

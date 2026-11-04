@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { HARNESS_PROJECT } from "./env.ts";
 import { readJsonFile, updateJsonFile } from "./json-file.ts";
 
 /** The project that has no directory. A cwd outside every project goes to it. */
@@ -116,7 +117,7 @@ export function resolveProject(
 	cwd: string,
 	projects: Readonly<Record<string, string>> = readProjects(),
 ): string {
-	if (env.HARNESS_PROJECT) return checkProject(env.HARNESS_PROJECT, projects);
+	if (env[HARNESS_PROJECT]) return checkProject(env[HARNESS_PROJECT], projects);
 	let found = MAIN_PROJECT;
 	let length = -1;
 
@@ -129,4 +130,17 @@ export function resolveProject(
 	}
 
 	return found;
+}
+
+/**
+ * The project of a command with the explicit project `name`: `name` when it is given, which must be `main` or a project,
+ * else the project of `env` and `cwd` (see `resolveProject`).
+ */
+export function projectOf(
+	name: string | undefined,
+	env: NodeJS.ProcessEnv,
+	cwd: string,
+	projects: Readonly<Record<string, string>> = readProjects(),
+): string {
+	return name === undefined ? resolveProject(env, cwd, projects) : checkProject(name, projects);
 }

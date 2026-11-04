@@ -283,10 +283,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// In Herdr, Pi gets the pane in HARNESS_HERDR_PANE and no HERDR_ENV, so Herdr's Pi integration does not report.
 		const attached = await cli(["attach", handle], { ...pi.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-3" });
 		expect(attached).toMatchObject({ code: 3, stderr: "" });
-		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE=pane-3`]);
+		expect(logLines(pi.log)).toEqual([
+			`--harness main --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE=pane-3 HARNESS_PROJECT=`,
+		]);
 
 		expect((await cli(["main"], pi.env)).code).toBe(3);
-		expect(logLines(pi.log)[1]).toBe("--harness main HERDR_ENV= HARNESS_HERDR_PANE=");
+		expect(logLines(pi.log)[1]).toBe("--harness main HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=");
 
 		expect(await cli(["attach", "abcdef"], pi.env)).toMatchObject({ code: 1, stderr: "Unknown subagent: abcdef\n" });
 		expect(logLines(pi.log)).toHaveLength(2);

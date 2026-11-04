@@ -166,7 +166,7 @@ function mirrorEntry(harness: Harness, entries: readonly SessionEntry[]): Mirror
  * session with messages, such as one of `--continue`, because Pi's own agent answered there.
  */
 function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): MirrorEntry | undefined {
-	const { checkProject, resolveProject } = harness.projects;
+	const { projectOf } = harness.projects;
 	const { errorMessage, parseTarget } = harness.protocol;
 	const { PI_FLAGS, toMirrorEntry } = harness.mirror;
 	const project = stringFlag(pi, PI_FLAGS.project);
@@ -190,7 +190,7 @@ function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): M
 	let target: MirrorTarget;
 
 	try {
-		const name = project ? checkProject(project) : resolveProject(process.env, ctx.cwd);
+		const name = projectOf(project || undefined, process.env, ctx.cwd);
 		const ref = conversation ? parseTarget({ conversation }) : child ? parseTarget({ handle: child }) : undefined;
 		target = { project: name, target: ref ?? { kind: "agent" } };
 	} catch (error) {

@@ -356,13 +356,13 @@ export async function tearDown(): Promise<void> {
 	await rm(root, { recursive: true, force: true });
 }
 
-/** A `pi` on `PATH` that logs its arguments and its Herdr variables to `log`, one line for each call, and exits with 3. */
+/** A `pi` on `PATH` that logs its arguments, its Herdr variables and `HARNESS_PROJECT` to `log`, one line for each call, and exits with 3. */
 export async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "pi.log");
 
 	const script = `#!/bin/sh
-echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE" >> "${log}"
+echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE HARNESS_PROJECT=$HARNESS_PROJECT" >> "${log}"
 exit 3
 `;
 
