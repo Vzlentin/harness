@@ -32,8 +32,17 @@ import { addUsageState } from "./usage.ts";
 
 export { type ResolvedModel, resolveModel } from "./model.ts";
 
-/** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
+/**
+ * The deepest depth of a depth budget whose first spec gives no `limit`, such as one of a library caller: a child of a
+ * child of a root.
+ */
 export const DEFAULT_DEPTH_LIMIT = 2;
+
+/**
+ * The tools that open children: `subagent` of `src/tool.ts`, and the `workflow` tool of workflows. A child at the limit
+ * of its depth budget is a leaf and gets neither.
+ */
+const DELEGATION_TOOLS = ["subagent", "workflow"];
 
 /**
  * The store children live in: a Harness, or a running task's runtime with the Harness's `submission`. `commit`
@@ -73,41 +82,65 @@ export type Spec = (
 			readonly parent?: never;
 	  }
 	| {
-			/** The conversation in this store that spawns the child. */
+			/**
+			 * The tree parent, a conversation in this store. Close, `ChildDoc.children`, the overlay that the child
+			 * inherits and `Lineage.parent` follow it. It also gives the depth budget, unless `depthRoot` or `depthParent` is
+			 * set.
+			 */
 			readonly parent: string;
 			readonly root?: never;
 	  }
-) & {
-	readonly provider?: string;
-	readonly model?: string;
-	readonly thinking?: string;
-	/** The caller's thinking level, used without `thinking`: the nearest level that the model has, not refused. */
-	readonly fallbackThinking?: string;
-	readonly cwd?: string;
-	/** The only tools the child gets, by name. */
-	readonly tools?: readonly string[];
-	readonly instructions?: string;
-	/**
-	 * The deepest depth of a new tree, for a child without a parent in a tree. A child of a child keeps the limit of its
-	 * tree. Default `DEFAULT_DEPTH_LIMIT`.
-	 */
-	readonly limit?: number;
-	/**
-	 * Files that the child sees in place of the disk, by path, relative to `cwd`: a string replaces the file, null
-	 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk. A
-	 * child of a parent with an overlay gets that overlay too, copied when the child is created; its own paths win.
-	 */
-	readonly overlay?: Overlay;
-};
+) &
+	(
+		| {
+				/**
+				 * The child starts a new depth budget at depth 0, with `limit`, and stays under its tree parent for close and
+				 * the viewer. For the sessions that a script opens in code.
+				 */
+				readonly depthRoot?: true;
+				readonly depthParent?: never;
+		  }
+		| {
+				/**
+				 * The conversation whose depth budget the child takes in place of the tree parent's: one deeper, with its limit.
+				 * A conversation that the library did not open counts as depth 0.
+				 */
+				readonly depthParent: string;
+				readonly depthRoot?: never;
+		  }
+	) & {
+		readonly provider?: string;
+		readonly model?: string;
+		readonly thinking?: string;
+		/** The caller's thinking level, used without `thinking`: the nearest level that the model has, not refused. */
+		readonly fallbackThinking?: string;
+		readonly cwd?: string;
+		/** The only tools the child gets, by name. */
+		readonly tools?: readonly string[];
+		readonly instructions?: string;
+		/**
+		 * The deepest depth of a new depth budget: for a depth root, or a child whose depth parent the library did not open.
+		 * A child of a child keeps the limit of its depth parent. Default `DEFAULT_DEPTH_LIMIT`. A child at the limit is a
+		 * leaf: it gets no `subagent` and no `workflow` tool, also when `tools` names them.
+		 */
+		readonly limit?: number;
+		/**
+		 * Files that the child sees in place of the disk, by path, relative to `cwd`: a string replaces the file, null
+		 * removes it. They change the project instructions, the skills and the `read` tool; the other tools see the disk. A
+		 * child of a parent with an overlay gets that overlay too, copied when the child is created; its own paths win.
+		 */
+		readonly overlay?: Overlay;
+	};
 
-/** Where a child sits in its tree. */
+/** Where a child sits in its tree and in its depth budget. */
 export type Lineage = {
 	readonly key: string;
 	readonly root: string;
+	/** The tree parent. */
 	readonly parent?: string;
-	/** 1 for a child of a root. */
+	/** 1 for a child of a root, and 0 for a depth root. */
 	readonly depth: number;
-	/** The deepest depth of the tree. */
+	/** The deepest depth of the depth budget. */
 	readonly limit: number;
 };
 
@@ -211,8 +244,8 @@ export type Children = {
 	/**
 	 * The child of `key`: created the first time `key` is seen, with its lineage, in one commit, and the same child after.
 	 * `setup` runs in the creating commit. Before creating anything, it refuses a spec whose model neither it nor the
-	 * owner's agent names, an unknown model or tool, a parent at its depth limit, and a closed parent. Keys are global in
-	 * a store, so callers prefix them.
+	 * owner's agent names, an unknown model or tool, a child deeper than its limit, and a closed parent. A child at its
+	 * limit gets no `subagent` and no `workflow` tool. Keys are global in a store, so callers prefix them.
 	 */
 	open(
 		place: Place,
@@ -752,8 +785,12 @@ export function createChildren(durable: typeof Durable): Children {
 				parentId === undefined ? undefined : (await place.store.snapshot(OverlayDoc, parentId, context))?.files;
 
 			const overlay = own !== undefined && inherited !== undefined ? mergeOverlay(inherited, own) : (own ?? inherited);
-			const depth = (parent?.depth ?? 0) + 1;
-			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
+			let budget = parent;
+
+			if (spec.depthRoot === true) budget = undefined;
+			else if (spec.depthParent !== undefined) budget = await lineage(place.store, spec.depthParent, context);
+			const depth = spec.depthRoot === true ? 0 : (budget?.depth ?? 0) + 1;
+			const limit = budget?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 
 			if (depth > limit) throw new Error("Nested subagents are disabled");
 			const root = spec.parent === undefined ? spec.root : (parent?.root ?? spec.parent);
@@ -785,6 +822,17 @@ export function createChildren(durable: typeof Durable): Children {
 					if (!selection.includes(answerName)) selection.push(answerName);
 				} else if (!selection?.add?.includes(answerName)) {
 					agent.extensions = { ...selection, add: [...(selection?.add ?? []), answerName] };
+				}
+
+				// A leaf: the filter of the enabled tools covers both the model and codemode.
+				if (depth === limit) {
+					const enabled = agent.tools;
+
+					if (Array.isArray(enabled)) {
+						agent.tools = enabled.filter((name) => !DELEGATION_TOOLS.includes(name));
+					} else {
+						agent.tools = { remove: [...new Set([...(enabled?.remove ?? []), ...DELEGATION_TOOLS])] };
+					}
 				}
 
 				const state: ChildDocState = {

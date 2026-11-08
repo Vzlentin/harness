@@ -497,15 +497,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
 	});
 
-	it("lets a child spawn a child with the tool, but not a third level, with agentDepthLimit 2", async () => {
+	it("lets a child spawn a child with the tool, and gives the child at agentDepthLimit 2 no subagent tool", async () => {
 		await setDepthLimit(2);
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(
 			new RegExp(
-				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Nested subagents are disabled\n`,
+				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Tool subagent is not available\n`,
 			),
 		);
+		expect(requests.get("Task:\nNest tool")?.tools).toEqual([
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"write",
+			"edit",
+			"bash",
+			"codemode",
+		]);
 		expect(called("Task:\nNest tool")).toBe(2);
 	});
 

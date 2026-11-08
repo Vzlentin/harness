@@ -31,7 +31,7 @@ harness spawn \
   --prompt "Run the targeted tests"
 ```
 
-Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Limits](#limits)). An unknown tool name is an error:
+Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Limits](#limits)). A child at the depth limit gets no `subagent` and no `workflow` (see [Push](#push)). An unknown tool name is an error:
 
 ```sh
 harness spawn --tools read,bash --prompt "Investigate the failure"
@@ -147,11 +147,11 @@ When a child finishes, the host sends its unread answers to its caller, so the c
 - When a push of a child fails, such as a conversation that cannot be found or a caller that refuses the input, the host writes a warning and skips that child for 1 s, then for twice as long after each failure in a row, up to 60 s. A timer pushes again when the wait ends, also without a new commit. A push of the child that ends without an error resets the wait. While a child of a caller waits after a failed push, the later children of that caller wait too, so the answers keep their order.
 - A turn that a mirror session started sends nothing up: when the last request is mirror input, the answer that goes up is the one of the caller's last request.
 
-The depth of the subagent tree is the setting `agentDepthLimit` in Pi's global `settings.json`, an integer of at least 1, default 4. The host reads it again at each spawn, and it applies to the new trees: a child of a child keeps the limit of its tree. A deeper spawn fails with `Nested subagents are disabled`. A tree that a library caller of the children library starts without a limit, such as one of workflows, keeps the limit of 2, also for the spawns of the `subagent` tool in it.
+The depth of the subagent tree is the setting `agentDepthLimit` in Pi's global `settings.json`, an integer of at least 1, default 4. The host reads it again at each spawn, and it applies to the new trees: a child of a child keeps the limit of its tree. A deeper spawn fails with `Nested subagents are disabled`. A tree that a library caller of the children library starts without a limit, such as one of workflows, keeps the limit of 2, also for the spawns of the `subagent` tool in it. A library caller can open a child as a depth root (`depthRoot`): it stays under its tree parent, for close and the viewer, and starts a new depth budget at depth 0 with its own `limit`, such as a session that a script opens in code. With `depthParent`, a child takes the depth budget of that conversation in place of its tree parent's: one deeper, with its limit; a conversation that the library did not open counts as depth 0. A child at the limit of its depth budget is a leaf: it gets no `subagent` and no `workflow` tool, also when `--tools` names them, so a model call to `subagent` there gives `Tool subagent is not available`.
 
 ## Limits
 
-- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions. `codemode` runs JavaScript that calls the other tools of the child, as Pi's `codemode` does. A script that a host stop interrupts continues when the host starts again.
+- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions. A child at the depth limit also gets no `subagent` and no `workflow` (see [Push](#push)). `codemode` runs JavaScript that calls the other tools of the child, as Pi's `codemode` does. A script that a host stop interrupts continues when the host starts again.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.
