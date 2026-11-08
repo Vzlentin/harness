@@ -3,13 +3,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connect, request } from "../src/client.ts";
-import { entriesPath, readEntries, setEntry } from "../src/entries.ts";
-import { type Host, runHost } from "../src/host.ts";
-import { Mirror } from "../src/mirror.ts";
-import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { AGENT_HANDLE, childTitle, statePaths, type TaskInfo, type WatchLine } from "../src/protocol.ts";
-import { inboxOf } from "../src/view-state.ts";
+import { connect, request } from "../src/client/client.ts";
+import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
+import { inboxOf } from "../src/client/view-state.ts";
+import { type Host, runHost } from "../src/host/run.ts";
+import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
+import { childTitle } from "../src/protocol/labels.ts";
+import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {
 	aborted,
 	called,
@@ -168,7 +170,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		if (client === undefined) throw new Error("no host");
 
 		try {
-			const watched = await client.watch({ conversation: ids.child });
+			const watched = await client.watch({ kind: "conversation", id: ids.child });
 			const lines: WatchLine[] = [];
 
 			void (async () => {
@@ -206,6 +208,17 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("refuses a note to a closed conversation", async () => {
+		const idFile = join(root, "closed.ids.json");
+		const input = { cwd: root, prompt: "Fixture closed", idFile, close: true };
+		await request({ type: "start", kind: KIND, key: "closed", input }, { start: false });
+		expect(await taskRequest("wait-task", "closed")).toMatchObject({ outcome: { status: "completed" } });
+		const ids: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
+		const note = { type: "note", requestId: "closed-note", text: "Too late", conversation: ids.child } as const;
+
+		await expect(request(note, { start: false })).rejects.toThrow(`The conversation ${ids.child} is closed`);
+	});
+
 	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {
 		gates.set("Fixture aborted", Promise.withResolvers());
 		const ids = await startWithIds("aborted", "Fixture aborted");
@@ -225,21 +238,24 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 		// Both targets at once: the type refuses it, so the line goes through JSON.
 		const both = JSON.parse(JSON.stringify({ type: "watch", handle: AGENT_HANDLE, conversation: ids.child }));
-		await expect(request(both, { start: false })).rejects.toThrow("Unknown or invalid request: watch");
+		await expect(request(both, { start: false })).rejects.toThrow("Invalid watch request: conversation is not allowed");
 
-		// `configure` takes only a handle, also with an extra `conversation` key.
+		// `configure` takes only a handle, and refuses a `conversation` key.
 		const configure = JSON.parse(
 			JSON.stringify({ type: "configure", handle: "nosuch", conversation: ids.child, thinking: "high" }),
 		);
 
-		await expect(request(configure, { start: false })).rejects.toThrow("Unknown subagent: nosuch");
+		await expect(request(configure, { start: false })).rejects.toThrow(
+			"Invalid configure request: conversation is not allowed",
+		);
 	});
 
 	it("mirrors a task's child by conversation: steers it while it works, aborts it, and refuses configure", async () => {
 		gates.set("Fixture mirrored", Promise.withResolvers());
 		const ids = await startWithIds("mirrored", "Fixture mirrored");
 		const { id } = await taskRequest("task", "mirrored");
-		const mirror = new Mirror({ project: MAIN_PROJECT, conversation: ids.child }, () => {}, { start: false });
+		const target: MirrorTarget = { project: MAIN_PROJECT, target: { kind: "conversation", id: ids.child } };
+		const mirror = new Mirror(target, () => {}, { start: false });
 
 		try {
 			await until(() => mirror.status.kind !== "connecting");
@@ -276,7 +292,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		try {
 			expect(await cli(["attach", "--conversation", ids.child], pi.env)).toMatchObject({ code: 3, stderr: "" });
 			expect(logLines(pi.log)).toEqual([
-				`--harness main --harness-conversation ${ids.child} HERDR_ENV= HARNESS_HERDR_PANE=`,
+				`--harness main --harness-conversation ${ids.child} HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=`,
 			]);
 
 			for (const conversation of ["999999", ids.root]) {
@@ -324,10 +340,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 	it("keeps the host running while a started task is live", async () => {
 		await host?.close();
-		const { dir } = statePaths(MAIN_PROJECT);
 
 		const idle = await runHost({
-			stateDir: dir,
 			project: MAIN_PROJECT,
 			cwd: projectDir(MAIN_PROJECT),
 			models,
@@ -361,10 +375,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		// The child's turn resumes in the next host; it must end, so only the blocked task is left.
 		gates.delete("Fixture blocked");
 		await writeFile(entriesPath(), "{}");
-		const { dir } = statePaths(MAIN_PROJECT);
 
 		const idle = await runHost({
-			stateDir: dir,
 			project: MAIN_PROJECT,
 			cwd: projectDir(MAIN_PROJECT),
 			models,
@@ -435,7 +447,6 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
 
 		const bare = await runHost({
-			stateDir: statePaths("bare").dir,
 			project: "bare",
 			cwd: root,
 			models: createModels(),

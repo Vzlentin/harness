@@ -2,10 +2,10 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connect } from "../src/client.ts";
-import { addProject, projectsPath, resolveProject } from "../src/projects.ts";
-import { statePaths } from "../src/protocol.ts";
-import { cli, handleOf, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { connect } from "../src/client/client.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { addProject, projectsPath, resolveProject } from "../src/protocol/projects.ts";
+import { cli, fakePi, handleOf, logLines, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 let dirA: string;
 let dirB: string;
@@ -114,6 +114,21 @@ describe("projects", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("opens Pi on the --project of attach, and does not pass that project to Pi in HARNESS_PROJECT", async () => {
+		const hostA = await startHost("a");
+		const pi = await fakePi();
+
+		try {
+			const handle = handleOf(await cli(["spawn", "--prompt", "Attach in a"], {}, dirA));
+			expect(await cli(["--project", "a", "attach", handle], pi.env, dirB)).toMatchObject({ code: 3, stderr: "" });
+			expect(logLines(pi.log)).toEqual([
+				`--harness a --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=`,
+			]);
+		} finally {
+			await hostA?.close();
+		}
+	});
+
 	it("starts one host process for each project", async () => {
 		const pids: number[] = [];
 
@@ -122,9 +137,15 @@ describe("projects", { timeout: 30_000 }, () => {
 				expect((await cli(["list"], {}, dir)).code).toBe(0);
 			}
 
-			for (const project of ["a", "b"]) {
-				process.env.HARNESS_PROJECT = project;
-				const client = await connect({ start: false });
+			// The project option wins over HARNESS_PROJECT.
+			const routes: [string, string][] = [
+				["a", "b"],
+				["b", "a"],
+			];
+
+			for (const [project, other] of routes) {
+				process.env.HARNESS_PROJECT = other;
+				const client = await connect({ start: false, project });
 				client?.close();
 				pids.push(client?.pid ?? 0);
 				expect(existsSync(join(statePaths(project).dir, "durable.sqlite"))).toBe(true);

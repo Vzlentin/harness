@@ -1,7 +1,15 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type EnvTarget } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { memoryDir } from "./projects.ts";
+import {
+	HARNESS_PROJECT,
+	MEMORY_DIR,
+	PI_MODEL,
+	PI_PROVIDER,
+	PI_REASONING_LEVEL,
+	PI_SESSION_ID,
+} from "../protocol/env.ts";
+import { memoryDir } from "../protocol/projects.ts";
 
 /**
  * The envs of the conversations of the host of `project`, whose directory is `projectCwd`. A conversation keeps its env
@@ -28,17 +36,17 @@ export class ConversationEnvs {
 
 		// An undefined MEMORY_DIR removes the host's own value from the shell.
 		const shellEnv: NodeJS.ProcessEnv = {
-			PI_SESSION_ID: String(conversationId),
-			HARNESS_PROJECT: this.#project,
-			MEMORY_DIR: memoryDir(this.#project, this.#projectCwd),
+			[PI_SESSION_ID]: String(conversationId),
+			[HARNESS_PROJECT]: this.#project,
+			[MEMORY_DIR]: memoryDir(this.#project, this.#projectCwd),
 		};
 
 		if (agent?.model !== undefined) {
-			shellEnv.PI_PROVIDER = agent.model.provider;
-			shellEnv.PI_MODEL = agent.model.modelId;
+			shellEnv[PI_PROVIDER] = agent.model.provider;
+			shellEnv[PI_MODEL] = agent.model.modelId;
 		}
 
-		if (agent?.thinkingLevel !== undefined) shellEnv.PI_REASONING_LEVEL = agent.thinkingLevel;
+		if (agent?.thinkingLevel !== undefined) shellEnv[PI_REASONING_LEVEL] = agent.thinkingLevel;
 		const key = JSON.stringify({ cwd, shellEnv });
 		const known = this.#current.get(conversationId);
 

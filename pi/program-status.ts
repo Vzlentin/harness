@@ -4,8 +4,8 @@
  * in all other cases.
  */
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
-import type { Mirror, targetTitle } from "../dist/mirror.js";
-import type { childTitle } from "../dist/protocol.js";
+import type { Mirror, targetTitle } from "../dist/client/mirror.js";
+import type { childTitle } from "../dist/protocol/index.js";
 
 /** The program name of each report. */
 const APP = "harness";

@@ -1,9 +1,10 @@
 import { once } from "node:events";
 import { createConnection } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Client, request } from "../src/client.ts";
-import type { Host } from "../src/host.ts";
-import { statePaths, type WatchLine } from "../src/protocol.ts";
+import { Client, request } from "../src/client/client.ts";
+import type { Host } from "../src/host/run.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import type { WatchLine } from "../src/protocol/requests.ts";
 import { cli, handleOf, setUp, startHost, tearDown } from "./helpers.ts";
 
 let host: Host | undefined;
@@ -32,7 +33,7 @@ describe("watch", { timeout: 30_000 }, () => {
 		const client = new Client(socket);
 
 		try {
-			const watched = await client.watch(handle);
+			const watched = await client.watch({ kind: "child", handle });
 			const events: WatchLine[] = [];
 
 			const ended = (async () => {
@@ -44,7 +45,7 @@ describe("watch", { timeout: 30_000 }, () => {
 			await note(handle, "large", "x".repeat(1_000_000));
 			await note(handle, "last", "Last note before the stop");
 			expect((await cli(["stop", handle])).code).toBe(0);
-			// The `Children` watch gets the stop after the reply.
+			// The `ChildRecords` watch gets the stop after the reply.
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			socket.resume();
 			await ended;

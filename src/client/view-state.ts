@@ -46,10 +46,14 @@ export function usageTotals(view: ConversationView): UsageTotals {
 
 /**
  * The usage of the last answer of the active transcript, which tells how full the context is. An aborted answer and an
- * answer that failed do not count.
+ * answer that failed do not count. The active transcript starts at the `head` of the newest head marker of the window,
+ * such as a compaction or a reset, or at the start of the window when that `head` is before it.
  */
 export function lastAnswerUsage(view: ConversationView): Usage | undefined {
-	for (const entry of view.entries.toReversed()) {
+	const marker = view.entries.findLast((entry) => entry.head !== undefined);
+	const head = view.entries.findIndex((entry) => entry.id === marker?.head);
+
+	for (const entry of view.entries.slice(Math.max(0, head)).toReversed()) {
 		const message = entry.model?.[0];
 
 		if (entry.kind !== "pi.assistant" || message?.role !== "assistant") continue;
@@ -98,8 +102,8 @@ export function statusText(live: LiveState): string {
 
 	if (compaction !== undefined) {
 		return compaction.retry
-			? `Retrying ${compaction.reason} compaction (attempt ${compaction.attempt + 1})...`
-			: `Compacting (${compaction.reason})...`;
+			? `Retrying ${compaction.trigger} compaction (attempt ${compaction.attempt + 1})...`
+			: `Compacting (${compaction.trigger})...`;
 	}
 
 	if (runningTool !== undefined) return `Running ${runningTool.name}... (esc to interrupt)`;

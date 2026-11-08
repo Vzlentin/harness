@@ -3,30 +3,33 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import * as ai from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
-import { AssistantEntry, type ConversationId, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	type ConversationId,
+	Harness,
+	ROOT_CONVERSATION_ID,
+	type Submission,
+	type SubmissionDraft,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createChildren } from "../src/children.ts";
-import { type Client, connect, request } from "../src/client.ts";
-import subagentEntry from "../src/durable-entry.ts";
-import { type Host, runHost } from "../src/host.ts";
-import { projectDir } from "../src/projects.ts";
-import {
-	AGENT_HANDLE,
-	type ChildInfo,
-	onLines,
-	PROTOCOL_VERSION,
-	statePaths,
-	type WatchLine,
-} from "../src/protocol.ts";
-import { Children } from "../src/targets.ts";
+import { createChildren } from "../src/children/library.ts";
+import { type Client, connect, request } from "../src/client/client.ts";
+import subagentEntry from "../src/host/durable-entry.ts";
+import { ChildRecords } from "../src/host/records.ts";
+import { type Host, runHost } from "../src/host/run.ts";
+import { library } from "../src/host/targets.ts";
+import { onLines } from "../src/protocol/lines.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { projectDir } from "../src/protocol/projects.ts";
+import { type ChildInfo, PROTOCOL_VERSION, type WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	called,
@@ -46,19 +49,22 @@ import {
 	until,
 } from "./helpers.ts";
 
+/** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
+type ContextSubmit = { submit(draft: SubmissionDraft, context: Context): Promise<Submission> };
+
 /** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
 const reports: unknown[] = [];
 
 /** A pi-durable host over `store` with the `piDurable` entry of this package. */
 async function openDurable(store: string): Promise<Harness> {
-	const entry = subagentEntry({ durable, ai });
+	const entry = subagentEntry({ durable });
 	const registry = durable.createRegistry();
 
 	for (const extension of entry.extensions) registry.install(extension);
 
 	return Harness.open(
 		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (error) => reports.push(error) },
+		{ models, registry, onReport: (report) => reports.push(report) },
 		BACKGROUND_CONTEXT,
 	);
 }
@@ -70,21 +76,25 @@ async function openDurable(store: string): Promise<Harness> {
 async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
 	const registry = durable.createRegistry();
 	registry.install(
-		subagentTool(durable, ai, {
-			caller: async (api) => `durable-test:${api.conversationId}`,
-			send: async (message, signal) => {
-				const reply = await request(message, { start: true, signal });
+		subagentTool(
+			durable,
+			{ Type },
+			{
+				caller: async (api) => `durable-test:${api.conversationId}`,
+				send: async (message, signal) => {
+					const reply = await request(message, { start: true, signal });
 
-				if (!hangSpawn || message.type !== "spawn") return reply;
+					if (!hangSpawn || message.type !== "spawn") return reply;
 
-				return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+					return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+				},
 			},
-		}),
+		),
 	);
 
 	return Harness.open(
 		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (error) => reports.push(error) },
+		{ models, registry, onReport: (report) => reports.push(report) },
 		BACKGROUND_CONTEXT,
 	);
 }
@@ -351,7 +361,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Note kind"]));
 		await cli(["wait", handle]);
 		const note = { type: "note", requestId: "kind", handle, text: "Bad", kind: "pi.user" } as const;
-		await expect(request(note, { start: false })).rejects.toThrow('A note kind cannot start with "pi.": pi.user');
+		await expect(request(note, { start: false })).rejects.toThrow("Invalid note request: kind is not valid");
 	});
 
 	it("queues a follow-up, renames and stops a child", async () => {
@@ -702,7 +712,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				prompt: "Nowhere",
 			};
 
-			expect(await rawError(JSON.stringify(spawn))).toBe("spawn requires a working directory");
+			expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: cwd is required");
 			expect(await client.request({ type: "list", caller })).toEqual([]);
 		} finally {
 			client.close();
@@ -710,9 +720,31 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a request line that does not match the protocol", async () => {
-		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown or invalid request: nope");
-		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Unknown or invalid request: status");
+		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown request: nope");
+		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Invalid status request: handle is required");
 		expect(await rawError("[]")).toBe("Invalid request");
+
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-huge",
+			caller: "cli-huge",
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			thinking: "huge",
+			callerThinking: "medium",
+			cwd: process.cwd(),
+			prompt: "Huge",
+		};
+
+		expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: thinking is not valid");
+
+		const note = { type: "note", requestId: "pi-kind", handle: "abc123", text: "Bad", kind: "pi.x" };
+		expect(await rawError(JSON.stringify(note))).toBe("Invalid note request: kind is not valid");
+
+		const conversationNote = { type: "note", requestId: "pi-kind", conversation: "c1", text: "Bad", kind: "pi.x" };
+		expect(await rawError(JSON.stringify(conversationNote))).toBe("Invalid note request: kind is not valid");
+		expect(await rawError(JSON.stringify({ type: "watch" }))).toBe("Invalid watch request: handle is required");
 	});
 
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {
@@ -846,18 +878,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const pending = client.request({ type: "answers", caller: "backoff-session" });
 			pending.catch(() => undefined);
 			await store.commit(async (tx) => {
-				(await tx.doc(Children)).children[handle] = {
+				(await tx.doc(ChildRecords)).children[handle] = {
 					caller: "backoff-session",
 					createdAt: new Date().toISOString(),
 					conversationId,
-					sent: ["backoff-request"],
+					requests: [{ id: "backoff-request", notify: true }],
+					read: 0,
 				};
 			}, BACKGROUND_CONTEXT);
 			await until(() => warnings() === 1);
 
 			for (let rename = 0; rename < 5; rename++) {
 				await store.commit(async (tx) => {
-					const record = (await tx.doc(Children)).children[handle];
+					const record = (await tx.doc(ChildRecords)).children[handle];
 
 					if (record !== undefined) record.name = `backoff-${rename}`;
 				}, BACKGROUND_CONTEXT);
@@ -870,7 +903,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			client?.close();
 			writes.mockRestore();
 			await store.commit(async (tx) => {
-				delete (await tx.doc(Children)).children[handle];
+				delete (await tx.doc(ChildRecords)).children[handle];
 			}, BACKGROUND_CONTEXT);
 		}
 	});
@@ -879,7 +912,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const parent = handleOf(await cli(["spawn", "--prompt", "Ordered parent"]));
 		await cli(["wait", parent]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		const pushed: string[] = [];
 		let refused = false;
@@ -888,8 +921,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const [draft] = submitted;
 					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
 
@@ -943,7 +977,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await cli(["wait", parent]);
 
 		const idOf = async (handle: string) =>
-			(await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+			(await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 
 		const id = await idOf(parent);
 		const conversation = store.conversation.bind(store);
@@ -959,8 +993,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const [draft] = submitted;
 					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
 
@@ -1043,7 +1078,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const place = { store, models, registry: durable.createRegistry().snapshot() };
 		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
 		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
@@ -1070,7 +1105,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Before the crash"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		let armed = true;
 		let failing: { mockRestore(): void } | undefined;
@@ -1122,7 +1157,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 			client.close();
 		}
 
-		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toContain("send-crash");
+		expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toContainEqual({
+			id: "send-crash",
+			notify: true,
+		});
 		expect(called("Sent at the crash")).toBe(1);
 	});
 
@@ -1136,8 +1174,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && armed && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const submission = await submit(...submitted);
 					const [draft] = submitted;
 
@@ -1180,8 +1219,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
 				answer: "Answer to Spawned at the crash",
 			});
-			expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toEqual([
-				"spawn:spawn-crash",
+			expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toEqual([
+				{ id: "spawn:spawn-crash", notify: true },
 			]);
 		} finally {
 			lookups.mockRestore();
@@ -1196,7 +1235,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Send fails"]));
 		await cli(["wait", handle]);
-		const id = (await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
 		const conversation = store.conversation.bind(store);
 		let armed = true;
 		let failing: { mockRestore(): void } | undefined;
@@ -1225,7 +1264,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			failing?.mockRestore();
 		}
 
-		expect((await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT))?.children[handle]?.sent).toHaveLength(1);
+		expect((await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.requests).toHaveLength(1);
 		expect((await cli(["status", handle])).stdout).toBe(`${handle}: idle (faux/faux-1, medium)\n`);
 		expect(called("Lost")).toBe(0);
 	});
@@ -1296,15 +1335,103 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ stateDir, project: "a", cwd: stateDir, models })).rejects.toThrow(
+		await expect(runHost({ project: "old-state", cwd: stateDir, models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
 
+	it("keeps the children and the requests of a store from version 2", async () => {
+		process.env.XDG_STATE_HOME = join(root, "state-v2");
+		const stateDir = statePaths("main").dir;
+		const caller = "v2-session";
+
+		try {
+			await mkdir(stateDir, { recursive: true });
+			const registry = durable.createRegistry();
+			registry.install(library.extension);
+			registry.install(library.answerExtension);
+
+			const store = await Harness.open(
+				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+				{ models, registry },
+				BACKGROUND_CONTEXT,
+			);
+
+			const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+			const place = { store, models, registry: registry.snapshot() };
+			const spec = { root: caller, provider: "faux", model: "faux-1", cwd: root };
+			const child = await library.open(place, owner, "v2:child", spec, BACKGROUND_CONTEXT);
+
+			const ChildrenV2 = durable.defineDoc<{
+				children: Record<string, durable.JsonObject>;
+				requests: Record<string, string>;
+			}>({
+				kind: "subagent.children",
+				version: 2,
+				scope: "session",
+				checkpointWhen: () => false,
+				initial: () => ({ children: {}, requests: {} }),
+			});
+
+			await store.commit(async (tx) => {
+				const state = await tx.doc(ChildrenV2);
+
+				state.children.v2kid = {
+					caller,
+					createdAt: new Date().toISOString(),
+					conversationId: child.id,
+					sent: ["spawn:x", "q"],
+					quiet: ["q"],
+					read: 1,
+					pushed: "spawn:x",
+				};
+				state.requests.x = "v2kid";
+			}, BACKGROUND_CONTEXT);
+			await store.close(BACKGROUND_CONTEXT);
+
+			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
+
+			try {
+				const children = await request({ type: "list", caller }, { start: false });
+				expect(children?.map((info) => info.handle)).toEqual(["v2kid"]);
+			} finally {
+				await migrated?.close();
+			}
+
+			const reopened = await Harness.open(
+				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+				{ models, registry: durable.createRegistry() },
+				BACKGROUND_CONTEXT,
+			);
+
+			try {
+				expect(await reopened.snapshot(ChildRecords, BACKGROUND_CONTEXT)).toMatchObject({
+					children: {
+						v2kid: {
+							caller,
+							conversationId: child.id,
+							requests: [
+								{ id: "spawn:x", notify: true },
+								{ id: "q", notify: false },
+							],
+							read: 1,
+							pushed: "spawn:x",
+						},
+					},
+					requests: { x: "v2kid" },
+				});
+			} finally {
+				await reopened.close(BACKGROUND_CONTEXT);
+			}
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 3);
-		const refusal = runHost({ stateDir, project: "a", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
+		const stateDir = await childrenStore("new-state", 4);
+		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 4 than 3");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
@@ -1389,7 +1516,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env.XDG_STATE_HOME = join(root, "state-empty");
 
 			const empty = await runHost({
-				stateDir: statePaths("main").dir,
 				project: "main",
 				cwd: projectDir("main"),
 				models: createModels(),
@@ -1435,6 +1561,24 @@ describe("subagent", { timeout: 30_000 }, () => {
 			);
 		} finally {
 			stderr.mockRestore();
+			process.env.XDG_STATE_HOME = join(root, "state");
+			await rm(entries);
+		}
+	});
+
+	it("refuses to start with an entry that returns an invalid result", async () => {
+		const entries = join(root, "config", "harness", "entries.json");
+		const module = join(root, "bad-entry.mjs");
+		await mkdir(join(root, "config", "harness"), { recursive: true });
+		await writeFile(module, 'export default () => ({ extensions: "x", close: async () => {} });\n');
+		await writeFile(entries, JSON.stringify({ bad: module }));
+		process.env.XDG_STATE_HOME = join(root, "state-bad");
+
+		try {
+			await expect(startHost()).rejects.toThrow(
+				`The entry ${module} returned an invalid result: /extensions must be array`,
+			);
+		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 			await rm(entries);
 		}
@@ -1515,7 +1659,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 
 		try {
-			const state = await store.snapshot(ChildrenDoc, BACKGROUND_CONTEXT);
+			const state = await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
 			const id = String(state?.children[handle ?? ""]?.conversationId);
 			expect(await createChildren(durable).lineage(store, id, BACKGROUND_CONTEXT)).toMatchObject({
 				root: caller,
@@ -1737,17 +1881,6 @@ async function restartWithStore(): Promise<Harness> {
 	return store;
 }
 
-/** The `subagent.children` document of the host, to read a child's conversation ID and requests. */
-const ChildrenDoc = durable.defineDoc<{
-	children: Record<string, { conversationId: ConversationId; sent?: string[] }>;
-}>({
-	kind: "subagent.children",
-	version: 2,
-	scope: "session",
-	checkpointWhen: () => false,
-	initial: () => ({ children: {} }),
-});
-
 /** The text of each user and assistant message of `view`. */
 function textsOf(view: Awaited<ReturnType<Client["watch"]>>["view"] | undefined): string[] {
 	return (view?.entries ?? []).flatMap((entry) => {
@@ -1765,7 +1898,7 @@ async function watchAgent(): Promise<{
 	const client = await connect({ start: false });
 
 	if (client === undefined) throw new Error("no host");
-	const first = await client.watch(AGENT_HANDLE);
+	const first = await client.watch({ kind: "agent" });
 	const events: WatchLine[] = [];
 	void (async () => {
 		for await (const line of first.lines) events.push(line);
@@ -1795,10 +1928,13 @@ async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
 	);
 }
 
-/** A state directory whose store has a `subagent.children` document at `version`, as another pi-subagent writes it. */
+/**
+ * The state directory of the project `name`, whose store has a `subagent.children` document at `version`, as another
+ * pi-subagent writes it.
+ */
 async function childrenStore(name: string, version: number): Promise<string> {
-	const stateDir = join(root, name);
-	await mkdir(stateDir);
+	const stateDir = statePaths(name).dir;
+	await mkdir(stateDir, { recursive: true });
 
 	const Children = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
 		kind: "subagent.children",

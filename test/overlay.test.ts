@@ -9,12 +9,12 @@ import { Harness } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createChildren, type Owner, type Place } from "../src/children.ts";
-import { request } from "../src/client.ts";
-import { ChildContext } from "../src/context.ts";
-import { setEntry } from "../src/entries.ts";
-import type { Host } from "../src/host.ts";
-import { overlayDoc } from "../src/overlay.ts";
+import { ChildContext } from "../src/children/context.ts";
+import { createChildren, type Owner, type Place } from "../src/children/library.ts";
+import { overlayDoc } from "../src/children/overlay.ts";
+import { request } from "../src/client/client.ts";
+import type { Host } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import { models, requests, root, setUp, startHost, tearDown } from "./helpers.ts";
 
 const library = createChildren(durable);

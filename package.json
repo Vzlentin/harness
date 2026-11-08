@@ -11,9 +11,69 @@
 		"harness": "dist/cli.js"
 	},
 	"exports": {
-		"./*": {
-			"types": "./dist/*.d.ts",
-			"default": "./dist/*.js"
+		"./answers": {
+			"types": "./dist/client/answers.d.ts",
+			"default": "./dist/client/answers.js"
+		},
+		"./children": {
+			"types": "./dist/children/library.d.ts",
+			"default": "./dist/children/library.js"
+		},
+		"./client": {
+			"types": "./dist/client/client.d.ts",
+			"default": "./dist/client/client.js"
+		},
+		"./durable-entry": {
+			"types": "./dist/host/durable-entry.d.ts",
+			"default": "./dist/host/durable-entry.js"
+		},
+		"./entries": {
+			"types": "./dist/protocol/entries.d.ts",
+			"default": "./dist/protocol/entries.js"
+		},
+		"./herdr": {
+			"types": "./dist/client/herdr.d.ts",
+			"default": "./dist/client/herdr.js"
+		},
+		"./host": {
+			"types": "./dist/host/run.d.ts",
+			"default": "./dist/host/run.js"
+		},
+		"./mirror": {
+			"types": "./dist/client/mirror.d.ts",
+			"default": "./dist/client/mirror.js"
+		},
+		"./overlay": {
+			"types": "./dist/children/overlay.d.ts",
+			"default": "./dist/children/overlay.js"
+		},
+		"./projects": {
+			"types": "./dist/protocol/projects.d.ts",
+			"default": "./dist/protocol/projects.js"
+		},
+		"./protocol": {
+			"types": "./dist/protocol/index.d.ts",
+			"default": "./dist/protocol/index.js"
+		},
+		"./respond": {
+			"types": "./dist/children/respond.d.ts",
+			"default": "./dist/children/respond.js"
+		},
+		"./tasks": {
+			"types": "./dist/host/tasks.d.ts",
+			"default": "./dist/host/tasks.js"
+		},
+		"./tool": {
+			"types": "./dist/tool.d.ts",
+			"default": "./dist/tool.js"
+		},
+		"./trust": {
+			"types": "./dist/protocol/trust.d.ts",
+			"default": "./dist/protocol/trust.js"
+		},
+		"./view-state": {
+			"types": "./dist/client/view-state.d.ts",
+			"default": "./dist/client/view-state.js"
 		},
 		"./package.json": "./package.json"
 	},
@@ -25,17 +85,18 @@
 	},
 	"scripts": {
 		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"prepare": "npm run build",
 		"prepack": "npm run build",
 		"check": "biome check . && oxlint --deny-warnings && npm run build && tsc -p tsconfig.json && vitest --run --passWithNoTests",
 		"test": "vitest --run --passWithNoTests"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "1.4.0",
-		"@earendil-works/pi-ai": "1.4.0",
-		"@earendil-works/pi-codemode": "1.4.0",
-		"@earendil-works/pi-coding-agent": "1.4.0",
-		"@earendil-works/pi-durable": "1.4.0",
-		"@earendil-works/pi-tui": "1.4.0",
+		"@earendil-works/chord": "1.5.0",
+		"@earendil-works/pi-ai": "1.5.0",
+		"@earendil-works/pi-codemode": "1.5.0",
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@earendil-works/pi-durable": "1.5.0",
+		"@earendil-works/pi-tui": "1.5.0",
 		"jiti": "2.7.0",
 		"typebox": "1.3.27"
 	},

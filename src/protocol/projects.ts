@@ -3,13 +3,13 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { HARNESS_PROJECT } from "./env.ts";
 import { readJsonFile, updateJsonFile } from "./json-file.ts";
 
 /** The project that has no directory. A cwd outside every project goes to it. */
 export const MAIN_PROJECT = "main";
 
-/** The commands of the `harness` CLI, which a project cannot have as its name. */
-export const COMMAND_NAMES: ReadonlySet<string> = new Set([
+const COMMANDS = [
 	"spawn",
 	"status",
 	"rename",
@@ -21,7 +21,13 @@ export const COMMAND_NAMES: ReadonlySet<string> = new Set([
 	"host",
 	"create",
 	"projects",
-]);
+] as const;
+
+/** A command of the `harness` CLI. */
+export type CommandName = (typeof COMMANDS)[number];
+
+/** The commands of the `harness` CLI, which a project cannot have as its name. */
+export const COMMAND_NAMES: ReadonlySet<string> = new Set(COMMANDS);
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -111,7 +117,7 @@ export function resolveProject(
 	cwd: string,
 	projects: Readonly<Record<string, string>> = readProjects(),
 ): string {
-	if (env.HARNESS_PROJECT) return checkProject(env.HARNESS_PROJECT, projects);
+	if (env[HARNESS_PROJECT]) return checkProject(env[HARNESS_PROJECT], projects);
 	let found = MAIN_PROJECT;
 	let length = -1;
 
@@ -124,4 +130,17 @@ export function resolveProject(
 	}
 
 	return found;
+}
+
+/**
+ * The project of a command with the explicit project `name`: `name` when it is given, which must be `main` or a project,
+ * else the project of `env` and `cwd` (see `resolveProject`).
+ */
+export function projectOf(
+	name: string | undefined,
+	env: NodeJS.ProcessEnv,
+	cwd: string,
+	projects: Readonly<Record<string, string>> = readProjects(),
+): string {
+	return name === undefined ? resolveProject(env, cwd, projects) : checkProject(name, projects);
 }

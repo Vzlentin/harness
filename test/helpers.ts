@@ -18,9 +18,8 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { Terminal } from "@earendil-works/pi-tui";
-import { type Host, runHost } from "../src/host.ts";
-import { MAIN_PROJECT, projectDir } from "../src/projects.ts";
-import { statePaths } from "../src/protocol.ts";
+import { type Host, runHost } from "../src/host/run.ts";
+import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
@@ -276,7 +275,7 @@ export function handleOf(result: Result): string {
  * while the test host was down, because the tests would then run against a host without the faux provider.
  */
 export async function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
-	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+	const host = await runHost({ project, cwd: projectDir(project), models });
 
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
@@ -357,13 +356,13 @@ export async function tearDown(): Promise<void> {
 	await rm(root, { recursive: true, force: true });
 }
 
-/** A `pi` on `PATH` that logs its arguments and its Herdr variables to `log`, one line for each call, and exits with 3. */
+/** A `pi` on `PATH` that logs its arguments, its Herdr variables and `HARNESS_PROJECT` to `log`, one line for each call, and exits with 3. */
 export async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "pi.log");
 
 	const script = `#!/bin/sh
-echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE" >> "${log}"
+echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE HARNESS_PROJECT=$HARNESS_PROJECT" >> "${log}"
 exit 3
 `;
 

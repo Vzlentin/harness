@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import type * as Ai from "@earendil-works/pi-ai";
-import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { request } from "./client.ts";
-import { childLine, isValidRunName, type Replies, type Request, runDisplayName } from "./protocol.ts";
-
-const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+import type * as TypeBox from "typebox";
+import type { Static, TSchema } from "typebox";
+import { Value } from "typebox/value";
+import { request } from "./client/client.ts";
+import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
+import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
@@ -22,8 +22,12 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.`;
 
-/** The parameters and the output schema of the tool, built with the `Type` of the caller's pi-ai. */
-export function toolSchemas(Type: typeof Ai.Type) {
+/**
+ * The parameters and the output schema of the tool, built with the caller's TypeBox `Type`, so the schemas come from the
+ * caller's copy of TypeBox.
+ */
+export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
+	const { Type } = typebox;
 	const text = (description: string) => Type.Optional(Type.String({ description }));
 	const texts = (description: string) => Type.Optional(Type.Array(Type.String(), { description }));
 
@@ -43,7 +47,11 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		name: text("spawn, rename: the child's name, 1 to 64 characters"),
 		provider: text("spawn: the provider; default yours"),
 		model: text("spawn: the model; default yours"),
-		thinking: text("spawn: off, minimal, low, medium, high, xhigh or max; default yours"),
+		thinking: Type.Optional(
+			Type.Enum(THINKING_LEVELS, {
+				description: `spawn: ${THINKING_LEVELS.slice(0, -1).join(", ")} or ${THINKING_LEVELS.at(-1)}; default yours`,
+			}),
+		),
 		cwd: text("spawn: the child's working directory; default yours"),
 		tools: texts(
 			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash, codemode and the package tools",
@@ -63,7 +71,7 @@ export function toolSchemas(Type: typeof Ai.Type) {
 	const child = Type.Object({
 		handle: Type.String(),
 		name: Type.Optional(Type.String()),
-		state: Type.Union([Type.Literal("busy"), Type.Literal("idle"), Type.Literal("error"), Type.Literal("closed")]),
+		state: Type.Enum(CHILD_STATES),
 		provider: Type.String(),
 		model: Type.String(),
 		thinking: Type.String(),
@@ -184,13 +192,11 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extract<Request, { type: "spawn" }> {
 	const provider = args.provider ?? scope.provider;
 	const model = args.model ?? scope.model;
-	const thinking = args.thinking ?? scope.thinking;
 
 	if (!provider) throw new Error("No provider specified and the caller has no model");
 
 	if (!model) throw new Error("No model specified and the caller has no model");
 
-	if (!THINKING_LEVELS.has(thinking)) throw new Error(`Invalid thinking level: ${thinking}`);
 	const base = scope.cwd;
 
 	if (base === undefined) throw new Error("spawn requires a caller with a working directory");
@@ -272,8 +278,12 @@ export type DurableScope = {
  * The pi-durable extension with the `subagent` tool. A call that runs again after a restart has the same task, so its
  * spawn or send has the same request ID and does not repeat.
  */
-export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: DurableScope): Extension {
-	const { parameters, output } = toolSchemas(ai.Type);
+export function subagentTool(
+	durable: typeof Durable,
+	typebox: Pick<typeof TypeBox, "Type">,
+	scope: DurableScope,
+): Extension {
+	const { parameters, output } = toolSchemas(typebox);
 
 	const tool = durable.defineTool({
 		name: "subagent",
@@ -283,6 +293,8 @@ export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: Dura
 		replay: "safe",
 		executionMode: "sequential",
 		async execute(args, api, context) {
+			// pi-durable has validated the arguments, but its types do not narrow TypeBox enums.
+			if (!Value.Check(parameters, args)) throw new Error("Invalid subagent arguments");
 			const agent = await api.agent(context);
 
 			const { text, data } = await runTool(args, {

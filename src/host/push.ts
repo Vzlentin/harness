@@ -4,22 +4,22 @@
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
-import type { Answer, Child, Input } from "./children.ts";
-import { AGENT_HANDLE, type Delivery, deliveryText } from "./protocol.ts";
+import { type CommitChange, type CommitObservation, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
+import type { Answer, Child, Input } from "../children/library.ts";
+import { deliveryText } from "../protocol/labels.ts";
+import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
 import {
 	type ChildRecord,
-	Children,
-	childOf,
-	childTarget,
+	ChildRecords,
+	isHeld,
 	isPushRequest,
-	library,
 	markRead,
 	pushRequest,
-	type TargetHost,
-	target,
-} from "./targets.ts";
-import { isHeld, unreadAnswers, unreadNotify } from "./unread.ts";
+	recordsByAge,
+	unreadAnswers,
+	unreadNotify,
+} from "./records.ts";
+import { childOf, childTarget, library, type TargetHost, target } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -87,7 +87,7 @@ export class Push {
 	readonly #sweepEnds = new Set<() => void>();
 	/** The children whose last pushes failed. */
 	readonly #failures = new Map<string, Failure>();
-	readonly #unsubscribe: () => void;
+	readonly #observation: CommitObservation;
 	/** The timer of the sweep at the end of the earliest wait of `#failures`. */
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#dirty = false;
@@ -104,8 +104,11 @@ export class Push {
 	constructor(host: PushHost) {
 		this.#host = host;
 		// The listener only schedules a sweep: it must not call the store.
-		this.#unsubscribe = host.harness.subscribeCommits((publication) => {
-			if (publication.changes.some(endsTurn)) this.schedule();
+		this.#observation = host.harness.observeCommits({
+			advance: (publication) => {
+				if (publication.changes.some(endsTurn)) this.schedule();
+			},
+			end: () => {},
 		});
 		this.schedule();
 	}
@@ -159,7 +162,7 @@ export class Push {
 					continue;
 				}
 
-				if (!isHeld(await this.#host.harness.snapshot(Children, waiting), child.id)) return { main, answer };
+				if (!isHeld(await this.#host.harness.snapshot(ChildRecords, waiting), child.id)) return { main, answer };
 				await sweep.ended;
 			} finally {
 				sweep.cancel();
@@ -167,7 +170,7 @@ export class Push {
 
 			signal.throwIfAborted();
 
-			if (this.#closed) throw new Error("The host is closing");
+			if (this.#closed) throw new Error(HOST_CLOSING);
 		}
 	}
 
@@ -243,7 +246,7 @@ export class Push {
 	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
 	close(): void {
 		this.#closed = true;
-		this.#unsubscribe();
+		this.#observation.detach();
 		clearTimeout(this.#retry);
 		const ends = [...this.#sweepEnds];
 		this.#sweepEnds.clear();
@@ -267,9 +270,8 @@ export class Push {
 
 	/** Pushes the answers of the children that are done, for each caller with a destination, oldest child first. */
 	async #sweep(): Promise<void> {
-		const state = await this.#host.harness.snapshot(Children, context);
-		const entries: Entry[] = Object.entries(state?.children ?? {});
-		entries.sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
+		const state = await this.#host.harness.snapshot(ChildRecords, context);
+		const entries: Entry[] = recordsByAge(state);
 		const done = new Map<string, Entry[]>();
 		const now = Date.now();
 
@@ -417,7 +419,7 @@ export class Push {
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
 
-		if (caller === String(this.#host.root.id)) return (await target(this.#host, { handle: AGENT_HANDLE })).send;
+		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
 		const conversation = (await library.inspect(this.#host.place, caller, context))?.conversation;
 
 		if (conversation === undefined) return undefined;
@@ -464,27 +466,32 @@ export class Push {
 
 		if (state === "busy" || state === "closed") return undefined;
 		const last = await child.lastRequest(context);
-		const sent = record.sent ?? [];
+		const ids = record.requests.map((request) => request.id);
 
 		if (last === null) return undefined;
-		const main = sent.includes(last) || isPushRequest(last) ? last : sent.at(-1);
+		const main = ids.includes(last) || isPushRequest(last) ? last : ids.at(-1);
 
 		if (main === undefined) return undefined;
 		const answer = await child.settled(context, main);
-		const { text, failed, read } = await unreadAnswers(child, handle, record, main, answer, sent, context);
+		const { text, failed, read } = await unreadAnswers(child, handle, record, main, answer, record.requests, context);
 
-		if (read <= (record.read ?? 0)) return undefined;
+		if (read <= record.read) return undefined;
 		const delivery = record.name === undefined ? { handle, text, failed } : { handle, name: record.name, text, failed };
 
 		return { delivery, handle, read, main };
 	}
 }
 
-/** Whether `change` can end a turn or change a record: a live document without a run, or the `Children` document. */
+/**
+ * Whether `change` can end a turn or change a record: a live document without a run or retired, or the `ChildRecords`
+ * document.
+ */
 function endsTurn(change: CommitChange): boolean {
 	if (change.type !== "document") return false;
 
-	if (change.record.kind === Children.definition.kind) return true;
+	if (change.record.kind === ChildRecords.definition.kind) return true;
 
-	return change.record.kind === LiveDoc.definition.kind && change.value?.run === undefined;
+	if (change.record.kind !== LiveDoc.definition.kind) return false;
+
+	return change.kind === "retire" || change.value.run === undefined;
 }

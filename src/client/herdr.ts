@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { childLabel } from "../protocol/labels.ts";
+import { cliPath } from "../protocol/paths.ts";
+import { resolveProject } from "../protocol/projects.ts";
+import type { ChildInfo } from "../protocol/requests.ts";
+import { parseTarget } from "../protocol/target.ts";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
-import { resolveProject } from "./projects.ts";
-import { type ChildInfo, childLabel, cliPath } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:harness";
 
@@ -37,7 +40,7 @@ function openCommand(target: MirrorTarget): string[] {
 
 /** The `--env` flags of `herdr` that give `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set. */
 function envFlags(env: NodeJS.ProcessEnv): string[] {
-	// The new pane must find the same host and projects as `statePaths()` in protocol.ts and `projectsPath()` in
+	// The new pane must find the same host and projects as `statePaths()` in paths.ts and `projectsPath()` in
 	// projects.ts.
 	const state = env.XDG_STATE_HOME;
 	const config = env.XDG_CONFIG_HOME;
@@ -104,7 +107,7 @@ export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Pr
 
 	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
 
-	await runOpen(output.result.root_pane.pane_id, { project, handle: child.handle }, env);
+	await runOpen(output.result.root_pane.pane_id, { project, target: parseTarget({ handle: child.handle }) }, env);
 }
 
 /**
@@ -121,7 +124,7 @@ export async function openConversationPane(
 	env: NodeJS.ProcessEnv,
 ): Promise<void> {
 	const project = resolveProject(env, process.cwd());
-	const target = { project, conversation: conversation.handle };
+	const target: MirrorTarget = { project, target: { kind: "conversation", id: conversation.handle } };
 	const label = childLabel(conversation);
 
 	if (place.pane !== undefined) {

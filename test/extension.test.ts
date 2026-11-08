@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -16,8 +17,8 @@ import type {
 import type { Component } from "@earendil-works/pi-tui";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type extension from "../pi/index.ts";
-import { request } from "../src/client.ts";
-import type { Host } from "../src/host.ts";
+import { request } from "../src/client/client.ts";
+import type { Host } from "../src/host/run.ts";
 import { TOOL_DESCRIPTION } from "../src/tool.ts";
 import { gates, root, setUp, startHost, tearDown } from "./helpers.ts";
 
@@ -33,7 +34,11 @@ type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execu
 type Handler = ExtensionHandler<SessionStartEvent | SessionShutdownEvent>;
 
 /** A registered tool: its description, and a call with `args` that gives its text. */
-type Tool = { readonly description: string; readonly call: (args: Args) => Promise<string> };
+type Tool = {
+	readonly description: string;
+	readonly parameters: unknown;
+	readonly call: (args: Args) => Promise<string>;
+};
 
 /** The arguments of a tool call in the tests. */
 type Args = Readonly<Record<string, string | readonly string[]>>;
@@ -138,7 +143,7 @@ async function load(): Promise<Registered> {
 				return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 			};
 
-			registered.tools.set(tool.name, { description: tool.description, call });
+			registered.tools.set(tool.name, { description: tool.description, parameters: tool.parameters, call });
 		},
 		registerCommand: (name, command) => {
 			registered.commands.set(name, command);
@@ -229,6 +234,14 @@ describe("the Pi extension", () => {
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
+	});
+
+	it("takes for the tool's thinking only pi-ai's levels, in their order", async () => {
+		const registered = await load();
+
+		expect(registered.tools.get("subagent")?.parameters).toMatchObject({
+			properties: { thinking: { enum: [...MODEL_THINKING_LEVELS] } },
+		});
 	});
 
 	it("puts the .bin folder next to its harness last on PATH, once for each load", async () => {

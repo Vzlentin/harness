@@ -12,17 +12,24 @@ import { type Component, KeybindingsManager, type TUI, TUI_KEYBINDINGS, TuiMainS
 import { beforeAll, describe, expect, it } from "vitest";
 import { ChatView } from "../pi/chat.ts";
 import { registerMirror } from "../pi/mirror.ts";
-import type { AgentReporter } from "../src/herdr.ts";
-import * as herdr from "../src/herdr.ts";
-import * as mirror from "../src/mirror.ts";
-import { MIRROR_ENTRY, type MirrorStatus, type MirrorTarget, PossiblySentError } from "../src/mirror.ts";
-import * as projects from "../src/projects.ts";
-import * as protocol from "../src/protocol.ts";
-import { AGENT_HANDLE, type ChildInfo } from "../src/protocol.ts";
-import * as viewState from "../src/view-state.ts";
+import type { AgentReporter } from "../src/client/herdr.ts";
+import * as herdr from "../src/client/herdr.ts";
+import * as mirror from "../src/client/mirror.ts";
+import {
+	MIRROR_ENTRY,
+	type MirrorStatus,
+	type MirrorTarget,
+	PossiblySentError,
+	toMirrorEntry,
+} from "../src/client/mirror.ts";
+import * as viewState from "../src/client/view-state.ts";
+import * as protocol from "../src/protocol/index.ts";
+import * as projects from "../src/protocol/projects.ts";
+import type { ChildInfo } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { FakeTerminal, until } from "./helpers.ts";
 
-const AGENT: MirrorTarget = { project: "main", handle: AGENT_HANDLE };
+const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
 
 const CHILD: ChildInfo = {
 	handle: AGENT_HANDLE,
@@ -150,7 +157,14 @@ function answerEntry(id: number, message: Answer): EntryRecord {
 
 /** The mirror entry with `target`, as Pi keeps it in the session. */
 function mirrorEntry(target: MirrorTarget): coding.SessionEntry {
-	return { type: "custom", customType: MIRROR_ENTRY, data: target, id: "mirror-1", parentId: null, timestamp: "" };
+	return {
+		type: "custom",
+		customType: MIRROR_ENTRY,
+		data: toMirrorEntry(target),
+		id: "mirror-1",
+		parentId: null,
+		timestamp: "",
+	};
 }
 
 /** An event that the tests give to a handler of the mirror. */
@@ -426,6 +440,52 @@ describe("chat view", () => {
 		expect(drawn(chat)).toContain("echo stale");
 		chat.apply(viewOf({}, [answerEntry(1, answer(6, [{ type: "text", text: "Other answer" }]))]));
 		expect(drawn(chat)).toContain("Other answer");
+		expect(drawn(chat)).not.toContain("echo stale");
+	});
+
+	it("keeps the drawn entries when the window of the view drops its oldest ones", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		const components = [...chat.transcript.children];
+		chat.apply({
+			...viewOf({}, [second, answerEntry(3, answer(3, [{ type: "text", text: "Third answer" }]))]),
+			before: first.id,
+		});
+		expect(chat.transcript.children).toHaveLength(components.length + 1);
+
+		for (const [index, component] of components.entries()) expect(chat.transcript.children[index]).toBe(component);
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Third answer");
+	});
+
+	it("keeps the entries before the window when a streamed answer is dropped", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		const partial = answer(9, [{ type: "text", text: "Partial answer" }]);
+		chat.apply({ ...viewOf({ generation: { attempt: 1, message: partial } }, [second]), before: first.id });
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Second answer");
+		expect(drawn(chat)).not.toContain("Partial answer");
+	});
+
+	it("keeps the entries before the window when a new answer is not the streamed one", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		const call = { type: "toolCall" as const, id: "stale-call", name: "bash", arguments: { command: "echo stale" } };
+		chat.apply({ ...viewOf({ generation: { attempt: 1, message: answer(5, [call]) } }, [second]), before: first.id });
+		const third = answerEntry(3, answer(6, [{ type: "text", text: "Third answer" }]));
+		chat.apply({ ...viewOf({}, [second, third]), before: first.id });
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Third answer");
 		expect(drawn(chat)).not.toContain("echo stale");
 	});
 

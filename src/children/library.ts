@@ -4,30 +4,33 @@
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { type Context, withCancel } from "@earendil-works/chord/context";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
-import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
+import type { Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {
-	Agent,
 	AgentChange,
 	Conversation,
 	ConversationId,
 	DocumentReader,
 	EntryId,
 	Extension,
+	InputSubmissionDraft,
 	JsonObject,
-	ModelRef,
 	RegistrySnapshot,
 	Submission,
+	SubmissionDraft,
 	SubmissionId,
 	TaskId,
 	ToolRegistration,
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
-import { complete, createAnswers } from "./answer.ts";
+import type { ChildState } from "../protocol/requests.ts";
+import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
+import { complete, createAnswers } from "./respond.ts";
+import { addUsageState } from "./usage.ts";
+
+export { type ResolvedModel, resolveModel } from "./model.ts";
 
 /** The deepest child of a tree whose first spec gives no `limit`, such as one of a library caller: a child of a child of a root. */
 export const DEFAULT_DEPTH_LIMIT = 2;
@@ -63,11 +66,18 @@ export type Owner =
 	| { readonly kind: "detached"; readonly root: Conversation };
 
 /** What a child runs with. JSON only, so a socket can carry it. A field left out comes from the owner's agent. */
-export type Spec = {
-	/** The root of the tree, for a child of a caller outside this store: a Pi session, a caller name. */
-	readonly root?: string;
-	/** The conversation in this store that spawns the child. */
-	readonly parent?: string;
+export type Spec = (
+	| {
+			/** The root of the tree, for a child of a caller outside this store: a Pi session, a caller name. */
+			readonly root: string;
+			readonly parent?: never;
+	  }
+	| {
+			/** The conversation in this store that spawns the child. */
+			readonly parent: string;
+			readonly root?: never;
+	  }
+) & {
 	readonly provider?: string;
 	readonly model?: string;
 	readonly thinking?: string;
@@ -101,8 +111,6 @@ export type Lineage = {
 	readonly limit: number;
 };
 
-export type ChildState = "busy" | "idle" | "error" | "closed";
-
 /**
  * What a turn returns: its text, or a named failure. `cut` stopped before its end, such as at its length limit, and
  * keeps its text. `no-respond` is a schema ask with no accepted `respond` call. `unanswered` settled with no answer,
@@ -132,10 +140,10 @@ export type Failure =
 	  };
 
 /** Input to a child, at most once per request ID. */
-export type Input = Parameters<Conversation["submit"]>[0] & { readonly type: "input"; readonly requestId: string };
+export type Input = InputSubmissionDraft & { readonly requestId: string };
 
 /** A passive entry for a child's transcript, at most once per request ID. */
-export type Write = Extract<Parameters<Conversation["submit"]>[0], { type: "write" }> & { readonly requestId: string };
+export type Write = Extract<SubmissionDraft, { type: "write" }> & { readonly requestId: string };
 
 /** One child, driven by its operations. Failures are returned, not thrown, so each caller keeps its own policy. */
 export type Child = {
@@ -294,14 +302,14 @@ export function createChildren(durable: typeof Durable): Children {
 
 	const OverlayDoc = overlayDoc(durable);
 
-	/** The conversation of each key; 0 before it exists. */
-	const Keys = durable.defineDocFamily<{ conversation: ConversationId | 0 }, null>({
+	/** The conversation of each key; null before it exists. */
+	const Keys = durable.defineDocFamily<{ conversation: ConversationId | null }, null>({
 		kind: "pi-subagent.key",
 		version: 1,
 		scope: "session",
 		checkpointWhen: () => false,
 		family: true,
-		initial: () => ({ conversation: 0 }),
+		initial: () => ({ conversation: null }),
 	});
 
 	/**
@@ -342,15 +350,9 @@ export function createChildren(durable: typeof Durable): Children {
 		return doc.parent === null ? found : { ...found, parent: doc.parent };
 	};
 
-	async function childDoc(store: Pick<Store, "snapshot">, id: ConversationId, context: Context) {
-		const doc = await store.snapshot(ChildDoc, id, context);
-
-		return doc === undefined || doc.key === "" ? undefined : doc;
-	}
-
 	async function lineage(store: Pick<Store, "snapshot">, id: string, context: Context) {
 		const conversation = conversationIdOf(id);
-		const doc = conversation === undefined ? undefined : await childDoc(store, conversation, context);
+		const doc = conversation === undefined ? undefined : await store.snapshot(ChildDoc, conversation, context);
 
 		return doc === undefined ? undefined : lineageOf(doc);
 	}
@@ -375,7 +377,7 @@ export function createChildren(durable: typeof Durable): Children {
 
 		// The loop also visits the IDs that it appends.
 		for (const member of ids) {
-			const doc = await childDoc(place.store, member, context);
+			const doc = await place.store.snapshot(ChildDoc, member, context);
 
 			for (const child of doc?.children ?? []) ids.push(child);
 		}
@@ -688,8 +690,8 @@ export function createChildren(durable: typeof Durable): Children {
 				? (await place.store.snapshot(Keys, which.key, context))?.conversation
 				: conversationIdOf(which.id);
 
-		if (id === undefined || id === 0) return undefined;
-		const doc = await childDoc(place.store, id, context);
+		if (id === undefined || id === null) return undefined;
+		const doc = await place.store.snapshot(ChildDoc, id, context);
 		const conversation = await place.store.conversation(id, context);
 
 		if (doc === undefined || conversation === undefined) return undefined;
@@ -754,14 +756,12 @@ export function createChildren(durable: typeof Durable): Children {
 			const limit = parent?.limit ?? spec.limit ?? DEFAULT_DEPTH_LIMIT;
 
 			if (depth > limit) throw new Error("Nested subagents are disabled");
-			const root = parent?.root ?? spec.root ?? spec.parent;
-
-			if (root === undefined) throw new Error("A child needs a root or a parent");
+			const root = spec.parent === undefined ? spec.root : (parent?.root ?? spec.parent);
 
 			const create = async (tx: Tx, ownerTask: TaskId) => {
 				const known = await tx.doc(Keys, key, null);
 
-				if (known.conversation !== 0) return undefined;
+				if (known.conversation !== null) return undefined;
 
 				if (parent !== undefined && parentId !== undefined && (await tx.doc(ChildDoc, parentId)).closed) {
 					throw new Error(`The child ${parentId} is closed`);
@@ -813,7 +813,7 @@ export function createChildren(durable: typeof Durable): Children {
 
 			if (owner.kind === "detached") {
 				await owner.root.commit(async (tx) => {
-					if ((await tx.doc(Keys, key, null)).conversation !== 0) return undefined;
+					if ((await tx.doc(Keys, key, null)).conversation !== null) return undefined;
 					const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
 
 					return create(tx, anchor);
@@ -831,91 +831,10 @@ export function createChildren(durable: typeof Durable): Children {
 	};
 }
 
-/** The model and the thinking level of a child. */
-export type ResolvedModel = { model: ModelRef; thinkingLevel: ModelThinkingLevel };
-
-/**
- * The model and thinking level of `request`; a field left out comes from `fallback`. An explicit `thinking` that the
- * model does not have is refused. Without it, the level is `fallbackThinking`, else the fallback's, clamped to the
- * nearest level that the model has.
- */
-export function resolveModel(
-	models: Models,
-	fallback: Pick<Agent, "model" | "thinkingLevel"> | undefined,
-	request: {
-		readonly provider?: string | undefined;
-		readonly model?: string | undefined;
-		readonly thinking?: string | undefined;
-		readonly fallbackThinking?: string | undefined;
-	},
-): ResolvedModel {
-	const provider = request.provider ?? fallback?.model?.provider;
-	const modelId = request.model ?? fallback?.model?.modelId;
-
-	if (provider === undefined || modelId === undefined) {
-		throw new Error("No model: neither the spec nor the owner's agent names one");
-	}
-
-	const model = models.getModel(provider, modelId);
-
-	if (model === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
-	const levels = getSupportedThinkingLevels(model);
-
-	if (request.thinking !== undefined) {
-		const thinkingLevel = levels.find((level) => level === request.thinking);
-
-		if (thinkingLevel === undefined)
-			throw new Error(`${provider}/${modelId} has no thinking level ${request.thinking}`);
-
-		return { model: { provider, modelId }, thinkingLevel };
-	}
-
-	const inherited = request.fallbackThinking ?? fallback?.thinkingLevel ?? "off";
-	const known = MODEL_THINKING_LEVELS.find((level) => level === inherited);
-
-	// `clampThinkingLevel` gives the model's first level for a name that it does not know.
-	return {
-		model: { provider, modelId },
-		thinkingLevel: known === undefined ? (levels[0] ?? "off") : clampThinkingLevel(model, known),
-	};
-}
-
 /** The conversation ID that `value` spells, as callers write it; nothing for another caller, such as a Pi session. */
 function conversationIdOf(value: string): ConversationId | undefined {
 	if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) return undefined;
 
 	// SAFETY: a conversation ID is a positive safe integer, and the callers look up the conversation of this one.
 	return Number(value) as ConversationId;
-}
-
-/** Adds every counter of `state` to `sum`. A counter that one side leaves out counts as 0. */
-function addUsageState(sum: UsageState, state: Readonly<UsageState>): void {
-	for (const bucket of ["models", "tools"] as const) {
-		const totals = sum[bucket];
-
-		for (const [key, usage] of Object.entries(state[bucket])) {
-			const total = Object.hasOwn(totals, key) ? totals[key] : undefined;
-
-			if (total === undefined) {
-				// Define rather than assign: assigning a tool named `__proto__` would set the prototype.
-				Object.defineProperty(totals, key, { value: structuredClone(usage), enumerable: true, writable: true });
-				continue;
-			}
-
-			total.input += usage.input;
-			total.output += usage.output;
-			total.cacheRead += usage.cacheRead;
-			total.cacheWrite += usage.cacheWrite;
-			total.totalTokens += usage.totalTokens;
-
-			if (usage.cacheWrite1h !== undefined) total.cacheWrite1h = (total.cacheWrite1h ?? 0) + usage.cacheWrite1h;
-
-			if (usage.reasoning !== undefined) total.reasoning = (total.reasoning ?? 0) + usage.reasoning;
-			total.cost.input += usage.cost.input;
-			total.cost.output += usage.cost.output;
-			total.cost.cacheRead += usage.cost.cacheRead;
-			total.cost.cacheWrite += usage.cost.cacheWrite;
-			total.cost.total += usage.cost.total;
-		}
-	}
 }

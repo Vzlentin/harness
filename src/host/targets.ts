@@ -1,13 +1,14 @@
 /**
  * The targets of the host's requests: the children by handle, the project agent, and the conversations of the children
- * library by ID, with the `Children` records of the host and the commits of their read marks.
+ * library by ID, with their info.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
-import { type Conversation, type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "./children.ts";
-import { AGENT_HANDLE, type ChildInfo, type ChildState, type Target } from "./protocol.ts";
-import { isHeld } from "./unread.ts";
+import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "../children/library.ts";
+import type { ChildInfo, ChildState } from "../protocol/requests.ts";
+import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
+import { type ChildRecord, ChildRecords, childRecord, isHeld } from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -21,36 +22,6 @@ export type TargetHost = {
 	/** The project agent: the root conversation, with a model and the project directory from its first use. */
 	readonly agent: () => Promise<Conversation>;
 };
-
-export type ChildRecord = {
-	name?: string;
-	/** `PI_SESSION_ID` of the spawner: a Pi session, the conversation ID of another child, or `cli`. */
-	caller: string;
-	createdAt: string;
-	conversationId: ConversationId;
-	/** The request IDs of the spawn and of each `send` of the caller, in order. */
-	sent?: string[];
-	/** How many requests of `sent` a `wait` or a push gave the answer of. */
-	read?: number;
-	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
-	pushed?: string;
-	/** The request IDs of `sent` with `notify: false`, whose answers are not pushed and do not hold the caller. */
-	quiet?: string[];
-};
-
-export type ChildrenState = { children: Record<string, ChildRecord>; requests: Record<string, string> };
-
-/**
- * The children by handle, and the handle of each spawn request ID. Version 2 leaves each child's last request to the
- * children library; a store with version 1 has children that the library does not know.
- */
-export const Children = defineDoc<ChildrenState>({
-	kind: "subagent.children",
-	version: 2,
-	scope: "session",
-	checkpointWhen: () => false,
-	initial: () => ({ children: {}, requests: {} }),
-});
 
 /** The request ID of the project agent's newest input, which its `error` state comes from. */
 const AgentState = defineDoc<{ lastRequest: string | null }>({
@@ -67,14 +38,22 @@ const AgentState = defineDoc<{ lastRequest: string | null }>({
 export const library = createChildren(durable);
 
 /**
- * The conversation of `ref`: a child or the project agent by handle, or a conversation of the children library by ID,
+ * The conversation of `ref`: a child by handle, the project agent, or a conversation of the children library by ID,
  * with its info, its input, and the record of a child.
  */
 export async function target(handler: TargetHost, ref: Target) {
-	if (ref.conversation !== undefined) return conversationTarget(handler, ref.conversation);
-	const { handle } = ref;
+	switch (ref.kind) {
+		case "child":
+			return childTarget(handler, ref.handle, await childRecord(handler.harness, ref.handle));
+		case "conversation":
+			return conversationTarget(handler, ref.id);
+		case "agent":
+			return agentTarget(handler);
+	}
+}
 
-	if (handle !== AGENT_HANDLE) return childTarget(handler, handle, await childRecord(handler.harness, handle));
+/** The target of the project agent. It has no record. */
+async function agentTarget(handler: TargetHost) {
 	const root = await handler.agent();
 	const { place, project } = handler;
 
@@ -89,7 +68,7 @@ export async function target(handler: TargetHost, ref: Target) {
 		conversation: root,
 		info: async (): Promise<ChildInfo> => ({
 			...(await agentFields(root)),
-			handle,
+			handle: AGENT_HANDLE,
 			name: `${project} agent`,
 			state: await turn.state(context),
 		}),
@@ -134,7 +113,7 @@ async function conversationTarget(handler: TargetHost, id: string) {
 			await conversation.submit({ ...input, whenBusy: "steer" }, context);
 		},
 		write: async (write: Write) => {
-			if ((await child.state(context)) === "closed") throw new Error(`${lineage.key} takes input only while it works`);
+			if ((await child.state(context)) === "closed") throw new Error(`The conversation ${id} is closed`);
 			await conversation.submit(write, context);
 		},
 		record: undefined,
@@ -154,24 +133,6 @@ export async function childTarget(handler: TargetHost, handle: string, record: C
 	};
 }
 
-export async function childRecord(harness: Harness, handle: string): Promise<ChildRecord> {
-	const state = await harness.snapshot(Children, context);
-	const record = recordOf(state, handle);
-
-	if (record === undefined) throw new Error(`Unknown subagent: ${handle}`);
-
-	return record;
-}
-
-/** The record of `handle`, which must belong to `caller`. */
-export async function ownRecord(harness: Harness, handle: string, caller: string): Promise<ChildRecord> {
-	const record = await childRecord(harness, handle);
-
-	if (record.caller !== caller) throw new Error(`Subagent ${handle} belongs to another session`);
-
-	return record;
-}
-
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
 	const child = await library.find(handler.place, handler.owner, { id: String(record.conversationId) }, context);
 
@@ -189,7 +150,7 @@ export async function childInfo(
 	record ??= await childRecord(handler.harness, handle);
 	const child = await childOf(handler, record);
 	const childState = await child.state(context);
-	const held = isHeld(await handler.harness.snapshot(Children, context), record.conversationId);
+	const held = isHeld(await handler.harness.snapshot(ChildRecords, context), record.conversationId);
 	// A closed child that still holds its caller is closed: it never runs again.
 	const state: ChildState = childState !== "closed" && held ? "busy" : childState;
 
@@ -203,71 +164,16 @@ async function agentFields(
 	conversation: Conversation,
 ): Promise<Pick<ChildInfo, "provider" | "model" | "thinking" | "cwd">> {
 	const agent = await conversation.agent(context);
+	const { model, cwd } = agent;
 
-	return {
-		provider: agent.model?.provider ?? "",
-		model: agent.model?.modelId ?? "",
-		thinking: agent.thinkingLevel,
-		// `spawnChild` refuses a spawn without `cwd`; the fallback only satisfies pi-durable's optional type.
-		cwd: agent.cwd ?? "",
-	};
-}
+	if (model === undefined) throw new Error(`The conversation ${conversation.id} has no model`);
 
-/**
- * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, in `tx`, the commit that makes it the
- * child's last request. Without `notify`, its answer is not pushed. A repeated request is not added. It is the only
- * writer of `sent` and `quiet`.
- */
-export async function addSent(
-	tx: Tx,
-	handle: string,
-	requestId: string,
-	options: { readonly notify: boolean },
-): Promise<void> {
-	const record = (await tx.doc(Children)).children[handle];
-	const sent = record?.sent ?? [];
+	if (cwd === undefined) throw new Error(`The conversation ${conversation.id} has no working directory`);
 
-	if (record === undefined || sent.includes(requestId)) return;
-	record.sent = [...sent, requestId];
-
-	if (!options.notify) record.quiet = [...(record.quiet ?? []), requestId];
-}
-
-/**
- * Marks the requests of `handle` up to `read` as read; `read` never passes the length of `sent`. After a push, `pushed`
- * is the request whose answer the push gave last, so that a `wait` for it gives no new answer. It is kept only for a
- * request of `sent` or the input of a push.
- */
-export async function markRead(harness: Harness, handle: string, read: number, pushed?: string): Promise<void> {
-	await harness.commit(async (tx) => {
-		const record = (await tx.doc(Children)).children[handle];
-
-		if (record === undefined) return;
-		const sent = record.sent ?? [];
-		record.read = Math.min(Math.max(record.read ?? 0, read), sent.length);
-
-		if (pushed !== undefined && (sent.includes(pushed) || isPushRequest(pushed))) record.pushed = pushed;
-	}, context);
-}
-
-const PUSH_PREFIX = "push:";
-
-/** The request ID of the push input that gives the answers of `handle` up to `read`. */
-export function pushRequest(handle: string, read: number): string {
-	return `${PUSH_PREFIX}${handle}:${read}`;
-}
-
-/** Whether `requestId` is the input of a push, which a conversation gets from its children. */
-export function isPushRequest(requestId: string): boolean {
-	return requestId.startsWith(PUSH_PREFIX);
+	return { provider: model.provider, model: model.modelId, thinking: agent.thinkingLevel, cwd };
 }
 
 /** Whether the conversation `id` runs a turn of its own, whatever its children do. */
 export async function turnRunning(harness: Harness, id: ConversationId): Promise<boolean> {
 	return (await harness.snapshot(durable.LiveDoc, id, context))?.run !== undefined;
-}
-
-/** The record of `handle` in the `Children` value `state`. */
-export function recordOf(state: Readonly<ChildrenState> | null | undefined, handle: string): ChildRecord | undefined {
-	return state != null && Object.hasOwn(state.children, handle) ? state.children[handle] : undefined;
 }

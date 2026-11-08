@@ -4,9 +4,10 @@ import * as durable from "@earendil-works/pi-durable";
 import { type ConversationId, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Owner, Place } from "../src/children.ts";
-import { Push } from "../src/push.ts";
-import { type ChildRecord, Children, library, markRead } from "../src/targets.ts";
+import type { Owner, Place } from "../src/children/library.ts";
+import { Push } from "../src/host/push.ts";
+import { type ChildRecord, ChildRecords, markRead } from "../src/host/records.ts";
+import { library, target } from "../src/host/targets.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";
 
 const faux = { provider: "faux", model: "faux-1" } as const;
@@ -35,29 +36,43 @@ afterAll(async () => {
 	await tearDown();
 });
 
-/** Writes the record of `handle` in the `Children` document. */
+/** Writes the record of `handle` in the `ChildRecords` document. */
 async function putRecord(handle: string, record: ChildRecord): Promise<void> {
 	await harness.commit(async (tx) => {
-		(await tx.doc(Children)).children[handle] = record;
+		(await tx.doc(ChildRecords)).children[handle] = record;
 	}, context);
 }
 
 async function recordOf(handle: string): Promise<ChildRecord | undefined> {
-	return (await harness.snapshot(Children, context))?.children[handle];
+	return (await harness.snapshot(ChildRecords, context))?.children[handle];
 }
 
 describe("read marks", () => {
-	it("keeps read within sent, and pushed to a request of sent or a push input", async () => {
+	it("never moves read back, and keeps the last pushed request", async () => {
 		// SAFETY: the marks do not look up the conversation of the record.
 		const conversationId = 999 as ConversationId;
-		await putRecord("marks", { caller: "cli", createdAt: "", conversationId, sent: ["spawn:a"] });
-		await markRead(harness, "marks", 3, "mirror-input");
-		expect(await recordOf("marks")).toMatchObject({ read: 1 });
-		expect((await recordOf("marks"))?.pushed).toBeUndefined();
-		await markRead(harness, "marks", 1, "push:other:2");
-		expect(await recordOf("marks")).toMatchObject({ read: 1, pushed: "push:other:2" });
+
+		const requests = [
+			{ id: "spawn:a", notify: true },
+			{ id: "b", notify: true },
+		];
+
+		await putRecord("marks", { caller: "cli", createdAt: "", conversationId, requests, read: 0 });
+		await markRead(harness, "marks", 2, "push:marks:2");
+		expect(await recordOf("marks")).toMatchObject({ read: 2, pushed: "push:marks:2" });
 		await markRead(harness, "marks", 1, "spawn:a");
-		expect(await recordOf("marks")).toMatchObject({ read: 1, pushed: "spawn:a" });
+		expect(await recordOf("marks")).toMatchObject({ read: 2, pushed: "spawn:a" });
+	});
+});
+
+describe("info", () => {
+	it("refuses a conversation without a working directory or without a model", async () => {
+		const host = { harness, place, owner, project: "main", agent: async () => owner.root };
+		const child = await library.open(place, owner, "t:no-cwd", { root: "test", ...faux }, context);
+		const found = await target(host, { kind: "conversation", id: String(child.id) });
+		await expect(found.info()).rejects.toThrow(`The conversation ${child.id} has no working directory`);
+		const agent = await target(host, { kind: "agent" });
+		await expect(agent.info()).rejects.toThrow(`The conversation ${owner.root.id} has no model`);
 	});
 });
 
@@ -71,7 +86,8 @@ describe("push", () => {
 			caller: String(child.id),
 			createdAt: "",
 			conversationId: holder.id,
-			sent: ["never"],
+			requests: [{ id: "never", notify: true }],
+			read: 0,
 		});
 
 		const push = new Push({

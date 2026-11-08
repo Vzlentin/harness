@@ -4,50 +4,55 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { request } from "./client.ts";
-import { piEnv } from "./herdr.ts";
-import { type MirrorTarget, piArgs } from "./mirror.ts";
+import { request } from "./client/client.ts";
+import { piEnv } from "./client/herdr.ts";
+import { type MirrorTarget, piArgs } from "./client/mirror.ts";
+import { HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL, PI_SESSION_ID } from "./protocol/env.ts";
 import {
 	addProject,
-	COMMAND_NAMES,
+	type CommandName,
 	checkProject,
 	MAIN_PROJECT,
 	projectDir,
+	projectOf,
 	readProjects,
-	resolveProject,
-} from "./projects.ts";
-import { AGENT_HANDLE, errorMessage, statePaths, type Target } from "./protocol.ts";
-import { runTool, sendToHost, type ToolArgs } from "./tool.ts";
+} from "./protocol/projects.ts";
+import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
+import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
+import { runTool, type ToolArgs } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
 }
 
+/** A command of the CLI: its lines in the usage, and what it runs. `project` is the `--project` value. */
+type Command = {
+	readonly usage: readonly string[];
+	run(args: string[], project: string | undefined): Promise<void> | void;
+};
+
 function usage(): never {
+	const lines = [...COMMANDS.values()].flatMap((command) => command.usage);
+
 	fail(`Usage:
   harness <project>
-  harness spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]
-    [--cwd <dir>] [--tools <names>] (--prompt <text> | --file <path>)...
-  harness status <handle>
-  harness rename <handle> <name>
-  harness send <handle> [--follow-up] <message>
-  harness wait <handle> [--timeout <seconds>]
-  harness stop <handle>
-  harness list
-  harness attach <handle>
-  harness attach --conversation <id>
-  harness create <name> --cwd <dir>
-  harness projects
-  harness --version
-Any command but harness <project> takes --project <name> before it; without it, the project is HARNESS_PROJECT, then the cwd.`);
+${lines.join("\n")}
+Any command but harness <project> takes --project <name> before it; without it, the project is ${HARNESS_PROJECT}, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
 	const value = args[index + 1];
 
 	if (!value || value.startsWith("--")) fail(`${option} requires a value`);
+
+	return value;
+}
+
+function thinkingLevel(value: string): ModelThinkingLevel {
+	if (!isThinkingLevel(value)) fail(`Invalid thinking level: ${value}`);
 
 	return value;
 }
@@ -71,7 +76,7 @@ function spawnArgs(args: string[]): ToolArgs {
 				spawn.model = valueAfter(args, i, option);
 				break;
 			case "--thinking":
-				spawn.thinking = valueAfter(args, i, option);
+				spawn.thinking = thinkingLevel(valueAfter(args, i, option));
 				break;
 			case "--cwd":
 				spawn.cwd = valueAfter(args, i, option);
@@ -124,33 +129,27 @@ function waitArgs(args: string[]): ToolArgs {
 	return { action: "wait", handle, timeout };
 }
 
-/** The tool arguments of a CLI command. */
-function toolArgs(command: string | undefined, args: string[]): ToolArgs {
-	const [first, second] = args;
+/** The arguments of `status` or `stop`: one handle. */
+function handleArgs(action: "status" | "stop", args: string[]): ToolArgs {
+	const [handle] = args;
 
-	switch (command) {
-		case "spawn":
-			return spawnArgs(args);
-		case "send":
-			return sendArgs(args);
-		case "wait":
-			return waitArgs(args);
-		case "status":
-		case "stop":
-			if (args.length !== 1 || first === undefined) usage();
+	if (args.length !== 1 || handle === undefined) usage();
 
-			return { action: command, handle: first };
-		case "rename":
-			if (args.length !== 2 || first === undefined || second === undefined) usage();
+	return { action, handle };
+}
 
-			return { action: command, handle: first, name: second };
-		case "list":
-			if (args.length !== 0) usage();
+function renameArgs(args: string[]): ToolArgs {
+	const [handle, name] = args;
 
-			return { action: command };
-		default:
-			usage();
-	}
+	if (args.length !== 2 || handle === undefined || name === undefined) usage();
+
+	return { action: "rename", handle, name };
+}
+
+function listArgs(args: string[]): ToolArgs {
+	if (args.length !== 0) usage();
+
+	return { action: "list" };
 }
 
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
@@ -176,11 +175,10 @@ function projectsCommand(args: string[]): void {
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
 	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
-	const { runHost } = await import("./host.ts");
+	const { runHost } = await import("./host/run.ts");
 	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
 
 	const host = await runHost({
-		stateDir: statePaths(project).dir,
 		project,
 		cwd: projectDir(project),
 		models: modelRuntime,
@@ -197,21 +195,21 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 }
 
 /** Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. */
-async function attachCommand(args: string[]): Promise<void> {
+async function attachCommand(args: string[], project: string | undefined): Promise<void> {
 	const [first, id] = args;
 	let ref: Target;
 
-	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = { handle: first };
-	else if (args.length === 2 && first === "--conversation" && id) ref = { conversation: id };
+	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = parseTarget({ handle: first });
+	else if (args.length === 2 && first === "--conversation" && id) ref = parseTarget({ conversation: id });
 	else usage();
 
-	await openInPi({ project: resolveProject(process.env, process.cwd()), ...ref });
+	await openInPi({ project: projectOf(project, process.env, process.cwd()), target: ref });
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	await openInPi({ project: name, handle: AGENT_HANDLE });
+	await openInPi({ project: name, target: { kind: "agent" } });
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
@@ -228,8 +226,7 @@ function userPath(): string {
  * project agent without a model.
  */
 async function openInPi(target: MirrorTarget): Promise<void> {
-	const ref = target.conversation === undefined ? { handle: target.handle } : { conversation: target.conversation };
-	await request({ type: "watch", ...ref }, { start: true, project: target.project });
+	await request({ type: "watch", ...targetRef(target.target) }, { start: true, project: target.project });
 
 	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",
@@ -244,9 +241,66 @@ async function openInPi(target: MirrorTarget): Promise<void> {
 	process.exitCode = result.status ?? 1;
 }
 
+function versionCommand(args: string[], project: string | undefined): void {
+	if (project !== undefined || args.length !== 0) usage();
+
+	const json: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	process.stdout.write(`${Value.Parse(Type.Object({ version: Type.String() }), json).version}\n`);
+}
+
 /**
- * Runs a command as a call of the `subagent` tool. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and the defaults
- * of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
+ * A command that runs as a call of the `subagent` tool. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and the
+ * defaults of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
+ */
+function toolCommand(lines: readonly string[], parse: (args: string[]) => ToolArgs): Command {
+	return {
+		usage: lines,
+		async run(args, project) {
+			const { text } = await runTool(parse(args), {
+				caller: process.env[PI_SESSION_ID] || "cli",
+				callKey: randomUUID(),
+				provider: process.env[PI_PROVIDER],
+				model: process.env[PI_MODEL],
+				thinking: process.env[PI_REASONING_LEVEL] || "medium",
+				cwd: process.cwd(),
+				send: (message, signal) => request(message, { start: true, signal, project }),
+				signal: undefined,
+			});
+
+			process.stdout.write(text);
+		},
+	};
+}
+
+/** The commands of the CLI, in the order of the usage. */
+const COMMANDS: ReadonlyMap<string, Command> = new Map(
+	Object.entries({
+		spawn: toolCommand(
+			[
+				"  harness spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]",
+				"    [--cwd <dir>] [--tools <names>] (--prompt <text> | --file <path>)...",
+			],
+			spawnArgs,
+		),
+		status: toolCommand(["  harness status <handle>"], (args) => handleArgs("status", args)),
+		rename: toolCommand(["  harness rename <handle> <name>"], renameArgs),
+		send: toolCommand(["  harness send <handle> [--follow-up] <message>"], sendArgs),
+		wait: toolCommand(["  harness wait <handle> [--timeout <seconds>]"], waitArgs),
+		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
+		list: toolCommand(["  harness list"], listArgs),
+		attach: {
+			usage: ["  harness attach <handle>", "  harness attach --conversation <id>"],
+			run: attachCommand,
+		},
+		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
+		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },
+		projects: { usage: ["  harness projects"], run: projectsCommand },
+		"--version": { usage: ["  harness --version"], run: versionCommand },
+	} satisfies Record<CommandName | "--version", Command>),
+);
+
+/**
+ * Runs a command of the table, or opens the agent of a project named alone. Any other word gives the usage.
  */
 async function main(): Promise<void> {
 	const all = process.argv.slice(2);
@@ -259,49 +313,19 @@ async function main(): Promise<void> {
 	}
 
 	const [command, ...args] = all;
+	const known = command === undefined ? undefined : COMMANDS.get(command);
 
-	if (command === "--version") {
-		if (project !== undefined || args.length !== 0) usage();
+	if (known !== undefined) return known.run(args, project);
 
-		const json: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-		process.stdout.write(`${Value.Parse(Type.Object({ version: Type.String() }), json).version}\n`);
-
-		return;
-	}
-
-	if (command === "create") return createCommand(args);
-
-	if (command === "projects") return projectsCommand(args);
-
-	if (command === "host") return hostCommand(args, checkProject(project ?? MAIN_PROJECT));
-
-	// A project alone opens its agent. Any other word goes to the usage.
 	if (
 		command !== undefined &&
-		!COMMAND_NAMES.has(command) &&
 		args.length === 0 &&
 		(command === MAIN_PROJECT || Object.hasOwn(readProjects(), command))
 	) {
 		return agentCommand(command, project);
 	}
 
-	// Every connection resolves the project from the env, so --project goes there.
-	if (project !== undefined) process.env.HARNESS_PROJECT = checkProject(project);
-
-	if (command === "attach") return attachCommand(args);
-
-	const { text } = await runTool(toolArgs(command, args), {
-		caller: process.env.PI_SESSION_ID || "cli",
-		callKey: randomUUID(),
-		provider: process.env.PI_PROVIDER,
-		model: process.env.PI_MODEL,
-		thinking: process.env.PI_REASONING_LEVEL || "medium",
-		cwd: process.cwd(),
-		send: sendToHost,
-		signal: undefined,
-	});
-
-	process.stdout.write(text);
+	usage();
 }
 
 main().catch((cause: unknown) => {

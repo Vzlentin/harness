@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, request } from "../src/client.ts";
-import { agentReporter, openChildTab, openConversationPane } from "../src/herdr.ts";
-import type { Host } from "../src/host.ts";
-import { AGENT_HANDLE, type ChildInfo, statePaths, type WatchLine } from "../src/protocol.ts";
-import { applyChange } from "../src/view-change.ts";
+import { Client, connect, request } from "../src/client/client.ts";
+import { agentReporter, openChildTab, openConversationPane } from "../src/client/herdr.ts";
+import type { Host } from "../src/host/run.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
+import { applyChange } from "../src/protocol/view-change.ts";
 import {
 	CLI,
 	called,
@@ -122,7 +123,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watched"]));
 		await until(() => called("Task:\nWatched") === 1);
 		const client = await hostClient();
-		const first = await client.watch(handle);
+		const first = await client.watch({ kind: "child", handle });
 		const lines: WatchLine[] = [];
 		void collect(first.lines, lines);
 
@@ -157,7 +158,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
 		await cli(["wait", handle]);
 		const client = await hostClient();
-		const watched = await client.watch(handle);
+		const watched = await client.watch({ kind: "child", handle });
 		const lines: WatchLine[] = [];
 		void collect(watched.lines, lines);
 
@@ -175,7 +176,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Fail"]));
 		await until(() => called("Task:\nFail") === 1);
 		const client = await hostClient();
-		const watched = await client.watch(handle);
+		const watched = await client.watch({ kind: "child", handle });
 		const lines: WatchLine[] = [];
 		void collect(watched.lines, lines);
 
@@ -206,7 +207,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			socket.write(`${JSON.stringify({ type: "watch", handle })}\n`, () => socket.destroy());
 			await once(socket, "close");
 			const client = await hostClient();
-			const watched = await client.watch(handle);
+			const watched = await client.watch({ kind: "child", handle });
 			const lines: WatchLine[] = [];
 			void collect(watched.lines, lines);
 
@@ -229,7 +230,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const client = await hostClient();
 
 		try {
-			const watched = await client.watch(handle);
+			const watched = await client.watch({ kind: "child", handle });
 			expect(watched.child.state).toBe("idle");
 			const lines: WatchLine[] = [];
 			void collect(watched.lines, lines);
@@ -282,10 +283,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// In Herdr, Pi gets the pane in HARNESS_HERDR_PANE and no HERDR_ENV, so Herdr's Pi integration does not report.
 		const attached = await cli(["attach", handle], { ...pi.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-3" });
 		expect(attached).toMatchObject({ code: 3, stderr: "" });
-		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE=pane-3`]);
+		expect(logLines(pi.log)).toEqual([
+			`--harness main --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE=pane-3 HARNESS_PROJECT=`,
+		]);
 
 		expect((await cli(["main"], pi.env)).code).toBe(3);
-		expect(logLines(pi.log)[1]).toBe("--harness main HERDR_ENV= HARNESS_HERDR_PANE=");
+		expect(logLines(pi.log)[1]).toBe("--harness main HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=");
 
 		expect(await cli(["attach", "abcdef"], pi.env)).toMatchObject({ code: 1, stderr: "Unknown subagent: abcdef\n" });
 		expect(logLines(pi.log)).toHaveLength(2);
@@ -315,7 +318,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-7" }, "viewed", {
 			project: "main",
-			handle: "abc123",
+			target: { kind: "child", handle: "abc123" },
 		});
 
 		reporter.report(false);
@@ -342,7 +345,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// The project agent resumes with `harness <project>`.
 		const agent = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-9" }, "main agent", {
 			project: "main",
-			handle: AGENT_HANDLE,
+			target: { kind: "agent" },
 		});
 
 		agent.report(false);
@@ -354,7 +357,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// A Pi that the user started in Herdr has HERDR_ENV and no HARNESS_HERDR_PANE: Herdr's Pi integration reports there.
 		const silent = agentReporter({ ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-8" }, "x", {
 			project: "main",
-			handle: "abc123",
+			target: { kind: "child", handle: "abc123" },
 		});
 
 		silent.report(true);
@@ -367,7 +370,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-5" }, "retried", {
 			project: "main",
-			handle: "abc123",
+			target: { kind: "child", handle: "abc123" },
 		});
 
 		await reporter.report(true);

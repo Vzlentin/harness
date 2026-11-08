@@ -14,7 +14,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import type { MirrorTarget } from "../dist/mirror.js";
+import type { MirrorTarget } from "../dist/client/mirror.js";
 import { Attachment } from "./attachment.ts";
 import type { Harness } from "./index.ts";
 
@@ -43,8 +43,8 @@ function registerFlags(pi: ExtensionAPI, harness: Harness): void {
 
 /** Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. */
 export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
-	const { MIRROR_ENTRY } = harness.mirror;
-	const { AGENT_HANDLE, errorMessage } = harness.protocol;
+	const { MIRROR_ENTRY, toMirrorEntry } = harness.mirror;
+	const { errorMessage } = harness.protocol;
 	// The frame of each mirror entry in Pi's chat. Pi can draw the entry before or after `session_start`.
 	const frames = new Map<string, tui.Container>();
 	let attached: Attachment | undefined;
@@ -79,10 +79,10 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
 			}
 
 			if (project === undefined) return;
-			const target: MirrorTarget = { project, handle: AGENT_HANDLE };
+			const target: MirrorTarget = { project, target: { kind: "agent" } };
 			await ctx.newSession({
 				setup: async (sessionManager) => {
-					sessionManager.appendCustomEntry(MIRROR_ENTRY, target);
+					sessionManager.appendCustomEntry(MIRROR_ENTRY, toMirrorEntry(target));
 				},
 			});
 		},
@@ -148,11 +148,11 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
 
 /** The newest mirror entry of `entries` with a valid target. */
 function mirrorEntry(harness: Harness, entries: readonly SessionEntry[]): MirrorEntry | undefined {
-	const { MIRROR_ENTRY, isMirrorTarget } = harness.mirror;
+	const { MIRROR_ENTRY, fromMirrorEntry, isMirrorEntry } = harness.mirror;
 
 	for (const entry of entries.toReversed()) {
-		if (entry.type === "custom" && entry.customType === MIRROR_ENTRY && isMirrorTarget(entry.data)) {
-			return { id: entry.id, target: entry.data };
+		if (entry.type === "custom" && entry.customType === MIRROR_ENTRY && isMirrorEntry(entry.data)) {
+			return { id: entry.id, target: fromMirrorEntry(entry.data) };
 		}
 	}
 
@@ -166,9 +166,9 @@ function mirrorEntry(harness: Harness, entries: readonly SessionEntry[]): Mirror
  * session with messages, such as one of `--continue`, because Pi's own agent answered there.
  */
 function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): MirrorEntry | undefined {
-	const { checkProject, resolveProject } = harness.projects;
-	const { AGENT_HANDLE, errorMessage } = harness.protocol;
-	const { PI_FLAGS } = harness.mirror;
+	const { projectOf } = harness.projects;
+	const { errorMessage, parseTarget } = harness.protocol;
+	const { PI_FLAGS, toMirrorEntry } = harness.mirror;
 	const project = stringFlag(pi, PI_FLAGS.project);
 	const child = stringFlag(pi, PI_FLAGS.child);
 	const conversation = stringFlag(pi, PI_FLAGS.conversation);
@@ -190,8 +190,9 @@ function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): M
 	let target: MirrorTarget;
 
 	try {
-		const name = project ? checkProject(project) : resolveProject(process.env, ctx.cwd);
-		target = conversation ? { project: name, conversation } : { project: name, handle: child || AGENT_HANDLE };
+		const name = projectOf(project || undefined, process.env, ctx.cwd);
+		const ref = conversation ? parseTarget({ conversation }) : child ? parseTarget({ handle: child }) : undefined;
+		target = { project: name, target: ref ?? { kind: "agent" } };
 	} catch (error) {
 		ctx.ui.notify(`harness: ${errorMessage(error)}`, "error");
 
@@ -199,7 +200,7 @@ function flagEntry(pi: ExtensionAPI, harness: Harness, ctx: ExtensionContext): M
 	}
 
 	// `appendEntry` gives no entry ID, so the entry comes back from the branch.
-	pi.appendEntry(harness.mirror.MIRROR_ENTRY, target);
+	pi.appendEntry(harness.mirror.MIRROR_ENTRY, toMirrorEntry(target));
 
 	return mirrorEntry(harness, ctx.sessionManager.getBranch());
 }

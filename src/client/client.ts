@@ -5,20 +5,30 @@ import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { checkProject, MAIN_PROJECT, resolveProject } from "./projects.ts";
+import { onLines } from "../protocol/lines.ts";
+import { cliPath, statePaths } from "../protocol/paths.ts";
+import { MAIN_PROJECT, projectOf } from "../protocol/projects.ts";
 import {
-	cliPath,
 	errorMessage,
-	onLines,
+	HOST_CLOSING,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Request,
 	STORE_LOCK_WAIT_MS,
-	statePaths,
-	type Target,
 	versionMismatch,
 	type WatchLine,
-} from "./protocol.ts";
+} from "../protocol/requests.ts";
+import { type Target, targetRef } from "../protocol/target.ts";
+
+/** The error of each request of a client whose connection closed. */
+export const HOST_CLOSED = "The harness host closed the connection";
+
+/**
+ * Whether `error` failed a request because its host stopped: the host was closing, or the connection closed.
+ */
+export function hostStopped(error: unknown): error is Error {
+	return error instanceof Error && (error.message === HOST_CLOSING || error.message === HOST_CLOSED);
+}
 
 const START_TIMEOUT_MS = 10_000;
 
@@ -128,7 +138,7 @@ export class Client {
 	}
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
-		if (this.#ended) return Promise.reject(new Error("The harness host closed the connection"));
+		if (this.#ended) return Promise.reject(new Error(HOST_CLOSED));
 
 		const reply = Promise.withResolvers<unknown>();
 		this.#pending.push(reply);
@@ -140,15 +150,14 @@ export class Client {
 	}
 
 	/**
-	 * Sends the `watch` request of `target`, a handle or a conversation ID. Its `lines` are the events of the watch, and
-	 * end when the connection closes. Other requests can follow on this client. Call it once.
+	 * Sends the `watch` request of `target`. Its `lines` are the events of the watch, and end when the connection closes.
+	 * Other requests can follow on this client. Call it once.
 	 */
-	async watch(target: string | Target): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
+	async watch(target: Target): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
 		const lines = new Readable({ objectMode: true, read() {} });
 		this.#lines = lines;
-		const ref = target instanceof Object ? target : { handle: target };
 
-		const reply = await this.request({ type: "watch", ...ref });
+		const reply = await this.request({ type: "watch", ...targetRef(target) });
 
 		return { ...reply, lines };
 	}
@@ -163,7 +172,7 @@ export class Client {
 		this.#socket.destroy();
 	}
 
-	#end(cause: unknown = new Error("The harness host closed the connection")): void {
+	#end(cause: unknown = new Error(HOST_CLOSED)): void {
 		if (!this.#ended) this.#lines?.push(null);
 		this.#ended = true;
 
@@ -172,13 +181,12 @@ export class Client {
 }
 
 /**
- * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `resolveProject`),
+ * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `projectOf`),
  * after its `hello`. When no host listens and `start` is true, it starts one (see `startAndConnect`). When no host
  * listens and `start` is false, it is undefined.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
-	const project =
-		options.project === undefined ? resolveProject(process.env, process.cwd()) : checkProject(options.project);
+	const project = projectOf(options.project, process.env, process.cwd());
 
 	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
@@ -211,7 +219,7 @@ type ConnectOptions = {
 	readonly start: boolean;
 	readonly signal?: AbortSignal | undefined;
 	/** `main` or a project name. Without it, the project comes from `HARNESS_PROJECT` and the cwd. */
-	readonly project?: string;
+	readonly project?: string | undefined;
 };
 
 type OneShot<T extends Request["type"]> = Extract<Request, { type: T }>;

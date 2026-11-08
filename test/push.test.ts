@@ -2,10 +2,11 @@ import { realpathSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { AnswerListener, type AnswersOptions } from "../src/answers.ts";
-import { connect, request } from "../src/client.ts";
-import { type Host, runHost } from "../src/host.ts";
-import { type ChildInfo, type Delivery, deliveryText, statePaths } from "../src/protocol.ts";
+import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
+import { connect, hostStopped, request } from "../src/client/client.ts";
+import { type Host, runHost } from "../src/host/run.ts";
+import { deliveryText } from "../src/protocol/labels.ts";
+import type { ChildInfo, Delivery } from "../src/protocol/requests.ts";
 import { called, calls, cli, gates, models, root, setUp, spawnedBy, startHost, tearDown, until } from "./helpers.ts";
 
 let host: Host | undefined;
@@ -210,7 +211,9 @@ describe("push", { timeout: 30_000 }, () => {
 			const replaced = older.request({ type: "answers", caller: "replaced-session" });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			void newer.request({ type: "answers", caller: "replaced-session" }).catch(() => {});
-			await expect(replaced).rejects.toThrow("A newer answers request of the same caller replaced this one");
+			const error: unknown = await replaced.catch((cause: unknown) => cause);
+			expect(String(error)).toContain("A newer answers request of the same caller replaced this one");
+			expect(hostStopped(error)).toBe(false);
 		} finally {
 			older?.close();
 			newer?.close();
@@ -222,7 +225,6 @@ describe("push", { timeout: 30_000 }, () => {
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
 
 		const idle = await runHost({
-			stateDir: statePaths("idle").dir,
 			project: "idle",
 			cwd: dir,
 			models,
@@ -237,7 +239,18 @@ describe("push", { timeout: 30_000 }, () => {
 			if (client === undefined) throw new Error("no host");
 			const pending = client.request({ type: "answers", caller: "idle-session" });
 			await idle.closed;
-			await expect(pending).rejects.toThrow("The host is closing");
+			const closing: unknown = await pending.catch((cause: unknown) => cause);
+			expect(String(closing)).toContain("The host is closing");
+			expect(hostStopped(closing)).toBe(true);
+
+			await until(() => client.ended);
+
+			const closed: unknown = await client
+				.request({ type: "list", caller: "idle-session" })
+				.catch((cause: unknown) => cause);
+
+			expect(String(closed)).toContain("The harness host closed the connection");
+			expect(hostStopped(closed)).toBe(true);
 		} finally {
 			client?.close();
 			await idle.close();

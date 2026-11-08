@@ -4,11 +4,12 @@
  */
 import { copyJson, type JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
-import { type AssistantMessage, type Message, Type, validateToolArguments } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Message, validateToolArguments } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ConversationId, Extension, HookApi, JsonObject, SubmissionId, Tx } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { errorMessage, Json } from "./protocol.ts";
+import { errorMessage, Json } from "../protocol/requests.ts";
 
 /**
  * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
