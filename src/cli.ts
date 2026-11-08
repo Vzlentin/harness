@@ -173,13 +173,29 @@ function projectsCommand(args: string[]): void {
  */
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
-	const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
+
+	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } = await import(
+		"@earendil-works/pi-coding-agent"
+	);
+
 	const { runHost } = await import("./host/run.ts");
-	const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
+	const cwd = projectDir(project);
+	const { modelRuntime, resourceLoader } = await createAgentSessionServices({ cwd });
+	const { extensions, runtime } = resourceLoader.getExtensions();
+
+	const runner = new ExtensionRunner(
+		extensions,
+		runtime,
+		cwd,
+		SessionManager.inMemory(cwd),
+		new ModelRegistry(modelRuntime),
+	);
+
+	runtime.createContext = () => runner.createContext();
 
 	const host = await runHost({
 		project,
-		cwd: projectDir(project),
+		cwd,
 		models: modelRuntime,
 	});
 
