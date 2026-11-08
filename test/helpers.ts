@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,8 +19,11 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import { type Client, connect } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
+import { AGENT_HANDLE } from "../src/protocol/target.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
@@ -102,6 +106,15 @@ export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 export const toolWaits = new Map<string, PromiseWithResolvers<string>>();
 
+/**
+ * The cells that the model of a prompt runs with the `ipython` tool, one in each round, by prompt. After the last one,
+ * it answers `Tool said: <result>`.
+ */
+export const cells = new Map<string, readonly string[]>();
+
+/** The text of each tool result of the current turn of a prompt of `cells`, by prompt. */
+export const cellResults = new Map<string, string[]>();
+
 async function respond(
 	context: TranscriptContext,
 	options: SimpleStreamOptions | undefined,
@@ -142,6 +155,16 @@ async function respond(
 		return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
 	}
 
+	const cellCodes = cells.get(prompt);
+
+	if (cellCodes !== undefined && last?.role === "toolResult") {
+		const done = turn.flatMap((message) => (message.role === "toolResult" ? [textOf(message)] : []));
+		cellResults.set(prompt, done);
+		const code = cellCodes[done.length];
+
+		if (code !== undefined) return fauxAssistantMessage(fauxToolCall("ipython", { code }), { stopReason: "toolUse" });
+	}
+
 	if (last?.role === "toolResult") {
 		const handle = /^Spawned nested \(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
 
@@ -176,6 +199,12 @@ async function respond(
 				}),
 			),
 		]);
+	}
+
+	if (cellCodes?.[0] !== undefined) {
+		cellResults.set(prompt, []);
+
+		return fauxAssistantMessage(fauxToolCall("ipython", { code: cellCodes[0] }), { stopReason: "toolUse" });
 	}
 
 	if (child !== undefined) {
@@ -261,6 +290,19 @@ export function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}, cwd = 
 	});
 }
 
+/** What the socket at `path` sends for the raw line `line`, up to the end of the connection. */
+export function rawReply(path: string, line: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const socket = createConnection(path);
+		let reply = "";
+		socket.setEncoding("utf8");
+		socket.on("data", (chunk: string) => (reply += chunk));
+		socket.once("error", reject);
+		socket.once("end", () => resolve(reply));
+		socket.write(`${line}\n`);
+	});
+}
+
 /** The handle in `Spawned <handle>` or `Spawned <name> (<handle>)`. */
 export function handleOf(result: Result): string {
 	const handle = /^Spawned (?:.* \()?([a-z0-9]+)\)?$/m.exec(result.stdout)?.[1];
@@ -291,6 +333,64 @@ export async function until(check: () => boolean): Promise<void> {
 
 export function called(prompt: string): number {
 	return calls.filter((call) => call.prompt === prompt).length;
+}
+
+/** Writes Pi's global settings of the tests, with `agentDepthLimit` when `limit` is set. */
+export async function setDepthLimit(limit: number | undefined): Promise<void> {
+	const settings =
+		limit === undefined ? { retry: { enabled: false } } : { retry: { enabled: false }, agentDepthLimit: limit };
+
+	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
+}
+
+/** A watch of the project agent of the running host, with its first reply and its events. */
+export async function watchAgent(): Promise<{
+	client: Client;
+	lines: { first: { child: ChildInfo }; events: WatchLine[] };
+}> {
+	const client = await connect({ start: false });
+
+	if (client === undefined) throw new Error("no host");
+	const first = await client.watch({ kind: "agent" });
+	const events: WatchLine[] = [];
+	void (async () => {
+		for await (const line of first.lines) events.push(line);
+	})();
+
+	return { client, lines: { first, events } };
+}
+
+/** Sends `message` to the project agent and gives the verb. */
+export async function inputAgent(client: Client, message: string): Promise<string> {
+	const reply = await client.request({
+		type: "input",
+		requestId: `input-${message}`,
+		handle: AGENT_HANDLE,
+		message,
+		followUp: false,
+	});
+
+	return reply.verb;
+}
+
+/** Waits for an idle event after a busy one. */
+export async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
+	const busy = () => events.findIndex((line) => !line.stopped && line.child.state === "busy");
+	await until(
+		() => busy() !== -1 && events.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"),
+	);
+}
+
+/** Sends `message` to the project agent, and waits until its turn ends. */
+export async function agentTurn(message: string): Promise<void> {
+	const { client, lines } = await watchAgent();
+
+	try {
+		await inputAgent(client, message);
+		await untilIdleAfterBusy(lines.events);
+	} finally {
+		client.close();
+	}
 }
 
 /** Makes a temporary root with the agent dir, home and state, points `process.env` at it and sets up the faux provider. */

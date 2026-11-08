@@ -78,7 +78,8 @@
 		"./package.json": "./package.json"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"python/*.py"
 	],
 	"engines": {
 		"node": ">=22.19.0"

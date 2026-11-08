@@ -36,13 +36,14 @@ import {
 	STORE_LOCK_WAIT_MS,
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
-import { subagentTool } from "../tool.ts";
+import { type Send, subagentTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
+import { serveRlm } from "./rlm.ts";
 import { library } from "./targets.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
@@ -129,19 +130,16 @@ export async function runHost(options: {
 		}));
 
 	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
-	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
-	const tool = subagentTool(
-		durable,
-		{ Type },
-		{
-			caller: async (api) => String(api.conversationId),
-			send: (request, signal) => handleRequest(request, { ...base, signal }),
-		},
-	);
+	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on. The
+	// kernels of `rlm` call it the same way.
+	const send: Send = (request, signal) => handleRequest(request, { ...base, signal });
+	const tool = subagentTool(durable, { Type }, { caller: async (api) => String(api.conversationId), send });
+	const rlm = serveRlm(entries.events, place, send, warn);
 
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
-	const selected = [ChildContext, tool, createCodemodeExtension({ sandbox }), ...entries.extensions];
+	// pi-durable keeps the last section of a key, so the `rlm` section of the host wins over one of an entry.
+	const selected = [ChildContext, tool, createCodemodeExtension({ sandbox }), ...entries.extensions, rlm.extension];
 
 	try {
 		for (const extension of selected) registry.install(extension);
@@ -280,6 +278,7 @@ export async function runHost(options: {
 		});
 	}).catch(async (cause: unknown) => {
 		push.close();
+		await rlm.close();
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
@@ -288,8 +287,8 @@ export async function runHost(options: {
 	});
 
 	/**
-	 * Stops the requests with the error `The host is closing`, waits until their replies are written, and then closes
-	 * the sockets, the entries, the sandbox and the harness.
+	 * Stops the requests, those of the kernel servers too, with the error `The host is closing`, waits until their
+	 * replies are written, and then closes the sockets, the entries, the sandbox and the harness.
 	 */
 	const close = () => {
 		closing ??= (async () => {
@@ -301,6 +300,9 @@ export async function runHost(options: {
 			for (const abort of aborts) abort.abort(reason);
 
 			try {
+				// The requests of the kernels stop the same way, before the entries stop the kernels.
+				await rlm.close();
+
 				// Each handler reads its signal or ends once the push closes, so this needs no timeout.
 				while (inFlight.size > 0) await Promise.allSettled(inFlight);
 				await waitAtMost(Promise.allSettled(writes), REPLY_WRITE_MS);

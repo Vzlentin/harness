@@ -247,7 +247,12 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 			// The record is written in the commit that creates the child.
 			const opened = await library.open(place, handler.owner, key, spec, context, (tx, id) =>
-				addRecord(tx, request.requestId, { caller: request.caller, conversationId: id, name: request.name }),
+				addRecord(tx, request.requestId, {
+					caller: request.caller,
+					conversationId: id,
+					name: request.name,
+					kind: request.kind,
+				}),
 			);
 
 			handle = await spawnedHandle(harness, request.requestId);
