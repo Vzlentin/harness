@@ -36,8 +36,10 @@ import {
 	STORE_LOCK_WAIT_MS,
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
+import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
 import { type Send, subagentTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
+import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
@@ -78,8 +80,10 @@ export async function runHost(options: {
 	readonly models: Models;
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
 	readonly idleExitMs?: number;
+	/** For tests: the time of a turn of an RLM child, after which the host aborts it. Default 5 minutes. */
+	readonly rlmDeadlineMs?: number;
 }): Promise<Host | undefined> {
-	const { project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS } = options;
+	const { project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS, rlmDeadlineMs = TURN_DEADLINE_MS } = options;
 	const { dir: stateDir, socket: socketPath } = statePaths(project);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
@@ -184,6 +188,7 @@ export async function runHost(options: {
 
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
+	const deadlines = new Deadlines({ harness, warn, deadlineMs: rlmDeadlineMs });
 
 	base = {
 		harness,
@@ -278,6 +283,7 @@ export async function runHost(options: {
 		});
 	}).catch(async (cause: unknown) => {
 		push.close();
+		deadlines.close();
 		await rlm.close();
 		await entries.close();
 		await sandbox.close();
@@ -294,6 +300,7 @@ export async function runHost(options: {
 		closing ??= (async () => {
 			clearInterval(timer);
 			push.close();
+			deadlines.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
 

@@ -136,6 +136,13 @@ export async function addRecord(
 	current.requests[requestId] = fresh;
 }
 
+/** Whether the conversation `conversationId` is an RLM child: a child that `rlm` spawned. */
+export function isRlmChild(state: Readonly<ChildrenState> | null | undefined, conversationId: ConversationId): boolean {
+	return Object.values(state?.children ?? {}).some(
+		(record) => record.kind === "rlm" && record.conversationId === conversationId,
+	);
+}
+
 export async function renameRecord(harness: Harness, handle: string, name: string): Promise<void> {
 	await harness.commit(async (tx) => {
 		const record = (await tx.doc(ChildRecords)).children[handle];
@@ -245,7 +252,7 @@ export type UnreadAnswers = { readonly text: string; readonly failed: boolean; r
 
 /**
  * The unread answers of `record` that a wait for `main` gives, oldest first. `answer` is the answer to `main`, and
- * `atStart` the requests of the record when the wait started.
+ * `atStart` the requests of the record when the wait started. `cut` changes the text of each answer and failure.
  */
 export async function unreadAnswers(
 	child: Child,
@@ -255,6 +262,7 @@ export async function unreadAnswers(
 	answer: Answer,
 	atStart: readonly ChildRequest[],
 	waiting: Context,
+	cut: (text: string) => string = (text) => text,
 ): Promise<UnreadAnswers> {
 	const unread = unreadBefore(record.requests, record.read, main, atStart);
 	const earlier: Answer[] = [];
@@ -269,14 +277,15 @@ export async function unreadAnswers(
 	const texts = earlier.map((before) => {
 		const text = answerText(handle, before);
 
-		return text.failed ? `(no answer: ${text.text})` : text.text;
+		return text.failed ? `(no answer: ${cut(text.text)})` : cut(text.text);
 	});
 
 	const last = answerText(handle, answer);
-	const all = [...texts, last.text];
+	const lastText = cut(last.text);
+	const all = [...texts, lastText];
 	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
 
-	const text = texts.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
+	const text = texts.length === 0 ? lastText : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
 
 	return { text, failed: last.failed, read: unread.read };
 }

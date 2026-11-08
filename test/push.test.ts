@@ -6,8 +6,21 @@ import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { connect, hostStopped, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
-import type { ChildInfo, Delivery } from "../src/protocol/requests.ts";
-import { called, calls, cli, gates, models, root, setUp, spawnedBy, startHost, tearDown, until } from "./helpers.ts";
+import type { Delivery } from "../src/protocol/requests.ts";
+import {
+	called,
+	calls,
+	cli,
+	gates,
+	models,
+	root,
+	setUp,
+	spawnAs,
+	spawnedBy,
+	startHost,
+	tearDown,
+	until,
+} from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -28,7 +41,7 @@ describe("push", { timeout: 30_000 }, () => {
 		const answers = listenAnswers(caller);
 
 		try {
-			const tree = (await spawnAs(caller, "Tree")).handle;
+			const tree = (await spawnAs(caller, "Task:\nTree", { notify: true })).handle;
 			await until(() => called("Task:\nTree leaf") === 1);
 			const branch = spawnedBy.get("Task:\nTree") ?? "";
 			await until(() => spawnedBy.has("Task:\nTree branch"));
@@ -65,7 +78,7 @@ describe("push", { timeout: 30_000 }, () => {
 		const answers = listenAnswers(caller);
 
 		try {
-			const parent = (await spawnAs(caller, "Quiet parent")).handle;
+			const parent = (await spawnAs(caller, "Task:\nQuiet parent", { notify: true })).handle;
 			// The parent's own answer comes while its quiet child still works.
 			await until(() => answers.deliveries.length === 1);
 			expect(called("Task:\nQuiet child")).toBe(1);
@@ -93,13 +106,13 @@ describe("push", { timeout: 30_000 }, () => {
 		const answers = listenAnswers(caller);
 
 		try {
-			const failed = (await spawnAs(caller, "Fail")).handle;
+			const failed = (await spawnAs(caller, "Task:\nFail", { notify: true })).handle;
 			await until(() => answers.deliveries.length === 1);
 			expect(answers.deliveries[0]).toEqual({ handle: failed, text: `${failed} failed: overloaded`, failed: true });
 			expect(answers.deliveries.map(deliveryText)).toEqual([
 				`subagent ${failed} failed\n\n${failed} failed: overloaded`,
 			]);
-			const aborted = (await spawnAs(caller, "Abort me")).handle;
+			const aborted = (await spawnAs(caller, "Task:\nAbort me", { notify: true })).handle;
 			await until(() => called("Task:\nAbort me") === 1);
 			await request({ type: "abort", handle: aborted }, { start: false });
 			await until(() => answers.deliveries.length === 2);
@@ -113,7 +126,7 @@ describe("push", { timeout: 30_000 }, () => {
 		const caller = "closed-session";
 		gates.set("Task:\nAfter close", Promise.withResolvers());
 		const answers = listenAnswers(caller);
-		const { handle } = await spawnAs(caller, "After close");
+		const { handle } = await spawnAs(caller, "Task:\nAfter close", { notify: true });
 		await until(() => called("Task:\nAfter close") === 1);
 		answers.listener.close();
 		gates.get("Task:\nAfter close")?.resolve();
@@ -129,7 +142,7 @@ describe("push", { timeout: 30_000 }, () => {
 		const before = called("Task:\nTree leaf");
 		gates.set("Task:\nTree leaf", Promise.withResolvers());
 		spawnedBy.clear();
-		const tree = (await spawnAs(caller, "Tree")).handle;
+		const tree = (await spawnAs(caller, "Task:\nTree", { notify: true })).handle;
 		await until(() => called("Task:\nTree leaf") === before + 1);
 		await until(() => spawnedBy.has("Task:\nTree") && spawnedBy.has("Task:\nTree branch"));
 		// The tree ended its own turn, and the busy leaf holds it.
@@ -159,9 +172,9 @@ describe("push", { timeout: 30_000 }, () => {
 		});
 
 		try {
-			const first = await spawnAs(caller, "Failed show");
+			const first = await spawnAs(caller, "Task:\nFailed show", { notify: true });
 			await until(() => answers.deliveries.length === 1);
-			const second = await spawnAs(caller, "Shown");
+			const second = await spawnAs(caller, "Task:\nShown", { notify: true });
 			await until(() => answers.deliveries.length === 2);
 			expect(answers.deliveries.map((delivery) => delivery.handle)).toEqual([first.handle, second.handle]);
 			expect(answers.errors).toEqual([new Error("The message did not show")]);
@@ -178,7 +191,7 @@ describe("push", { timeout: 30_000 }, () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			await host?.close();
 			host = await startHost();
-			const { handle } = await spawnAs(caller, "After restart");
+			const { handle } = await spawnAs(caller, "Task:\nAfter restart", { notify: true });
 			await until(() => answers.deliveries.length === 1);
 			expect(answers.deliveries[0]?.handle).toBe(handle);
 		} finally {
@@ -194,7 +207,7 @@ describe("push", { timeout: 30_000 }, () => {
 		try {
 			await new Promise((resolve) => setTimeout(resolve, 600));
 			host = await startHost();
-			const { handle } = await spawnAs(caller, "Late host");
+			const { handle } = await spawnAs(caller, "Task:\nLate host", { notify: true });
 			await until(() => answers.deliveries.length === 1);
 			expect(answers.deliveries[0]?.handle).toBe(handle);
 		} finally {
@@ -257,28 +270,6 @@ describe("push", { timeout: 30_000 }, () => {
 		}
 	});
 });
-
-/** Spawns a child with the task `prompt` for `caller` through the socket, as the tool does. */
-async function spawnAs(caller: string, prompt: string): Promise<ChildInfo> {
-	const spawned = await request(
-		{
-			type: "spawn",
-			requestId: `${caller}:${prompt}`,
-			caller,
-			notify: true,
-			provider: "faux",
-			model: "faux-1",
-			callerThinking: "medium",
-			cwd: root,
-			prompt: `Task:\n${prompt}`,
-		},
-		{ start: false },
-	);
-
-	if (spawned === undefined) throw new Error("no host");
-
-	return spawned;
-}
 
 /** Waits until the child `handle` of the main host has the state `state`. */
 async function untilState(handle: string, state: string): Promise<void> {

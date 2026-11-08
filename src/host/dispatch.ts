@@ -4,13 +4,21 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type * as durable from "@earendil-works/pi-durable";
-import type { Harness } from "@earendil-works/pi-durable";
+import type { Harness, Tx } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
 import { type ChildInfo, PROTOCOL_VERSION, type Replies, type Request, versionMismatch } from "../protocol/requests.ts";
 import { parseTarget, type Target } from "../protocol/target.ts";
+import {
+	cutAnswer,
+	MAX_LIVE_CHILDREN,
+	overInput,
+	SEND_TOO_LARGE,
+	SPAWN_TOO_LARGE,
+	TOO_MANY_LIVE,
+} from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import type { Connection, Push } from "./push.ts";
 import {
@@ -124,6 +132,8 @@ async function send(request: Extract<Request, { type: "send" }>, handler: Handle
 	const { handle, requestId, notify } = request;
 	const record = await ownRecord(handler.harness, handle, request.caller);
 
+	if (record.kind === "rlm" && overInput(request.message)) throw new Error(SEND_TOO_LARGE);
+
 	return handler.push.whileActive(handle, async () =>
 		sendTo(request, await childTarget(handler, handle, record), handler.harness, {
 			// The request goes into the record's `requests` in the commit that makes it the last request, so a wait
@@ -206,6 +216,8 @@ async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
+
+	if (request.kind === "rlm" && overInput(request.prompt)) throw new Error(SPAWN_TOO_LARGE);
 	let handle = await spawnedHandle(harness, request.requestId);
 
 	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
@@ -245,15 +257,18 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		for (let attempt = 0; handle === undefined; attempt += 1) {
 			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			// The record is written in the commit that creates the child.
-			const opened = await library.open(place, handler.owner, key, spec, context, (tx, id) =>
-				addRecord(tx, request.requestId, {
+			// The record is written in the commit that creates the child. Commits run one at a time, so the count of the live
+			// RLM children there holds for spawns at the same time.
+			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
+				if (request.kind === "rlm") await refuseLiveOverflow(tx, request.caller);
+
+				await addRecord(tx, request.requestId, {
 					caller: request.caller,
 					conversationId: id,
 					name: request.name,
 					kind: request.kind,
-				}),
-			);
+				});
+			});
 
 			handle = await spawnedHandle(harness, request.requestId);
 
@@ -271,6 +286,20 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	});
 
 	return childInfo(handler, handle, record);
+}
+
+/**
+ * Refuses a new RLM child of `caller` in `tx`, the commit that creates it, when the caller has `MAX_LIVE_CHILDREN` RLM
+ * children that are not closed. A closed child can keep its record, such as after a close of its parent.
+ */
+async function refuseLiveOverflow(tx: Tx, caller: string): Promise<void> {
+	const own = Object.values((await tx.doc(ChildRecords)).children).filter(
+		(record) => record.caller === caller && record.kind === "rlm",
+	);
+
+	const closed = await Promise.all(own.map((record) => library.closed(tx, record.conversationId)));
+
+	if (closed.filter((isClosed) => !isClosed).length >= MAX_LIVE_CHILDREN) throw new Error(TOO_MANY_LIVE);
 }
 
 /**
@@ -342,7 +371,8 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 		const latest = await childRecord(handler.harness, request.handle);
 
 		if (main !== null && main === latest.pushed) return { answer: NO_NEW_ANSWERS };
-		text = await unreadAnswers(child, request.handle, latest, main, answer, record.requests, waiting);
+		const cut = record.kind === "rlm" ? cutAnswer : undefined;
+		text = await unreadAnswers(child, request.handle, latest, main, answer, record.requests, waiting, cut);
 		await markRead(handler.harness, request.handle, text.read);
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);

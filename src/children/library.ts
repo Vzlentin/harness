@@ -276,6 +276,8 @@ export type Children = {
 	): Promise<Pick<Child, "lineage" | "conversation" | "state"> | undefined>;
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
+	/** Whether the child with the conversation ID `id` is closed, read in `tx`. */
+	closed(tx: Tx, id: ConversationId): Promise<boolean>;
 	/**
 	 * The `send` and `state` of `Child` for any conversation, with its last request in `last`. As for `Child.send`, the
 	 * commit after the submit writes the request as the last request, unless a newer submission already is. `state` is
@@ -753,6 +755,7 @@ export function createChildren(durable: typeof Durable): Children {
 		find,
 		inspect,
 		turn,
+		closed: async (tx, id) => (await tx.doc(ChildDoc, id)).closed,
 		async open(place, owner, key, spec, context, setup) {
 			const existing = await find(place, owner, { key }, context);
 

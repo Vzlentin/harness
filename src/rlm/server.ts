@@ -9,10 +9,10 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import { onLines } from "../protocol/lines.ts";
 import { errorMessage, HOST_CLOSING, type Reply } from "../protocol/requests.ts";
 import { runTool, type Send, type ToolArgs, type ToolScope, toolSchemas } from "../tool.ts";
 import { HARNESS_RLM_SOCKET, HARNESS_RLM_TOKEN } from "./kernel.ts";
+import { LINE_TOO_LONG, MAX_LINE_BYTES } from "./limits.ts";
 
 /** The error of a request without the token of its server. */
 const INVALID_TOKEN = "Invalid rlm token";
@@ -129,7 +129,11 @@ export class KernelServers {
 	}
 }
 
-/** Serves the one request of `socket`, a connection to `running`, with `answer`. A close of the socket aborts it. */
+/**
+ * Serves the one request of `socket`, a connection to `running`, with `answer`. A close of the socket aborts it. A line
+ * of more than `MAX_LINE_BYTES` gets an error and runs nothing. The data after the line, or after such a refusal, is
+ * read and ignored.
+ */
 function serve(
 	running: KernelServer,
 	socket: Socket,
@@ -138,11 +142,30 @@ function serve(
 	running.connections.add(socket);
 	const abort = new AbortController();
 	running.aborts.add(abort);
+	const chunks: Buffer[] = [];
+	let size = 0;
 	let served = false;
 
-	onLines(socket, (text) => {
+	socket.on("data", (chunk: Buffer) => {
 		if (served) return;
+		const newline = chunk.indexOf(0x0a);
+		const part = newline === -1 ? chunk : chunk.subarray(0, newline);
+		size += part.length;
+
+		if (size > MAX_LINE_BYTES) {
+			served = true;
+			chunks.length = 0;
+			socket.end(`${JSON.stringify({ ok: false, error: LINE_TOO_LONG } satisfies Reply)}\n`);
+
+			return;
+		}
+
+		chunks.push(part);
+
+		if (newline === -1) return;
 		served = true;
+		const text = Buffer.concat(chunks).toString("utf8");
+		chunks.length = 0;
 
 		const request = answer(text, abort.signal).then((reply) => {
 			if (!socket.destroyed) socket.end(`${JSON.stringify(reply)}\n`);

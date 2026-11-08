@@ -19,10 +19,10 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
-import { type Client, connect } from "../src/client/client.ts";
+import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
+import type { ChildInfo, ChildKind, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
@@ -391,6 +391,50 @@ export async function agentTurn(message: string): Promise<void> {
 	} finally {
 		client.close();
 	}
+}
+
+/**
+ * The options of a spawn through the socket: whether its answers are pushed, its kind, its request ID
+ * (`<caller>:<prompt>` by default), and the project of its host.
+ */
+type SpawnOptions = {
+	readonly notify: boolean;
+	readonly kind?: ChildKind;
+	readonly requestId?: string;
+	readonly project?: string;
+};
+
+/** Spawns a child of `caller` with the first message `prompt` through the socket, as `rlm` or the tool does. */
+export async function spawnAs(caller: string, prompt: string, options: SpawnOptions): Promise<ChildInfo> {
+	const spawn = {
+		type: "spawn",
+		requestId: options.requestId ?? `${caller}:${prompt}`,
+		caller,
+		notify: options.notify,
+		provider: "faux",
+		model: "faux-1",
+		callerThinking: "medium",
+		cwd: root,
+		prompt,
+	} as const;
+
+	const spawned = await request(options.kind === undefined ? spawn : { ...spawn, kind: options.kind }, {
+		start: false,
+		project: options.project,
+	});
+
+	if (spawned === undefined) throw new Error("no host");
+
+	return spawned;
+}
+
+/** The answer that a `wait` for `handle` gives, in the host of `project`. */
+export async function answerOf(handle: string, project?: string): Promise<string> {
+	const reply = await request({ type: "wait", handle, timeout: 10 }, { start: false, project });
+
+	if (reply === undefined) throw new Error("no host");
+
+	return reply.answer;
 }
 
 /** Makes a temporary root with the agent dir, home and state, points `process.env` at it and sets up the faux provider. */
