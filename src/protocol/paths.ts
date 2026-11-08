@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The CLI of this install, which the host start and the Herdr tabs run with this Node: `cli.js` next to the built
- * modules, or `cli.ts` in a checkout, which Node runs with type stripping.
+ * The CLI of this install, which the host start and the hc terminals of `openChildTab` and `openConversationPane` run
+ * with this Node: `cli.js` next to the built modules, or `cli.ts` in a checkout, which Node runs with type stripping.
  */
 export function cliPath(): string {
 	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js", import.meta.url));

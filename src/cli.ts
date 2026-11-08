@@ -8,7 +8,6 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
-import { piEnv } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL, PI_SESSION_ID } from "./protocol/env.ts";
 import {
@@ -230,7 +229,7 @@ async function openInPi(target: MirrorTarget): Promise<void> {
 
 	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",
-		env: { ...piEnv(process.env), PATH: userPath() },
+		env: { ...process.env, PATH: userPath() },
 	});
 
 	if (result.error !== undefined && "code" in result.error && result.error.code === "ENOENT") {

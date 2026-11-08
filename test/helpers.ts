@@ -17,7 +17,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 
@@ -316,9 +316,7 @@ export async function setUp(): Promise<void> {
 		"PI_SESSION_ID",
 		"PI_REASONING_LEVEL",
 		"PI_SESSION_FILE",
-		"HERDR_ENV",
-		"HERDR_PANE_ID",
-		"HARNESS_HERDR_PANE",
+		"HC_TERMINAL_ID",
 		"HARNESS_PROJECT",
 		"MEMORY_DIR",
 		// Node warns on stderr when both are set, and the tests compare stderr.
@@ -356,13 +354,13 @@ export async function tearDown(): Promise<void> {
 	await rm(root, { recursive: true, force: true });
 }
 
-/** A `pi` on `PATH` that logs its arguments, its Herdr variables and `HARNESS_PROJECT` to `log`, one line for each call, and exits with 3. */
+/** A `pi` on `PATH` that logs its arguments and `HARNESS_PROJECT` to `log`, one line for each call, and exits with 3. */
 export async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "pi.log");
 
 	const script = `#!/bin/sh
-echo "$* HERDR_ENV=$HERDR_ENV HARNESS_HERDR_PANE=$HARNESS_HERDR_PANE HARNESS_PROJECT=$HARNESS_PROJECT" >> "${log}"
+echo "$* HARNESS_PROJECT=$HARNESS_PROJECT" >> "${log}"
 exit 3
 `;
 
@@ -377,8 +375,10 @@ export function logLines(log: string): string[] {
 	return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
 }
 
-/** A terminal for a TUI that is not started: it keeps nothing and gives no input. */
+/** A terminal for a TUI that is not started: it keeps only the program statuses that it gets, and gives no input. */
 export class FakeTerminal implements Terminal {
+	readonly statuses: ProgramStatus[] = [];
+
 	start(): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
@@ -400,5 +400,7 @@ export class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
-	setProgramStatus(): void {}
+	setProgramStatus(status: ProgramStatus): void {
+		this.statuses.push(status);
+	}
 }

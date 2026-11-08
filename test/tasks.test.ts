@@ -291,9 +291,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 		try {
 			expect(await cli(["attach", "--conversation", ids.child], pi.env)).toMatchObject({ code: 3, stderr: "" });
-			expect(logLines(pi.log)).toEqual([
-				`--harness main --harness-conversation ${ids.child} HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=`,
-			]);
+			expect(logLines(pi.log)).toEqual([`--harness main --harness-conversation ${ids.child} HARNESS_PROJECT=`]);
 
 			for (const conversation of ["999999", ids.root]) {
 				expect(await cli(["attach", "--conversation", conversation], pi.env)).toMatchObject({

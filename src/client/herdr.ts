@@ -1,3 +1,7 @@
+/**
+ * Opens a child or a conversation in Pi in herdr-app: each one runs in a background hc terminal, and the `herdr.space`
+ * and `herdr.tab` labels of that terminal tell herdr-app where to show it.
+ */
 import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -8,77 +12,34 @@ import type { ChildInfo } from "../protocol/requests.ts";
 import { parseTarget } from "../protocol/target.ts";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
 
-const HERDR_SOURCE = "custom:harness";
+/** The label that puts an hc terminal in a space of herdr-app. Without a tab label, herdr-app opens a new tab there. */
+const SPACE_LABEL = "herdr.space";
+
+/** The label that puts an hc terminal in a tab of herdr-app, to the right of the last pane of that tab. */
+const TAB_LABEL = "herdr.tab";
+
+/** The part of the output of `hc get --json` that has the labels of the terminal. */
+const TerminalLabels = Type.Object({ labels: Type.Record(Type.String(), Type.String()) });
 
 /**
- * The variable that gives the Herdr pane to the Pi that the CLI starts there, in place of `HERDR_ENV`. Without
- * `HERDR_ENV`, Herdr's own Pi integration does not report, so the pane shows the state of the mirrored agent, which the
- * extension reports, and not the state of Pi's own agent, which does not run.
+ * Where `openConversationPane` shows a conversation: in a new tab of the space `space`, in a new tab of the space of
+ * the hc terminal of this process when `space` is not given, or with `side` in a new pane to the right in the tab of
+ * that terminal.
  */
-const PANE_VARIABLE = "HARNESS_HERDR_PANE";
+export type ConversationPlace = { space?: string; side?: never } | { side: true; space?: never };
 
-/** The part of the output of `herdr tab create` that has the pane of the tab, and the tab ID when Herdr gives it. */
-const TabCreated = Type.Object({
-	result: Type.Object({
-		root_pane: Type.Object({ pane_id: Type.String() }),
-		tab: Type.Optional(Type.Object({ tab_id: Type.Optional(Type.String()) })),
-	}),
-});
-
-/** The part of the output of `herdr pane split` that has the new pane. */
-const PaneSplit = Type.Object({ result: Type.Object({ pane: Type.Object({ pane_id: Type.String() }) }) });
-
-export type AgentReporter = { report(busy: boolean): Promise<void>; release(): Promise<void> };
-
-/**
- * The words of the command that opens `target` in Pi, with this Node and this package's CLI, so it does not need the
- * CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
- */
-function openCommand(target: MirrorTarget): string[] {
-	return ["env", process.execPath, cliPath(), ...harnessArgs(target)];
-}
-
-/** The `--env` flags of `herdr` that give `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set. */
-function envFlags(env: NodeJS.ProcessEnv): string[] {
-	// The new pane must find the same host and projects as `statePaths()` in paths.ts and `projectsPath()` in
-	// projects.ts.
-	const state = env.XDG_STATE_HOME;
-	const config = env.XDG_CONFIG_HOME;
-
-	return [
-		...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
-		...(config ? ["--env", `XDG_CONFIG_HOME=${config}`] : []),
-	];
-}
-
-/** Runs the command that opens `target` in Pi in the Herdr pane `pane`, with each word in single quotes. */
-async function runOpen(pane: string, target: MirrorTarget, env: NodeJS.ProcessEnv): Promise<void> {
-	const command = openCommand(target)
-		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
-		.join(" ");
-
-	await herdr(["pane", "run", pane, command], env);
-}
-
-/** Whether this process runs in a Herdr pane, also as the Pi that the CLI starts there. */
+/** Whether this process runs in an hc terminal. */
 export function inHerdr(env: NodeJS.ProcessEnv): boolean {
-	return Boolean(env.HERDR_ENV || env[PANE_VARIABLE]);
-}
-
-/** The environment of the Pi that the CLI starts: in a Herdr pane, `HARNESS_HERDR_PANE` in place of `HERDR_ENV`. */
-export function piEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	const { HERDR_ENV, ...rest } = env;
-
-	return HERDR_ENV && env.HERDR_PANE_ID ? { ...rest, [PANE_VARIABLE]: env.HERDR_PANE_ID } : env;
+	return Boolean(env.HC_TERMINAL_ID);
 }
 
 /**
- * Runs `herdr` with `args` and gives its output. When `herdr` fails, it rejects with the stderr of `herdr`, or with the
- * error of `execFile` when stderr is empty.
+ * Runs `hc` with `args` and gives its output. When `hc` fails, it rejects with the stderr of `hc`, or with the error of
+ * `execFile` when stderr is empty.
  */
-export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+export function hc(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile("herdr", args, { env }, (error, stdout, stderr) => {
+		execFile("hc", args, { env }, (error, stdout, stderr) => {
 			if (error) reject(new Error(stderr.trim() || error.message));
 			else resolve(stdout);
 		});
@@ -86,177 +47,118 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
 }
 
 /**
- * Opens a Herdr tab that opens `child` in Pi, on the project of `env` and this process's cwd. It rejects when a
- * `herdr` call fails or gives no pane ID.
+ * The labels `names` of the hc terminal of this process, with their values, in the order of `names`. It rejects when
+ * this process is not in an hc terminal, and when that terminal does not have one of `names`, or has it empty.
  */
-export async function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
-	const project = resolveProject(env, process.cwd());
+async function callerLabels(names: readonly string[], env: NodeJS.ProcessEnv): Promise<Record<string, string>> {
+	const id = env.HC_TERMINAL_ID;
 
-	const created = await herdr(
-		["tab", "create", "--cwd", child.cwd, "--label", childLabel(child), "--focus", ...envFlags(env)],
-		env,
-	);
+	if (!id) throw new Error("Not in an hc terminal: HC_TERMINAL_ID is not set");
+	const output = await hc(["get", "--json", id], env);
 
-	let output: unknown;
+	let terminal: unknown;
 
 	try {
-		output = JSON.parse(created);
+		terminal = JSON.parse(output);
 	} catch {
-		output = undefined;
+		terminal = undefined;
 	}
 
-	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
+	if (!Value.Check(TerminalLabels, terminal)) throw new Error(`hc get gave no labels: ${output.trim()}`);
+	const { labels } = terminal;
 
-	await runOpen(output.result.root_pane.pane_id, { project, target: parseTarget({ handle: child.handle }) }, env);
+	return Object.fromEntries(
+		names.map((name) => {
+			const value = labels[name];
+
+			if (!value) throw new Error(`The hc terminal ${id} has no ${name} label`);
+
+			return [name, value];
+		}),
+	);
 }
 
 /**
- * Opens the children library conversation `conversation` in Pi, on the project of `env` and this process's cwd: in a
- * new pane to the right of the Herdr pane `place.pane`, or in a new tab of the Herdr workspace `place.workspace`. The
- * pane or tab gets the key of the conversation as its label. For a conversation, `ChildInfo` gives the same ID in
- * `handle` and in `conversation`. It rejects when a `herdr` call fails or gives no pane ID. When a call fails after the
- * pane or tab exists, it closes that pane or tab first: the tab, or its pane when Herdr gives no tab ID. A failure of
- * that close is ignored, and the rejection keeps the first error.
+ * The hc name of the terminal of `child`: its label in lowercase, with `-` in place of each character other than
+ * `a-z`, `0-9`, `-` and `_`, without the characters before the first letter or digit, and cut to 32 characters. There
+ * is no name when nothing is left, or when the result has the shape of an hc terminal ID, such as `t7`: hc refuses
+ * these names.
  */
-export async function openConversationPane(
+function terminalName(child: ChildInfo): string | undefined {
+	const name = childLabel(child)
+		.toLowerCase()
+		.replace(/[^a-z0-9_-]/gu, "-")
+		.replace(/^[^a-z0-9]+/u, "")
+		.slice(0, 32);
+
+	return name === "" || /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/u.test(name) ? undefined : name;
+}
+
+/**
+ * The words of the command that opens `target` in Pi, with this Node and this package's CLI, so it does not need the
+ * CLI on PATH. hc gives the program the environment of the hc server, so the command starts with `env` and the
+ * `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set.
+ */
+function openCommand(target: MirrorTarget, env: NodeJS.ProcessEnv): string[] {
+	// The program must find the same host and projects as `statePaths()` in paths.ts and `projectsPath()` in
+	// projects.ts.
+	const assignments = ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].flatMap((name) => {
+		const value = env[name];
+
+		return value ? [`${name}=${value}`] : [];
+	});
+
+	const prefix = assignments.length > 0 ? ["env", ...assignments] : [];
+
+	return [...prefix, process.execPath, cliPath(), ...harnessArgs(target)];
+}
+
+/**
+ * Opens `target` in Pi at `place` in herdr-app, on the project of `env` and this process's cwd, in a new background hc
+ * terminal in the cwd of `child`, named after it. With `place.space`, the terminal gets that `herdr.space` label;
+ * without it, the terminal gets the labels of the hc terminal of this process that `place` needs. It rejects before it
+ * starts a terminal when it cannot read these labels, and it rejects when an `hc` call fails.
+ */
+async function openInHc(
+	child: ChildInfo,
+	target: MirrorTarget["target"],
+	place: ConversationPlace,
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	const project = resolveProject(env, process.cwd());
+
+	const labels =
+		place.space !== undefined
+			? { [SPACE_LABEL]: place.space }
+			: await callerLabels(place.side ? [SPACE_LABEL, TAB_LABEL] : [SPACE_LABEL], env);
+
+	const flags = Object.entries(labels).flatMap(([label, value]) => ["--label", `${label}=${value}`]);
+	const name = terminalName(child);
+	const named = name === undefined ? [] : ["--name", name];
+	const command = openCommand({ project, target }, env);
+
+	await hc(["run", "--bg", "--keep", "--no-parent", "--cwd", child.cwd, ...named, ...flags, "--", ...command], env);
+}
+
+/**
+ * Opens `child` in Pi in a new herdr-app tab, in the space of the hc terminal of this process, on the project of `env`
+ * and this process's cwd. It rejects before it starts a terminal when this process is not in an hc terminal or its
+ * terminal has no `herdr.space` label, and it rejects when an `hc` call fails.
+ */
+export function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
+	return openInHc(child, parseTarget({ handle: child.handle }), {}, env);
+}
+
+/**
+ * Opens the children library conversation `conversation` in Pi at `place` in herdr-app, on the project of `env` and
+ * this process's cwd. For a conversation, `ChildInfo` gives the same ID in `handle` and in `conversation`. Without
+ * `place.space`, it rejects before it starts a terminal when this process is not in an hc terminal, or when its
+ * terminal does not have the labels that `place` needs. It rejects when an `hc` call fails.
+ */
+export function openConversationPane(
 	conversation: ChildInfo,
-	place: { pane: string; workspace?: never } | { workspace: string; pane?: never },
+	place: ConversationPlace,
 	env: NodeJS.ProcessEnv,
 ): Promise<void> {
-	const project = resolveProject(env, process.cwd());
-	const target: MirrorTarget = { project, target: { kind: "conversation", id: conversation.handle } };
-	const label = childLabel(conversation);
-
-	if (place.pane !== undefined) {
-		const split = await herdr(
-			["pane", "split", place.pane, "--direction", "right", "--cwd", conversation.cwd, ...envFlags(env)],
-			env,
-		);
-
-		let output: unknown;
-
-		try {
-			output = JSON.parse(split);
-		} catch {
-			output = undefined;
-		}
-
-		if (!Value.Check(PaneSplit, output)) throw new Error(`herdr pane split gave no pane ID: ${split.trim()}`);
-		const pane = output.result.pane.pane_id;
-		await closeOnFailure(
-			async () => {
-				await herdr(["pane", "rename", pane, label], env);
-				await runOpen(pane, target, env);
-			},
-			["pane", "close", pane],
-			env,
-		);
-
-		return;
-	}
-
-	const created = await herdr(
-		[
-			"tab",
-			"create",
-			"--workspace",
-			place.workspace,
-			"--cwd",
-			conversation.cwd,
-			"--label",
-			label,
-			"--focus",
-			...envFlags(env),
-		],
-		env,
-	);
-
-	let output: unknown;
-
-	try {
-		output = JSON.parse(created);
-	} catch {
-		output = undefined;
-	}
-
-	if (!Value.Check(TabCreated, output)) throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
-
-	const pane = output.result.root_pane.pane_id;
-	const tab = output.result.tab?.tab_id;
-
-	await closeOnFailure(
-		() => runOpen(pane, target, env),
-		tab === undefined ? ["pane", "close", pane] : ["tab", "close", tab],
-		env,
-	);
-}
-
-/** Runs `open`. When it fails, it runs `herdr` with `close`, ignores a failure of that call, and rejects with the first error. */
-async function closeOnFailure(
-	open: () => Promise<void>,
-	close: readonly string[],
-	env: NodeJS.ProcessEnv,
-): Promise<void> {
-	try {
-		await open();
-	} catch (error) {
-		await herdr(close, env).catch(() => "");
-		throw error;
-	}
-}
-
-/**
- * Reports the state of the agent `label` to the Herdr pane of `HARNESS_HERDR_PANE`, with the command that opens
- * `target` as the resume command. Both methods do nothing without that variable, so only a Pi that the CLI
- * started in a Herdr pane reports. The calls run one after another, so `--seq` reaches Herdr in order. A report of
- * the state of the last report that waits or went through does nothing. After a failed last report, or after a
- * release, the next report goes to Herdr again. `report` gives the end of its call, which never rejects.
- */
-export function agentReporter(env: NodeJS.ProcessEnv, label: string, target: MirrorTarget): AgentReporter {
-	const pane = env[PANE_VARIABLE] || undefined;
-	const resume = pane === undefined ? [] : ["--", ...openCommand(target)];
-	let calls: Promise<void> = Promise.resolve();
-	let seq = 0;
-	let reported: string | undefined;
-
-	/** Queues one `herdr` call; `onFailure` runs with its `--seq` when it fails. */
-	const call = (
-		command: string,
-		options: readonly string[],
-		resume: readonly string[],
-		onFailure: (failed: number) => void,
-	) => {
-		if (pane === undefined) return calls;
-		seq = Math.max(Date.now(), seq + 1);
-		const mine = seq;
-		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(mine), pane];
-
-		// A failed report never stops the caller.
-		calls = calls.then(() =>
-			herdr([...args, ...resume], env).then(
-				() => {},
-				() => onFailure(mine),
-			),
-		);
-
-		return calls;
-	};
-
-	return {
-		report(busy) {
-			const state = busy ? "working" : "idle";
-
-			if (state === reported) return calls;
-			reported = state;
-
-			// Only the failure of the last call forgets the state: a later call has its own state, or a release.
-			return call("report-agent", ["--state", state], resume, (failed) => {
-				if (failed === seq) reported = undefined;
-			});
-		},
-		async release() {
-			reported = undefined;
-			await call("release-agent", [], [], () => {});
-		},
-	};
+	return openInHc(conversation, { kind: "conversation", id: conversation.handle }, place, env);
 }

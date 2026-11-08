@@ -405,7 +405,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 		expect(reports).toEqual([
 			{ state: "idle", app: "harness", message: "main agent" },
 			{ state: "working", app: "harness", message: "main agent" },
-			{ state: "idle", app: "harness", message: "main agent" },
+			{ state: "done", app: "harness", message: "main agent" },
 			{ state: "working", app: "harness", message: "main agent" },
 			{ state: "error", app: "harness", message: "overloaded" },
 			{ state: "idle", app: "harness", message: "main agent" },

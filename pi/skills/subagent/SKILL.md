@@ -67,7 +67,7 @@ Use `list` at any time to find the subagents of this session again, with their h
 
 Stop every subagent when you no longer need it; do not leave completed subagents idle. This stops its work and the work of its own children, and removes it. Keep an idle subagent only when you expect concrete follow-up work, then stop it afterward.
 
-For humans, not for you: the interactive `/subagent` command opens a child in Pi in a new Herdr tab. Outside Herdr, it shows the `harness attach <handle>` command, which opens a mirror session of the child, where the user can read and send messages.
+For humans, not for you: the interactive `/subagent` command opens a child in Pi in a new herdr-app tab, through hc. Outside an hc terminal, it shows the `harness attach <handle>` command, which opens a mirror session of the child, where the user can read and send messages.
 
 ## CLI
 

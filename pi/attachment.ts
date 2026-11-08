@@ -14,7 +14,6 @@ import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
-import type { AgentReporter } from "../dist/client/herdr.js";
 import type { Mirror, MirrorStatus, MirrorTarget } from "../dist/client/mirror.js";
 import type { ChildInfo } from "../dist/protocol/index.js";
 import { ChatView } from "./chat.ts";
@@ -40,8 +39,6 @@ export class Attachment {
 	readonly #mirror: Mirror;
 	#ui: TUI | undefined;
 	#chat: ChatView | undefined;
-	/** The state of the agent for Herdr, made when the agent is first known. */
-	#reporter: AgentReporter | undefined;
 	/** The state of the agent for the terminal, made with the TUI. */
 	#programStatus: ProgramStatusReport | undefined;
 	#expanded = false;
@@ -146,10 +143,15 @@ export class Attachment {
 	}
 
 	/**
-	 * Closes the connection and gives Pi back its editor. The agent keeps running in the host. The promise resolves when
-	 * Herdr has released the agent of the pane.
+	 * Reports the state of the agent to the terminal again, also when it did not change: Pi writes its own state when a
+	 * dialog ends.
 	 */
-	async close(): Promise<void> {
+	reportStatusAgain(): void {
+		if (!this.#closed) this.#programStatus?.reportAgain(this.#mirror);
+	}
+
+	/** Closes the connection and gives Pi back its editor. The agent keeps running in the host. */
+	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.models.close();
@@ -159,7 +161,6 @@ export class Attachment {
 		this.#ctx.ui.setWidget(WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
 		this.#programStatus?.leave(this.#mirror);
-		await this.#reporter?.release();
 	}
 
 	/** Shows each change of the mirror, whose status was `previous` before it. */
@@ -173,17 +174,13 @@ export class Attachment {
 		this.#showStatus(ui, view, child);
 
 		if (status.kind === "failed" && previous.kind !== "failed") this.#showFailure(status.reason);
-		else void this.#reporter?.report(this.#mirror.busy);
 		this.#programStatus?.update(this.#mirror);
 
 		if (child !== undefined) this.#followAgent(child);
 		ui.requestRender();
 	}
 
-	/**
-	 * Shows the transcript under its header, and makes the Herdr reporter at the first connection. It applies `view` only
-	 * on an open connection.
-	 */
+	/** Shows the transcript under its header. It applies `view` only on an open connection. */
 	#showTranscript(ui: TUI, view: ConversationView, child: ChildInfo, previous: MirrorStatus): void {
 		const chat = this.#chat ?? this.#startTranscript(ui, child);
 
@@ -200,8 +197,6 @@ export class Attachment {
 		this.#frame.clear();
 		this.#frame.addChild(this.#line("muted", () => this.#header(this.#mirror.child ?? first)));
 		this.#frame.addChild(chat.transcript);
-		const { herdr, protocol } = this.#harness;
-		this.#reporter = herdr.agentReporter(process.env, protocol.childLabel(first), this.#mirror.target);
 
 		return chat;
 	}
@@ -240,9 +235,6 @@ export class Attachment {
 		if (this.#chat === undefined) this.#frame.clear();
 		this.#frame.addChild(this.#line("error", () => reason));
 		this.#ctx.ui.notify(`harness: ${reason}`, "error");
-		// A failed mirror does not connect again, so Herdr forgets the agent of the pane now, and gets no more reports.
-		void this.#reporter?.release();
-		this.#reporter = undefined;
 	}
 
 	/** Gives Pi the agent's title, and on an open connection its model and thinking level. */

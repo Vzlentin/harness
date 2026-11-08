@@ -121,9 +121,7 @@ describe("projects", { timeout: 30_000 }, () => {
 		try {
 			const handle = handleOf(await cli(["spawn", "--prompt", "Attach in a"], {}, dirA));
 			expect(await cli(["--project", "a", "attach", handle], pi.env, dirB)).toMatchObject({ code: 3, stderr: "" });
-			expect(logLines(pi.log)).toEqual([
-				`--harness a --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=`,
-			]);
+			expect(logLines(pi.log)).toEqual([`--harness a --harness-child ${handle} HARNESS_PROJECT=`]);
 		} finally {
 			await hostA?.close();
 		}

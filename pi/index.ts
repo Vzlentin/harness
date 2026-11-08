@@ -123,7 +123,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	});
 
 	pi.registerCommand("subagent", {
-		description: "Open a subagent spawned by this session in Pi, in a new Herdr tab",
+		description: "Open a subagent spawned by this session in Pi, in a new herdr-app tab",
 		handler: async (_args, ctx) => {
 			const children: readonly protocol.ChildInfo[] = await client.request(
 				{ type: "list", caller: ctx.sessionManager.getSessionId() },
@@ -156,7 +156,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 				await herdr.openChildTab(child, process.env);
 			} catch (error) {
 				const message = protocol.errorMessage(error);
-				ctx.ui.notify(`Could not open a Herdr tab: ${message}. Run in another terminal: ${command}`, "error");
+				ctx.ui.notify(`Could not open a herdr-app tab: ${message}. Run in another terminal: ${command}`, "error");
 			}
 		},
 	});

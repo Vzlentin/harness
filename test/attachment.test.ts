@@ -12,8 +12,6 @@ import { type Component, KeybindingsManager, type TUI, TUI_KEYBINDINGS, TuiMainS
 import { beforeAll, describe, expect, it } from "vitest";
 import { ChatView } from "../pi/chat.ts";
 import { registerMirror } from "../pi/mirror.ts";
-import type { AgentReporter } from "../src/client/herdr.ts";
-import * as herdr from "../src/client/herdr.ts";
 import * as mirror from "../src/client/mirror.ts";
 import {
 	MIRROR_ENTRY,
@@ -104,22 +102,6 @@ class FakeMirror {
 	async configure(): Promise<void> {}
 }
 
-/** A Herdr reporter that counts its calls. A release ends when `released` resolves. */
-class FakeReporter implements AgentReporter {
-	reports = 0;
-	releases = 0;
-	released: Promise<void> = Promise.resolve();
-
-	async report(): Promise<void> {
-		this.reports++;
-	}
-
-	async release(): Promise<void> {
-		this.releases++;
-		await this.released;
-	}
-}
-
 /** A conversation view with the live document `live` and `entries`. */
 function viewOf(live: LiveState, entries: readonly EntryRecord[] = []): ConversationView {
 	return { conversation: { id: conversationId }, entries, docs: { "pi.live": live } };
@@ -168,10 +150,15 @@ function mirrorEntry(target: MirrorTarget): coding.SessionEntry {
 }
 
 /** An event that the tests give to a handler of the mirror. */
-type TestEvent = { readonly type: string; readonly reason?: string; readonly text?: string };
+type TestEvent = {
+	readonly type: string;
+	readonly reason?: string;
+	readonly text?: string;
+	readonly kind?: string;
+};
 
-/** A handler of the mirror; the `input` handler gives a result, and the `session_shutdown` handler a promise. */
-type Handler = (event: TestEvent, ctx: coding.ExtensionContext) => coding.InputEventResult | Promise<void> | undefined;
+/** A handler of the mirror; the `input` handler gives a result. */
+type Handler = (event: TestEvent, ctx: coding.ExtensionContext) => coding.InputEventResult | undefined;
 
 /** The theme of the tests: no colors. */
 const PLAIN: Pick<coding.Theme, "fg" | "bold"> = { fg: (_name, text) => text, bold: (text) => text };
@@ -186,8 +173,8 @@ type EditorFactory = Parameters<coding.ExtensionUIContext["setEditorComponent"]>
 class Session {
 	readonly handlers = new Map<string, Handler>();
 	readonly notes: string[] = [];
-	readonly reporter = new FakeReporter();
-	readonly ui = new TuiMainScreen(new FakeTerminal());
+	readonly terminal = new FakeTerminal();
+	readonly ui = new TuiMainScreen(this.terminal);
 	readonly ctx: coding.ExtensionContext;
 	text = "";
 	#editorFactory: EditorFactory;
@@ -231,7 +218,6 @@ class Session {
 
 		// SAFETY: the mirror and the attachment read only these fields of the context.
 		this.ctx = ctx as coding.ExtensionContext;
-		const reporter = this.reporter;
 
 		const pi: Pick<
 			coding.ExtensionAPI,
@@ -267,21 +253,19 @@ class Session {
 
 		const harness = {
 			mirror: { ...mirror, Mirror: FakeMirror },
-			herdr: { ...herdr, agentReporter: () => reporter },
 			projects,
 			protocol,
 			viewState,
 		};
 
 		// SAFETY: the mirror calls only these functions of Pi. It uses only these modules of the harness, from `src/` in
-		// place of `dist/`, and only the members of `Mirror` that `FakeMirror` has. The fake mirror and the fake Herdr
-		// reporter make sure that no test starts a host or Herdr. The classes of `src/` are not those of `dist/` for the
-		// type check, so the harness goes as `never`.
+		// place of `dist/`, and only the members of `Mirror` that `FakeMirror` has. The fake mirror makes sure that no test
+		// starts a host. The classes of `src/` are not those of `dist/` for the type check, so the harness goes as `never`.
 		registerMirror(pi as coding.ExtensionAPI, harness as never);
 	}
 
 	/** Calls the handler of `event`, with `data`. */
-	emit(event: string, data: Omit<TestEvent, "type"> = {}): coding.InputEventResult | Promise<void> | undefined {
+	emit(event: string, data: Omit<TestEvent, "type"> = {}): coding.InputEventResult | undefined {
 		const handler = this.handlers.get(event);
 
 		if (handler === undefined) throw new Error(`no handler for ${event}`);
@@ -391,34 +375,38 @@ describe("mirror sessions in Pi", () => {
 		session.emit("session_shutdown");
 	});
 
-	it("releases the agent in Herdr when the mirror fails, and reports no more", () => {
+	it("reports done to the terminal after a turn of the agent, through a reconnection, and idle after a failure", () => {
 		const { session, mirror } = attached();
+		const report = (state: string, message = "main agent") => ({ state, app: "harness", message });
+		mirror.mirror.child = { ...CHILD, state: "busy" };
 		mirror.change({ kind: "open" });
-		expect(session.reporter.reports).toBe(1);
+		mirror.change({ kind: "reconnecting" });
+		mirror.mirror.child = { ...CHILD, state: "idle" };
+		mirror.change({ kind: "open" });
 		mirror.change({ kind: "failed", reason: "Unknown subagent: abc" });
-		mirror.change({ kind: "failed", reason: "Unknown subagent: abc" });
-		expect(session.reporter).toMatchObject({ reports: 1, releases: 1 });
 		session.emit("session_shutdown");
-		expect(session.reporter.releases).toBe(1);
+		expect(session.terminal.statuses).toEqual([
+			report("idle"),
+			report("working"),
+			report("blocked", "main agent (connecting again)"),
+			report("done"),
+			report("idle"),
+			report("idle"),
+		]);
 	});
 
-	it("ends the session shutdown only after Herdr has released the agent", async () => {
+	it("reports the state of the agent again when a dialog of Pi ends, until Pi leaves the session", () => {
 		const { session, mirror } = attached();
+		const states = () => session.terminal.statuses.map(({ state }) => state);
+		mirror.mirror.child = { ...CHILD, state: "busy" };
 		mirror.change({ kind: "open" });
-		const release = Promise.withResolvers<void>();
-		session.reporter.released = release.promise;
-		let ended = false;
-
-		const shutdown = Promise.resolve(session.emit("session_shutdown")).then(() => {
-			ended = true;
-		});
-
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(session.reporter.releases).toBe(1);
-		expect(ended).toBe(false);
-		release.resolve();
-		await shutdown;
-		expect(ended).toBe(true);
+		mirror.mirror.child = { ...CHILD, state: "idle" };
+		mirror.change({ kind: "open" });
+		session.emit("ui_prompt_end", { reason: "ui_prompt", kind: "select" });
+		expect(states()).toEqual(["idle", "working", "done", "done"]);
+		session.emit("session_shutdown");
+		session.emit("ui_prompt_end", { reason: "ui_prompt", kind: "confirm" });
+		expect(states()).toEqual(["idle", "working", "done", "done", "idle"]);
 	});
 });
 

@@ -118,11 +118,15 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
 		if (entry !== undefined) attached = new Attachment(pi, harness, ctx, entry.id, entry.target, frameOf(entry.id));
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", () => {
 		refused = false;
-		const closing = attached?.close();
+		attached?.close();
 		attached = undefined;
-		await closing;
+	});
+
+	// When a dialog ends, Pi writes its own state to the terminal over the state of the agent, so the agent's goes again.
+	pi.on("ui_prompt_end", () => {
+		attached?.reportStatusAgain();
 	});
 
 	// The agent of the host answers in a mirror session, so the input goes there and not to Pi's own agent.

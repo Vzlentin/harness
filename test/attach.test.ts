@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, connect, request } from "../src/client/client.ts";
-import { agentReporter, openChildTab, openConversationPane } from "../src/client/herdr.ts";
+import { openChildTab, openConversationPane } from "../src/client/herdr.ts";
 import type { Host } from "../src/host/run.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
@@ -51,44 +51,46 @@ async function hostClient(): Promise<Client> {
 	return client;
 }
 
-/** The `--seq` of a logged `herdr` call. */
-function seqOf(line: string | undefined): number {
-	return Number(/--seq (\d+)/.exec(line ?? "")?.[1]);
-}
+/** The output of `hc get --json t3` for the terminal `t3` of the caller, in the space `s1` and the tab `b2`. */
+const CALLER = JSON.stringify({ address: "t3", labels: { "herdr.space": "s1", "herdr.tab": "b2" } });
 
 /**
- * A `herdr` on `PATH` that logs its arguments to `log`, one line for each call, gives the pane `p1` to a new tab, and
- * the pane `p2` to a split. With `fail`, each call writes that text to stderr and exits with 1, after the log line.
- * With `failOnce`, only the first call does that. With `failOn`, only the calls whose first two words are `failOn` do
- * that.
+ * An `hc` on `PATH` that logs its arguments to `log`, one line for each call, and prints `terminal` for `get`. Its
+ * environment is that of the hc terminal `t3`. With `fail`, each call whose first word is `failOn` writes `fail` to
+ * stderr and exits with 1, after the log line.
  */
-async function fakeHerdr(
+async function fakeHc(
+	terminal = CALLER,
 	fail?: string,
-	failOnce = false,
-	failOn?: string,
+	failOn = "run",
 ): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
-	const log = join(bin, "herdr.log");
-	const flag = join(bin, "fail-once");
-
-	if (failOnce) await writeFile(flag, "");
-
-	const failure =
-		failOn === undefined
-			? `echo '${fail}' >&2; exit 1`
-			: `if [ "$1 $2" = "${failOn}" ]; then echo '${fail}' >&2; exit 1; fi`;
+	const log = join(bin, "hc.log");
 
 	const script = `#!/bin/sh
 echo "$*" >> "${log}"
-${fail === undefined ? "" : failOnce ? `if [ -e "${flag}" ]; then rm "${flag}"; ${failure}; fi` : failure}
-if [ "$1 $2" = "tab create" ]; then echo '{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"p1"}}}'; fi
-if [ "$1 $2" = "pane split" ]; then echo '{"result":{"type":"pane_info","pane":{"pane_id":"p2"}}}'; fi
+${fail === undefined ? "" : `if [ "$1" = "${failOn}" ]; then echo '${fail}' >&2; exit 1; fi`}
+if [ "$1" = "get" ]; then echo '${terminal}'; fi
 `;
 
-	await writeFile(join(bin, "herdr"), script);
-	await chmod(join(bin, "herdr"), 0o755);
+	await writeFile(join(bin, "hc"), script);
+	await chmod(join(bin, "hc"), 0o755);
 
-	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
+	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HC_TERMINAL_ID: "t3" }, log };
+}
+
+/** A child named `name`, in `root`, as the host lists it. */
+function childInfo(name: string): ChildInfo {
+	return { handle: "abc123", name, state: "idle", provider: "p", model: "m", thinking: "off", cwd: root };
+}
+
+/** `env` without `XDG_STATE_HOME` and `XDG_CONFIG_HOME`. */
+function withoutXdg(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const rest = { ...env };
+	delete rest.XDG_STATE_HOME;
+	delete rest.XDG_CONFIG_HOME;
+
+	return rest;
 }
 
 /** A children library conversation, as the host lists it, in `root`. */
@@ -280,15 +282,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const pi = await fakePi();
 		const handle = handleOf(await cli(["spawn", "--name", "piped", "--prompt", "Pipe me"]));
 
-		// In Herdr, Pi gets the pane in HARNESS_HERDR_PANE and no HERDR_ENV, so Herdr's Pi integration does not report.
-		const attached = await cli(["attach", handle], { ...pi.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-3" });
-		expect(attached).toMatchObject({ code: 3, stderr: "" });
-		expect(logLines(pi.log)).toEqual([
-			`--harness main --harness-child ${handle} HERDR_ENV= HARNESS_HERDR_PANE=pane-3 HARNESS_PROJECT=`,
-		]);
+		expect(await cli(["attach", handle], pi.env)).toMatchObject({ code: 3, stderr: "" });
+		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_PROJECT=`]);
 
 		expect((await cli(["main"], pi.env)).code).toBe(3);
-		expect(logLines(pi.log)[1]).toBe("--harness main HERDR_ENV= HARNESS_HERDR_PANE= HARNESS_PROJECT=");
+		expect(logLines(pi.log)[1]).toBe("--harness main HARNESS_PROJECT=");
 
 		expect(await cli(["attach", "abcdef"], pi.env)).toMatchObject({ code: 1, stderr: "Unknown subagent: abcdef\n" });
 		expect(logLines(pi.log)).toHaveLength(2);
@@ -313,156 +311,110 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(logLines(decoyLog)).toEqual([]);
 	});
 
-	it("reports the state of a mirrored agent to the Herdr pane of a Pi that the CLI started", async () => {
-		const herdr = await fakeHerdr();
-
-		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-7" }, "viewed", {
-			project: "main",
-			target: { kind: "child", handle: "abc123" },
-		});
-
-		reporter.report(false);
-		reporter.report(true);
-		reporter.report(true);
-		reporter.report(false);
-		await reporter.release();
-
-		const reports = logLines(herdr.log);
-
-		const report = (state: string, index: number) =>
-			`pane report-agent --source custom:harness --agent viewed --state ${state} --seq ${seqOf(reports[index])} pane-7 -- env ${process.execPath} ${CLI} --project main attach abc123`;
-
-		expect(reports).toEqual([
-			report("idle", 0),
-			report("working", 1),
-			report("idle", 2),
-			`pane release-agent --source custom:harness --agent viewed --seq ${seqOf(reports[3])} pane-7`,
-		]);
-		const seqs = reports.map(seqOf);
-		expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
-		expect(new Set(seqs).size).toBe(seqs.length);
-
-		// The project agent resumes with `harness <project>`.
-		const agent = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-9" }, "main agent", {
-			project: "main",
-			target: { kind: "agent" },
-		});
-
-		agent.report(false);
-		await agent.release();
-		expect(logLines(herdr.log)[4]).toBe(
-			`pane report-agent --source custom:harness --agent main agent --state idle --seq ${seqOf(logLines(herdr.log)[4])} pane-9 -- env ${process.execPath} ${CLI} main`,
-		);
-
-		// A Pi that the user started in Herdr has HERDR_ENV and no HARNESS_HERDR_PANE: Herdr's Pi integration reports there.
-		const silent = agentReporter({ ...herdr.env, HERDR_ENV: "1", HERDR_PANE_ID: "pane-8" }, "x", {
-			project: "main",
-			target: { kind: "child", handle: "abc123" },
-		});
-
-		silent.report(true);
-		await silent.release();
-		expect(logLines(herdr.log)).toHaveLength(6);
-	});
-
-	it("reports the state again after a failed report and after a release", async () => {
-		const herdr = await fakeHerdr("pane busy", true);
-
-		const reporter = agentReporter({ ...herdr.env, HARNESS_HERDR_PANE: "pane-5" }, "retried", {
-			project: "main",
-			target: { kind: "child", handle: "abc123" },
-		});
-
-		await reporter.report(true);
-		await reporter.report(true);
-		await reporter.report(true);
-		await reporter.release();
-		await reporter.report(true);
-		await reporter.release();
-
-		const states = logLines(herdr.log).map((line) => /--state (\w+)|release-agent/.exec(line)?.[0]);
-
-		expect(states).toEqual(["--state working", "--state working", "release-agent", "--state working", "release-agent"]);
-	});
-
-	it("opens a child in Pi in a Herdr tab", async () => {
-		const herdr = await fakeHerdr();
+	it("opens a child in Pi in a new herdr-app tab, in the space of the hc terminal of the caller", async () => {
+		const hc = await fakeHc();
 		const handle = handleOf(await cli(["spawn", "--name", "tabbed", "--prompt", "Tab me"]));
 		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
 		const child = children.find((found) => found.handle === handle);
 
 		if (child === undefined) throw new Error("no child");
-		const state = herdr.env.XDG_STATE_HOME;
-		const config = herdr.env.XDG_CONFIG_HOME;
+		const state = hc.env.XDG_STATE_HOME;
+		const config = hc.env.XDG_CONFIG_HOME;
 		expect(state).toBeTruthy();
 		expect(config).toBeTruthy();
-		const run = `pane run p1 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '${handle}'`;
-		await openChildTab(child, herdr.env);
-		expect(logLines(herdr.log)).toEqual([
-			`tab create --cwd ${child.cwd} --label tabbed --focus --env XDG_STATE_HOME=${state} --env XDG_CONFIG_HOME=${config}`,
-			run,
+		const run = `run --bg --keep --no-parent --cwd ${child.cwd} --name tabbed --label herdr.space=s1 --`;
+		const command = `${process.execPath} ${CLI} --project main attach ${handle}`;
+		await openChildTab(child, hc.env);
+		expect(logLines(hc.log)).toEqual([
+			"get --json t3",
+			`${run} env XDG_STATE_HOME=${state} XDG_CONFIG_HOME=${config} ${command}`,
 		]);
-		// Without XDG_STATE_HOME and XDG_CONFIG_HOME, the tab finds the host under HOME, as this process does.
-		const env = { ...herdr.env };
-		delete env.XDG_STATE_HOME;
-		delete env.XDG_CONFIG_HOME;
-		await openChildTab(child, env);
-		expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${child.cwd} --label tabbed --focus`, run]);
+		// hc gives the program the environment of its server, so only `env` gives it the XDG variables of the caller.
+		// Without them, the tab finds the host under HOME, as this process does.
+		await openChildTab(child, withoutXdg(hc.env));
+		expect(logLines(hc.log).slice(2)).toEqual(["get --json t3", `${run} ${command}`]);
 	});
 
-	it("rejects with the herdr error when it cannot open a Herdr tab", async () => {
-		const herdr = await fakeHerdr("no such session");
-		const handle = handleOf(await cli(["spawn", "--name", "untabbed", "--prompt", "No tab"]));
-		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
-		const child = children.find((found) => found.handle === handle);
+	it("names the hc terminal after the child, as hc takes a name, or leaves the name out", async () => {
+		const hc = await fakeHc();
 
-		if (child === undefined) throw new Error("no child");
-		await expect(openChildTab(child, herdr.env)).rejects.toThrow("no such session");
-		expect(logLines(herdr.log)).toHaveLength(1);
-		expect(logLines(herdr.log)[0]).toMatch(/^tab create /);
-	});
-	it("opens a conversation in Pi in a Herdr pane split", async () => {
-		const herdr = await fakeHerdr();
-		const state = herdr.env.XDG_STATE_HOME;
-		const config = herdr.env.XDG_CONFIG_HOME;
-		expect(state).toBeTruthy();
-		expect(config).toBeTruthy();
-		await openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env);
-		expect(logLines(herdr.log)).toEqual([
-			`pane split p0 --direction right --cwd ${root} --env XDG_STATE_HOME=${state} --env XDG_CONFIG_HOME=${config}`,
-			"pane rename p2 key",
-			`pane run p2 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '--conversation' 'c1'`,
-		]);
+		// Each label of a child, and the name of its hc terminal.
+		const names = {
+			"Fix: Auth.Flow!": "fix--auth-flow-",
+			"__Agent Ω 1234567890 1234567890 1234567890": "agent---1234567890-1234567890-12",
+			t0: "t0",
+			t7a: "t7a",
+			T7: undefined,
+			t7b: undefined,
+			"!!!": undefined,
+		};
+
+		for (const name of Object.keys(names)) await openChildTab(childInfo(name), hc.env);
+		const runs = logLines(hc.log).filter((line) => line.startsWith("run "));
+		expect(runs.map((line) => /--name (\S+)/.exec(line)?.[1])).toEqual(Object.values(names));
 	});
 
-	it("opens a conversation in Pi in a new tab of a Herdr workspace", async () => {
-		const herdr = await fakeHerdr();
-		const env = { ...herdr.env };
-		delete env.XDG_STATE_HOME;
-		delete env.XDG_CONFIG_HOME;
-		await openConversationPane(conversationInfo(), { workspace: "w1" }, env);
-		expect(logLines(herdr.log)).toEqual([
-			`tab create --workspace w1 --cwd ${root} --label key --focus`,
-			`pane run p1 'env' '${process.execPath}' '${CLI}' '--project' 'main' 'attach' '--conversation' 'c1'`,
+	it("opens a conversation in Pi in a new tab of a given space, without the labels of the caller", async () => {
+		const hc = await fakeHc();
+		const env = withoutXdg(hc.env);
+		delete env.HC_TERMINAL_ID;
+		await openConversationPane(conversationInfo(), { space: "s9" }, env);
+		expect(logLines(hc.log)).toEqual([
+			`run --bg --keep --no-parent --cwd ${root} --name key --label herdr.space=s9 -- ${process.execPath} ${CLI} --project main attach --conversation c1`,
 		]);
 	});
 
-	it("rejects with the herdr error when it cannot open a conversation pane, and makes no more calls", async () => {
-		const herdr = await fakeHerdr("no such pane");
-		await expect(openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env)).rejects.toThrow("no such pane");
-		expect(logLines(herdr.log)).toHaveLength(1);
-		expect(logLines(herdr.log)[0]).toMatch(/^pane split /);
+	it("opens a conversation in Pi in a new tab of the space of the caller, or to the right in its tab", async () => {
+		const hc = await fakeHc();
+		const env = withoutXdg(hc.env);
+		const command = `${process.execPath} ${CLI} --project main attach --conversation c1`;
+		const run = `run --bg --keep --no-parent --cwd ${root} --name key --label herdr.space=s1`;
+		await openConversationPane(conversationInfo(), {}, env);
+		await openConversationPane(conversationInfo(), { side: true }, env);
+		expect(logLines(hc.log)).toEqual([
+			"get --json t3",
+			`${run} -- ${command}`,
+			"get --json t3",
+			`${run} --label herdr.tab=b2 -- ${command}`,
+		]);
 	});
 
-	it("closes the new pane or tab when it cannot open the conversation there", async () => {
-		const herdr = await fakeHerdr("pane is gone", false, "pane run");
-		await expect(openConversationPane(conversationInfo(), { pane: "p0" }, herdr.env)).rejects.toThrow("pane is gone");
-		expect(logLines(herdr.log).at(-1)).toBe("pane close p2");
+	it("starts no hc terminal when the caller is not in one, or its terminal lacks a label", async () => {
+		const outside = await fakeHc();
+		const env = { ...outside.env };
+		delete env.HC_TERMINAL_ID;
+		const notInHc = "Not in an hc terminal: HC_TERMINAL_ID is not set";
+		await expect(openChildTab(childInfo("outside"), env)).rejects.toThrow(notInHc);
+		await expect(openConversationPane(conversationInfo(), { side: true }, env)).rejects.toThrow(notInHc);
+		expect(logLines(outside.log)).toEqual([]);
 
-		const tab = await fakeHerdr("pane is gone", false, "pane run");
-		await expect(openConversationPane(conversationInfo(), { workspace: "w1" }, tab.env)).rejects.toThrow(
-			"pane is gone",
+		const noTab = await fakeHc(JSON.stringify({ address: "t3", labels: { "herdr.space": "s1" } }));
+		await expect(openConversationPane(conversationInfo(), { side: true }, noTab.env)).rejects.toThrow(
+			"The hc terminal t3 has no herdr.tab label",
 		);
-		expect(logLines(tab.log).at(-1)).toBe("tab close t1");
+		expect(logLines(noTab.log)).toEqual(["get --json t3"]);
+
+		const emptySpace = await fakeHc(JSON.stringify({ address: "t3", labels: { "herdr.space": "" } }));
+		await expect(openChildTab(childInfo("empty"), emptySpace.env)).rejects.toThrow(
+			"The hc terminal t3 has no herdr.space label",
+		);
+		expect(logLines(emptySpace.log)).toEqual(["get --json t3"]);
+
+		const noLabels = await fakeHc('{"address":"t3"}');
+		await expect(openChildTab(childInfo("unlabeled"), noLabels.env)).rejects.toThrow(
+			'hc get gave no labels: {"address":"t3"}',
+		);
+		expect(logLines(noLabels.log)).toEqual(["get --json t3"]);
+	});
+
+	it("rejects with the error of hc when hc fails", async () => {
+		const taken = '{"error":{"kind":"name_taken","message":"the name key is taken"}}';
+		const hc = await fakeHc(CALLER, taken);
+		await expect(openConversationPane(conversationInfo(), {}, hc.env)).rejects.toThrow(taken);
+		expect(logLines(hc.log)).toHaveLength(2);
+
+		const get = await fakeHc(CALLER, "no such terminal: t3", "get");
+		await expect(openChildTab(childInfo("lost"), get.env)).rejects.toThrow("no such terminal: t3");
+		expect(logLines(get.log)).toEqual(["get --json t3"]);
 	});
 });
