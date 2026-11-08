@@ -3,12 +3,18 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import * as ai from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
-import { AssistantEntry, type ConversationId, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	type ConversationId,
+	Harness,
+	ROOT_CONVERSATION_ID,
+	type Submission,
+	type SubmissionDraft,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -43,19 +49,22 @@ import {
 	until,
 } from "./helpers.ts";
 
+/** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
+type ContextSubmit = { submit(draft: SubmissionDraft, context: Context): Promise<Submission> };
+
 /** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
 const reports: unknown[] = [];
 
 /** A pi-durable host over `store` with the `piDurable` entry of this package. */
 async function openDurable(store: string): Promise<Harness> {
-	const entry = subagentEntry({ durable, ai });
+	const entry = subagentEntry({ durable });
 	const registry = durable.createRegistry();
 
 	for (const extension of entry.extensions) registry.install(extension);
 
 	return Harness.open(
 		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (error) => reports.push(error) },
+		{ models, registry, onReport: (report) => reports.push(report) },
 		BACKGROUND_CONTEXT,
 	);
 }
@@ -67,21 +76,25 @@ async function openDurable(store: string): Promise<Harness> {
 async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
 	const registry = durable.createRegistry();
 	registry.install(
-		subagentTool(durable, ai, {
-			caller: async (api) => `durable-test:${api.conversationId}`,
-			send: async (message, signal) => {
-				const reply = await request(message, { start: true, signal });
+		subagentTool(
+			durable,
+			{ Type },
+			{
+				caller: async (api) => `durable-test:${api.conversationId}`,
+				send: async (message, signal) => {
+					const reply = await request(message, { start: true, signal });
 
-				if (!hangSpawn || message.type !== "spawn") return reply;
+					if (!hangSpawn || message.type !== "spawn") return reply;
 
-				return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+					return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+				},
 			},
-		}),
+		),
 	);
 
 	return Harness.open(
 		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (error) => reports.push(error) },
+		{ models, registry, onReport: (report) => reports.push(report) },
 		BACKGROUND_CONTEXT,
 	);
 }
@@ -908,8 +921,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const [draft] = submitted;
 					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
 
@@ -979,8 +993,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const [draft] = submitted;
 					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
 
@@ -1159,8 +1174,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const found = await conversation(...args);
 
 			if (found !== undefined && armed && !vi.isMockFunction(found.submit)) {
-				const submit = found.submit.bind(found);
-				vi.spyOn(found, "submit").mockImplementation(async (...submitted) => {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
 					const submission = await submit(...submitted);
 					const [draft] = submitted;
 

@@ -79,6 +79,7 @@ export function applyChange(view: ConversationView, change: ViewChange): Convers
 	}
 
 	return {
+		...view,
 		conversation: conversation ?? view.conversation,
 		entries: entries === undefined ? view.entries : [...view.entries.slice(0, entries.from), ...entries.items],
 		docs: changedDocs,

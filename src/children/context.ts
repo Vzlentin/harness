@@ -6,7 +6,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { ImageContent, Static, TextContent, TSchema } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
 	createFindTool,
 	createGrepTool,
@@ -28,9 +28,13 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import type { TSchema } from "typebox";
 import { errorMessage } from "../protocol/requests.ts";
 import { savedTrust, type TrustApi } from "../protocol/trust.ts";
 import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
+
+/** The arguments that pi-durable gives to a tool with the parameter schema `T`. */
+type DurableArgs<T extends TSchema> = Parameters<ToolRegistration<T>["execute"]>[0];
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
 type PiTool<T extends TSchema> = {
@@ -39,7 +43,7 @@ type PiTool<T extends TSchema> = {
 	readonly parameters: T;
 	execute(
 		id: string,
-		args: Static<T>,
+		args: DurableArgs<T>,
 		signal?: AbortSignal,
 	): Promise<{ readonly content: (TextContent | ImageContent)[] }>;
 };

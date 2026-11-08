@@ -33,6 +33,16 @@ function answer(id: number, stopReason: AssistantMessage["stopReason"], answerUs
 	return { id: id as EntryId, conversationId, kind: "pi.assistant", model: [message] };
 }
 
+/** A head marker, such as a compaction or a reset, whose active transcript starts at `head`. */
+function marker(id: number, head: number): EntryRecord {
+	// SAFETY: as for `conversationId`.
+	return { id: id as EntryId, conversationId, kind: "marker", head: head as EntryId };
+}
+
+function view(entries: EntryRecord[]): ConversationView {
+	return { conversation: { id: conversationId }, entries, docs: {} };
+}
+
 describe("view state", () => {
 	it("sums the usage of the requests and the tool results, and takes the context from the last full answer", () => {
 		const first = usage(100, 20, 300, 10, 0.5);
@@ -47,5 +57,15 @@ describe("view state", () => {
 		expect(totals).toMatchObject({ input: 105, output: 20, cacheRead: 300, cacheWrite: 10 });
 		expect(totals.cost).toBeCloseTo(0.51);
 		expect(lastAnswerUsage(view)).toEqual(first);
+	});
+
+	it("takes the context only from the answers after the head of the newest head marker", () => {
+		const before = answer(1, "stop", usage(100, 20, 300, 10, 0.5));
+		const keptUsage = usage(50, 5, 0, 0, 0.1);
+		const kept = answer(2, "stop", keptUsage);
+
+		expect(lastAnswerUsage(view([before, marker(2, 2)]))).toBeUndefined();
+		expect(lastAnswerUsage(view([before, kept, marker(3, 2)]))).toEqual(keptUsage);
+		expect(lastAnswerUsage(view([before, marker(3, 1), kept, marker(4, 4)]))).toBeUndefined();
 	});
 });

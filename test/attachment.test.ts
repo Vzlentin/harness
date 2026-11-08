@@ -443,6 +443,52 @@ describe("chat view", () => {
 		expect(drawn(chat)).not.toContain("echo stale");
 	});
 
+	it("keeps the drawn entries when the window of the view drops its oldest ones", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		const components = [...chat.transcript.children];
+		chat.apply({
+			...viewOf({}, [second, answerEntry(3, answer(3, [{ type: "text", text: "Third answer" }]))]),
+			before: first.id,
+		});
+		expect(chat.transcript.children).toHaveLength(components.length + 1);
+
+		for (const [index, component] of components.entries()) expect(chat.transcript.children[index]).toBe(component);
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Third answer");
+	});
+
+	it("keeps the entries before the window when a streamed answer is dropped", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		const partial = answer(9, [{ type: "text", text: "Partial answer" }]);
+		chat.apply({ ...viewOf({ generation: { attempt: 1, message: partial } }, [second]), before: first.id });
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Second answer");
+		expect(drawn(chat)).not.toContain("Partial answer");
+	});
+
+	it("keeps the entries before the window when a new answer is not the streamed one", () => {
+		const chat = chatView();
+		const first = answerEntry(1, answer(1, [{ type: "text", text: "First answer" }]));
+		const second = answerEntry(2, answer(2, [{ type: "text", text: "Second answer" }]));
+		chat.apply(viewOf({}, [first, second]));
+		chat.apply({ ...viewOf({}, [second]), before: first.id });
+		const call = { type: "toolCall" as const, id: "stale-call", name: "bash", arguments: { command: "echo stale" } };
+		chat.apply({ ...viewOf({ generation: { attempt: 1, message: answer(5, [call]) } }, [second]), before: first.id });
+		const third = answerEntry(3, answer(6, [{ type: "text", text: "Third answer" }]));
+		chat.apply({ ...viewOf({}, [second, third]), before: first.id });
+		expect(drawn(chat)).toContain("First answer");
+		expect(drawn(chat)).toContain("Third answer");
+		expect(drawn(chat)).not.toContain("echo stale");
+	});
+
 	it("shows a running card as interrupted when no connection gives its result", () => {
 		const chat = chatView();
 		// SAFETY: as for `conversationId`.

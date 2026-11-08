@@ -113,9 +113,10 @@ export async function serveWatch(
 		if (childrenWatch !== undefined) {
 			const { watch, handle } = childrenWatch;
 
-			watch.start(async (state) => {
-				if (!socket.writable) return;
-				const next = recordOf(state, handle);
+			// A retired `ChildRecords` document has no records. Durable never calls with a failure.
+			watch.start(async (call) => {
+				if (!socket.writable || call.kind !== "value") return;
+				const next = recordOf(call.retired ? undefined : call.value, handle);
 
 				if (next === undefined) {
 					queue = queue.then(stop);
@@ -127,7 +128,9 @@ export async function serveWatch(
 			});
 		}
 
-		conversation.start((view, ops) => send(viewChange(view, ops)));
+		conversation.start(async (call) => {
+			if (call.kind === "value") await send(viewChange(call.value, call.ops));
+		});
 	});
 
 	return { view: conversation.value, child: last };

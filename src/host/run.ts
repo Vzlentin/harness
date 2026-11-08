@@ -6,7 +6,6 @@ import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -131,10 +130,14 @@ export async function runHost(options: {
 
 	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
-	const tool = subagentTool(durable, ai, {
-		caller: async (api) => String(api.conversationId),
-		send: (request, signal) => handleRequest(request, { ...base, signal }),
-	});
+	const tool = subagentTool(
+		durable,
+		{ Type },
+		{
+			caller: async (api) => String(api.conversationId),
+			send: (request, signal) => handleRequest(request, { ...base, signal }),
+		},
+	);
 
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
@@ -154,7 +157,7 @@ export async function runHost(options: {
 				registry,
 				settings: piSettings(settings, selected),
 				env: (target, envContext) => envs.env(target, envContext),
-				onReport: warn,
+				onReport: (report) => warn(report.error),
 			},
 			context,
 		);

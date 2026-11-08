@@ -1,17 +1,17 @@
 /**
- * The `subagent` tool for hosts that run agents on pi-durable. The host passes its pi-durable and pi-ai modules, so
- * this package loads no second copy of either.
+ * The `subagent` tool for hosts that run agents on pi-durable. The host passes its pi-durable module, so this package
+ * loads no second copy of it.
  */
 import { randomUUID } from "node:crypto";
-import type * as Ai from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { sendToHost, subagentTool } from "../tool.ts";
 
 /**
  * The entry for a pi-durable host. The caller is `<store>:<conversation ID>`, where the store is a random ID that the store keeps,
  * so conversations of two stores do not share children.
  */
-export default function subagentEntry({ durable, ai }: { readonly durable: typeof Durable; readonly ai: typeof Ai }) {
+export default function subagentEntry({ durable }: { readonly durable: typeof Durable }) {
 	const Store = durable.defineDoc<{ id: string }>({
 		kind: "pi-subagent.store",
 		version: 1,
@@ -23,20 +23,24 @@ export default function subagentEntry({ durable, ai }: { readonly durable: typeo
 	// The store ID never changes, so the first call reads it and the next calls reuse it.
 	let storeId: string | undefined;
 
-	const extension = subagentTool(durable, ai, {
-		caller: async (api, context) => {
-			storeId ??= await api.commit(async (tx) => {
-				const store = await tx.doc(Store);
+	const extension = subagentTool(
+		durable,
+		{ Type },
+		{
+			caller: async (api, context) => {
+				storeId ??= await api.commit(async (tx) => {
+					const store = await tx.doc(Store);
 
-				if (store.id === "") store.id = randomUUID();
+					if (store.id === "") store.id = randomUUID();
 
-				return store.id;
-			}, context);
+					return store.id;
+				}, context);
 
-			return `${storeId}:${api.conversationId}`;
+				return `${storeId}:${api.conversationId}`;
+			},
+			send: sendToHost,
 		},
-		send: sendToHost,
-	});
+	);
 
 	return { extensions: [extension], close: async () => {} };
 }

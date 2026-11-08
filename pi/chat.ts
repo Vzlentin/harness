@@ -103,7 +103,7 @@ export class ChatView {
 		const message = live.generation?.message;
 
 		// A streamed answer without its entry was dropped, for example by a retry.
-		if (message === undefined && this.streaming !== undefined) this.rebuild(view.entries);
+		if (message === undefined && this.streaming !== undefined) this.dropStream();
 
 		if (message !== undefined) this.syncStreaming(message);
 
@@ -157,13 +157,23 @@ export class ChatView {
 	}
 
 	private syncTranscript(entries: readonly EntryRecord[]): void {
-		// A compaction or a reset replaces the head of the active transcript. The streamed answer is drawn again from the
-		// entries when a new answer is not the one it streamed.
-		const headChanged = this.renderedEntryIds.some((id, index) => entries[index]?.id !== id);
+		// The window of the view drops its oldest entries, and the drawn entries stay. A compaction or a reset is a new
+		// entry. All is drawn again when a drawn entry in the window changed. A new answer that is not the streamed one
+		// removes only the streamed answer and its cards.
+		const first = this.renderedEntryIds.findIndex((id) => id === entries[0]?.id);
+		const drawn = this.renderedEntryIds.slice(Math.max(0, first));
 
-		if (headChanged || this.streamReplaced(entries.slice(this.renderedEntryIds.length))) this.rebuild(entries);
+		if (drawn.some((id, index) => entries[index]?.id !== id)) {
+			this.rebuild(entries);
 
-		for (const entry of entries.slice(this.renderedEntryIds.length)) {
+			return;
+		}
+
+		const added = entries.slice(drawn.length);
+
+		if (this.streamReplaced(added)) this.dropStream();
+
+		for (const entry of added) {
 			this.addEntry(entry);
 			this.renderedEntryIds.push(entry.id);
 		}
@@ -176,6 +186,24 @@ export class ChatView {
 		const message = answer?.model?.[0];
 
 		return message?.role === "assistant" && message.timestamp !== this.streaming.timestamp;
+	}
+
+	/** Removes the streamed answer and the cards of its calls, and keeps the drawn entries. */
+	private dropStream(): void {
+		if (this.streaming !== undefined) this.transcript.removeChild(this.streaming.component);
+
+		for (const id of this.streamingCalls) {
+			const card = this.tools.get(id);
+
+			if (card === undefined) continue;
+			this.transcript.removeChild(card);
+			this.cards.splice(this.cards.indexOf(card), 1);
+			this.running.delete(card);
+			this.tools.delete(id);
+		}
+
+		this.streamingCalls.clear();
+		this.streaming = undefined;
 	}
 
 	private rebuild(entries: readonly EntryRecord[]): void {

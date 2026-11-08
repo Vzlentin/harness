@@ -13,9 +13,11 @@ import type {
 	DocumentReader,
 	EntryId,
 	Extension,
+	InputSubmissionDraft,
 	JsonObject,
 	RegistrySnapshot,
 	Submission,
+	SubmissionDraft,
 	SubmissionId,
 	TaskId,
 	ToolRegistration,
@@ -138,10 +140,10 @@ export type Failure =
 	  };
 
 /** Input to a child, at most once per request ID. */
-export type Input = Parameters<Conversation["submit"]>[0] & { readonly type: "input"; readonly requestId: string };
+export type Input = InputSubmissionDraft & { readonly requestId: string };
 
 /** A passive entry for a child's transcript, at most once per request ID. */
-export type Write = Extract<Parameters<Conversation["submit"]>[0], { type: "write" }> & { readonly requestId: string };
+export type Write = Extract<SubmissionDraft, { type: "write" }> & { readonly requestId: string };
 
 /** One child, driven by its operations. Failures are returned, not thrown, so each caller keeps its own policy. */
 export type Child = {

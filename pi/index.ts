@@ -7,7 +7,6 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Type } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -16,6 +15,7 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import type * as answers from "../dist/client/answers.js";
 import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";

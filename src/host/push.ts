@@ -4,7 +4,7 @@
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
+import { type CommitChange, type CommitObservation, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
@@ -87,7 +87,7 @@ export class Push {
 	readonly #sweepEnds = new Set<() => void>();
 	/** The children whose last pushes failed. */
 	readonly #failures = new Map<string, Failure>();
-	readonly #unsubscribe: () => void;
+	readonly #observation: CommitObservation;
 	/** The timer of the sweep at the end of the earliest wait of `#failures`. */
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#dirty = false;
@@ -104,8 +104,11 @@ export class Push {
 	constructor(host: PushHost) {
 		this.#host = host;
 		// The listener only schedules a sweep: it must not call the store.
-		this.#unsubscribe = host.harness.subscribeCommits((publication) => {
-			if (publication.changes.some(endsTurn)) this.schedule();
+		this.#observation = host.harness.observeCommits({
+			advance: (publication) => {
+				if (publication.changes.some(endsTurn)) this.schedule();
+			},
+			end: () => {},
 		});
 		this.schedule();
 	}
@@ -243,7 +246,7 @@ export class Push {
 	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
 	close(): void {
 		this.#closed = true;
-		this.#unsubscribe();
+		this.#observation.detach();
 		clearTimeout(this.#retry);
 		const ends = [...this.#sweepEnds];
 		this.#sweepEnds.clear();
@@ -479,11 +482,16 @@ export class Push {
 	}
 }
 
-/** Whether `change` can end a turn or change a record: a live document without a run, or the `ChildRecords` document. */
+/**
+ * Whether `change` can end a turn or change a record: a live document without a run or retired, or the `ChildRecords`
+ * document.
+ */
 function endsTurn(change: CommitChange): boolean {
 	if (change.type !== "document") return false;
 
 	if (change.record.kind === ChildRecords.definition.kind) return true;
 
-	return change.record.kind === LiveDoc.definition.kind && change.value?.run === undefined;
+	if (change.record.kind !== LiveDoc.definition.kind) return false;
+
+	return change.kind === "retire" || change.value.run === undefined;
 }
