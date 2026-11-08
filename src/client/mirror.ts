@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { runDisplayName } from "../protocol/labels.ts";
+import { childTitle, runDisplayName } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
 import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
@@ -173,6 +173,11 @@ export class Mirror {
 	/** The child or the project agent, as the last connection gave it. It is undefined before the first connection. */
 	get child(): ChildInfo | undefined {
 		return this.#child;
+	}
+
+	/** The title of the agent: from its info once a connection gave it, else from the target. */
+	get title(): string {
+		return this.#child === undefined ? targetTitle(this.target) : childTitle(this.#child);
 	}
 
 	/** Whether the conversation works, as an open connection tells. */

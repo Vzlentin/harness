@@ -53,6 +53,7 @@ harness list
 harness wait <handle>
 harness send <handle> "Focus on error handling"
 harness attach <handle>     # open it in Pi
+harness inspect <handle>    # open it in a browser, at the URL that it prints
 harness stop <handle>
 harness main                # open the agent of the main project in Pi
 ```

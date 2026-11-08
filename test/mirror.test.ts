@@ -21,12 +21,10 @@ import {
 	type MirrorTarget,
 	PossiblySentError,
 	piArgs,
-	targetTitle,
 } from "../src/client/mirror.ts";
 import * as viewState from "../src/client/view-state.ts";
 import { inboxOf } from "../src/client/view-state.ts";
 import type { Host } from "../src/host/run.ts";
-import { childTitle } from "../src/protocol/labels.ts";
 import { addProject } from "../src/protocol/projects.ts";
 import { type ChildInfo, errorMessage } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
@@ -91,7 +89,7 @@ function reportedMirror(target: MirrorTarget, options: MirrorOptions = {}) {
 		},
 	};
 
-	const report = new ProgramStatusReport(terminal, { targetTitle, childTitle });
+	const report = new ProgramStatusReport(terminal);
 	const mirror: Mirror = new Mirror(target, () => report.update(mirror), { start: false, ...options });
 	report.update(mirror);
 

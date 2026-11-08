@@ -39,6 +39,10 @@
 			"types": "./dist/host/run.d.ts",
 			"default": "./dist/host/run.js"
 		},
+		"./inspect": {
+			"types": "./dist/inspect/index.d.ts",
+			"default": "./dist/inspect/index.js"
+		},
 		"./mirror": {
 			"types": "./dist/client/mirror.d.ts",
 			"default": "./dist/client/mirror.js"
@@ -83,7 +87,8 @@
 	},
 	"files": [
 		"dist",
-		"python/*.py"
+		"python/*.py",
+		"web"
 	],
 	"engines": {
 		"node": ">=22.19.0"

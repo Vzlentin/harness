@@ -1,7 +1,15 @@
-/** The names of the environment variables that the host sets in a conversation shell and that the CLI reads. */
+/**
+ * The names of the environment variables that the host sets in a conversation shell and that the CLI reads, and the
+ * caller of a command that comes from them.
+ */
 
 /** The conversation of the shell: the caller of a CLI command that runs in it. */
 export const PI_SESSION_ID = "PI_SESSION_ID";
+
+/** The caller of a command with the environment `env`: `PI_SESSION_ID`, or `cli` when it is not set. */
+export function cliCaller(env: NodeJS.ProcessEnv): string {
+	return env[PI_SESSION_ID] || "cli";
+}
 
 /** The provider of the conversation's model: the default provider of a spawn. */
 export const PI_PROVIDER = "PI_PROVIDER";

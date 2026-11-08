@@ -21,6 +21,7 @@ const COMMANDS = [
 	"host",
 	"create",
 	"projects",
+	"inspect",
 ] as const;
 
 /** A command of the `harness` CLI. */

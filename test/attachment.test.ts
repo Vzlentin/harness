@@ -89,6 +89,11 @@ class FakeMirror {
 		made.push(record);
 	}
 
+	/** The title as `Mirror` gives it, from the same functions. */
+	get title(): string {
+		return this.child === undefined ? mirror.targetTitle(this.target) : protocol.childTitle(this.child);
+	}
+
 	get busy(): boolean {
 		return this.status.kind === "open" && this.child?.state === "busy";
 	}

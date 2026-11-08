@@ -1,0 +1,307 @@
+/* The terminal theme of harness inspect: the colors of Pi's dark theme, and a monospace font. */
+
+:where(.inspect-page, .inspect, .inspect-picker) {
+	--bg: #333333;
+	--fg: #ffffff;
+	--accent: #c0a172;
+	--success: #a2af5f;
+	--warning: #b3a950;
+	--error: #e9877f;
+	--muted: #b2a492;
+	--dim: #968772;
+	--thinking: #ad9e8a;
+	--border: #d39051;
+	--border-muted: #8f816c;
+	--user-bg: #54371d;
+	--note-bg: #543905;
+	--tool-pending-bg: #453d33;
+	--tool-success-bg: #3d421e;
+	--tool-error-bg: #632b27;
+	--sunk: #282828;
+
+	color-scheme: dark;
+	background: var(--bg);
+	color: var(--fg);
+	font:
+		13px / 1.45 ui-monospace,
+		SFMono-Regular,
+		Menlo,
+		Consolas,
+		monospace;
+}
+
+.inspect-page {
+	margin: 0;
+	height: 100vh;
+	height: 100dvh;
+}
+
+.inspect-page main {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.inspect-page a,
+.inspect-picker a {
+	color: var(--accent);
+}
+
+.inspect-back {
+	padding: 0.4em 0.75em 0;
+}
+
+.inspect-body {
+	flex: 1;
+	min-height: 0;
+}
+
+.inspect {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+/*
+ * A click in the transcript gives the view the focus for Esc, and Chrome rings it after a key.
+ * The box of the form shows where the reader types, so the view has no ring.
+ */
+.inspect:focus {
+	outline: none;
+}
+
+.inspect-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.25em 1em;
+	padding: 0.5em 0.75em;
+	border-bottom: 1px solid var(--border-muted);
+}
+
+.inspect-title {
+	color: var(--accent);
+	font-weight: bold;
+}
+
+.inspect-model,
+.inspect-connection,
+:is(.inspect, .inspect-picker) .muted-line {
+	color: var(--muted);
+}
+
+.inspect-connection.failed,
+:is(.inspect, .inspect-picker) .error-line {
+	color: var(--error);
+}
+
+.inspect-connection.connecting,
+.inspect-connection.reconnecting {
+	color: var(--warning);
+}
+
+:is(.inspect, .inspect-picker) .badge.busy {
+	color: var(--warning);
+}
+
+:is(.inspect, .inspect-picker) .badge.idle {
+	color: var(--success);
+}
+
+:is(.inspect, .inspect-picker) .badge.error {
+	color: var(--error);
+}
+
+:is(.inspect, .inspect-picker) .badge.closed {
+	color: var(--dim);
+}
+
+.inspect-transcript {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 0.75em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.6em;
+}
+
+.inspect .message,
+.inspect .text,
+.inspect pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.inspect pre {
+	margin: 0.25em 0 0;
+	font: inherit;
+	max-height: 24em;
+	overflow-y: auto;
+}
+
+.inspect .message.user {
+	background: var(--user-bg);
+	padding: 0.5em 0.75em;
+}
+
+.inspect .message.note {
+	background: var(--note-bg);
+	padding: 0.5em 0.75em;
+}
+
+.inspect .note-label,
+.inspect .marker {
+	color: var(--muted);
+}
+
+.inspect .message.assistant {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+}
+
+.inspect .message.streaming {
+	border-left: 2px solid var(--border-muted);
+	padding-left: 0.5em;
+}
+
+.inspect details.thinking {
+	color: var(--thinking);
+	font-style: italic;
+}
+
+.inspect summary {
+	cursor: pointer;
+	color: var(--muted);
+}
+
+.inspect .tool {
+	background: var(--tool-pending-bg);
+	padding: 0.4em 0.75em;
+}
+
+.inspect .tool.done {
+	background: var(--tool-success-bg);
+}
+
+.inspect .tool.failed {
+	background: var(--tool-error-bg);
+}
+
+.inspect .tool-head {
+	display: flex;
+	gap: 0.75em;
+	min-width: 0;
+}
+
+.inspect .tool-name {
+	flex-shrink: 0;
+	font-weight: bold;
+}
+
+.inspect .tool-args {
+	min-width: 0;
+	color: var(--muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.inspect .tool-note {
+	color: var(--error);
+}
+
+.inspect-footer {
+	border-top: 1px solid var(--border-muted);
+	padding: 0.5em 0.75em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25em;
+}
+
+.inspect-status {
+	color: var(--accent);
+}
+
+.inspect-queued,
+.inspect-usage {
+	color: var(--dim);
+}
+
+.inspect-notice {
+	color: var(--error);
+}
+
+.inspect-status:empty,
+.inspect-queued:empty,
+.inspect-usage:empty,
+.inspect-notice:empty {
+	display: none;
+}
+
+.inspect-form {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.5em;
+	align-items: flex-end;
+}
+
+.inspect-form textarea {
+	flex: 1 1 20em;
+	resize: vertical;
+	font: inherit;
+	color: var(--fg);
+	background: var(--sunk);
+	border: 1px solid var(--border-muted);
+	padding: 0.4em;
+}
+
+.inspect-form textarea:focus {
+	outline: 1px solid var(--border);
+}
+
+.inspect-buttons {
+	display: flex;
+	gap: 0.4em;
+}
+
+.inspect-buttons button {
+	font: inherit;
+	color: var(--fg);
+	background: var(--tool-pending-bg);
+	border: 1px solid var(--border-muted);
+	padding: 0.4em 0.8em;
+	cursor: pointer;
+}
+
+.inspect-buttons button.stop {
+	border-color: var(--error);
+	color: var(--error);
+}
+
+.inspect-buttons button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.inspect-picker {
+	padding: 0.75em 1em;
+}
+
+.inspect-picker h1 {
+	font-size: 1.2em;
+	color: var(--accent);
+}
+
+.inspect-picker h2 {
+	font-size: 1em;
+	margin: 1em 0 0.25em;
+}
+
+.inspect-picker ul {
+	margin: 0;
+	padding-left: 1.5em;
+}

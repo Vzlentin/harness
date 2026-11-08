@@ -9,7 +9,8 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
-import { HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL, PI_SESSION_ID } from "./protocol/env.ts";
+import { pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
+import { cliCaller, HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL } from "./protocol/env.ts";
 import {
 	addProject,
 	type CommandName,
@@ -256,6 +257,77 @@ async function openInPi(target: MirrorTarget): Promise<void> {
 	process.exitCode = result.status ?? 1;
 }
 
+/** The arguments of `inspect`: the target, if any, and where the server listens. */
+type InspectArgs = {
+	ref: Target | undefined;
+	port: number | undefined;
+	host: string | undefined;
+	tailscale: boolean;
+};
+
+function inspectArgs(args: string[]): InspectArgs {
+	const parsed: InspectArgs = { ref: undefined, port: undefined, host: undefined, tailscale: false };
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+
+		switch (arg) {
+			case "--conversation":
+				if (parsed.ref !== undefined) usage();
+				parsed.ref = parseTarget({ conversation: valueAfter(args, i, arg) });
+				i++;
+				break;
+			case "--port":
+				parsed.port = portNumber(valueAfter(args, i, arg));
+				i++;
+				break;
+			case "--host":
+				parsed.host = valueAfter(args, i, arg);
+				i++;
+				break;
+			case "--tailscale":
+				parsed.tailscale = true;
+				break;
+			default:
+				if (arg.startsWith("--")) fail(`Unknown inspect argument: ${arg}`);
+
+				if (parsed.ref !== undefined) usage();
+				parsed.ref = parseTarget({ handle: arg });
+		}
+	}
+
+	return parsed;
+}
+
+function portNumber(value: string): number {
+	const port = Number(value);
+
+	if (!Number.isInteger(port) || port < 0 || port > 65535) fail("--port must be an integer from 0 to 65535");
+
+	return port;
+}
+
+/**
+ * Serves the inspect UI until SIGINT or SIGTERM, and prints its URL on each bound address: with the target of the
+ * arguments in the query, the project agent with `--project` alone, or the picker of the projects without either.
+ */
+async function inspectCommand(args: string[], project: string | undefined): Promise<void> {
+	const { ref, port, host, tailscale } = inspectArgs(args);
+
+	const target: MirrorTarget | undefined =
+		ref === undefined && project === undefined
+			? undefined
+			: { project: projectOf(project, process.env, process.cwd()), target: ref ?? { kind: "agent" } };
+
+	const server = await startInspectServer({ hosts: await resolveBindHosts({ host, tailscale }), port });
+
+	for (const url of server.urls) process.stdout.write(`${url}${target === undefined ? "" : pageQuery(target)}\n`);
+
+	for (const signal of ["SIGINT", "SIGTERM"] as const) {
+		process.once(signal, () => void server.close().then(() => process.exit(0)));
+	}
+}
+
 function versionCommand(args: string[], project: string | undefined): void {
 	if (project !== undefined || args.length !== 0) usage();
 
@@ -272,7 +344,7 @@ function toolCommand(lines: readonly string[], parse: (args: string[]) => ToolAr
 		usage: lines,
 		async run(args, project) {
 			const { text } = await runTool(parse(args), {
-				caller: process.env[PI_SESSION_ID] || "cli",
+				caller: cliCaller(process.env),
 				callKey: randomUUID(),
 				provider: process.env[PI_PROVIDER],
 				model: process.env[PI_MODEL],
@@ -306,6 +378,10 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		attach: {
 			usage: ["  harness attach <handle>", "  harness attach --conversation <id>"],
 			run: attachCommand,
+		},
+		inspect: {
+			usage: ["  harness inspect [<handle> | --conversation <id>] [--port <n>] [--host <ip> | --tailscale]"],
+			run: inspectCommand,
 		},
 		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },

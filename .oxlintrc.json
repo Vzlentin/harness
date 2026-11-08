@@ -113,6 +113,22 @@
 			}
 		},
 		{
+			"files": ["src/inspect/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**", "!../protocol/**", "!../client/**"],
+								"message": "inspect/ imports only protocol/ and client/ from src/."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
 			"files": ["src/rlm/**"],
 			"rules": {
 				"no-restricted-imports": [

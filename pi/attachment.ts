@@ -66,10 +66,7 @@ export class Attachment {
 			(ui, theme) => {
 				this.#ui = ui;
 				this.#theme = theme;
-				this.#programStatus ??= new ProgramStatusReport(ui.terminal, {
-					targetTitle: harness.mirror.targetTitle,
-					childTitle: harness.protocol.childTitle,
-				});
+				this.#programStatus ??= new ProgramStatusReport(ui.terminal);
 
 				return this.#status;
 			},
