@@ -8,7 +8,7 @@ import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
-import { CHILD_STATES, type ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
+import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
@@ -76,6 +76,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		model: Type.String(),
 		thinking: Type.String(),
 		cwd: Type.String(),
+		kind: Type.Optional(Type.Literal(ChildKind.const)),
 	});
 
 	const result = <A extends string, V extends TSchema>(action: A, value: V) =>

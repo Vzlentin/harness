@@ -49,7 +49,10 @@ export function versionMismatch(client: number, host: number, pid: number): stri
 		: `The harness host (pid ${pid}) uses protocol ${host}, not ${client}. The host is older: stop it with kill ${pid} and run the command again`;
 }
 
-/** The marker of a child that a kernel spawned through `rlm`. The host keeps it on the child's record. */
+/**
+ * The marker of a child that a kernel spawned through `rlm`. The host keeps it on the child's record, and gives it in the
+ * child's info.
+ */
 export const ChildKind = Type.Literal("rlm");
 
 export type ChildKind = Static<typeof ChildKind>;
@@ -73,6 +76,8 @@ export type ChildInfo = {
 	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
+	/** The marker of a child by handle that a kernel spawned through `rlm`. The other targets have none. */
+	readonly kind?: ChildKind;
 };
 
 /** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */

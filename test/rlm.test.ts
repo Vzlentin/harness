@@ -5,14 +5,19 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { request } from "../src/client/client.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { statePaths } from "../src/protocol/paths.ts";
+import { runTool, sendToHost, toolSchemas } from "../src/tool.ts";
 import {
 	aborted,
 	agentTurn,
+	answerOf,
 	called,
 	cellResults,
 	cells,
@@ -25,6 +30,7 @@ import {
 	root,
 	setDepthLimit,
 	setUp,
+	spawnAs,
 	startHost,
 	tearDown,
 	until,
@@ -87,7 +93,7 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		const tour = JSON.parse(cellResults.get("RLM tour")?.[0] ?? "");
 		one = tour.one.handle;
 		two = tour.two.handle;
-		expect(tour.one).toMatchObject({ name: "one", provider: "faux", model: "faux-1" });
+		expect(tour.one).toMatchObject({ name: "one", provider: "faux", model: "faux-1", kind: "rlm" });
 		expect(tour.two).toMatchObject({ provider: "faux", model: "faux-2" });
 		expect(tour.first).toBe("Answer to Task:\nRLM one\n\n<context>\nContext text\n</context>");
 		expect(tour.sent).toMatchObject({ verb: "Prompted", child: { handle: one } });
@@ -105,6 +111,38 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		);
 		expect((await cli(["status", two])).stderr).toBe(`Unknown subagent: ${two}\n`);
 		expect(requests.get("RLM tour")?.system).toContain("<rlm>\nThe IPython kernel has `rlm`");
+	});
+
+	it("marks the RLM children of a caller in list, in its text and its data, apart from its other children", async () => {
+		const sub = await spawnAs(AGENT_CALLER, "Task:\nRLM plain sibling", { notify: false });
+		await answerOf(sub.handle);
+		const status = await request({ type: "status", handle: one }, { start: false });
+		expect(status).toMatchObject({ handle: one, kind: "rlm" });
+
+		const lines = `first (${one})  idle      faux/faux-1  ${status?.thinking}  rlm\n${sub.handle}  idle      faux/faux-1  medium\n`;
+		expect((await cli(["list"], { PI_SESSION_ID: AGENT_CALLER })).stdout).toBe(lines);
+
+		const scope = {
+			caller: AGENT_CALLER,
+			callKey: "rlm-list",
+			provider: "faux",
+			model: "faux-1",
+			thinking: "medium",
+			cwd: root,
+			send: sendToHost,
+			signal: undefined,
+		};
+
+		const listed = await runTool({ action: "list" }, scope);
+		expect(listed.text).toBe(lines);
+		const children = listed.data.action === "list" ? listed.data.value : [];
+		expect(children.map(({ handle }) => handle)).toEqual([one, sub.handle]);
+		expect(children[0]).toEqual(status);
+		expect(children[1]).not.toHaveProperty("kind");
+
+		const { output } = toolSchemas({ Type });
+		expect(Value.Check(output, listed.data)).toBe(true);
+		expect(Value.Check(output, { action: "list", value: [{ ...children[0], kind: "other" }] })).toBe(false);
 	});
 
 	it("runs the waits of asyncio.gather at the same time", async () => {

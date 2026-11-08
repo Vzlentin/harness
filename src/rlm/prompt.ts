@@ -2,7 +2,7 @@ import { CUT_LINE, MAX_ANSWER, MAX_INPUT, MAX_LIVE_CHILDREN, POOL_SIZE, TURN_DEA
 
 /** The text of the `<rlm>` section, for a conversation whose IPython kernel has `rlm`. */
 export const RLM_SECTION = `The IPython kernel has \`rlm\`, a client for your subagents. Each method is a coroutine: call it with \`await\`.
-- \`await rlm.spawn(prompt, *, context=None, name=None, files=None, model=None, thinking=None, cwd=None)\` starts a child and gives it as a dict: \`handle\`, \`name\`, \`state\`, \`provider\`, \`model\`, \`thinking\`, \`cwd\`. The child gets \`context\` after the task, in a \`<context>\` block. \`model\` is a model of your provider, or \`<provider>/<model>\`. Without \`model\`, \`thinking\` or \`cwd\`, the child uses yours. A relative \`cwd\` or file path is relative to your working directory.
+- \`await rlm.spawn(prompt, *, context=None, name=None, files=None, model=None, thinking=None, cwd=None)\` starts a child and gives it as a dict: \`handle\`, \`name\`, \`state\`, \`provider\`, \`model\`, \`thinking\`, \`cwd\`, \`kind\` (\`"rlm"\`). The child gets \`context\` after the task, in a \`<context>\` block. \`model\` is a model of your provider, or \`<provider>/<model>\`. Without \`model\`, \`thinking\` or \`cwd\`, the child uses yours. A relative \`cwd\` or file path is relative to your working directory.
 - \`await rlm.send(handle, message, *, follow_up=False)\` sends \`message\` to the child, and gives \`{"verb", "child"}\`.
 - \`await rlm.wait(handle, timeout=1800)\` waits until the child answers its last message, and gives the answers that no earlier \`wait\` gave, as text.
 - \`await rlm.status(handle)\` and \`await rlm.rename(handle, name)\` give the child.

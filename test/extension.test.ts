@@ -25,7 +25,7 @@ import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import { RLM_SECTION } from "../src/rlm/prompt.ts";
 import { TOOL_DESCRIPTION } from "../src/tool.ts";
-import { gates, rawReply, root, setUp, startHost, tearDown } from "./helpers.ts";
+import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -423,7 +423,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
-	it("shows in the widget the children, then that the host is not running, and nothing without children", async () => {
+	it("shows the children in the widget, an RLM child marked, then that the host is not running, and nothing without children", async () => {
 		const registered = await load();
 		const quiet: Widgets = [];
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
@@ -431,29 +431,39 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
 		host = await startHost();
-
-		const spawned = await request(
-			{
-				type: "spawn",
-				requestId: "widget",
-				caller: "session",
-				notify: false,
-				provider: "faux",
-				model: "faux-1",
-				callerThinking: "medium",
-				cwd: root,
-				prompt: "Task:\nWidget",
-			},
-			{ start: false },
-		);
-
-		const handle = spawned?.handle ?? "";
+		const { handle } = await spawnAs("session", "Task:\nWidget", { notify: false });
 		await untilIdle(handle);
+		const { handle: rlm } = await spawnAs("session", "Task:\nWidget RLM", { notify: false, kind: "rlm" });
+		await untilIdle(rlm);
 		const widgets: Widgets = [];
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([`<dim>subagents: <success>${handle}:idle`]), {
-			timeout: 10_000,
-		});
+		const line = `<dim>subagents: <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`;
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([line]), { timeout: 10_000 });
+
+		const options: string[][] = [];
+
+		const ctx = {
+			sessionManager: { getSessionId: () => "session" },
+			ui: {
+				select: async (_title: string, items: string[]) => {
+					options.push(items);
+
+					return items[1];
+				},
+				notify: (message: string, type?: string) => {
+					registered.notifications.push({ message, type });
+				},
+			},
+		};
+
+		// SAFETY: outside an hc terminal, the handler of `/subagent` reads only these fields of the context.
+		await registered.commands.get("subagent")?.handler("", ctx as Parameters<Command["handler"]>[1]);
+		expect(options).toEqual([
+			[`${handle}  idle      faux/faux-1  medium`, `${rlm}  idle      faux/faux-1  medium  rlm`],
+		]);
+		expect(registered.notifications).toEqual([
+			{ message: `Run in another terminal: harness attach ${rlm}`, type: "info" },
+		]);
 		await host?.close();
 		host = undefined;
 		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["<warning>subagents: the harness host is not running"]), {

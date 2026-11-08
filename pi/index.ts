@@ -229,7 +229,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 
 /**
  * The lines of the subagents widget for `children`, the reply of `list`: nothing for no children, and a warning for no
- * host (undefined) when the session `spawned` children.
+ * host (undefined) when the session `spawned` children. An RLM child starts with its marker.
  */
 function widgetLines(
 	theme: ExtensionContext["ui"]["theme"],
@@ -242,9 +242,11 @@ function widgetLines(
 
 	if (children.length === 0) return undefined;
 
-	const visible = children
-		.slice(0, 5)
-		.map(({ name, handle, state }) => theme.fg(STATE_COLORS[state], `${name ?? handle}:${state}`));
+	const visible = children.slice(0, 5).map(({ name, handle, state, kind }) => {
+		const label = `${name ?? handle}:${state}`;
+
+		return theme.fg(STATE_COLORS[state], kind === undefined ? label : `${kind}:${label}`);
+	});
 
 	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
 

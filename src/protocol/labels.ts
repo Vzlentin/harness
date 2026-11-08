@@ -42,7 +42,9 @@ export function childTitle(child: Labeled): string {
 	return child.handle === AGENT_HANDLE || child.conversation !== undefined ? childLabel(child) : runDisplayName(child);
 }
 
-/** The line of one child in a list. */
+/** The line of one child in a list, with the marker of an RLM child at its end. */
 export function childLine(child: ChildInfo): string {
-	return `${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`;
+	const line = `${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`;
+
+	return child.kind === undefined ? line : `${line}  ${child.kind}`;
 }
