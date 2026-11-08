@@ -1,6 +1,6 @@
-"""The `rlm` client of an IPython kernel of the harness host, with the actions of the `subagent` tool.
+"""The `rlm` client of an IPython kernel of the harness host or of Pi, with the actions of the `subagent` tool.
 
-The host binds `rlm = Rlm()` in the kernel. Each call opens its own connection to the kernel's server, so
+The startup code of the kernel binds `rlm = Rlm()`. Each call opens its own connection to the kernel's server, so
 `asyncio.gather` runs several calls at the same time. A cancelled call closes its connection, which stops its request
 in the host; the child continues. Standard library only, for Python 3.9 or later.
 """
@@ -60,7 +60,7 @@ async def _call(action, args):
 
 
 class Rlm:
-    """The subagents of the kernel's conversation. Each method is a coroutine."""
+    """The subagents of the kernel's conversation or Pi session. Each method is a coroutine."""
 
     async def spawn(self, prompt, *, context=None, name=None, files=None, model=None, thinking=None, cwd=None):
         """Starts a child with `prompt`, then `context` in a `<context>` block, and gives the child as a dict.

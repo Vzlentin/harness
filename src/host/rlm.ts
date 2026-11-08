@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { Store } from "../children/library.ts";
-import { KERNEL_STARTING, KernelStarting, STARTUP_CODE } from "../rlm/kernel.ts";
+import { ConversationKernelStarting, INVALID_KERNEL_STARTING, KERNEL_STARTING } from "../rlm/kernel.ts";
 import { POOL_SIZE } from "../rlm/limits.ts";
 import { RequestPool } from "../rlm/pool.ts";
 import { RLM_SECTION } from "../rlm/prompt.ts";
@@ -63,19 +63,17 @@ export function serveRlm(
 		return { caller: String(id), ...callerDefaults(await conversation.agent(context)) };
 	};
 
-	const setUp = async (starting: KernelStarting): Promise<void> => {
+	const setUp = async (starting: ConversationKernelStarting): Promise<void> => {
 		const { conversationId } = starting;
 
 		// A leaf opens no children, so its kernel gets no `rlm`.
 		if (await isLeaf(place.store, String(conversationId), context)) return;
-		const env = await servers.start(String(conversationId), () => scope(conversationId));
-		Object.assign(starting.env, env);
-		starting.startupCode.push(...STARTUP_CODE);
+		await servers.serve(starting, String(conversationId), () => scope(conversationId));
 	};
 
 	events.on(KERNEL_STARTING, (starting) => {
-		if (!Value.Check(KernelStarting, starting)) {
-			warn(new Error(`The ${KERNEL_STARTING} event has an invalid payload; its kernel gets no rlm`));
+		if (!Value.Check(ConversationKernelStarting, starting)) {
+			warn(new Error(INVALID_KERNEL_STARTING));
 
 			return;
 		}

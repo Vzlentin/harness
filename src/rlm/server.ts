@@ -11,13 +11,16 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import { errorMessage, HOST_CLOSING, type Reply } from "../protocol/requests.ts";
 import { runTool, type Send, type ToolArgs, type ToolScope, toolSchemas } from "../tool.ts";
-import { HARNESS_RLM_SOCKET, HARNESS_RLM_TOKEN } from "./kernel.ts";
+import { HARNESS_RLM_SOCKET, HARNESS_RLM_TOKEN, type KernelStarting, STARTUP_CODE } from "./kernel.ts";
 import { LINE_TOO_LONG, MAX_LINE_BYTES } from "./limits.ts";
 
 /** The error of a request without the token of its server. */
 const INVALID_TOKEN = "Invalid rlm token";
 
-/** The caller of the requests of a kernel and its spawn defaults: the conversation of the kernel and its agent. */
+/**
+ * The caller of the requests of a kernel and its spawn defaults: in the host, the conversation of the kernel and its
+ * agent; in Pi, the session and its model, thinking level and working directory.
+ */
 export type KernelScope = Pick<ToolScope, "caller" | "provider" | "model" | "thinking" | "cwd">;
 
 /** A request line, as far as the token check reads it. */
@@ -40,8 +43,8 @@ type KernelServer = {
 };
 
 /**
- * The servers of the kernels of one host, by key. A new start of a key replaces its server. Each request runs as a call
- * of the `subagent` tool with the caller of its kernel, through `send`.
+ * The servers of the kernels of one host or one Pi session, by key. A new start of a key replaces its server. Each
+ * request runs as a call of the `subagent` tool with the caller of its kernel, through `send`.
  */
 export class KernelServers {
 	readonly #send: Send;
@@ -53,10 +56,15 @@ export class KernelServers {
 	}
 
 	/**
-	 * Starts the server of a new kernel start of `key`, closes the server of its earlier start, and gives the environment
-	 * of the kernel. `scope` gives the caller and the spawn defaults, at each request. After `close()`, it refuses.
+	 * Starts the server of the kernel start `starting` of `key`, closes the server of its earlier start, then gives the
+	 * kernel its environment and the startup code that binds `rlm`. `scope` gives the caller and the spawn defaults, at
+	 * each request. After `close()`, it refuses with `The host is closing`.
 	 */
-	async start(key: string, scope: () => Promise<KernelScope>): Promise<Record<string, string>> {
+	async serve(
+		starting: Pick<KernelStarting, "env" | "startupCode">,
+		key: string,
+		scope: () => Promise<KernelScope>,
+	): Promise<void> {
 		if (this.#closed) throw new Error(HOST_CLOSING);
 		// mkdtemp makes the directory with mode 0700. A short path under /tmp keeps the socket path under the 104 bytes of
 		// macOS.
@@ -66,7 +74,7 @@ export class KernelServers {
 
 		const running: KernelServer = {
 			server: createServer((socket) =>
-				serve(running, socket, (text, signal) => this.#answer(text, token, scope, signal)),
+				serveConnection(running, socket, (text, signal) => this.#answer(text, token, scope, signal)),
 			),
 			dir,
 			connections: new Set(),
@@ -96,8 +104,8 @@ export class KernelServers {
 		this.#servers.set(key, running);
 
 		if (old !== undefined) await shut(old, new Error("The kernel started again"));
-
-		return { [HARNESS_RLM_SOCKET]: socketPath, [HARNESS_RLM_TOKEN]: token };
+		Object.assign(starting.env, { [HARNESS_RLM_SOCKET]: socketPath, [HARNESS_RLM_TOKEN]: token });
+		starting.startupCode.push(...STARTUP_CODE);
 	}
 
 	/** Stops the requests with the error `The host is closing`, then closes each server and removes its directory. */
@@ -134,7 +142,7 @@ export class KernelServers {
  * of more than `MAX_LINE_BYTES` gets an error and runs nothing. The data after the line, or after such a refusal, is
  * read and ignored.
  */
-function serve(
+function serveConnection(
 	running: KernelServer,
 	socket: Socket,
 	answer: (text: string, signal: AbortSignal) => Promise<Reply>,

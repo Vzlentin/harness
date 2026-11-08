@@ -59,6 +59,10 @@
 			"types": "./dist/children/respond.d.ts",
 			"default": "./dist/children/respond.js"
 		},
+		"./rlm": {
+			"types": "./dist/rlm/index.d.ts",
+			"default": "./dist/rlm/index.js"
+		},
 		"./tasks": {
 			"types": "./dist/host/tasks.d.ts",
 			"default": "./dist/host/tasks.js"
