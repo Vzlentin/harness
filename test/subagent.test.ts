@@ -28,25 +28,30 @@ import { library } from "../src/host/targets.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { projectDir } from "../src/protocol/projects.ts";
-import { type ChildInfo, PROTOCOL_VERSION, type WatchLine } from "../src/protocol/requests.ts";
+import { type ChildInfo, PROTOCOL_VERSION } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
+	agentTurn,
 	called,
 	calls,
 	cli,
 	contexts,
 	gates,
 	handleOf,
+	inputAgent,
 	models,
 	requests,
 	root,
+	setDepthLimit,
 	setUp,
 	startHost,
 	tearDown,
 	textOf,
 	toolWaits,
 	until,
+	untilIdleAfterBusy,
+	watchAgent,
 } from "./helpers.ts";
 
 /** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
@@ -497,15 +502,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
 	});
 
-	it("lets a child spawn a child with the tool, but not a third level, with agentDepthLimit 2", async () => {
+	it("lets a child spawn a child with the tool, and gives the child at agentDepthLimit 2 no subagent tool", async () => {
 		await setDepthLimit(2);
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(
 			new RegExp(
-				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Nested subagents are disabled\n`,
+				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Tool subagent is not available\n`,
 			),
 		);
+		expect(requests.get("Task:\nNest tool")?.tools).toEqual([
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"write",
+			"edit",
+			"bash",
+			"codemode",
+		]);
 		expect(called("Task:\nNest tool")).toBe(2);
 	});
 
@@ -1638,14 +1653,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("makes the agent the parent of the children it spawns", async () => {
 		const caller = String(ROOT_CONVERSATION_ID);
-		const { client, lines } = await watchAgent();
-
-		try {
-			await inputAgent(client, "Agent spawn");
-			await untilIdleAfterBusy(lines.events);
-		} finally {
-			client.close();
-		}
+		await agentTurn("Agent spawn");
 
 		const listed = await cli(["list"], { PI_SESSION_ID: caller });
 		const handle = /^nested \(([a-z0-9]+)\) {2}idle/m.exec(listed.stdout)?.[1];
@@ -1850,14 +1858,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 });
 
-/** Writes Pi's global settings of the tests, with `agentDepthLimit` when `limit` is set. */
-async function setDepthLimit(limit: number | undefined): Promise<void> {
-	const settings =
-		limit === undefined ? { retry: { enabled: false } } : { retry: { enabled: false }, agentDepthLimit: limit };
-
-	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
-}
-
 /** Restarts the suite host and gives its store, for a test that reads it or makes it fail. */
 async function restartWithStore(): Promise<Harness> {
 	await host?.close();
@@ -1888,44 +1888,6 @@ function textsOf(view: Awaited<ReturnType<Client["watch"]>>["view"] | undefined)
 
 		return message !== undefined && (message.role === "user" || message.role === "assistant") ? [textOf(message)] : [];
 	});
-}
-
-/** A watch of the project agent of the running host, with its first reply and its events. */
-async function watchAgent(): Promise<{
-	client: Client;
-	lines: { first: { child: ChildInfo }; events: WatchLine[] };
-}> {
-	const client = await connect({ start: false });
-
-	if (client === undefined) throw new Error("no host");
-	const first = await client.watch({ kind: "agent" });
-	const events: WatchLine[] = [];
-	void (async () => {
-		for await (const line of first.lines) events.push(line);
-	})();
-
-	return { client, lines: { first, events } };
-}
-
-/** Sends `message` to the project agent and gives the verb. */
-async function inputAgent(client: Client, message: string): Promise<string> {
-	const reply = await client.request({
-		type: "input",
-		requestId: `input-${message}`,
-		handle: AGENT_HANDLE,
-		message,
-		followUp: false,
-	});
-
-	return reply.verb;
-}
-
-/** Waits for an idle event after a busy one. */
-async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
-	const busy = () => events.findIndex((line) => !line.stopped && line.child.state === "busy");
-	await until(
-		() => busy() !== -1 && events.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"),
-	);
 }
 
 /**

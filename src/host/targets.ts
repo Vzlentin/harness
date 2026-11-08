@@ -156,7 +156,12 @@ export async function childInfo(
 
 	const fields = await agentFields(child.conversation);
 
-	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
+	let info: ChildInfo =
+		record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
+
+	if (record.kind !== undefined) info = { ...info, kind: record.kind };
+
+	return info;
 }
 
 /** The model, thinking level and directory of the agent of `conversation`, for its info. */

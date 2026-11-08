@@ -2,13 +2,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { Agent, Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type * as TypeBox from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
-import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
+import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
@@ -76,6 +76,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		model: Type.String(),
 		thinking: Type.String(),
 		cwd: Type.String(),
+		kind: Type.Optional(Type.Literal(ChildKind.const)),
 	});
 
 	const result = <A extends string, V extends TSchema>(action: A, value: V) =>
@@ -123,7 +124,21 @@ export type ToolScope = {
 	readonly cwd: string | undefined;
 	readonly send: Send;
 	readonly signal: AbortSignal | undefined;
+	/** The marker of the children that the call spawns: `rlm` for a call of `rlm` in a kernel. */
+	readonly kind?: ChildKind;
 };
+
+/** The spawn defaults of a caller from its agent: its provider, model, thinking level and working directory. */
+export function callerDefaults(
+	agent: Pick<Agent, "model" | "thinkingLevel" | "cwd">,
+): Pick<ToolScope, "provider" | "model" | "thinking" | "cwd"> {
+	return {
+		provider: agent.model?.provider,
+		model: agent.model?.modelId,
+		thinking: agent.thinkingLevel,
+		cwd: agent.cwd,
+	};
+}
 
 /** Runs one call of the tool. */
 export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolResult> {
@@ -236,6 +251,8 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 
 	if (tools !== undefined) request = { ...request, tools };
 
+	if (scope.kind !== undefined) request = { ...request, kind: scope.kind };
+
 	return request;
 }
 
@@ -300,10 +317,7 @@ export function subagentTool(
 			const { text, data } = await runTool(args, {
 				caller: await scope.caller(api, context),
 				callKey: String(api.taskId),
-				provider: agent.model?.provider,
-				model: agent.model?.modelId,
-				thinking: agent.thinkingLevel,
-				cwd: agent.cwd,
+				...callerDefaults(agent),
 				send: scope.send,
 				signal: context.abortSignal,
 			});

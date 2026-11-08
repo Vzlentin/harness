@@ -9,6 +9,7 @@ import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
+import type { ChildKind } from "../protocol/requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -24,6 +25,7 @@ export type ChildRecord = {
 	read: number;
 	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
 	pushed?: string;
+	kind?: ChildKind;
 };
 
 /** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
@@ -107,14 +109,19 @@ export async function spawnedHandle(harness: Harness, requestId: string): Promis
 export async function addRecord(
 	tx: Tx,
 	requestId: string,
-	child: { readonly caller: string; readonly conversationId: ConversationId; readonly name: string | undefined },
+	child: {
+		readonly caller: string;
+		readonly conversationId: ConversationId;
+		readonly name: string | undefined;
+		readonly kind: ChildKind | undefined;
+	},
 ): Promise<void> {
 	const current = await tx.doc(ChildRecords);
 	let fresh = randomBytes(3).toString("hex");
 
 	while (Object.hasOwn(current.children, fresh)) fresh = randomBytes(3).toString("hex");
 
-	const record: ChildRecord = {
+	let record: ChildRecord = {
 		caller: child.caller,
 		createdAt: new Date().toISOString(),
 		conversationId: child.conversationId,
@@ -122,8 +129,18 @@ export async function addRecord(
 		read: 0,
 	};
 
-	current.children[fresh] = child.name === undefined ? record : { name: child.name, ...record };
+	if (child.name !== undefined) record = { name: child.name, ...record };
+
+	if (child.kind !== undefined) record = { ...record, kind: child.kind };
+	current.children[fresh] = record;
 	current.requests[requestId] = fresh;
+}
+
+/** Whether the conversation `conversationId` is an RLM child: a child that `rlm` spawned. */
+export function isRlmChild(state: Readonly<ChildrenState> | null | undefined, conversationId: ConversationId): boolean {
+	return Object.values(state?.children ?? {}).some(
+		(record) => record.kind === "rlm" && record.conversationId === conversationId,
+	);
 }
 
 export async function renameRecord(harness: Harness, handle: string, name: string): Promise<void> {
@@ -235,7 +252,7 @@ export type UnreadAnswers = { readonly text: string; readonly failed: boolean; r
 
 /**
  * The unread answers of `record` that a wait for `main` gives, oldest first. `answer` is the answer to `main`, and
- * `atStart` the requests of the record when the wait started.
+ * `atStart` the requests of the record when the wait started. `cut` changes the text of each answer and failure.
  */
 export async function unreadAnswers(
 	child: Child,
@@ -245,6 +262,7 @@ export async function unreadAnswers(
 	answer: Answer,
 	atStart: readonly ChildRequest[],
 	waiting: Context,
+	cut: (text: string) => string = (text) => text,
 ): Promise<UnreadAnswers> {
 	const unread = unreadBefore(record.requests, record.read, main, atStart);
 	const earlier: Answer[] = [];
@@ -259,14 +277,15 @@ export async function unreadAnswers(
 	const texts = earlier.map((before) => {
 		const text = answerText(handle, before);
 
-		return text.failed ? `(no answer: ${text.text})` : text.text;
+		return text.failed ? `(no answer: ${cut(text.text)})` : cut(text.text);
 	});
 
 	const last = answerText(handle, answer);
-	const all = [...texts, last.text];
+	const lastText = cut(last.text);
+	const all = [...texts, lastText];
 	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
 
-	const text = texts.length === 0 ? last.text : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
+	const text = texts.length === 0 ? lastText : `${all.length} unread answers, oldest first.\n\n${parts.join("\n\n")}`;
 
 	return { text, failed: last.failed, read: unread.read };
 }

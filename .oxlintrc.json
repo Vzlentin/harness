@@ -50,8 +50,14 @@
 								"message": "pi/ is published without dist/: import its types only, and take the modules from the Harness object."
 							},
 							{
-								"group": ["../dist/**", "!../dist/protocol/**", "!../dist/client/**", "!../dist/tool.js"],
-								"message": "pi/ loads only protocol/, client/ and tool.ts."
+								"group": [
+									"../dist/**",
+									"!../dist/protocol/**",
+									"!../dist/client/**",
+									"!../dist/rlm/**",
+									"!../dist/tool.js"
+								],
+								"message": "pi/ loads only protocol/, client/, rlm/ and tool.ts."
 							}
 						]
 					}
@@ -107,6 +113,27 @@
 			}
 		},
 		{
+			"files": ["src/rlm/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["../**", "!../protocol/**", "!../tool.ts"],
+								"message": "rlm/ imports only protocol/ and tool.ts from src/."
+							},
+							{
+								"group": ["@earendil-works/**"],
+								"allowTypeImports": true,
+								"message": "The Pi extension loads rlm/ from dist/: import the types of Pi packages only."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
 			"files": ["src/host/**"],
 			"rules": {
 				"no-restricted-imports": [
@@ -114,8 +141,8 @@
 					{
 						"patterns": [
 							{
-								"group": ["../**", "!../protocol/**", "!../children/**", "!../tool.ts"],
-								"message": "host/ imports only protocol/, children/ and tool.ts."
+								"group": ["../**", "!../protocol/**", "!../children/**", "!../rlm/**", "!../tool.ts"],
+								"message": "host/ imports only protocol/, children/, rlm/ and tool.ts."
 							}
 						]
 					}
@@ -130,8 +157,8 @@
 					{
 						"patterns": [
 							{
-								"group": ["../**", "!../protocol/**", "!../children/**", "!../tool.ts"],
-								"message": "host/ imports only protocol/, children/ and tool.ts."
+								"group": ["../**", "!../protocol/**", "!../children/**", "!../rlm/**", "!../tool.ts"],
+								"message": "host/ imports only protocol/, children/, rlm/ and tool.ts."
 							},
 							{
 								"group": ["@earendil-works/*"],

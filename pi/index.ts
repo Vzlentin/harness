@@ -1,7 +1,8 @@
 /**
- * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the mirror
- * sessions of `/harness`. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
- * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
+ * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children, the mirror
+ * sessions of `/harness` and `rlm` in the IPython kernels of the session. They use the client of `@vzlentin/harness`,
+ * the dependency of this package, from its built `dist/`, and start the host of that install. The `.bin` folder that
+ * holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -24,8 +25,10 @@ import type * as viewState from "../dist/client/view-state.js";
 import type * as protocol from "../dist/protocol/index.js";
 import type * as projects from "../dist/protocol/projects.js";
 import type * as trust from "../dist/protocol/trust.js";
+import type * as rlm from "../dist/rlm/index.js";
 import type * as tool from "../dist/tool.js";
 import { registerMirror } from "./mirror.ts";
+import { registerRlm } from "./rlm.ts";
 
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
@@ -35,6 +38,7 @@ export type Harness = {
 	readonly mirror: typeof mirror;
 	readonly projects: typeof projects;
 	readonly protocol: typeof protocol;
+	readonly rlm: typeof rlm;
 	readonly tool: typeof tool;
 	readonly trust: typeof trust;
 	readonly viewState: typeof viewState;
@@ -74,6 +78,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	const piTrust = { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore, SettingsManager };
 	const savedTrust = (cwd: string) => harness.trust.savedTrust(cwd, piTrust);
 	registerMirror(pi, harness);
+	registerRlm(pi, harness, sessionScope);
 	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 
@@ -99,12 +104,8 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		executionMode: "sequential",
 		async execute(toolCallId, args, signal, _onUpdate, ctx) {
 			const { text, data } = await tool.runTool(args, {
-				caller: ctx.sessionManager.getSessionId(),
+				...sessionScope(pi, ctx),
 				callKey: toolCallId,
-				provider: ctx.model?.provider,
-				model: ctx.model?.id,
-				thinking: pi.getThinkingLevel(),
-				cwd: ctx.cwd,
 				send: tool.sendToHost,
 				signal,
 			});
@@ -228,7 +229,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 
 /**
  * The lines of the subagents widget for `children`, the reply of `list`: nothing for no children, and a warning for no
- * host (undefined) when the session `spawned` children.
+ * host (undefined) when the session `spawned` children. An RLM child starts with its marker.
  */
 function widgetLines(
 	theme: ExtensionContext["ui"]["theme"],
@@ -241,9 +242,11 @@ function widgetLines(
 
 	if (children.length === 0) return undefined;
 
-	const visible = children
-		.slice(0, 5)
-		.map(({ name, handle, state }) => theme.fg(STATE_COLORS[state], `${name ?? handle}:${state}`));
+	const visible = children.slice(0, 5).map(({ name, handle, state, kind }) => {
+		const label = `${name ?? handle}:${state}`;
+
+		return theme.fg(STATE_COLORS[state], kind === undefined ? label : `${kind}:${label}`);
+	});
 
 	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
 
@@ -258,6 +261,20 @@ const STATE_COLORS: Record<protocol.ChildState, "warning" | "success" | "error" 
 	closed: "muted",
 };
 
+/**
+ * The caller of the calls of the session of `ctx`, with its tool or its `rlm`, and their spawn defaults: the session ID,
+ * the model, the thinking level and the working directory, read now.
+ */
+function sessionScope(pi: ExtensionAPI, ctx: ExtensionContext): rlm.KernelScope {
+	return {
+		caller: ctx.sessionManager.getSessionId(),
+		provider: ctx.model?.provider,
+		model: ctx.model?.id,
+		thinking: pi.getThinkingLevel(),
+		cwd: ctx.cwd,
+	};
+}
+
 /** Whether the session of `ctx` has a result of the `subagent` tool. */
 function hasSpawned(ctx: ExtensionContext): boolean {
 	return ctx.sessionManager
@@ -270,13 +287,13 @@ function hasSpawned(ctx: ExtensionContext): boolean {
 
 /** Loads the modules of the harness package that this extension resolves. A module that does not load makes the extension fail. */
 async function loadHarness(require: NodeJS.Require): Promise<Harness> {
-	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "tool", "trust", "view-state"];
+	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "rlm", "tool", "trust", "view-state"];
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, client, herdr, mirror, projects, protocol, tool, trust, viewState] = await Promise.all(
+	const [answers, client, herdr, mirror, projects, protocol, rlm, tool, trust, viewState] = await Promise.all(
 		urls.map((url) => import(url)),
 	);
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { answers, client, herdr, mirror, projects, protocol, tool, trust, viewState } as Harness;
+	return { answers, client, herdr, mirror, projects, protocol, rlm, tool, trust, viewState } as Harness;
 }

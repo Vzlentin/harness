@@ -1,26 +1,31 @@
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-	ExtensionHandler,
-	SessionShutdownEvent,
-	SessionStartEvent,
-	Theme,
+import {
+	type BeforeAgentStartEvent,
+	createEventBus,
+	type EventBus,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ExtensionHandler,
+	type NormalizedBuildSystemPromptOptions,
+	type SessionShutdownEvent,
+	type SessionStartEvent,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
+import { RLM_SECTION } from "../src/rlm/prompt.ts";
 import { TOOL_DESCRIPTION } from "../src/tool.ts";
-import { gates, root, setUp, startHost, tearDown } from "./helpers.ts";
+import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,8 +35,14 @@ type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
-/** An event handler that the extension gives to `pi.on`; the tests call those of `session_start` and `session_shutdown`. */
-type Handler = ExtensionHandler<SessionStartEvent | SessionShutdownEvent>;
+/** An event of Pi that the tests give to the extension's handlers. */
+type PiEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent;
+
+/**
+ * An event handler that the extension gives to `pi.on`; the tests call those of `session_start`, `session_shutdown` and
+ * `before_agent_start`.
+ */
+type Handler = ExtensionHandler<PiEvent>;
 
 /** A registered tool: its description, and a call with `args` that gives its text. */
 type Tool = {
@@ -46,6 +57,16 @@ type Args = Readonly<Record<string, string | readonly string[]>>;
 /** A message that the extension sent to Pi, with its options. */
 type Sent = { readonly text: string; readonly details: unknown; readonly options: unknown };
 
+/** A notification that the extension showed in the session. */
+type Notification = { readonly message: string; readonly type: string | undefined };
+
+/** The payload of a kernel start, as pi-ipython gives it on `pi.events`. */
+type KernelStarting = {
+	readonly env: Record<string, string>;
+	readonly startupCode: string[];
+	readonly waitFor: (promise: Promise<void>) => void;
+};
+
 /** What the extension registers in Pi. */
 type Registered = {
 	readonly tools: Map<string, Tool>;
@@ -53,6 +74,9 @@ type Registered = {
 	readonly flags: string[];
 	readonly handlers: Map<string, Handler[]>;
 	readonly messages: Sent[];
+	readonly notifications: Notification[];
+	/** The bus of `pi.events`, on which pi-ipython announces its kernel starts. */
+	readonly events: EventBus;
 };
 
 /**
@@ -75,6 +99,12 @@ beforeAll(async () => {
 
 	for (const file of await readdir(join(repo, "pi"))) {
 		if (file.endsWith(".ts") || file === "package.json") await copyFile(join(repo, "pi", file), join(agents, file));
+	}
+
+	await mkdir(join(harness, "python"));
+
+	for (const file of await readdir(join(repo, "python"))) {
+		if (file.endsWith(".py")) await copyFile(join(repo, "python", file), join(harness, "python", file));
 	}
 
 	for (const name of ["@earendil-works", "typebox"])
@@ -121,10 +151,13 @@ async function load(): Promise<Registered> {
 		flags: [],
 		handlers: new Map(),
 		messages: [],
+		notifications: [],
+		events: createEventBus(),
 	};
 
 	const api: Pick<
 		ExtensionAPI,
+		| "events"
 		| "registerTool"
 		| "registerCommand"
 		| "registerFlag"
@@ -135,6 +168,7 @@ async function load(): Promise<Registered> {
 		| "appendEntry"
 		| "sendMessage"
 	> = {
+		events: registered.events,
 		registerTool: (tool) => {
 			const call = async (args: Args) => {
 				// SAFETY: the tests give the arguments of the tool's schema.
@@ -152,7 +186,7 @@ async function load(): Promise<Registered> {
 			registered.flags.push(name);
 		},
 		registerEntryRenderer: () => {},
-		// SAFETY: the tests call only the `session_start` and `session_shutdown` handlers, whose type is `Handler`.
+		// SAFETY: the tests call only the handlers of the events of `PiEvent`, whose type is `Handler`.
 		on: ((event: string, handler: Handler) => {
 			registered.handlers.set(event, [...(registered.handlers.get(event) ?? []), handler]);
 
@@ -189,35 +223,95 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 type Widgets = (readonly string[] | undefined)[];
 
 /**
- * Calls the handlers of `event` with harness, for the session `session` without entries. Without `widgets`, the
- * session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and `widgets` gets each content
- * of the subagents widget.
+ * Calls the handlers of `event` with harness, for the session `session` without entries, in `root` with the faux
+ * model. Without `widgets`, the session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and
+ * `widgets` gets each content of the subagents widget. The notifications go to `registered`.
  */
-async function sessionEvent(
-	registered: Registered,
-	event: SessionStartEvent | SessionShutdownEvent,
-	widgets?: Widgets,
-): Promise<void> {
-	const ctx: Pick<ExtensionContext, "hasUI"> & {
+async function sessionEvent(registered: Registered, event: PiEvent, widgets?: Widgets): Promise<void> {
+	const ctx: Pick<ExtensionContext, "hasUI" | "cwd"> & {
+		readonly model: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">;
 		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntries" | "getBranch">;
-		readonly ui: Pick<ExtensionContext["ui"], "setWidget"> & { readonly theme: Pick<Theme, "fg"> };
+		readonly ui: Pick<ExtensionContext["ui"], "setWidget" | "notify"> & { readonly theme: Pick<Theme, "fg"> };
 	} = {
 		hasUI: widgets !== undefined,
+		cwd: root,
+		model: { provider: "faux", id: "faux-1" },
 		sessionManager: { getSessionId: () => "session", getEntries: () => [], getBranch: () => [] },
 		ui: {
 			// The extension gives the widget lines, never a component.
 			setWidget: (key: string, content: string[] | ((...args: never[]) => Component) | undefined) => {
 				if (key === "subagents" && !(content instanceof Function)) widgets?.push(content);
 			},
+			notify: (message, type) => {
+				registered.notifications.push({ message, type });
+			},
 			theme: { fg: (color, text) => `<${color}>${text}` },
 		},
 	};
 
-	// SAFETY: with harness, the session handlers read only these fields of the context.
+	// SAFETY: with harness, the handlers read only these fields of the context, and only the provider and the ID of the
+	// model.
 	const context = ctx as ExtensionContext;
 
 	for (const handler of registered.handlers.get(event.type) ?? []) await handler(event, context);
 }
+
+/**
+ * Emits a kernel start on the bus of the extension, as pi-ipython does, and gives its payload once the promises given
+ * to `waitFor` settle.
+ */
+async function kernelStart(registered: Registered): Promise<KernelStarting> {
+	const waits: Promise<void>[] = [];
+	const starting: KernelStarting = { env: {}, startupCode: [], waitFor: (promise) => void waits.push(promise) };
+	registered.events.emit("ipython:kernel-starting", starting);
+	// pi-ipython reads the waits right after the emit, so the listener gives its promise before its first `await`.
+	expect(waits).toHaveLength(1);
+	await Promise.all(waits);
+
+	return starting;
+}
+
+/** The sections of the system prompt after the `before_agent_start` handlers, for a session with `selectedTools`. */
+async function agentStartSections(registered: Registered, selectedTools: string[]): Promise<Record<string, string>> {
+	const sections: Record<string, string> = {};
+	// SAFETY: the extension reads only the selected tools and the sections of the options.
+	const systemPromptOptions = { selectedTools, sections } as NormalizedBuildSystemPromptOptions;
+
+	await sessionEvent(registered, {
+		type: "before_agent_start",
+		messageType: "user",
+		prompt: "Hello",
+		systemPrompt: "",
+		systemPromptOptions,
+	});
+
+	return sections;
+}
+
+/**
+ * A kernel of the Pi session: it runs the startup code in its argument, then, as cells would, spawns a child without a
+ * model and waits for it, spawns a quiet child, and spawns with a context of 1 MiB + 1 byte. It prints the results as
+ * JSON.
+ */
+const KERNEL_SCRIPT = [
+	"import asyncio, json, sys",
+	"namespace = {}",
+	"for line in json.loads(sys.argv[1]):",
+	"    exec(line, namespace)",
+	"rlm = namespace['rlm']",
+	"from harness_rlm import RlmError",
+	"async def main():",
+	"    child = await rlm.spawn('From the Pi kernel')",
+	"    answer = await rlm.wait(child)",
+	"    quiet = await rlm.spawn('Quiet from the Pi kernel')",
+	"    try:",
+	"        await rlm.spawn('Too large', context='x' * (1024 * 1024 + 1))",
+	"        error = None",
+	"    except RlmError as refused:",
+	"        error = str(refused)",
+	"    print(json.dumps({'child': child, 'answer': answer, 'quiet': quiet['handle'], 'error': error}))",
+	"asyncio.run(main())",
+].join("\n");
 
 /** Waits until the child `handle` of the main host is idle. */
 async function untilIdle(handle: string): Promise<void> {
@@ -329,7 +423,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
-	it("shows in the widget the children, then that the host is not running, and nothing without children", async () => {
+	it("shows the children in the widget, an RLM child marked, then that the host is not running, and nothing without children", async () => {
 		const registered = await load();
 		const quiet: Widgets = [];
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
@@ -337,34 +431,104 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
 		host = await startHost();
-
-		const spawned = await request(
-			{
-				type: "spawn",
-				requestId: "widget",
-				caller: "session",
-				notify: false,
-				provider: "faux",
-				model: "faux-1",
-				callerThinking: "medium",
-				cwd: root,
-				prompt: "Task:\nWidget",
-			},
-			{ start: false },
-		);
-
-		const handle = spawned?.handle ?? "";
+		const { handle } = await spawnAs("session", "Task:\nWidget", { notify: false });
 		await untilIdle(handle);
+		const { handle: rlm } = await spawnAs("session", "Task:\nWidget RLM", { notify: false, kind: "rlm" });
+		await untilIdle(rlm);
 		const widgets: Widgets = [];
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([`<dim>subagents: <success>${handle}:idle`]), {
-			timeout: 10_000,
-		});
+		const line = `<dim>subagents: <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`;
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([line]), { timeout: 10_000 });
+
+		const options: string[][] = [];
+
+		const ctx = {
+			sessionManager: { getSessionId: () => "session" },
+			ui: {
+				select: async (_title: string, items: string[]) => {
+					options.push(items);
+
+					return items[1];
+				},
+				notify: (message: string, type?: string) => {
+					registered.notifications.push({ message, type });
+				},
+			},
+		};
+
+		// SAFETY: outside an hc terminal, the handler of `/subagent` reads only these fields of the context.
+		await registered.commands.get("subagent")?.handler("", ctx as Parameters<Command["handler"]>[1]);
+		expect(options).toEqual([
+			[`${handle}  idle      faux/faux-1  medium`, `${rlm}  idle      faux/faux-1  medium  rlm`],
+		]);
+		expect(registered.notifications).toEqual([
+			{ message: `Run in another terminal: harness attach ${rlm}`, type: "info" },
+		]);
 		await host?.close();
 		host = undefined;
 		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["<warning>subagents: the harness host is not running"]), {
 			timeout: 10_000,
 		});
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
+	});
+
+	it("serves rlm to each kernel start of the session through the host, and closes its server at the session end", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+
+		registered.events.emit("ipython:kernel-starting", { env: {}, startupCode: [] });
+		expect(registered.notifications).toEqual([
+			{ message: "The ipython:kernel-starting event has an invalid payload; its kernel gets no rlm", type: "warning" },
+		]);
+
+		const { env, startupCode } = await kernelStart(registered);
+		const socket = env.HARNESS_RLM_SOCKET ?? "";
+		expect(socket).toMatch(/^\/tmp\/harness-rlm-[^/]+\/kernel\.sock$/);
+		expect(env.HARNESS_RLM_TOKEN).toMatch(/^[0-9a-f]{64}$/);
+		expect(process.env.HARNESS_RLM_SOCKET).toBeUndefined();
+		expect(process.env.HARNESS_RLM_TOKEN).toBeUndefined();
+
+		const { stdout } = await run("python3", ["-I", "-B", "-c", KERNEL_SCRIPT, JSON.stringify(startupCode)], {
+			env: { ...process.env, ...env },
+			timeout: 30_000,
+		});
+
+		const kernel = JSON.parse(stdout);
+
+		// The child takes the model and the working directory of the session, and the host refuses the size of an RLM
+		// spawn, so the spawns have `kind: "rlm"`.
+		expect(kernel).toMatchObject({
+			child: { ...FAUX, cwd: root },
+			answer: "Answer to Task:\nFrom the Pi kernel",
+			error: "The prompt of an RLM spawn, with its files and context, is more than 1 MiB",
+		});
+
+		// The children of the kernel are those of the session's tool.
+		const listed = await callTool(registered, { action: "list" });
+		expect(listed).toContain(kernel.child.handle);
+		expect(listed).toContain(kernel.quiet);
+
+		// The spawns have `notify: false`, so no answer comes as a message.
+		await untilIdle(kernel.quiet);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(registered.messages).toEqual([]);
+
+		// A new kernel start replaces the server.
+		const restarted = (await kernelStart(registered)).env.HARNESS_RLM_SOCKET ?? "";
+		expect(restarted).toMatch(/^\/tmp\/harness-rlm-[^/]+\/kernel\.sock$/);
+		expect(restarted).not.toBe(socket);
+		expect(existsSync(dirname(socket))).toBe(false);
+
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+		await expect(rawReply(restarted, "{}")).rejects.toThrow("ENOENT");
+		expect(existsSync(dirname(restarted))).toBe(false);
+	});
+
+	it("gives the rlm section to a session with the ipython tool only", async () => {
+		const registered = await load();
+
+		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({ rlm: RLM_SECTION });
+		expect(await agentStartSections(registered, ["read", "bash"])).toEqual({});
 	});
 });

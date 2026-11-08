@@ -4,10 +4,11 @@ import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { Type } from "typebox";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createChildren, type Owner, type Place } from "../src/children/library.ts";
+import { createChildren, type Owner, type Place, type Spec } from "../src/children/library.ts";
 import { REMINDER } from "../src/children/respond.ts";
-import { called, gates, models, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
+import { called, gates, models, requests, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
 const faux = { provider: "faux", model: "faux-1" } as const;
@@ -36,12 +37,27 @@ const Holder = durable.defineTask<null, { phase: "hold" }, null>({
 		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
 });
 
+/** A tool that does nothing, so a child offers its name. */
+function placeholder(name: string) {
+	return durable.defineTool({
+		name,
+		description: `The ${name} placeholder`,
+		parameters: Type.Object({}),
+		replay: "safe",
+		execute: async () => ({ output: [{ type: "text", text: name }] }),
+	});
+}
+
+const DELEGATION = ["subagent", "workflow"];
+
 beforeAll(async () => {
 	await setUp();
 	const registry = durable.createRegistry();
 	registry.install(library.extension);
 	registry.install(library.answerExtension);
 	registry.install(durable.defineExtension({ name: "test-holder", tasks: [Holder] }));
+	const tools = [...DELEGATION, "lookup"].map(placeholder);
+	registry.install(durable.defineExtension({ name: "test-tools", tools }));
 	harness = await Harness.open(
 		await openNodeSqliteStorage(join(root, "children.sqlite")),
 		{ models, registry },
@@ -561,5 +577,83 @@ describe("children library", { timeout: 30_000 }, () => {
 		gate.resolve();
 		gates.delete("Schema");
 		expect(await asked).toMatchObject({ status: "failed", reason: "no-respond" });
+	});
+
+	it("starts a new depth budget at depth 0 for a depth root, under its tree parent", async () => {
+		const tree = await library.open(place, owner, "t:budget-tree", { root: "test", ...faux }, context);
+		const sessionSpec: Spec = { parent: String(tree.id), ...faux, depthRoot: true };
+		const session = await library.open(place, owner, "t:budget-session", sessionSpec, context);
+		expect(session.lineage).toEqual({
+			key: "t:budget-session",
+			root: "test",
+			parent: String(tree.id),
+			depth: 0,
+			limit: 2,
+		});
+
+		const child = await library.open(place, owner, "t:budget-child", { parent: String(session.id), ...faux }, context);
+		expect(child.lineage).toMatchObject({ depth: 1, limit: 2 });
+		const leafSpec = { parent: String(child.id), ...faux, cwd: root };
+		const leaf = await library.open(place, owner, "t:budget-leaf", leafSpec, context);
+		expect(leaf.lineage).toMatchObject({ depth: 2, limit: 2 });
+		await leaf.ask({ type: "input", content: "Budget leaf", requestId: "r1" }, context);
+		const tools = requests.get("Budget leaf")?.tools;
+		expect(tools?.filter((name) => [...DELEGATION, "lookup"].includes(name))).toEqual(["lookup"]);
+		await expect(
+			library.open(place, owner, "t:budget-deeper", { parent: String(leaf.id), ...faux }, context),
+		).rejects.toThrow("Nested subagents are disabled");
+
+		// A depth root under a leaf of the tree starts a budget with its own limit.
+		const ownSpec: Spec = { parent: String(leaf.id), ...faux, depthRoot: true, limit: 3 };
+		const own = await library.open(place, owner, "t:budget-own", ownSpec, context);
+		expect(own.lineage).toMatchObject({ depth: 0, limit: 3 });
+
+		// The depth roots stay in the tree, so closing the tree closes them.
+		expect(await tree.close(context)).toEqual([tree.id, session.id, child.id, leaf.id, own.id]);
+	});
+
+	it("takes the depth budget of the depth parent, and depth 1 for a conversation that the library did not open", async () => {
+		const budget = await library.open(place, owner, "t:dp-budget", { root: "test", ...faux, limit: 3 }, context);
+		const tree = await library.open(place, owner, "t:dp-tree", { root: "other", ...faux, limit: 5 }, context);
+		const spec = { parent: String(tree.id), depthParent: String(budget.id), ...faux, limit: 9 };
+		const child = await library.open(place, owner, "t:dp-child", spec, context);
+		expect(child.lineage).toEqual({ key: "t:dp-child", root: "other", parent: String(tree.id), depth: 2, limit: 3 });
+		expect((await tree.close(context)).includes(child.id)).toBe(true);
+		const outside = String((await harness.root(context)).id);
+		const fromRoot = { root: "test", depthParent: outside, ...faux, limit: 4 };
+		expect((await library.open(place, owner, "t:dp-outside", fromRoot, context)).lineage).toMatchObject({
+			depth: 1,
+			limit: 4,
+		});
+		const fromText = { root: "test", depthParent: "pi-session", ...faux };
+		expect((await library.open(place, owner, "t:dp-text", fromText, context)).lineage).toMatchObject({
+			depth: 1,
+			limit: 2,
+		});
+		const leaf = await library.open(place, owner, "t:dp-leaf", { root: "test", ...faux, limit: 1 }, context);
+		await expect(
+			library.open(place, owner, "t:dp-deeper", { root: "test", depthParent: String(leaf.id), ...faux }, context),
+		).rejects.toThrow("Nested subagents are disabled");
+	});
+
+	it("gives a child at its depth limit no subagent and no workflow tool, also when Spec.tools names them", async () => {
+		const offered = async (key: string, spec: Spec, prompt: string) => {
+			const child = await library.open(place, owner, key, spec, context);
+			await child.ask({ type: "input", content: prompt, requestId: "r1" }, context);
+
+			return requests.get(prompt)?.tools.filter((name) => [...DELEGATION, "lookup"].includes(name));
+		};
+
+		const middle = await library.open(place, owner, "t:leaf-middle", { root: "test", ...faux, cwd: root }, context);
+		expect(await offered("t:leaf-top", { root: "test", ...faux, cwd: root }, "Leaf top")).toEqual([
+			...DELEGATION,
+			"lookup",
+		]);
+		const parent = String(middle.id);
+		expect(await offered("t:leaf", { parent, ...faux, cwd: root }, "Leaf plain")).toEqual(["lookup"]);
+		const named = { parent, ...faux, cwd: root, tools: ["lookup", "subagent"] };
+		expect(await offered("t:leaf-named", named, "Leaf named")).toEqual(["lookup"]);
+		const rootLeaf = { root: "test", ...faux, cwd: root, depthRoot: true, limit: 0 } as const;
+		expect(await offered("t:leaf-root", rootLeaf, "Leaf root")).toEqual(["lookup"]);
 	});
 });

@@ -31,6 +31,7 @@ import { addProject } from "../src/protocol/projects.ts";
 import { type ChildInfo, errorMessage } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {
+	answerOf,
 	called,
 	cli,
 	FakeTerminal,
@@ -39,6 +40,7 @@ import {
 	models,
 	root,
 	setUp,
+	spawnAs,
 	startHost,
 	tearDown,
 	textOf,
@@ -429,6 +431,21 @@ describe("mirror", { timeout: 30_000 }, () => {
 			{ state: "idle", app: "harness", message: handle },
 			{ state: "idle", app: "harness", message: `reported (${handle})` },
 		]);
+	});
+
+	it("gets the marker of an RLM child in the watch reply, and in the event after a rename", async () => {
+		const { handle } = await spawnAs("cli", "Task:\nMirror RLM", { notify: false, kind: "rlm" });
+		await answerOf(handle);
+		const mirror = await opened({ project: "main", target: { kind: "child", handle } });
+
+		try {
+			expect(mirror.child).toMatchObject({ handle, kind: "rlm" });
+			expect((await cli(["rename", handle, "marked"])).code).toBe(0);
+			await until(() => mirror.child?.name === "marked");
+			expect(mirror.child).toMatchObject({ handle, name: "marked", kind: "rlm" });
+		} finally {
+			mirror.close();
+		}
 	});
 });
 

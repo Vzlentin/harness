@@ -59,6 +59,10 @@
 			"types": "./dist/children/respond.d.ts",
 			"default": "./dist/children/respond.js"
 		},
+		"./rlm": {
+			"types": "./dist/rlm/index.d.ts",
+			"default": "./dist/rlm/index.js"
+		},
 		"./tasks": {
 			"types": "./dist/host/tasks.d.ts",
 			"default": "./dist/host/tasks.js"
@@ -78,7 +82,8 @@
 		"./package.json": "./package.json"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"python/*.py"
 	],
 	"engines": {
 		"node": ">=22.19.0"

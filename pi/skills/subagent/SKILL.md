@@ -5,7 +5,7 @@ description: Spawn and communicate with observable Pi subagents for second opini
 
 # Subagent
 
-Use the `subagent` tool to delegate work to a separate agent with its own context. Each subagent is a conversation in one background host process, which starts when needed. A subagent can spawn its own subagents, down to the depth limit: the `agentDepthLimit` setting in Pi's global `settings.json` (default 4), or 2 in a tree that a library such as workflows starts without a limit. A deeper spawn fails with `Nested subagents are disabled`.
+Use the `subagent` tool to delegate work to a separate agent with its own context. Each subagent is a conversation in one background host process, which starts when needed. A subagent can spawn its own subagents, down to the depth limit: the `agentDepthLimit` setting in Pi's global `settings.json` (default 4), or 2 in a tree that a library such as workflows starts without a limit. A deeper spawn fails with `Nested subagents are disabled`. A subagent at the depth limit has no `subagent` tool and cannot spawn.
 
 When the tool is not available, use the `harness` CLI in bash. It has the same commands (see [CLI](#cli)).
 

@@ -1,7 +1,7 @@
 {
 	"name": "@vzlentin/pi-agents",
 	"version": "0.6.2",
-	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget, the /harness mirror sessions and the subagent skill",
+	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget, the /harness mirror sessions, rlm in the IPython kernels and the subagent skill",
 	"keywords": [
 		"pi-package"
 	],

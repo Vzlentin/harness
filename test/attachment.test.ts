@@ -138,7 +138,7 @@ function answerEntry(id: number, message: Answer): EntryRecord {
 }
 
 /** The mirror entry with `target`, as Pi keeps it in the session. */
-function mirrorEntry(target: MirrorTarget): coding.SessionEntry {
+function mirrorEntry(target: MirrorTarget): coding.CustomEntry {
 	return {
 		type: "custom",
 		customType: MIRROR_ENTRY,
@@ -177,6 +177,8 @@ class Session {
 	readonly ui = new TuiMainScreen(this.terminal);
 	readonly ctx: coding.ExtensionContext;
 	text = "";
+	/** The renderer of the mirror entry. */
+	renderer: coding.EntryRenderer | undefined;
 	#editorFactory: EditorFactory;
 
 	/** A session in `mode` with the entries `branch`, in a Pi with the flags `flags`. */
@@ -235,7 +237,10 @@ class Session {
 			| "on"
 		> = {
 			registerFlag: () => {},
-			registerEntryRenderer: () => {},
+			registerEntryRenderer: (_type, renderer) => {
+				// SAFETY: the mirror registers one renderer, for its own entry, and the tests give it only that entry.
+				this.renderer = renderer as coding.EntryRenderer;
+			},
 			registerCommand: () => {},
 			// SAFETY: the tests call only the handlers of the mirror, with the events and the context that they read.
 			on: ((event: string, handler: Handler) => {
@@ -393,6 +398,26 @@ describe("mirror sessions in Pi", () => {
 			report("idle"),
 			report("idle"),
 		]);
+	});
+
+	it("shows the marker of an RLM child in the first line, between the title and the directory", () => {
+		const header = (child: ChildInfo): string => {
+			const { session, mirror } = attached();
+			mirror.mirror.child = child;
+			mirror.change({ kind: "open" });
+			// SAFETY: the renderer of the mirror entry reads only `expanded` of the options.
+			const options = { expanded: false } as coding.EntryRenderOptions;
+			const frame = session.renderer?.(mirrorEntry(AGENT), options, THEME);
+			const first = stripVTControlCharacters(frame?.render(100)[0] ?? "").trim();
+			session.emit("session_shutdown");
+
+			return first;
+		};
+
+		const child = { ...CHILD, handle: "abc123", name: "sub" };
+		expect(header(child)).toBe("harness │ sub (abc123) │ /tmp");
+		const { name: _, ...unnamed } = child;
+		expect(header({ ...unnamed, kind: "rlm" })).toBe("harness │ abc123 │ rlm │ /tmp");
 	});
 
 	it("reports the state of the agent again when a dialog of Pi ends, until Pi leaves the session", () => {

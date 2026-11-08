@@ -64,11 +64,15 @@ const EntryResult = Type.Object({
 
 export type Entry = Static<typeof EntryResult>;
 
-/** The entries that the host loaded, as one: their extensions, tasks and catch-up hooks in load order, and `close`. */
+/**
+ * The entries that the host loaded, as one: their extensions, tasks and catch-up hooks in load order, the event bus that
+ * they share, and `close`.
+ */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
 	readonly tasks: readonly AnyTask[];
 	readonly catchUps: readonly CatchUpHook[];
+	readonly events: EventBus;
 	close(): Promise<void>;
 };
 
@@ -175,6 +179,7 @@ export async function loadEntries(
 		extensions: entries.flatMap((entry) => entry.extensions),
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
 		catchUps: entries.flatMap((entry) => (entry.catchUp === undefined ? [] : [checkedHook(entry.catchUp)])),
+		events,
 		close,
 	};
 }
