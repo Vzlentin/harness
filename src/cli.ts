@@ -321,11 +321,12 @@ async function inspectCommand(args: string[], project: string | undefined): Prom
 
 	const server = await startInspectServer({ hosts: await resolveBindHosts({ host, tailscale }), port });
 
-	for (const url of server.urls) process.stdout.write(`${url}${target === undefined ? "" : pageQuery(target)}\n`);
-
+	// Before the URLs: a reader can stop the command as soon as it reads the first one.
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.once(signal, () => void server.close().then(() => process.exit(0)));
 	}
+
+	for (const url of server.urls) process.stdout.write(`${url}${target === undefined ? "" : pageQuery(target)}\n`);
 }
 
 function versionCommand(args: string[], project: string | undefined): void {

@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -17,7 +15,6 @@ import { statePaths } from "../src/protocol/paths.ts";
 import {
 	aborted,
 	answerOf,
-	CLI,
 	called,
 	cli,
 	gates,
@@ -155,24 +152,19 @@ async function fakeTailscale(body: string): Promise<void> {
 	process.env.PATH = `${bin}:${process.env.PATH}`;
 }
 
-/** Runs the CLI with `args` until its first line, then stops it with SIGTERM: the line, and the exit code. */
-async function firstLine(args: readonly string[]): Promise<{ line: string; code: number | null }> {
-	const child = spawn(process.execPath, [CLI, ...args], { cwd: root, stdio: ["ignore", "pipe", "inherit"] });
-	const exited = once(child, "exit");
-	let output = "";
-	child.stdout.setEncoding("utf8");
-
-	for await (const chunk of child.stdout) {
-		output += chunk;
-
-		if (output.includes("\n")) break;
-	}
-
-	child.kill("SIGTERM");
-	const [code] = await exited;
-
-	return { line: output.trim(), code };
-}
+/**
+ * `NODE_OPTIONS` that make the CLI send SIGTERM to itself as soon as its first write to stdout returns: the earliest
+ * time that a reader of the first line can stop it.
+ */
+const STOP_AFTER_FIRST_WRITE = {
+	NODE_OPTIONS: `--import data:text/javascript,${encodeURIComponent(`const write = process.stdout.write;
+process.stdout.write = function (...args) {
+	process.stdout.write = write;
+	const written = write.apply(this, args);
+	process.kill(process.pid, "SIGTERM");
+	return written;
+};`)}`,
+};
 
 describe("resolveBindHosts", () => {
 	it("binds 127.0.0.1 by default, the --host alone, and refuses both --host and --tailscale", async () => {
@@ -395,18 +387,22 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 
 describe("harness inspect", { timeout: 30_000 }, () => {
 	it("prints the URL of the page with the target of its arguments, and stops on SIGTERM", async () => {
-		const url = /^http:\/\/127\.0\.0\.1:\d+\/$/;
-
-		const child = await firstLine(["inspect", "a1b2c3", "--port", "0"]);
-		expect(child.code).toBe(0);
-		expect(child.line).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&handle=a1b2c3$/);
-		expect((await firstLine(["--project", "main", "inspect", "--port", "0"])).line).toMatch(
-			/^http:\/\/127\.0\.0\.1:\d+\/\?project=main$/,
-		);
-		expect((await firstLine(["inspect", "--conversation", "42", "--port", "0"])).line).toMatch(
-			/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&conversation=42$/,
-		);
-		expect((await firstLine(["inspect", "--port", "0"])).line).toMatch(url);
+		expect(await cli(["inspect", "a1b2c3", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
+			code: 0,
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&handle=a1b2c3\n$/),
+		});
+		expect(await cli(["--project", "main", "inspect", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
+			code: 0,
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main\n$/),
+		});
+		expect(await cli(["inspect", "--conversation", "42", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
+			code: 0,
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&conversation=42\n$/),
+		});
+		expect(await cli(["inspect", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
+			code: 0,
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\n$/),
+		});
 	});
 
 	it("refuses arguments that it does not take", async () => {
