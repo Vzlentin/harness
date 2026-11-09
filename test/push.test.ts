@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { connect, hostStopped, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";

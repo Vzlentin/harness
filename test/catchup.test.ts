@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Write } from "../src/children/library.ts";
 import { type Client, connect } from "../src/client/client.ts";
 import { type CatchUpHost, catchUp } from "../src/host/agent.ts";
@@ -258,7 +258,7 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 			const before = (await catchUpData(store)).length;
 			const write = writer(agent);
 			const late = await git("rev-parse", "--short", "HEAD");
-			let failing: ReturnType<typeof vi.spyOn> | undefined;
+			let failing: { mockRestore(): void } | undefined;
 
 			// The store fails at the first commit after the entry is written.
 			await catchUp(

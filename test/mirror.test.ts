@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import * as coding from "@earendil-works/pi-coding-agent";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type ProgramStatus, TuiMainScreen } from "@earendil-works/pi-tui";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { ChatView } from "../pi/chat.ts";
 import { ModelSync, type PiModels, type PiSession } from "../pi/model-sync.ts";
 import { ProgramStatusReport } from "../pi/program-status.ts";
@@ -335,6 +335,7 @@ describe("mirror", { timeout: 30_000 }, () => {
 	it("fails a message whose answer the closed connection lost as possibly sent", async () => {
 		const mirror = await opened(AGENT, { retryDelaysMs: [0] });
 		const reason = `${HOST_CLOSED}. Connecting again failed: Could not connect to the harness host`;
+		// oxlint-disable-next-line typescript/unbound-method -- the spy calls the method with its receiver.
 		const request = Client.prototype.request;
 
 		// The input goes to the host, and its answer is lost.

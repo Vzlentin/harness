@@ -10,13 +10,8 @@
 		"url": "git+https://github.com/Vzlentin/harness.git"
 	},
 	"type": "module",
-	"pi": {
-		"extensions": [
-			"./index.ts"
-		],
-		"skills": [
-			"./skills"
-		]
+	"publishConfig": {
+		"access": "public"
 	},
 	"dependencies": {
 		"@vzlentin/harness": "0.6.2"
@@ -27,7 +22,12 @@
 		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
-	"publishConfig": {
-		"access": "public"
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		],
+		"skills": [
+			"./skills"
+		]
 	}
 }

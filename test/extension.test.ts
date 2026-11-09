@@ -19,7 +19,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
@@ -91,8 +91,8 @@ beforeAll(async () => {
 	modules = join(realpathSync(await mkdtemp(join(tmpdir(), "harness-extension-"))), "node_modules");
 	const harness = join(modules, "@vzlentin", "harness");
 	const agents = join(modules, "@vzlentin", "pi-agents");
-	const tsc = join(repo, "node_modules", "typescript", "bin", "tsc");
-	await run(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", join(harness, "dist")], { cwd: repo });
+	const vp = join(repo, "node_modules", "vite-plus", "bin", "vp");
+	await run(process.execPath, [vp, "pack", "--out-dir", join(harness, "dist")], { cwd: repo });
 	await copyFile(join(repo, "package.json"), join(harness, "package.json"));
 	await symlink(join(repo, "node_modules"), join(harness, "node_modules"));
 	await mkdir(agents, { recursive: true });

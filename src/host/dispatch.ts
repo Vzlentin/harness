@@ -281,7 +281,9 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	const requestId = `spawn:${request.requestId}`;
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
 	// the request goes into the record's `requests` in the commit that makes it the last request.
-	await (await childOf(handler, record)).send({ type: "input", content: request.prompt, requestId }, context, {
+	await (
+		await childOf(handler, record)
+	).send({ type: "input", content: request.prompt, requestId }, context, {
 		admitted: (tx) => addRequest(tx, handle, requestId, { notify: request.notify }),
 	});
 

@@ -6,10 +6,15 @@
 		"type": "git",
 		"url": "git+https://github.com/Vzlentin/harness.git"
 	},
-	"type": "module",
 	"bin": {
 		"harness": "dist/cli.js"
 	},
+	"files": [
+		"dist",
+		"python/*.py",
+		"web"
+	],
+	"type": "module",
 	"exports": {
 		"./answers": {
 			"types": "./dist/client/answers.d.ts",
@@ -85,20 +90,15 @@
 		},
 		"./package.json": "./package.json"
 	},
-	"files": [
-		"dist",
-		"python/*.py",
-		"web"
-	],
-	"engines": {
-		"node": ">=22.19.0"
+	"publishConfig": {
+		"access": "public"
 	},
 	"scripts": {
-		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"build": "vp pack",
 		"prepare": "npm run build",
 		"prepack": "npm run build",
-		"check": "biome check . && oxlint --deny-warnings && npm run build && tsc -p tsconfig.json && vitest --run --passWithNoTests",
-		"test": "vitest --run --passWithNoTests"
+		"check": "npm run build && vp check --deny-warnings && tsc -p tsconfig.json && vp test",
+		"test": "vp test"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.0",
@@ -111,14 +111,11 @@
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.15",
-		"@oxlint/plugins": "1.88.0",
 		"@types/node": "26.6.4",
-		"oxlint": "1.88.0",
 		"typescript": "7.0.2",
-		"vitest": "5.0.3"
+		"vite-plus": "1.5.0"
 	},
-	"publishConfig": {
-		"access": "public"
+	"engines": {
+		"node": ">=22.19.0"
 	}
 }

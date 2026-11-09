@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const Root = Type.Object({ version: Type.String() });

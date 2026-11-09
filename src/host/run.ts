@@ -444,7 +444,7 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 function liveTasks(tasks: HarnessInspection["tasks"]): number {
 	const dead = new Set<number>(tasks.filter((task) => task.state.kind === "blocked").map((task) => task.record.id));
 
-	for (let grown = true; grown; ) {
+	for (let grown = true; grown;) {
 		grown = false;
 
 		for (const task of tasks) {

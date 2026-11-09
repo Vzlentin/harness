@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { serveRlm } from "../src/host/rlm.ts";
 import {
 	HARNESS_RLM_SOCKET,

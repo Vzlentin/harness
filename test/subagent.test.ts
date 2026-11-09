@@ -18,7 +18,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
@@ -935,6 +935,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
 			const found = await conversation(...args);
 
+			// oxlint-disable-next-line typescript/unbound-method -- the condition only reads whether `submit` is a spy.
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
 				const submitter: ContextSubmit = found;
 				const submit = submitter.submit.bind(submitter);
@@ -1007,6 +1008,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
 			const found = await conversation(...args);
 
+			// oxlint-disable-next-line typescript/unbound-method -- the condition only reads whether `submit` is a spy.
 			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
 				const submitter: ContextSubmit = found;
 				const submit = submitter.submit.bind(submitter);
@@ -1188,6 +1190,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
 			const found = await conversation(...args);
 
+			// oxlint-disable-next-line typescript/unbound-method -- the condition only reads whether `submit` is a spy.
 			if (found !== undefined && armed && !vi.isMockFunction(found.submit)) {
 				const submitter: ContextSubmit = found;
 				const submit = submitter.submit.bind(submitter);

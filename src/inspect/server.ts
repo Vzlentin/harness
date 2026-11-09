@@ -160,5 +160,5 @@ function closeAll(servers: readonly Server[]): Promise<void> {
 export function pageQuery({ project, target }: MirrorTarget): string {
 	const fields = target.kind === "agent" ? { project } : { project, ...targetRef(target) };
 
-	return `?${new URLSearchParams(fields)}`;
+	return `?${new URLSearchParams(fields).toString()}`;
 }

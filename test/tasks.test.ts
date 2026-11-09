@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect, request } from "../src/client/client.ts";
 import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
 import { inboxOf } from "../src/client/view-state.ts";

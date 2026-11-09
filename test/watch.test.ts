@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createConnection } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { Client, request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import { statePaths } from "../src/protocol/paths.ts";

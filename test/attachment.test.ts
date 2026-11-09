@@ -9,7 +9,7 @@ import type {
 	TaskId,
 } from "@earendil-works/pi-durable";
 import { type Component, KeybindingsManager, type TUI, TUI_KEYBINDINGS, TuiMainScreen } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { ChatView } from "../pi/chat.ts";
 import { registerMirror } from "../pi/mirror.ts";
 import * as mirror from "../src/client/mirror.ts";

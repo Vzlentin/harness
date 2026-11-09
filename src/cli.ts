@@ -175,9 +175,8 @@ function projectsCommand(args: string[]): void {
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
 
-	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } = await import(
-		"@earendil-works/pi-coding-agent"
-	);
+	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } =
+		await import("@earendil-works/pi-coding-agent");
 
 	const { runHost } = await import("./host/run.ts");
 	const cwd = projectDir(project);

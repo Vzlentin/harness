@@ -1,6 +1,6 @@
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { ConversationId, ConversationView, EntryId, EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { lastAnswerUsage, usageTotals } from "../src/client/view-state.ts";
 
 function usage(input: number, output: number, cacheRead: number, cacheWrite: number, cost: number) {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect } from "../src/client/client.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { addProject, projectsPath, resolveProject } from "../src/protocol/projects.ts";

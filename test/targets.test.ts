@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { type ConversationId, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Owner, Place } from "../src/children/library.ts";
 import { Push } from "../src/host/push.ts";
 import { type ChildRecord, ChildRecords, markRead } from "../src/host/records.ts";

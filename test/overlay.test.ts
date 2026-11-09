@@ -8,7 +8,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { Harness } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { ChildContext } from "../src/children/context.ts";
 import { createChildren, type Owner, type Place } from "../src/children/library.ts";
 import { overlayDoc } from "../src/children/overlay.ts";

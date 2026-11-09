@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { entriesPath, readEntries } from "../src/protocol/entries.ts";
 import { readProjects } from "../src/protocol/projects.ts";
 import { root, setUp, tearDown } from "./helpers.ts";

@@ -1,5 +1,5 @@
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isValidRunName } from "../src/protocol/labels.ts";
 import { THINKING_LEVELS } from "../src/protocol/requests.ts";
 

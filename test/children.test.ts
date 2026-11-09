@@ -5,7 +5,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren, type Owner, type Place, type Spec } from "../src/children/library.ts";
 import { REMINDER } from "../src/children/respond.ts";
 import { called, gates, models, requests, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";

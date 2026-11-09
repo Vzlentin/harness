@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { Client, connect, request } from "../src/client/client.ts";
 import { openChildTab, openConversationPane } from "../src/client/herdr.ts";
 import type { Host } from "../src/host/run.ts";

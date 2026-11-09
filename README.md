@@ -72,7 +72,7 @@ the default branch since its last input.
 
 ```sh
 npm ci
-npm run check               # Biome, oxlint, TypeScript, Vitest
+npm run check               # vp pack, vp check, tsc, vp test
 XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 ```
 
@@ -80,7 +80,7 @@ XDG_STATE_HOME=/tmp/harness-dev node src/cli.ts list
 stores with the hosts of the installed `harness`.
 
 The checkout runs from its TypeScript source. The package contains `dist/`. The Pi extension in `pi/` is the package
-`@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. `npm run check` builds `dist/` too, before the type check. The extension
+`@vzlentin/pi-agents`. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. `npm run check` builds `dist/` too, before the lint and the type checks. The extension
 loads `dist/` of its dependency `@vzlentin/harness`. To try the checkout's extension in Pi, link the checkout as that
 dependency, then install `pi/`:
 

@@ -192,14 +192,14 @@ The depth of the subagent tree is the setting `agentDepthLimit` in Pi's global `
 
 The `subagent` tool does what the CLI does, with one `action` and its arguments:
 
-| `action` | Arguments |
-| --- | --- |
-| `spawn` | `name`, `provider`, `model`, `thinking`, `cwd`, `tools`, `prompts`, `files`, `key`, `notify` |
-| `send` | `handle`, `message`, `followUp`, `key`, `notify` |
-| `wait` | `handle`, `timeout` (seconds, default 1800) |
-| `status`, `stop` | `handle` |
-| `rename` | `handle`, `name` |
-| `list` | none |
+| `action`         | Arguments                                                                                    |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `spawn`          | `name`, `provider`, `model`, `thinking`, `cwd`, `tools`, `prompts`, `files`, `key`, `notify` |
+| `send`           | `handle`, `message`, `followUp`, `key`, `notify`                                             |
+| `wait`           | `handle`, `timeout` (seconds, default 1800)                                                  |
+| `status`, `stop` | `handle`                                                                                     |
+| `rename`         | `handle`, `name`                                                                             |
+| `list`           | none                                                                                         |
 
 `tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. A caller without a working directory cannot spawn. The text result is the output of the same CLI command. The structured result is `{ action, value }`, and the tool declares its schema, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`. A child is `{ handle, name, state, provider, model, thinking, cwd, kind }`, where `state` is `busy`, `idle`, `error` or `closed`, `cwd` is its working directory, and `kind` is `rlm` for an RLM child (see [RLM limits](#rlm-limits)) and absent for the other children.
 
