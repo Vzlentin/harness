@@ -10,6 +10,9 @@ import { root, setUp, tearDown } from "./helpers.ts";
 const WORKERS = 4;
 const WRITES = 25;
 
+/** How long after their spawn the workers start together: a worker's start takes about 0.5 s on a machine at rest. */
+const START_MS = 2000;
+
 beforeAll(async () => {
 	await setUp();
 });
@@ -18,8 +21,14 @@ afterAll(async () => {
 	await tearDown();
 });
 
-/** Runs `code` as an ES module in `WORKERS` processes at the same time, with `WORKER` set to the number of each. */
+/**
+ * Runs `code` as an ES module in `WORKERS` processes at the same time, with `WORKER` set to the number of each. Each
+ * process waits until the time `START` before it runs `code`, so the processes reach the lock together, and not one
+ * after the other as their starts end. Node loads the imports of `code` before the wait.
+ */
 async function inWorkers(code: string): Promise<void> {
+	const start = String(Date.now() + START_MS);
+
 	await Promise.all(
 		Array.from(
 			{ length: WORKERS },
@@ -27,8 +36,8 @@ async function inWorkers(code: string): Promise<void> {
 				new Promise<void>((resolve, reject) => {
 					execFile(
 						process.execPath,
-						["--input-type=module", "--eval", code],
-						{ env: { ...process.env, WORKER: String(worker) } },
+						["--input-type=module", "--eval", `while (Date.now() < Number(process.env.START)) {}\n${code}`],
+						{ env: { ...process.env, WORKER: String(worker), START: start } },
 						(error, _stdout, stderr) => (error === null ? resolve() : reject(new Error(stderr))),
 					);
 				}),

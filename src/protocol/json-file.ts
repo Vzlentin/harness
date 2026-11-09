@@ -77,11 +77,13 @@ function withFileLock<T>(path: string, run: () => T): T {
 	while (own === undefined) {
 		const holder = holderOf(lock);
 
-		// A lock with no process ID is not one of a live process: a lock file gets its ID before it has its name.
-		if (holder !== undefined && !(Number.isInteger(holder.pid) && runs(holder.pid))) breakLock(lock, holder.ino);
-		else if (holder !== undefined && Date.now() > deadline) {
-			throw new Error(`Could not lock ${path}: another process holds ${lock}. Remove it if no harness command runs`);
-		} else if (holder !== undefined) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
+		if (holder !== undefined && !(isStale(holder) && breakLock(lock))) {
+			if (Date.now() > deadline) {
+				throw new Error(`Could not lock ${path}: another process holds ${lock}. Remove it if no harness command runs`);
+			}
+
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_MS);
+		}
 
 		own = tryLock(lock);
 	}
@@ -89,8 +91,7 @@ function withFileLock<T>(path: string, run: () => T): T {
 	try {
 		return run();
 	} finally {
-		// Only this process's own lock: one that another process took as stale is not removed.
-		if (holderOf(lock)?.ino === own) rmSync(lock, { force: true });
+		unlock(lock, own);
 	}
 }
 
@@ -115,26 +116,43 @@ function tryLock(lock: string): number | undefined {
 }
 
 /**
- * Removes the stale lock file `lock` with the inode `ino`. It moves the file away first and checks that the file it
- * moved is that one: when another process removed the stale lock and took a new one meanwhile, it puts that one back.
+ * Removes the lock file `lock` when it is the one with the inode `own`, which this process took. When a user removed it,
+ * the lock that another process took since stays.
  */
-function breakLock(lock: string, ino: number): void {
-	const moved = `${lock}.stale.${process.pid}.${randomUUID()}`;
+function unlock(lock: string, own: number): void {
+	if (holderOf(lock)?.ino === own) rmSync(lock, { force: true });
+}
 
-	try {
-		renameSync(lock, moved);
-	} catch (error) {
-		if (hasCode(error, "ENOENT")) return;
-		throw error;
+/**
+ * Removes the stale lock file `lock`. It is true when it removed the file or the file is gone, and false when another
+ * process holds `lock` now or removes it now. Only one process at a time holds `<lock>.break`, so no other process
+ * removes `lock` between the new check of its process and the removal. A lock that another process took after the
+ * first check has a live process, so the new check keeps it, and two processes never hold the lock. A `<lock>.break`
+ * whose process does not run is removed.
+ */
+function breakLock(lock: string): boolean {
+	const breaking = `${lock}.break`;
+	const own = tryLock(breaking);
+
+	if (own === undefined) {
+		const breaker = holderOf(breaking);
+
+		if (breaker !== undefined && isStale(breaker)) rmSync(breaking, { force: true });
+
+		return false;
 	}
 
 	try {
-		if (statSync(moved).ino !== ino) linkSync(moved, lock);
-	} catch (error) {
-		// A third process took the free lock before it was put back; that process holds it now.
-		if (!hasCode(error, "EEXIST")) throw error;
+		const holder = holderOf(lock);
+
+		if (holder === undefined) return true;
+
+		if (!isStale(holder)) return false;
+		rmSync(lock, { force: true });
+
+		return true;
 	} finally {
-		rmSync(moved, { force: true });
+		unlock(breaking, own);
 	}
 }
 
@@ -157,6 +175,14 @@ function holderOf(lock: string): { readonly pid: number; readonly ino: number } 
 	} finally {
 		closeSync(fd);
 	}
+}
+
+/**
+ * Whether the process of a lock file does not run. A lock with no process ID is not one of a live process: a lock file
+ * gets its ID before it has its name.
+ */
+function isStale(holder: { readonly pid: number }): boolean {
+	return !(Number.isInteger(holder.pid) && runs(holder.pid));
 }
 
 /** Whether the process `pid` runs. A process of another user, which this process cannot signal, runs. */

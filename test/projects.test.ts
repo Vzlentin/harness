@@ -5,7 +5,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect } from "../src/client/client.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { addProject, projectsPath, resolveProject } from "../src/protocol/projects.ts";
-import { cli, fakePi, handleOf, logLines, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import {
+	cli,
+	fakePi,
+	handleOf,
+	logLines,
+	root,
+	setUp,
+	startHost,
+	startHostProcess,
+	tearDown,
+	until,
+} from "./helpers.ts";
 
 let dirA: string;
 let dirB: string;
@@ -61,12 +72,10 @@ describe("projects", { timeout: 30_000 }, () => {
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];
 
-		for (const [args, error] of failures) {
-			const result = await cli(args);
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain(error);
-		}
-
+		const results = await Promise.all(failures.map(([args]) => cli(args)));
+		expect(results).toEqual(
+			failures.map(([, error]) => expect.objectContaining({ code: 1, stderr: expect.stringContaining(error) })),
+		);
 		expect(existsSync(projectsPath())).toBe(false);
 
 		// A relative --cwd through a symbolic link is stored as its real path.
@@ -78,10 +87,15 @@ describe("projects", { timeout: 30_000 }, () => {
 			stderr: "",
 		});
 		expect(JSON.parse(readFileSync(projectsPath(), "utf8"))).toEqual({ a: real });
-		const duplicate = await cli(["create", "a", "--cwd", dirB]);
+
+		const [duplicate, created] = await Promise.all([
+			cli(["create", "a", "--cwd", dirB]),
+			cli(["create", "b", "--cwd", dirB]),
+		]);
+
 		expect(duplicate.code).toBe(1);
 		expect(duplicate.stderr).toContain(`The project a exists (${real})`);
-		expect((await cli(["create", "b", "--cwd", dirB])).code).toBe(0);
+		expect(created.code).toBe(0);
 		expect((await cli(["projects"])).stdout).toBe(`a  ${real}\nb  ${realpathSync(dirB)}\nmain\n`);
 	});
 
@@ -90,22 +104,34 @@ describe("projects", { timeout: 30_000 }, () => {
 		const hostB = await startHost("b");
 
 		try {
-			const childA = handleOf(await cli(["spawn", "--prompt", "In a"], {}, dirA));
-			await cli(["wait", childA], {}, dirA);
-			const childB = handleOf(await cli(["spawn", "--prompt", "Environment"], {}, dirB));
-			expect((await cli(["wait", childB], {}, dirB)).stdout).toMatch(/Tool said: \S+ faux faux-1 medium b\n/);
-			const listA = (await cli(["list"], {}, dirA)).stdout;
-			expect(listA).toContain(childA);
-			expect(listA).not.toContain(childB);
-			const listB = (await cli(["list"], {}, dirB)).stdout;
-			expect(listB).toContain(childB);
-			expect(listB).not.toContain(childA);
-			// --project wins over HARNESS_PROJECT, which wins over the cwd.
-			expect((await cli(["list"], { HARNESS_PROJECT: "b" }, dirA)).stdout).toBe(listB);
-			expect((await cli(["--project", "a", "list"], { HARNESS_PROJECT: "b" }, dirB)).stdout).toBe(listA);
-			// After the command, --project is an argument of that command, not the project.
-			expect((await cli(["list", "--project", "a"], {}, dirB)).code).toBe(1);
-			const unknown = await cli(["--project", "nope", "list"]);
+			const [spawnA, spawnB] = await Promise.all([
+				cli(["spawn", "--prompt", "In a"], {}, dirA),
+				cli(["spawn", "--prompt", "Environment"], {}, dirB),
+			]);
+
+			const childA = handleOf(spawnA);
+			const childB = handleOf(spawnB);
+			const [, waitB] = await Promise.all([cli(["wait", childA], {}, dirA), cli(["wait", childB], {}, dirB)]);
+			expect(waitB.stdout).toMatch(/Tool said: \S+ faux faux-1 medium b\n/);
+
+			const [listA, listB, listByEnv, listByOption, optionAfter, unknown] = await Promise.all([
+				cli(["list"], {}, dirA),
+				cli(["list"], {}, dirB),
+				// --project wins over HARNESS_PROJECT, which wins over the cwd.
+				cli(["list"], { HARNESS_PROJECT: "b" }, dirA),
+				cli(["--project", "a", "list"], { HARNESS_PROJECT: "b" }, dirB),
+				// After the command, --project is an argument of that command, not the project.
+				cli(["list", "--project", "a"], {}, dirB),
+				cli(["--project", "nope", "list"]),
+			]);
+
+			expect(listA.stdout).toContain(childA);
+			expect(listA.stdout).not.toContain(childB);
+			expect(listB.stdout).toContain(childB);
+			expect(listB.stdout).not.toContain(childA);
+			expect(listByEnv.stdout).toBe(listB.stdout);
+			expect(listByOption.stdout).toBe(listA.stdout);
+			expect(optionAfter.code).toBe(1);
 			expect(unknown.code).toBe(1);
 			expect(unknown.stderr).toBe("Unknown harness project: nope\n");
 		} finally {
@@ -128,12 +154,18 @@ describe("projects", { timeout: 30_000 }, () => {
 	});
 
 	it("starts one host process for each project", async () => {
-		const pids: number[] = [];
+		const pids = new Map<string, number>();
 
 		try {
-			for (const dir of [dirA, dirB]) {
-				expect((await cli(["list"], {}, dir)).code).toBe(0);
-			}
+			const [clientA, clientB] = await Promise.all([startHostProcess("a"), startHostProcess("b")]);
+			pids.set("a", clientA.pid);
+			pids.set("b", clientB.pid);
+			clientA.close();
+			clientB.close();
+			expect(clientA.pid).toBeGreaterThan(0);
+			expect(clientA.pid).not.toBe(process.pid);
+			expect(clientB.pid).not.toBe(process.pid);
+			expect(clientB.pid).not.toBe(clientA.pid);
 
 			// The project option wins over HARNESS_PROJECT.
 			const routes: [string, string][] = [
@@ -145,17 +177,14 @@ describe("projects", { timeout: 30_000 }, () => {
 				process.env.HARNESS_PROJECT = other;
 				const client = await connect({ start: false, project });
 				client?.close();
-				pids.push(client?.pid ?? 0);
+				expect(client?.pid).toBe(pids.get(project));
 				expect(existsSync(join(statePaths(project).dir, "durable.sqlite"))).toBe(true);
 			}
-
-			expect(pids[0]).toBeGreaterThan(0);
-			expect(pids[1]).toBeGreaterThan(0);
-			expect(pids[0]).not.toBe(pids[1]);
 		} finally {
 			delete process.env.HARNESS_PROJECT;
 
-			for (const pid of pids) if (pid > 0) process.kill(pid, "SIGTERM");
+			// A host of this process, such as one of a test that timed out and has not closed its hosts yet, is not stopped.
+			for (const pid of pids.values()) if (pid > 0 && pid !== process.pid) process.kill(pid, "SIGTERM");
 		}
 
 		await until(() => !existsSync(statePaths("a").socket) && !existsSync(statePaths("b").socket));

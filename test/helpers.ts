@@ -19,6 +19,7 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import { vi } from "vite-plus/test";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
@@ -322,6 +323,34 @@ export async function startHost(project = MAIN_PROJECT): Promise<Host | undefine
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
 	return host;
+}
+
+/**
+ * Connects to the host process of `project` and starts it when no host listens, as a command does. When the started host
+ * is still starting after the 10 s of `connect`, as on a loaded machine, it waits up to 10 s more until the host listens.
+ */
+export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> {
+	let client: Client | undefined;
+
+	try {
+		client = await connect({ start: true, project });
+	} catch (error) {
+		if (!(error instanceof Error && error.message.includes(" is still starting: "))) throw error;
+	}
+
+	return (
+		client ??
+		vi.waitFor(
+			async () => {
+				const started = await connect({ start: false, project });
+
+				if (started === undefined) throw new Error(`The host of ${project} does not listen yet`);
+
+				return started;
+			},
+			{ timeout: 10_000, interval: 100 },
+		)
+	);
 }
 
 /** Polls `check` for up to 10 s. */

@@ -23,6 +23,7 @@ import {
 	root,
 	setUp,
 	startHost,
+	startHostProcess,
 	tearDown,
 	until,
 } from "./helpers.ts";
@@ -427,10 +428,10 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 		let pid: number | undefined;
 
 		try {
+			const client = await startHostProcess();
+			pid = client.pid;
+			client.close();
 			expect(await cli(["list"])).toMatchObject({ code: 0, stdout: "No subagents\n" });
-			const client = await connect({ start: false });
-			pid = client?.pid;
-			client?.close();
 			await start("typed", "Fixture typed", "fixture.typed");
 			expect(await taskRequest("wait-task", "typed")).toMatchObject({
 				outcome: { status: "completed", result: "typed" },

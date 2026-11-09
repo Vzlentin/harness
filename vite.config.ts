@@ -20,6 +20,7 @@ export default defineConfig({
 		useTabs: true,
 		printWidth: 120,
 		singleQuote: false,
+		sortImports: { newlinesBetween: false },
 		ignorePatterns: ["dist/**", "tools/oxlint/anti-slop/**", ".release-please-manifest.json", "CHANGELOG.md"],
 	},
 	lint: {

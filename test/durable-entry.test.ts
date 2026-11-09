@@ -19,7 +19,7 @@ register("data:text/javascript," + encodeURIComponent(process.argv[1]));
 const m = await import(process.argv[2]);
 console.log(JSON.stringify(Object.keys(m)));`;
 
-describe("the durable entry", () => {
+describe("the durable entry", { timeout: 30_000 }, () => {
 	it("loads with no runtime import of a package that the host passes", async () => {
 		const agentDir = await mkdtemp(join(tmpdir(), "harness-durable-entry-"));
 

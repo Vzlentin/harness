@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
+import { Push } from "../src/host/push.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { library } from "../src/host/targets.ts";
@@ -46,6 +47,7 @@ import {
 	setDepthLimit,
 	setUp,
 	startHost,
+	startHostProcess,
 	tearDown,
 	textOf,
 	toolWaits,
@@ -190,16 +192,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses unknown arguments, models and tools", async () => {
-		expect((await cli(["spawn", "--no-skills", "--prompt", "x"])).stderr).toBe("Unknown spawn argument: --no-skills\n");
-		expect((await cli(["spawn", "--model", "nope", "--prompt", "x"])).stderr).toBe("Unknown model: faux/nope\n");
-		expect((await cli(["spawn", "--tools", "read,web", "--prompt", "x"])).stderr).toBe("Unknown tool: web\n");
-		expect((await cli(["status", "abcdef"])).stderr).toBe("Unknown subagent: abcdef\n");
-		expect((await cli(["spawn", "--thinking", "huge", "--prompt", "x"])).stderr).toBe("Invalid thinking level: huge\n");
-		expect((await cli(["spawn", "--thinking", "xhigh", "--prompt", "x"])).stderr).toBe(
-			"faux/faux-1 has no thinking level xhigh\n",
-		);
-		expect((await cli(["spawn", "--name", "x"])).stderr).toBe("spawn requires at least one prompt or file\n");
-		expect((await cli(["status", "ABC"])).stderr).toBe("Invalid subagent handle: ABC\n");
+		const cases: [string[], string][] = [
+			[["spawn", "--no-skills", "--prompt", "x"], "Unknown spawn argument: --no-skills\n"],
+			[["spawn", "--model", "nope", "--prompt", "x"], "Unknown model: faux/nope\n"],
+			[["spawn", "--tools", "read,web", "--prompt", "x"], "Unknown tool: web\n"],
+			[["status", "abcdef"], "Unknown subagent: abcdef\n"],
+			[["spawn", "--thinking", "huge", "--prompt", "x"], "Invalid thinking level: huge\n"],
+			[["spawn", "--thinking", "xhigh", "--prompt", "x"], "faux/faux-1 has no thinking level xhigh\n"],
+			[["spawn", "--name", "x"], "spawn requires at least one prompt or file\n"],
+			[["status", "ABC"], "Invalid subagent handle: ABC\n"],
+		];
+
+		const results = await Promise.all(cases.map(([args]) => cli(args)));
+		expect(results.map(({ stderr }) => stderr)).toEqual(cases.map(([, error]) => error));
 	});
 
 	it("gives a child the project instructions, skills, tools and directory, as a Pi session there", async () => {
@@ -369,7 +374,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await expect(request(note, { start: false })).rejects.toThrow("Invalid note request: kind is not valid");
 	});
 
-	it("queues a follow-up, renames and stops a child", async () => {
+	it("queues a follow-up for a busy child", async () => {
 		gates.set("Task:\nHold on", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--prompt", "Hold on"]));
 		await until(() => called("Task:\nHold on") === 1);
@@ -382,7 +387,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 			`${handle} finished\n\n2 unread answers, oldest first.\n\n` +
 				"--- Answer 1 of 2 ---\nAnswer to Task:\nHold on\n\n--- Answer 2 of 2 ---\nAnswer to Then summarize\n",
 		);
+	});
 
+	it("renames and stops a child", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
 		expect((await cli(["rename", handle, "summary"])).stdout).toBe(`Renamed summary (${handle})\n`);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped summary (${handle})\n`);
 		expect((await cli(["status", handle])).stderr).toBe(`Unknown subagent: ${handle}\n`);
@@ -407,12 +415,32 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.set("Task:\nSlow", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--prompt", "Slow"]));
 		await until(() => called("Task:\nSlow") === 1);
-		const waiting = cli(["wait", handle]);
-		// The wait has read the last request before the follow-up comes.
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		expect((await cli(["send", handle, "--follow-up", "Late"])).stdout).toBe(`Queued follow-up for ${handle}\n`);
-		gates.get("Task:\nSlow")?.resolve();
-		expect((await waiting).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nSlow\n`);
+		const read = Promise.withResolvers<void>();
+		// oxlint-disable-next-line typescript/unbound-method -- the spy calls the method with its receiver.
+		const done = Push.prototype.done;
+
+		// The wait reads the last request of the child in `done`: `read` resolves once it has.
+		const spy = vi.spyOn(Push.prototype, "done").mockImplementation(function (this: Push, child, signal) {
+			const lastRequest = async (context: Context) => {
+				const last = await child.lastRequest(context);
+				read.resolve();
+
+				return last;
+			};
+
+			return done.call(this, { ...child, lastRequest }, signal);
+		});
+
+		try {
+			const waiting = cli(["wait", handle]);
+			await read.promise;
+			expect((await cli(["send", handle, "--follow-up", "Late"])).stdout).toBe(`Queued follow-up for ${handle}\n`);
+			gates.get("Task:\nSlow")?.resolve();
+			expect((await waiting).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nSlow\n`);
+		} finally {
+			spy.mockRestore();
+		}
+
 		await until(() => called("Late") === 1);
 
 		while ((await cli(["status", handle])).stdout !== `${handle}: idle (faux/faux-1, medium)\n`) {
@@ -1765,14 +1793,19 @@ describe("subagent", { timeout: 30_000 }, () => {
 		let pid: number | undefined;
 
 		try {
-			const connecting = connect({ start: true });
+			const connecting = startHostProcess();
 			const log = join(dir, "host.log");
 			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another harness host runs"));
 			lock.close();
 			const client = await connecting;
-			client?.close();
-			pid = client?.pid;
+			client.close();
+			pid = client.pid;
 			expect(pid).toBeGreaterThan(0);
+			// The host that listens is a later process than each one that found the lock held.
+			const lines = readFileSync(log, "utf8").matchAll(/^Another harness host runs \(pid (\d+) exits\)$/gm);
+			const exited = Array.from(lines, (line) => Number(line[1]));
+			expect(exited.length).toBeGreaterThan(0);
+			expect(exited).not.toContain(pid);
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 
