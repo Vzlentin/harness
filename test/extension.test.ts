@@ -27,7 +27,6 @@ import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
-import { RLM_SECTION } from "../src/rlm/prompt.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
 import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
@@ -639,10 +638,10 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets, true);
 	});
 
-	it("gives the rlm section to a session with the ipython tool only", async () => {
+	it("gives no rlm section to a session, also with the ipython tool", async () => {
 		const registered = await load();
 
-		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({ rlm: RLM_SECTION });
+		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({});
 		expect(await agentStartSections(registered, ["read", "bash"])).toEqual({});
 	});
 });

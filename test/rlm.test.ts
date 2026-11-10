@@ -110,7 +110,8 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 			`first (${one}): idle (faux/faux-1, ${tour.one.thinking})\n`,
 		);
 		expect((await cli(["status", two])).stderr).toBe(`Unknown subagent: ${two}\n`);
-		expect(requests.get("RLM tour")?.system).toContain("<rlm>\nThe IPython kernel has `rlm`");
+		expect(requests.get("RLM tour")?.tools).toContain("ipython");
+		expect(requests.get("RLM tour")?.system).not.toContain("<rlm>");
 	});
 
 	it("marks the RLM children of a caller in list, in its text and its data, apart from its other children", async () => {
@@ -189,7 +190,7 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		expect((await cli(["status", held])).stderr).toBe(`Unknown subagent: ${held}\n`);
 	});
 
-	it("gives a child at the depth limit no rlm section and no rlm in its kernel", async () => {
+	it("gives a child at the depth limit no rlm in its kernel", async () => {
 		await setDepthLimit(2);
 
 		try {
@@ -203,10 +204,8 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 
 		expect(cellResults.get("Task:\nRLM leaf")?.map((text) => text.trim())).toEqual(["False"]);
 		expect(cellResults.get("RLM nested")?.[0]).toContain("Tool said: Tool said: False");
-		expect(requests.get("Task:\nRLM nest")?.system).toContain("<rlm>");
 		expect(requests.get("Task:\nRLM leaf")?.tools).toContain("ipython");
 		expect(requests.get("Task:\nRLM leaf")?.tools).not.toContain("subagent");
-		expect(requests.get("Task:\nRLM leaf")?.system).not.toContain("<rlm>");
 	});
 
 	it("raises RlmError for the arguments that the client or the tool refuses", async () => {
@@ -224,13 +223,6 @@ for call in (rlm.spawn("RLM text", context=3), rlm.wait("abc123", timeout=0), rl
 			"context must be text\nInvalid rlm request: /timeout must be >= 1\nInvalid rlm request: /name must be string\n",
 		]);
 		expect(called("Task:\nRLM text")).toBe(0);
-	});
-
-	it("gives no rlm section to a conversation without the ipython tool", async () => {
-		const handle = handleOf(await cli(["spawn", "--tools", "read,bash", "--prompt", "RLM no ipython"]));
-		await cli(["wait", handle]);
-		expect(requests.get("Task:\nRLM no ipython")?.tools).toEqual(["read", "bash"]);
-		expect(requests.get("Task:\nRLM no ipython")?.system).not.toContain("<rlm>");
 	});
 
 	it("serves each kernel start on its own private socket, which refuses a wrong token", async () => {

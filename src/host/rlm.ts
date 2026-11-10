@@ -1,24 +1,15 @@
 /**
  * `rlm` in the IPython kernels of the host: a kernel server for each kernel start of a conversation that is not a leaf,
- * the `<rlm>` section of such conversations when they have the `ipython` tool, and the pool of the model requests of
- * the RLM children.
+ * and the pool of the model requests of the RLM children.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { EventBus } from "@earendil-works/pi-coding-agent";
-import {
-	type ConversationId,
-	defineExtension,
-	type Extension,
-	GenerationTask,
-	hook,
-	section,
-} from "@earendil-works/pi-durable";
+import { type ConversationId, defineExtension, type Extension, GenerationTask, hook } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { Store } from "../children/library.ts";
 import { ConversationKernelStarting, INVALID_KERNEL_STARTING, KERNEL_STARTING } from "../rlm/kernel.ts";
 import { POOL_SIZE } from "../rlm/limits.ts";
 import { RequestPool } from "../rlm/pool.ts";
-import { RLM_SECTION } from "../rlm/prompt.ts";
 import { type KernelScope, KernelServers } from "../rlm/server.ts";
 import { callerDefaults, type Send } from "../tool.ts";
 import { ChildRecords, isRlmChild } from "./records.ts";
@@ -27,9 +18,7 @@ import { library } from "./targets.ts";
 const context = BACKGROUND_CONTEXT;
 
 export type Rlm = {
-	/**
-	 * The extension with the `<rlm>` section and the hooks of the pool, for the default selection of the conversations.
-	 */
+	/** The extension with the hooks of the pool, for the default selection of the conversations. */
 	readonly extension: Extension;
 	/**
 	 * Closes the kernel servers. It keeps listening, so a later kernel start that is not a leaf fails with `The host is
@@ -105,17 +94,7 @@ export function serveRlm(
 		},
 	});
 
-	const extension = defineExtension({
-		name: "harness-rlm",
-		hooks: [poolHooks],
-		sections: [
-			section("rlm", async (input, renderContext) => {
-				if (!input.agent.tools.some(({ name }) => name === "ipython")) return undefined;
-
-				return (await isLeaf(input.read, String(input.conversationId), renderContext)) ? undefined : RLM_SECTION;
-			}),
-		],
-	});
+	const extension = defineExtension({ name: "harness-rlm", hooks: [poolHooks] });
 
 	return { extension, close: () => servers.close() };
 }

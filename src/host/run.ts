@@ -159,7 +159,6 @@ export async function runHost(options: {
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
 
-	// pi-durable keeps the last section of a key, so the `rlm` section of the host wins over one of an entry.
 	const selected = [
 		ChildContext,
 		subagentTool(durable, { Type }, scope),

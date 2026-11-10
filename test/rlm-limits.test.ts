@@ -99,6 +99,21 @@ describe("limits of the RLM children", { timeout: 30_000 }, () => {
 		]);
 	});
 
+	it("gives the API and each limit in the docstring of rlm", async () => {
+		cells.set("Task:\nRLM doc", ["print(rlm.__doc__)"]);
+		await cli(["wait", handleOf(await cli(["spawn", "--prompt", "RLM doc"]))]);
+		const doc = cellResults.get("Task:\nRLM doc")?.[0];
+
+		expect(doc).toContain(
+			"`await rlm.spawn(prompt, *, context=None, name=None, files=None, model=None, thinking=None, cwd=None)`",
+		);
+		expect(doc).toContain("You can have 16 children that are not stopped. A 17th spawn raises `RlmError`");
+		expect(doc).toContain("at most 1 MiB of UTF-8");
+		expect(doc).toContain("after 5 minutes");
+		expect(doc).toContain("at 256 KiB, and adds the line `[The answer was cut at 256 KiB]`");
+		expect(doc).toContain("at most 4 model requests at the same time");
+	});
+
 	it("cuts each answer of an RLM child at 256 KiB, on a character boundary", async () => {
 		const prompt = `Task:\nx${"\u20ac".repeat(90_000)}`;
 		const rlmChild = await spawnAs("cut", prompt, { notify: false, kind: "rlm", requestId: "cut:rlm" });

@@ -1,10 +1,11 @@
 /**
  * The kernel side of `rlm`: the event that pi-ipython emits before each kernel start, the environment that gives the
- * kernel its server, and the startup code that binds `rlm`.
+ * kernel its server, and the startup code that binds `rlm` and sets its docstring.
  */
 import { fileURLToPath } from "node:url";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { RLM_DOC } from "./doc.ts";
 
 /**
  * The event that pi-ipython emits before each kernel start, restarts included: on the shared bus of the host's entries,
@@ -44,8 +45,12 @@ export const HARNESS_RLM_TOKEN = "HARNESS_RLM_TOKEN";
 /** The folder of `harness_rlm.py`: two levels up from this module, in `src/rlm/` of a checkout and `dist/rlm/` of an install. */
 const PYTHON_DIR = fileURLToPath(new URL("../../python", import.meta.url));
 
-/** The startup code of a kernel: `python/` first on `sys.path`, because the kernel runs with `-I -S`, then `rlm`. */
+/**
+ * The startup code of a kernel: `python/` first on `sys.path`, because the kernel runs with `-I -S`, then `rlm`, then
+ * its docstring, so `print(rlm.__doc__)` gives the API and the limits.
+ */
 export const STARTUP_CODE: readonly string[] = [
 	`__import__('sys').path.insert(0, ${JSON.stringify(PYTHON_DIR)})`,
 	"rlm = __import__('harness_rlm').Rlm()",
+	`rlm.__doc__ = ${JSON.stringify(RLM_DOC)}`,
 ];

@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: Spawn and communicate with observable Pi subagents for second opinions, independent investigations, and delegated implementation work.
+description: Gives the depth limit, the `tools` allowlists and the `harness` CLI fallback.
 ---
 
 # Subagent

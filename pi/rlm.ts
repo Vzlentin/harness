@@ -1,7 +1,7 @@
 /**
  * `rlm` in the IPython kernels of interactive Pi: a kernel server for each kernel start that pi-ipython announces on
- * `pi.events`, and the `<rlm>` section when the session has the `ipython` tool. The kernel stays in Pi, and its
- * requests go to the host of the project, which runs the children.
+ * `pi.events`. The kernel stays in Pi, and its requests go to the host of the project, which runs the children. A Pi
+ * session is a root, at depth 0, so it is never a leaf: its kernel always has `rlm`.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
@@ -45,13 +45,6 @@ export function registerRlm(
 		// pi-ipython reads the payload once the promises of `waitFor` settle, so the change happens in one. Its rejection
 		// fails the kernel start.
 		starting.waitFor(servers.serve(starting, KERNEL, async () => scope(pi, ctx)));
-	});
-
-	// A Pi session is a root, at depth 0, so it is never a leaf: its kernel always has `rlm`.
-	pi.on("before_agent_start", (event) => {
-		const options = event.systemPromptOptions;
-
-		if (options.selectedTools.includes("ipython")) options.sections.rlm = rlm.RLM_SECTION;
 	});
 
 	// The children stay in the host.

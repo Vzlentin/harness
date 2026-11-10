@@ -3,7 +3,7 @@
  * time of a turn, the text of an answer, and the model requests of a tree at the same time.
  */
 
-/** A size in bytes, and its text in the errors and in the `<rlm>` section. */
+/** A size in bytes, and its text in the errors and in the docstring of `rlm`. */
 type Size = { readonly bytes: number; readonly text: string };
 
 /** `count` KiB. */

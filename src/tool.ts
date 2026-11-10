@@ -27,7 +27,8 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 - spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.
 - list: your children.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
-Children persist after a turn. Stop each child when you no longer need it.`;
+Children persist after a turn. Stop each child when you no longer need it.
+With the \`ipython\` tool, the kernel also has \`rlm\`, a client for the same children: \`print(rlm.__doc__)\` prints its API and its limits.`;
 
 /**
  * The parameters and the output schema of the tool, built with the caller's TypeBox `Type`, so the schemas come from the
