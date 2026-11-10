@@ -97,7 +97,7 @@ export async function abortTask(harness: Harness, key: string): Promise<TaskInfo
 }
 
 /** The ID of the task that `start` created for `key`. */
-async function taskId(harness: Harness, key: string): Promise<TaskId<JsonValue>> {
+export async function taskId(harness: Harness, key: string): Promise<TaskId<JsonValue>> {
 	const state = await harness.snapshot(StartedTasks, context);
 	const id = state != null && Object.hasOwn(state.tasks, key) ? state.tasks[key] : undefined;
 

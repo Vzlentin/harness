@@ -37,6 +37,7 @@ import {
 	unreadAnswers,
 } from "./records.ts";
 import {
+	callerConversation,
 	childInfo,
 	childOf,
 	childTarget,
@@ -45,9 +46,11 @@ import {
 	type SendOptions,
 	type TargetHost,
 	target,
+	targetConversation,
 	turnRunning,
 } from "./targets.ts";
-import { abortTask, startTask, type TaskHost, taskInfo, waitTask } from "./tasks.ts";
+import { abortTask, startTask, type TaskHost, taskId, taskInfo, waitTask } from "./tasks.ts";
+import { addTodo, readTodos, setTodo, type TodoOwner } from "./todo.ts";
 import { serveWatch } from "./watch.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -74,7 +77,10 @@ export type Handler = Base &
 		readonly connection?: Connection;
 	};
 
-/** Handles `request`. The target of a request that has one is parsed here, once. */
+/**
+ * Handles `request`. Each target is parsed once with `parseTarget`: here, or in `todoOwner` for the list target of
+ * `todo`, which can also be a task key or none.
+ */
 export function handleRequest<T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
 	handler: Handler,
@@ -111,6 +117,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return waitTask(handler, request.key);
 		case "abort-task":
 			return abortTask(handler.harness, request.key);
+		case "todo":
+			return todo(request, handler);
 		case "list":
 			return list(request, handler);
 		case "rename":
@@ -176,6 +184,37 @@ async function start(request: Extract<Request, { type: "start" }>, handler: Hand
 	return startTask(handler, request);
 }
 
+/** Adds, sets or lists the todos of the list that `request` targets. */
+async function todo(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<Replies["todo"]> {
+	const owner = await todoOwner(request, handler);
+
+	switch (request.action) {
+		case "add":
+			return handler.harness.commit((tx) => addTodo(tx, owner, request.text), context);
+		case "set":
+			return handler.harness.commit((tx) => setTodo(tx, owner, request), context);
+		case "list":
+			return readTodos(handler.harness, owner, context);
+	}
+}
+
+/**
+ * The owner of the list that `request` targets: the task of a `start` key, a library conversation, the project agent,
+ * a child by handle, or the caller. A caller that is a conversation of the host has the list of its conversation. The
+ * project agent needs no set-up, and a child by handle needs no check of its caller.
+ */
+async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
+	if (request.key !== undefined) return { kind: "task", id: await taskId(handler.harness, request.key) };
+
+	if (request.handle !== undefined || request.conversation !== undefined) {
+		return { kind: "conversation", id: await targetConversation(handler, parseTarget(request)) };
+	}
+
+	const own = await callerConversation(handler, request.caller);
+
+	return own === undefined ? { kind: "caller", caller: request.caller } : { kind: "conversation", id: own };
+}
+
 async function list(request: Extract<Request, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
 	const state = await handler.harness.snapshot(ChildRecords, context);
 
@@ -233,11 +272,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 	if (handle === undefined) {
 		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
-		const parent =
-			(await library.lineage(harness, request.caller, context)) !== undefined ||
-			request.caller === String(handler.root.id)
-				? request.caller
-				: undefined;
+		const parent = (await callerConversation(handler, request.caller)) === undefined ? undefined : request.caller;
 
 		let spec: Spec = {
 			...(parent === undefined ? { root: request.caller } : { parent }),

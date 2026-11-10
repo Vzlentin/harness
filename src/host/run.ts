@@ -57,8 +57,16 @@ const REPLY_WRITE_MS = 2000;
 
 const context = BACKGROUND_CONTEXT;
 
-/** The requests that do not count as activity for the idle exit. */
+/** The request types that do not count as activity for the idle exit. */
 const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set(["hello", "list", "status", "answers"]);
+
+/**
+ * Whether `request` does not count as activity for the idle exit. A `todo` list does not, because a widget can poll it,
+ * but a change of a list does.
+ */
+function isPassive(request: Request): boolean {
+	return PASSIVE_REQUESTS.has(request.type) || (request.type === "todo" && request.action === "list");
+}
 
 /** A JSON object with a string `type`, which names the request that a line meant. */
 const Typed = Type.Object({ type: Type.String() });
@@ -238,7 +246,7 @@ export async function runHost(options: {
 					if (closing !== undefined) throw new Error(HOST_CLOSING);
 					const request = parseRequest(line);
 
-					if (!PASSIVE_REQUESTS.has(request.type)) lastActivity = Date.now();
+					if (!isPassive(request)) lastActivity = Date.now();
 
 					reply = {
 						ok: true,

@@ -76,6 +76,10 @@
 			"types": "./dist/host/tasks.d.ts",
 			"default": "./dist/host/tasks.js"
 		},
+		"./todo": {
+			"types": "./dist/host/todo.d.ts",
+			"default": "./dist/host/todo.js"
+		},
 		"./tool": {
 			"types": "./dist/tool.d.ts",
 			"default": "./dist/tool.js"

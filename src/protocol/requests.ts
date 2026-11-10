@@ -2,14 +2,15 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
-import { withTarget } from "./target.ts";
+import { withListTarget, withTarget } from "./target.ts";
+import { Todo, type TodoList, TodoState } from "./todo.ts";
 import type { ViewChange } from "./view-change.ts";
 
 /**
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -224,6 +225,30 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("wait-task"), key: Type.String() }),
 	/** Aborts the task and the work that it owns. */
 	Type.Object({ type: Type.Literal("abort-task"), key: Type.String() }),
+	/**
+	 * Adds a todo with the state `open` to a list, and replies with it. The list is the one of a handle, a conversation or
+	 * the task of a `start` key, or, with none of them, the caller's own list.
+	 */
+	...withListTarget({
+		type: Type.Literal("todo"),
+		caller: Type.String(),
+		action: Type.Literal("add"),
+		text: Type.String(),
+	}),
+	/**
+	 * Sets the state of the todo `id`, and its text with `text`, and replies with the todo. It comes before `list`, so a
+	 * `set` with a bad state fails on `state`, not on `action`.
+	 */
+	...withListTarget({
+		type: Type.Literal("todo"),
+		caller: Type.String(),
+		action: Type.Literal("set"),
+		id: Todo.properties.id,
+		state: TodoState,
+		text: Type.Optional(Type.String()),
+	}),
+	/** Replies with the list, in ID order. */
+	...withListTarget({ type: Type.Literal("todo"), caller: Type.String(), action: Type.Literal("list") }),
 ]);
 
 export type Request = Static<typeof RequestLine>;
@@ -248,6 +273,8 @@ export type Replies = {
 	readonly task: TaskInfo;
 	readonly "wait-task": TaskInfo;
 	readonly "abort-task": TaskInfo;
+	/** The todo of `add` and `set`, or the list of `list`. */
+	readonly todo: Todo | TodoList;
 };
 
 /**

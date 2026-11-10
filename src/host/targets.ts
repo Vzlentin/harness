@@ -52,6 +52,21 @@ export async function target(handler: TargetHost, ref: Target) {
 	}
 }
 
+/** The conversation ID of `ref`, with no set-up of the project agent and no check of the caller of a child. */
+export async function targetConversation(
+	host: Pick<TargetHost, "harness" | "place"> & { readonly root: Conversation },
+	ref: Target,
+): Promise<ConversationId> {
+	switch (ref.kind) {
+		case "child":
+			return (await childRecord(host.harness, ref.handle)).conversationId;
+		case "conversation":
+			return (await libraryConversation(host.place, ref.id)).conversation.id;
+		case "agent":
+			return host.root.id;
+	}
+}
+
 /** The target of the project agent. It has no record. */
 async function agentTarget(handler: TargetHost) {
 	const root = await handler.agent();
@@ -90,9 +105,7 @@ export type SendOptions = Parameters<Child["send"]>[2];
  * input only while it works, and a note while it is open.
  */
 async function conversationTarget(handler: TargetHost, id: string) {
-	const child = await library.inspect(handler.place, id, context);
-
-	if (child === undefined) throw new Error(`Unknown conversation: ${id}`);
+	const child = await libraryConversation(handler.place, id);
 	const { conversation, lineage } = child;
 
 	const info = async (): Promise<ChildInfo> => ({
@@ -118,6 +131,31 @@ async function conversationTarget(handler: TargetHost, id: string) {
 		},
 		record: undefined,
 	};
+}
+
+/**
+ * The conversation `id` that the children library opened, of any owner. A root, an unknown ID, or text that is not an ID
+ * is refused.
+ */
+async function libraryConversation(place: Place, id: string) {
+	const child = await library.inspect(place, id, context);
+
+	if (child === undefined) throw new Error(`Unknown conversation: ${id}`);
+
+	return child;
+}
+
+/**
+ * The conversation of `caller` when it is the project agent or a conversation that the children library opened, such
+ * as a child of this host; nothing for another caller, such as a Pi session or `cli`.
+ */
+export async function callerConversation(
+	host: { readonly place: Place; readonly root: Conversation },
+	caller: string,
+): Promise<ConversationId | undefined> {
+	if (caller === String(host.root.id)) return host.root.id;
+
+	return (await library.inspect(host.place, caller, context))?.conversation.id;
 }
 
 /** The target of the child `handle`, whose record is `record`. */
