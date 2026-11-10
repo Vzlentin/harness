@@ -423,7 +423,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
-	it("shows the children in the widget, an RLM child marked, then that the host is not running, and nothing without children", async () => {
+	it("shows the children in the widget, an RLM child marked, and nothing without children or without a host", async () => {
 		const registered = await load();
 		const quiet: Widgets = [];
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
@@ -466,9 +466,7 @@ describe("the Pi extension", () => {
 		]);
 		await host?.close();
 		host = undefined;
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["<warning>subagents: the harness host is not running"]), {
-			timeout: 10_000,
-		});
+		await vi.waitFor(() => expect(widgets.at(-1)).toBeUndefined(), { timeout: 10_000 });
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 

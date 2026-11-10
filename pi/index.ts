@@ -165,10 +165,8 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let widgetContext: ExtensionContext | undefined;
 	let refreshing = false;
-	// Only a session that spawned children sees that the host is not running.
-	let spawned = false;
 
-	// The widget does not start the host.
+	// The widget does not start the host: when none runs, it shows nothing.
 	const refreshWidget = async (): Promise<void> => {
 		if (!widgetContext || refreshing) return;
 		refreshing = true;
@@ -184,8 +182,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 					{ start: false },
 				);
 
-				if (children !== undefined && children.length > 0) spawned = true;
-				lines = widgetLines(context.ui.theme, children, spawned);
+				lines = widgetLines(context.ui.theme, children);
 			} catch (cause) {
 				lines = [context.ui.theme.fg("error", `subagents: ${protocol.errorMessage(cause).split("\n", 1)[0]}`)];
 			}
@@ -200,16 +197,14 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	pi.on("session_start", (_event, ctx) => {
 		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
 		listener?.close();
-		const spawnedBefore = hasSpawned(ctx);
 		// A write to stderr would break the TUI, so a delivery that fails is a notification.
 		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
-			start: spawnedBefore,
+			start: hasSpawned(ctx),
 			onError: (error) =>
 				ctx.ui.notify(`Could not show the answer of a subagent: ${protocol.errorMessage(error)}`, "error"),
 		});
 
 		if (!ctx.hasUI) return;
-		spawned = spawnedBefore;
 		widgetContext = ctx;
 		void refreshWidget();
 		widgetTimer = setInterval(() => void refreshWidget(), 1000);
@@ -228,19 +223,14 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 }
 
 /**
- * The lines of the subagents widget for `children`, the reply of `list`: nothing for no children, and a warning for no
- * host (undefined) when the session `spawned` children. An RLM child starts with its marker.
+ * The lines of the subagents widget for `children`, the reply of `list`: nothing for no host (undefined) and for no
+ * children. An RLM child starts with its marker.
  */
 function widgetLines(
 	theme: ExtensionContext["ui"]["theme"],
 	children: readonly protocol.ChildInfo[] | undefined,
-	spawned: boolean,
 ): string[] | undefined {
-	if (children === undefined) {
-		return spawned ? [theme.fg("warning", "subagents: the harness host is not running")] : undefined;
-	}
-
-	if (children.length === 0) return undefined;
+	if (children === undefined || children.length === 0) return undefined;
 
 	const visible = children.slice(0, 5).map(({ name, handle, state, kind }) => {
 		const label = `${name ?? handle}:${state}`;
