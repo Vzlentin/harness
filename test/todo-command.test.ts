@@ -6,7 +6,7 @@ import type { Host } from "../src/host/run.ts";
 import { runTodoTool, sendToHost, todoToolSchemas } from "../src/tool.ts";
 import { cli, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
-const USAGE_LINE = "  harness todo [list | add <text> | set <id> <state> [--text <text>]]\n";
+const USAGE_LINE = "  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]\n";
 
 let host: Host | undefined;
 

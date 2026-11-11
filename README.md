@@ -57,6 +57,7 @@ harness inspect <handle>    # open it in a browser, at the URL that it prints
 harness page <folder> --slug <slug>  # put a page on harness inspect; its Send posts to you
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
+harness tree                # print the agents and the runs of the project, with their todos
 harness main                # open the agent of the main project in Pi
 ```
 

@@ -53,6 +53,16 @@ export const ListTarget = Type.Union(withListTarget({}));
 
 export type ListTarget = Static<typeof ListTarget>;
 
+const [listHandle, listConversation, listKey] = withListTarget({});
+
+/**
+ * A list on the wire, as `classify-todos` takes it: the list of a handle, which can be `AGENT_HANDLE`, of a conversation
+ * ID, or of the key of a started task.
+ */
+export const ListRef = Type.Union([listHandle, listConversation, listKey]);
+
+export type ListRef = Static<typeof ListRef>;
+
 /** A target on the wire: a handle, which can be `AGENT_HANDLE`, or a conversation ID. */
 export const TargetRef = Type.Union(withTarget({}));
 

@@ -7,7 +7,7 @@ import { Watch, type WatchCall, type WatchEnd, type WatchHandle } from "@earendi
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, DocumentReader, Session, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import { TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
+import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
 
 export * from "../protocol/todo.ts";
 
@@ -33,7 +33,7 @@ const ConversationTodos = durable.defineDoc<TodoList>({
  * makes the task terminal.
  */
 const TaskTodos = durable.defineDocFamily<TodoList, null>({
-	kind: "harness.task-todos",
+	kind: TASK_TODO_LIST_KIND,
 	version: 1,
 	scope: "session",
 	checkpointWhen: () => false,

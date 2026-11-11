@@ -8,6 +8,7 @@ import { type CommitChange, type CommitObservation, type Conversation, LiveDoc }
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
+import { Passes } from "./passes.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -89,10 +90,9 @@ export class Push {
 	/** The children whose last pushes failed. */
 	readonly #failures = new Map<string, Failure>();
 	readonly #observation: CommitObservation;
+	readonly #passes = new Passes(() => this.#pass());
 	/** The timer of the sweep at the end of the earliest wait of `#failures`. */
 	#retry: ReturnType<typeof setTimeout> | undefined;
-	#dirty = false;
-	#running = false;
 	#closed = false;
 
 	/** Writes `cause` as a warning, and gives nothing. */
@@ -116,13 +116,7 @@ export class Push {
 
 	/** Schedules a sweep. */
 	schedule(): void {
-		if (this.#closed) return;
-		this.#dirty = true;
-
-		if (this.#running) return;
-		this.#running = true;
-		// Out of the commit listener, which must not call the store.
-		setImmediate(() => void this.#run());
+		this.#passes.request();
 	}
 
 	/** Runs `run` while `handle` counts as active, then sweeps: a sweep does not push the answers of an active child. */
@@ -247,6 +241,7 @@ export class Push {
 	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
 	close(): void {
 		this.#closed = true;
+		this.#passes.stop();
 		this.#observation.detach();
 		clearTimeout(this.#retry);
 		const ends = [...this.#sweepEnds];
@@ -255,18 +250,14 @@ export class Push {
 		for (const end of ends) end();
 	}
 
-	async #run(): Promise<void> {
-		while (this.#dirty && !this.#closed) {
-			this.#dirty = false;
-			await this.#sweep().catch(this.#warn);
-			this.#setRetry();
-			const ends = [...this.#sweepEnds];
-			this.#sweepEnds.clear();
+	/** Sweeps, sets the timer of the next retry, and calls the functions that wait for the end of the sweep. */
+	async #pass(): Promise<void> {
+		await this.#sweep().catch(this.#warn);
+		this.#setRetry();
+		const ends = [...this.#sweepEnds];
+		this.#sweepEnds.clear();
 
-			for (const end of ends) end();
-		}
-
-		this.#running = false;
+		for (const end of ends) end();
 	}
 
 	/** Pushes the answers of the children that are done, for each caller with a destination, oldest child first. */

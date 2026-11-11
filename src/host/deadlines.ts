@@ -9,6 +9,7 @@ import {
 	LiveDoc,
 	type SubmissionId,
 } from "@earendil-works/pi-durable";
+import { Passes } from "./passes.ts";
 import { ChildRecords, isRlmChild, recordsByAge } from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -39,7 +40,7 @@ export class Deadlines {
 	/** The conversations to check at the next check. */
 	readonly #marked = new Set<ConversationId>();
 	readonly #observation: CommitObservation;
-	#running = false;
+	readonly #passes = new Passes(() => this.#pass());
 	#closed = false;
 
 	/** Writes `cause` as a warning, unless the deadlines are closed, as the store may then be. */
@@ -66,6 +67,7 @@ export class Deadlines {
 	/** Stops the checks and the timers. */
 	close(): void {
 		this.#closed = true;
+		this.#passes.stop();
 		this.#observation.detach();
 
 		for (const { timer } of this.#deadlines.values()) clearTimeout(timer);
@@ -86,21 +88,14 @@ export class Deadlines {
 	#mark(id: ConversationId): void {
 		if (this.#closed) return;
 		this.#marked.add(id);
-
-		if (this.#running) return;
-		this.#running = true;
-		// Out of the commit listener, which must not call the store.
-		setImmediate(() => void this.#run());
+		this.#passes.request();
 	}
 
-	async #run(): Promise<void> {
-		while (this.#marked.size > 0 && !this.#closed) {
-			const marked = [...this.#marked];
-			this.#marked.clear();
-			await this.#checkAll(marked).catch(this.#warn);
-		}
-
-		this.#running = false;
+	/** Checks the conversations that are marked, and clears the marks. */
+	async #pass(): Promise<void> {
+		const marked = [...this.#marked];
+		this.#marked.clear();
+		await this.#checkAll(marked).catch(this.#warn);
 	}
 
 	/** Checks each of `marked`, one at a time. */

@@ -2,15 +2,16 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
-import { withListTarget, withTarget } from "./target.ts";
-import { Todo, type TodoList, TodoState } from "./todo.ts";
+import { ListRef, withListTarget, withTarget } from "./target.ts";
+import { type ClassifyReply, Todo, type TodoList, TodoState } from "./todo.ts";
+import type { TreeReply } from "./tree.ts";
 import type { ViewChange } from "./view-change.ts";
 
 /**
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 15;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -251,6 +252,25 @@ export const RequestLine = Type.Union([
 	}),
 	/** Replies with the list, in ID order. */
 	...withListTarget({ type: Type.Literal("todo"), caller: Type.String(), action: Type.Literal("list") }),
+	/**
+	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
+	 * child tasks and the conversations of the children library that the tasks own.
+	 */
+	Type.Object({ type: Type.Literal("tree") }),
+	/**
+	 * The reply of `tree`, then one `{ event: TreeEvent }` line for the nodes that a later commit changed, and one for
+	 * the nodes that went. It needs a connection.
+	 */
+	Type.Object({ type: Type.Literal("watch-tree") }),
+	/**
+	 * Asks the classifier of Pi's settings about the todos `ids` that are open, default every open todo, of the list
+	 * `list`, default the list of the project. It stores nothing.
+	 */
+	Type.Object({
+		type: Type.Literal("classify-todos"),
+		list: Type.Optional(ListRef),
+		ids: Type.Optional(Type.Array(Todo.properties.id)),
+	}),
 ]);
 
 export type Request = Static<typeof RequestLine>;
@@ -278,6 +298,9 @@ export type Replies = {
 	readonly "abort-task": TaskInfo;
 	/** The todo of `add` and `set`, or the list of `list`. */
 	readonly todo: Todo | TodoList;
+	readonly tree: TreeReply;
+	readonly "watch-tree": TreeReply;
+	readonly "classify-todos": ClassifyReply;
 };
 
 /**

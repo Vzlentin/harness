@@ -58,7 +58,15 @@ const REPLY_WRITE_MS = 2000;
 const context = BACKGROUND_CONTEXT;
 
 /** The request types that do not count as activity for the idle exit. */
-const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set(["hello", "list", "status", "answers"]);
+const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
+	"hello",
+	"list",
+	"status",
+	"answers",
+	"tree",
+	"watch-tree",
+	"classify-todos",
+]);
 
 /**
  * Whether `request` does not count as activity for the idle exit. A `todo` list does not, because a widget can poll it,

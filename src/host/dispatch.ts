@@ -10,7 +10,7 @@ import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
 import { type ChildInfo, PROTOCOL_VERSION, type Replies, type Request, versionMismatch } from "../protocol/requests.ts";
-import { AGENT_HANDLE, parseTarget, type Target } from "../protocol/target.ts";
+import { type ListRef, parseTarget, type Target } from "../protocol/target.ts";
 import {
 	cutAnswer,
 	MAX_LIVE_CHILDREN,
@@ -20,14 +20,15 @@ import {
 	TOO_MANY_LIVE,
 } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
+import { classifyTodos, todoClassifier } from "./classify.ts";
 import type { Connection, Push } from "./push.ts";
 import {
 	addRecord,
 	addRequest,
+	callerHandle,
 	type ChildRecord,
 	ChildRecords,
 	childRecord,
-	conversationEntry,
 	markRead,
 	ownRecord,
 	recordsByAge,
@@ -52,6 +53,8 @@ import {
 } from "./targets.ts";
 import { abortTask, startTask, type TaskHost, taskId, taskInfo, waitTask } from "./tasks.ts";
 import { addTodo, readTodos, setTodo, type TodoOwner } from "./todo.ts";
+import { serveTreeWatch } from "./tree-watch.ts";
+import { treeNodes } from "./tree.ts";
 import { serveWatch } from "./watch.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -67,7 +70,7 @@ const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 export type Base = Omit<TaskHost, "signal"> &
 	TargetHost &
 	CatchUpHost & {
-		/** Pi's settings, for the depth limit of the subagent tree. */
+		/** Pi's settings, for the depth limit of the subagent tree and the classifier of the todos. */
 		readonly settings: SettingsManager;
 		readonly push: Push;
 	};
@@ -120,6 +123,12 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return abortTask(handler.harness, request.key);
 		case "todo":
 			return todo(request, handler);
+		case "classify-todos":
+			return classify(request, handler);
+		case "tree":
+			return { nodes: await treeNodes(handler) };
+		case "watch-tree":
+			return watchTree(handler);
 		case "list":
 			return list(request, handler);
 		case "whoami":
@@ -179,6 +188,12 @@ function watch(ref: Target, handler: Handler): Promise<Replies["watch"]> {
 	return serveWatch(handler, ref, handler.connection);
 }
 
+function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
+	if (handler.connection === undefined) throw new Error("A tree watch needs a connection");
+
+	return serveTreeWatch(handler, handler.connection);
+}
+
 async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
 	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
 	// for the agent, the task still starts: its children may name their own.
@@ -207,15 +222,38 @@ async function todo(request: Extract<Request, { type: "todo" }>, handler: Handle
  * project agent needs no set-up, and a child by handle needs no check of its caller.
  */
 async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
-	if (request.key !== undefined) return { kind: "task", id: await taskId(handler.harness, request.key) };
-
-	if (request.handle !== undefined || request.conversation !== undefined) {
-		return { kind: "conversation", id: await targetConversation(handler, parseTarget(request)) };
+	if (request.key !== undefined || request.handle !== undefined || request.conversation !== undefined) {
+		return listOwner(request, handler);
 	}
 
 	const own = await callerConversation(handler, request.caller);
 
 	return own === undefined ? { kind: "caller", caller: request.caller } : { kind: "conversation", id: own };
+}
+
+/** The owner of the list `ref`: the task of a `start` key, or the conversation of a handle or a conversation ID. */
+async function listOwner(ref: ListRef, handler: Handler): Promise<TodoOwner> {
+	if (ref.key !== undefined) return { kind: "task", id: await taskId(handler.harness, ref.key) };
+
+	return { kind: "conversation", id: await targetConversation(handler, parseTarget(ref)) };
+}
+
+/**
+ * The answers of the classifier about the open todos of the list of `request`, default the list of the project. The
+ * classifier is found first, so a client without a credential gets that error for any list.
+ */
+async function classify(
+	request: Extract<Request, { type: "classify-todos" }>,
+	handler: Handler,
+): Promise<Replies["classify-todos"]> {
+	const model = await todoClassifier(handler.settings, handler.place.models);
+
+	const owner: TodoOwner =
+		request.list === undefined ? { kind: "conversation", id: handler.root.id } : await listOwner(request.list, handler);
+
+	const { todos } = await readTodos(handler.harness, owner, context);
+
+	return { answers: await classifyTodos(handler.place.models, model, todos, request.ids, handler.signal) };
 }
 
 async function list(request: Extract<Request, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
@@ -238,13 +276,12 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 
 /** The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. */
 async function whoami(caller: string, handler: Handler): Promise<Replies["whoami"]> {
-	if (caller === String(handler.root.id)) return { handle: AGENT_HANDLE };
 	const state = await handler.harness.snapshot(ChildRecords, context);
-	const found = conversationEntry(recordsByAge(state), caller);
+	const handle = callerHandle(handler.root.id, recordsByAge(state), caller);
 
-	if (found === undefined) throw new Error(`The caller ${caller} is not a child or the project agent of this host`);
+	if (handle === undefined) throw new Error(`The caller ${caller} is not a child or the project agent of this host`);
 
-	return { handle: found[0] };
+	return { handle };
 }
 
 async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {

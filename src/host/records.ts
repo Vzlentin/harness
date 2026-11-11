@@ -10,6 +10,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import type { ChildKind } from "../protocol/requests.ts";
+import { AGENT_HANDLE } from "../protocol/target.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -183,6 +184,20 @@ export function conversationEntry<E extends readonly [string, ChildRecord]>(
 	conversationId: string,
 ): E | undefined {
 	return entries.find(([, record]) => String(record.conversationId) === conversationId);
+}
+
+/**
+ * The handle of `caller`, a conversation ID: `agent` for `rootId`, the conversation of the project agent, or the handle
+ * of the child of `entries` whose conversation it is. Nothing for another caller.
+ */
+export function callerHandle(
+	rootId: ConversationId,
+	entries: readonly (readonly [string, ChildRecord])[],
+	caller: string,
+): string | undefined {
+	if (caller === String(rootId)) return AGENT_HANDLE;
+
+	return conversationEntry(entries, caller)?.[0];
 }
 
 /**

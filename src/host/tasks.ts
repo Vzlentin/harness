@@ -106,6 +106,11 @@ export async function taskId(harness: Harness, key: string): Promise<TaskId<Json
 	return id;
 }
 
+/** The kinds of the tasks of `startable`, which `start` can create. */
+export function entryKinds(startable: Extension): string[] {
+	return (startable.tasks ?? []).map((task) => task.definition.name);
+}
+
 /** The task of `kind` in `startable`. The entries give erased tasks, so this is where they get the type of `createTask`. */
 function startableTask(startable: Extension, kind: string): Task<JsonValue, { phase: string }, JsonValue, object> {
 	const task = startable.tasks?.find((found) => found.definition.name === kind);

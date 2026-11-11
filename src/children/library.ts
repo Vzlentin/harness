@@ -300,6 +300,9 @@ export type Turn = {
 
 type OwnerState = { kind: "task"; taskId: number; group?: string } | { kind: "detached" };
 
+/** The kind of the document of each conversation that the library opened, with its lineage, owner and state. */
+export const CHILD_DOC_KIND = "pi-subagent.child";
+
 type ChildDocState = {
 	key: string;
 	root: string;
@@ -316,7 +319,7 @@ type ChildDocState = {
 
 export function createChildren(durable: typeof Durable): Children {
 	const ChildDoc = durable.defineDoc<ChildDocState>({
-		kind: "pi-subagent.child",
+		kind: CHILD_DOC_KIND,
 		version: 1,
 		scope: "conversation",
 		history: "latest",

@@ -5,10 +5,18 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
-import { type Child, createChildren, type Input, type Owner, type Place, type Write } from "../children/library.ts";
+import {
+	type Child,
+	createChildren,
+	type Input,
+	type Owner,
+	type Place,
+	type Turn,
+	type Write,
+} from "../children/library.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
-import { type ChildRecord, ChildRecords, childRecord, isHeld } from "./records.ts";
+import { type ChildRecord, ChildRecords, type ChildrenState, childRecord, isHeld } from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -24,7 +32,7 @@ export type TargetHost = {
 };
 
 /** The request ID of the project agent's newest input, which its `error` state comes from. */
-const AgentState = defineDoc<{ lastRequest: string | null }>({
+export const AgentState = defineDoc<{ lastRequest: string | null }>({
 	kind: "harness.agent",
 	version: 1,
 	scope: "conversation",
@@ -71,13 +79,7 @@ export async function targetConversation(
 async function agentTarget(handler: TargetHost) {
 	const root = await handler.agent();
 	const { place, project } = handler;
-
-	const turn = library.turn(place, root.id, root, {
-		read: async (tx) => (await tx.doc(AgentState, root.id)).lastRequest,
-		write: async (tx, requestId) => {
-			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
-		},
-	});
+	const turn = agentTurn(place, root);
 
 	return {
 		conversation: root,
@@ -93,6 +95,16 @@ async function agentTarget(handler: TargetHost) {
 		},
 		record: undefined,
 	};
+}
+
+/** The input and the state of the project agent, the root conversation `root`. The state needs no model. */
+export function agentTurn(place: Place, root: Conversation): Turn {
+	return library.turn(place, root.id, root, {
+		read: async (tx) => (await tx.doc(AgentState, root.id)).lastRequest,
+		write: async (tx, requestId) => {
+			(await tx.doc(AgentState, root.id)).lastRequest = requestId;
+		},
+	});
 }
 
 export type Found = Awaited<ReturnType<typeof target>>;
@@ -188,9 +200,8 @@ export async function childInfo(
 	record ??= await childRecord(handler.harness, handle);
 	const child = await childOf(handler, record);
 	const childState = await child.state(context);
-	const held = isHeld(await handler.harness.snapshot(ChildRecords, context), record.conversationId);
-	// A closed child that still holds its caller is closed: it never runs again.
-	const state: ChildState = childState !== "closed" && held ? "busy" : childState;
+	const records = await handler.harness.snapshot(ChildRecords, context);
+	const state = heldState(childState, records, record.conversationId);
 
 	const fields = await agentFields(child.conversation);
 
@@ -200,6 +211,19 @@ export async function childInfo(
 	if (record.kind !== undefined) info = { ...info, kind: record.kind };
 
 	return info;
+}
+
+/**
+ * The state of a child by handle, from `state`, the state of its conversation: `busy` also while one of its notify
+ * children holds it, in `records`.
+ */
+export function heldState(
+	state: ChildState,
+	records: Readonly<ChildrenState> | undefined,
+	conversationId: ConversationId,
+): ChildState {
+	// A closed child that still holds its caller is closed: it never runs again.
+	return state !== "closed" && isHeld(records, conversationId) ? "busy" : state;
 }
 
 /** The model, thinking level and directory of the agent of `conversation`, for its info. */

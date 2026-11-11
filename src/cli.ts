@@ -30,8 +30,9 @@ import {
 	readProjects,
 } from "./protocol/projects.ts";
 import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
-import { AGENT_HANDLE, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
-import { Todo, TodoState } from "./protocol/todo.ts";
+import { AGENT_HANDLE, type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
+import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
+import { treeLines } from "./protocol/tree.ts";
 import { runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
 
 function fail(message: string): never {
@@ -162,8 +163,13 @@ function listArgs(args: string[]): ToolArgs {
 	return { action: "list" };
 }
 
-/** A call of the todo tool from the arguments of `todo`, with the list of its target option. */
-type TodoCall = { readonly args: Omit<TodoToolArgs, "list">; readonly target: ListTarget };
+/**
+ * A call of the todo tool from the arguments of `todo`, or the `sort` of a list, with the list of its target option.
+ */
+type TodoCall = {
+	readonly args: Omit<TodoToolArgs, "list"> | { readonly action: "sort" };
+	readonly target: ListTarget;
+};
 
 function todoArgs(args: string[]): TodoCall {
 	const words: string[] = [];
@@ -201,10 +207,11 @@ function todoArgs(args: string[]): TodoCall {
 	}
 
 	const [action = "list", ...rest] = words;
-	let call: Omit<TodoToolArgs, "list">;
+	let call: TodoCall["args"];
 
 	switch (action) {
 		case "list":
+		case "sort":
 			if (rest.length !== 0 || text !== undefined) usage();
 			call = { action };
 			break;
@@ -250,12 +257,56 @@ function todoState(value: string): TodoState {
 	return value;
 }
 
-/** Runs `todo` as a call of the todo tool, and prints its output. */
+/** Runs `todo` as a call of the todo tool, or `todo sort` as a `classify-todos` request, and prints its output. */
 async function todoCommand(args: string[], project: string | undefined): Promise<void> {
 	const call = todoArgs(args);
+
+	if (call.args.action === "sort") return sortCommand(call.target, project);
 	const { text } = await runTodoTool(call.args, cliScope(project), call.target);
 
 	process.stdout.write(text);
+}
+
+/**
+ * Prints the answers of the classifier about the open todos of the list `target`, default the list of the project: one
+ * line for each todo, or `No open todos`.
+ */
+async function sortCommand(target: ListTarget, project: string | undefined): Promise<void> {
+	const list = listRef(target);
+
+	const classify =
+		list === undefined ? ({ type: "classify-todos" } as const) : ({ type: "classify-todos", list } as const);
+
+	const { answers } = await request(classify, { start: true, project });
+
+	process.stdout.write(
+		answers.length === 0 ? "No open todos\n" : answers.map((answer) => `${answerLine(answer)}\n`).join(""),
+	);
+}
+
+/** The list of `target` as `classify-todos` takes it; nothing for `{}`. */
+function listRef(target: ListTarget): ListRef | undefined {
+	if (target.handle !== undefined) return { handle: target.handle };
+
+	if (target.conversation !== undefined) return { conversation: target.conversation };
+
+	return target.key === undefined ? undefined : { key: target.key };
+}
+
+/** Prints the line of each node of the tree of the project, or with `--json` the reply as one JSON line. */
+async function treeCommand(args: string[], project: string | undefined): Promise<void> {
+	const json = args.length === 1 && args[0] === "--json";
+
+	if (args.length !== 0 && !json) usage();
+	const reply = await request({ type: "tree" }, { start: true, project });
+
+	process.stdout.write(
+		json
+			? `${JSON.stringify(reply)}\n`
+			: treeLines(reply.nodes)
+					.map((line) => `${line}\n`)
+					.join(""),
+	);
 }
 
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
@@ -535,9 +586,10 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		wait: toolCommand(["  harness wait <handle> [--timeout <seconds>]"], waitArgs),
 		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
 		list: toolCommand(["  harness list"], listArgs),
+		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
 		todo: {
 			usage: [
-				"  harness todo [list | add <text> | set <id> <state> [--text <text>]]",
+				"  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]",
 				"    [--handle <handle> | --conversation <id> | --task <key> | --project-list]",
 			],
 			run: todoCommand,
