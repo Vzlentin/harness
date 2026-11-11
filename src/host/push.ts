@@ -11,6 +11,7 @@ import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
+	conversationEntry,
 	isHeld,
 	isPushRequest,
 	markRead,
@@ -415,7 +416,7 @@ export class Push {
 
 	/** The input of `caller` when it is a conversation of the host. */
 	async #input(caller: string, entries: readonly Entry[]): Promise<((input: Input) => Promise<void>) | undefined> {
-		const parent = entries.find(([, record]) => String(record.conversationId) === caller);
+		const parent = conversationEntry(entries, caller);
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
 

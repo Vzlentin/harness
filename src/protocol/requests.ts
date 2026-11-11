@@ -10,7 +10,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 13;
+export const PROTOCOL_VERSION = 14;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -159,6 +159,8 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
 	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
+	/** The handle of `caller` when it is a child of this host by handle, or `agent` when it is the project agent. */
+	Type.Object({ type: Type.Literal("whoami"), caller: Type.String() }),
 	/**
 	 * Waits until the host has answers of the children of `caller` to push, marks them read and replies with them. A
 	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
@@ -261,6 +263,7 @@ export type Replies = {
 	readonly wait: { readonly answer: string };
 	readonly status: ChildInfo;
 	readonly list: readonly ChildInfo[];
+	readonly whoami: { readonly handle: string };
 	readonly answers: readonly Delivery[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };

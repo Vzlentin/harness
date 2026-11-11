@@ -167,9 +167,12 @@ process.stdout.write = function (...args) {
 };
 
 describe("resolveBindHosts", () => {
-	it("binds 127.0.0.1 by default, the --host alone, and refuses both --host and --tailscale", async () => {
+	it("binds 127.0.0.1 by default, the --host alone, and refuses a host name and both --host and --tailscale", async () => {
 		expect(await resolveBindHosts({})).toEqual(["127.0.0.1"]);
 		expect(await resolveBindHosts({ host: "0.0.0.0" })).toEqual(["0.0.0.0"]);
+		await expect(resolveBindHosts({ host: "inspect.invalid" })).rejects.toThrow(
+			"The host must be an IP address or localhost: inspect.invalid",
+		);
 		await expect(resolveBindHosts({ host: "127.0.0.1", tailscale: true })).rejects.toThrow(
 			"Use --host or --tailscale, not both",
 		);

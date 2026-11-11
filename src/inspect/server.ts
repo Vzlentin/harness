@@ -4,18 +4,22 @@
  */
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { isIPv4, isIPv6 } from "node:net";
+import { connect, isIPv4, isIPv6 } from "node:net";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { MirrorTarget } from "../client/mirror.ts";
 import { targetRef } from "../protocol/target.ts";
 import { createInspectHandler, type InspectHandler, isAddress } from "./handler.ts";
+import { PAGES } from "./pages.ts";
 
 /** The address of the server without `--host` and `--tailscale`: this machine only. */
 const LOOPBACK = "127.0.0.1";
 
 /** The port of the server without `--port`. */
-const DEFAULT_PORT = 7501;
+export const DEFAULT_PORT = 7501;
+
+/** How long `listens` waits for a connection. */
+const PROBE_TIMEOUT_MS = 1000;
 
 /** The page of `/`: the picker of the projects and their targets, or the target of its query. */
 const PAGE = `<!doctype html>
@@ -57,7 +61,8 @@ export type InspectServer = {
 
 /**
  * The addresses of the server: `127.0.0.1` by default, `host` alone with `host`, and `127.0.0.1` with the IPv4
- * addresses of `tailscale ip -4` with `tailscale`. It binds `0.0.0.0` only when `host` is `0.0.0.0`.
+ * addresses of `tailscale ip -4` with `tailscale`. It binds `0.0.0.0` only when `host` is `0.0.0.0`. It refuses a `host`
+ * that is not an IP address or `localhost`, as `startInspectServer` does.
  */
 export async function resolveBindHosts(options: {
 	readonly host?: string | undefined;
@@ -67,7 +72,11 @@ export async function resolveBindHosts(options: {
 
 	if (host !== undefined && tailscale) throw new Error("Use --host or --tailscale, not both");
 
-	if (host !== undefined) return [host];
+	if (host !== undefined) {
+		checkHost(host);
+
+		return [host];
+	}
 
 	if (!tailscale) return [LOOPBACK];
 	const addresses = (await tailscaleIp()).split("\n").map((line) => line.trim());
@@ -88,16 +97,20 @@ function tailscaleIp(): Promise<string> {
 	});
 }
 
+/** Refuses a host that is not an IP address or `localhost`, because the routes refuse its name in the `Host` header. */
+function checkHost(host: string): void {
+	if (!isAddress(host)) throw new Error(`The host must be an IP address or localhost: ${host}`);
+}
+
 /**
  * Serves the page and the inspect routes on each address of `hosts`, with one server for each. The first address takes
  * the port, and the others listen on the same one. When an address fails, the servers that listen close. It refuses a
- * host that is not an IP address or `localhost`, because the routes refuse its name in the `Host` header.
+ * host that is not an IP address or `localhost` before it listens.
  */
 export async function startInspectServer(options: InspectServerOptions = {}): Promise<InspectServer> {
 	const hosts = options.hosts ?? [LOOPBACK];
-	const name = hosts.find((host) => !isAddress(host));
 
-	if (name !== undefined) throw new Error(`The host must be an IP address or localhost: ${name}`);
+	for (const host of hosts) checkHost(host);
 	const handler = createInspectHandler({ start: options.start });
 	const servers: Server[] = [];
 	let port = options.port ?? DEFAULT_PORT;
@@ -114,9 +127,36 @@ export async function startInspectServer(options: InspectServerOptions = {}): Pr
 	}
 
 	return {
-		urls: hosts.map((host) => `http://${isIPv6(host) ? `[${host}]` : host}:${port}/`),
+		urls: hosts.map((host) => serverUrl(host, port)),
 		close: () => closeAll(servers),
 	};
+}
+
+/** The URL of `/` of a server on `port` of `host`, with an IPv6 address in brackets. */
+function serverUrl(host: string, port: number): string {
+	return `http://${isIPv6(host) ? `[${host}]` : host}:${port}/`;
+}
+
+/** The link of the page `slug` of `harness page` on `port` of `host`, with the query of `target`, which its Send posts to. */
+export function pageLink(host: string, port: number, slug: string, target: MirrorTarget): string {
+	// `serverUrl` ends with the `/` that starts `PAGES`.
+	return `${serverUrl(host, port)}${PAGES.slice(1)}${slug}/${pageQuery(target)}`;
+}
+
+/** Whether a server accepts a TCP connection on `port` of `host` within 1 s. */
+export function listens(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = connect({ host, port, timeout: PROBE_TIMEOUT_MS });
+
+		const done = (open: boolean) => {
+			socket.destroy();
+			resolve(open);
+		};
+
+		socket.once("connect", () => done(true));
+		socket.once("timeout", () => done(false));
+		socket.once("error", () => done(false));
+	});
 }
 
 async function serve(handler: InspectHandler, req: IncomingMessage, res: ServerResponse): Promise<void> {

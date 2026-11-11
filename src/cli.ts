@@ -9,8 +9,17 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
-import { pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
-import { cliCaller, HARNESS_PROJECT, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL } from "./protocol/env.ts";
+import { pageFiles, writePage } from "./inspect/pages.ts";
+import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
+import {
+	cliCaller,
+	HARNESS_PROJECT,
+	PI_MODEL,
+	PI_PROVIDER,
+	PI_REASONING_LEVEL,
+	PI_SESSION_ID,
+} from "./protocol/env.ts";
+import { pageDir } from "./protocol/paths.ts";
 import {
 	addProject,
 	type CommandName,
@@ -353,16 +362,16 @@ async function openInPi(target: MirrorTarget): Promise<void> {
 	process.exitCode = result.status ?? 1;
 }
 
-/** The arguments of `inspect`: the target, if any, and where the server listens. */
-type InspectArgs = {
+/** The arguments of `inspect` and `page` after their own: the target, if any, and where the server listens. */
+type ServerArgs = {
 	ref: Target | undefined;
 	port: number | undefined;
 	host: string | undefined;
 	tailscale: boolean;
 };
 
-function inspectArgs(args: string[]): InspectArgs {
-	const parsed: InspectArgs = { ref: undefined, port: undefined, host: undefined, tailscale: false };
+function serverArgs(command: "inspect" | "page", args: string[]): ServerArgs {
+	const parsed: ServerArgs = { ref: undefined, port: undefined, host: undefined, tailscale: false };
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] ?? "";
@@ -385,7 +394,7 @@ function inspectArgs(args: string[]): InspectArgs {
 				parsed.tailscale = true;
 				break;
 			default:
-				if (arg.startsWith("--")) fail(`Unknown inspect argument: ${arg}`);
+				if (arg.startsWith("--")) fail(`Unknown ${command} argument: ${arg}`);
 
 				if (parsed.ref !== undefined) usage();
 				parsed.ref = parseTarget({ handle: arg });
@@ -408,7 +417,7 @@ function portNumber(value: string): number {
  * arguments in the query, the project agent with `--project` alone, or the picker of the projects without either.
  */
 async function inspectCommand(args: string[], project: string | undefined): Promise<void> {
-	const { ref, port, host, tailscale } = inspectArgs(args);
+	const { ref, port, host, tailscale } = serverArgs("inspect", args);
 
 	const target: MirrorTarget | undefined =
 		ref === undefined && project === undefined
@@ -423,6 +432,55 @@ async function inspectCommand(args: string[], project: string | undefined): Prom
 	}
 
 	for (const url of server.urls) process.stdout.write(`${url}${target === undefined ? "" : pageQuery(target)}\n`);
+}
+
+/** The arguments of `page`: the folder and the slug of the page, then those of `serverArgs`. */
+type PageArgs = ServerArgs & { folder: string; slug: string };
+
+function pageArgs(args: string[]): PageArgs {
+	const [folder, ...rest] = args;
+
+	if (folder === undefined || folder.startsWith("--")) usage();
+	const at = rest.indexOf("--slug");
+
+	if (at === -1) usage();
+	const slug = valueAfter(rest, at, "--slug");
+	rest.splice(at, 2);
+
+	return { folder, slug, ...serverArgs("page", rest) };
+}
+
+/**
+ * Copies the page in `<folder>` to the pages of the inspect routes, and prints its link on each address, with the target
+ * that its Send posts to: the target of the arguments, else the child or the project agent of `PI_SESSION_ID`. It starts
+ * no server: a line notes an address where none listens.
+ */
+async function pageCommand(args: string[], project: string | undefined): Promise<void> {
+	const { folder, slug, ref, port = DEFAULT_PORT, host, tailscale } = pageArgs(args);
+	const dest = pageDir(slug);
+	const files = pageFiles(folder);
+	const name = projectOf(project, process.env, process.cwd());
+	const target: MirrorTarget = { project: name, target: ref ?? (await callerTarget(name)) };
+	const hosts = await resolveBindHosts({ host, tailscale });
+	writePage(dest, folder, files);
+	const open = await Promise.all(hosts.map((address) => listens(address, port)));
+
+	for (const [index, address] of hosts.entries()) {
+		const note = open[index] === true ? "" : "  (no server listens: harness inspect serves the pages)";
+		process.stdout.write(`${pageLink(address, port, slug, target)}${note}\n`);
+	}
+}
+
+/** The target of the caller of this process in the host of `project`: its child by handle, or the project agent. */
+async function callerTarget(project: string): Promise<Target> {
+	const caller = process.env[PI_SESSION_ID];
+
+	if (!caller) fail("Give <handle> or --conversation <id>: PI_SESSION_ID is not set");
+	const reply = await request({ type: "whoami", caller }, { start: false, project });
+
+	if (reply === undefined) fail(`The harness host of ${project} is not running`);
+
+	return parseTarget(reply);
 }
 
 function versionCommand(args: string[], project: string | undefined): void {
@@ -491,6 +549,13 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		inspect: {
 			usage: ["  harness inspect [<handle> | --conversation <id>] [--port <n>] [--host <ip> | --tailscale]"],
 			run: inspectCommand,
+		},
+		page: {
+			usage: [
+				"  harness page <folder> --slug <slug> [<handle> | --conversation <id>]",
+				"    [--port <n>] [--host <ip> | --tailscale]",
+			],
+			run: pageCommand,
 		},
 		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },

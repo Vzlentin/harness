@@ -177,6 +177,14 @@ export function recordsByAge(state: Readonly<ChildrenState> | null | undefined):
 	return Object.entries(state?.children ?? {}).sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The `[handle, record]` entry of `entries` whose child has the conversation ID `conversationId`, if any. */
+export function conversationEntry<E extends readonly [string, ChildRecord]>(
+	entries: readonly E[],
+	conversationId: string,
+): E | undefined {
+	return entries.find(([, record]) => String(record.conversationId) === conversationId);
+}
+
 /**
  * Adds `requestId` to the requests of `handle` that a `wait` gives the answers of, in `tx`, the commit that makes it the
  * child's last request. Without `notify`, its answer is not pushed. A repeated request is not added. It is the only

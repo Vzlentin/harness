@@ -1,7 +1,7 @@
 /**
  * The routes of the conversation inspect UI: the JSON and Server-Sent Events routes under `/api/inspect/`, on the hosts
- * of the projects, and the browser files under `/assets/`. `harness inspect` serves them alone, and another server,
- * such as `workflows web`, can mount them on its own port.
+ * of the projects, the browser files under `/assets/`, and the pages of `harness page` under `/pages/`. `harness inspect`
+ * serves them alone, and another server, such as `workflows web`, can mount them on its own port.
  */
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -28,6 +28,7 @@ import { childTitle } from "../protocol/labels.ts";
 import { checkProject, MAIN_PROJECT, readProjects } from "../protocol/projects.ts";
 import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
 import { AGENT_HANDLE, parseTarget, targetRef } from "../protocol/target.ts";
+import { addSend, PAGES, readPage } from "./pages.ts";
 
 /** The routes of the API start with this path. */
 const API = "/api/inspect/";
@@ -97,9 +98,9 @@ const TargetQuery = Type.Object(TargetFields);
 const InputBody = Type.Object({ ...TargetFields, message: Type.String(), followUp: Type.Optional(Type.Boolean()) });
 
 /**
- * The handler of the inspect routes. The routes of `/api/inspect/` refuse a `Host` header that is not an IP address or
- * `localhost` with 403, so that a DNS rebinding cannot reach them, and the POST routes take only `application/json`, so
- * that a form of another site cannot post to them.
+ * The handler of the inspect routes. The routes of `/api/inspect/` and `/pages/` refuse a `Host` header that is not an IP
+ * address or `localhost` with 403, so that a DNS rebinding cannot reach them, and the POST routes take only
+ * `application/json`, so that a form of another site cannot post to them.
  */
 export function createInspectHandler(options: InspectOptions = {}): InspectHandler {
 	const start = options.start ?? true;
@@ -114,10 +115,18 @@ export function createInspectHandler(options: InspectOptions = {}): InspectHandl
 			return true;
 		}
 
-		if (!url.pathname.startsWith(API)) return false;
+		const page = url.pathname.startsWith(PAGES);
+
+		if (!page && !url.pathname.startsWith(API)) return false;
 
 		try {
-			await serveApi(req, res, url, start);
+			if (!addressHost(req.headers.host)) {
+				sendJson(res, 403, { error: "The Host header must be an IP address or localhost" });
+			} else if (page) {
+				await servePage(req, res, url);
+			} else {
+				await serveApi(req, res, url, start);
+			}
 		} catch (error) {
 			if (res.headersSent) res.destroy();
 			else sendJson(res, 500, { error: errorMessage(error) });
@@ -142,12 +151,6 @@ async function sendAsset(res: ServerResponse, file: string, type: string): Promi
 }
 
 async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, start: boolean): Promise<void> {
-	if (!addressHost(req.headers.host)) {
-		sendJson(res, 403, { error: "The Host header must be an IP address or localhost" });
-
-		return;
-	}
-
 	switch (`${req.method} ${url.pathname}`) {
 		case "GET /api/inspect/projects":
 			return answer(res, () => undefined, projectList);
@@ -168,8 +171,37 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 				(sent) => toHost(sent, start),
 			);
 		default:
-			sendJson(res, 404, { error: `Not found: ${req.method} ${url.pathname}` });
+			notFound(req, res, url);
 	}
+}
+
+/**
+ * Serves a file of a page of `harness page`. An HTML file whose query has a target gets the script of the Send, which
+ * posts to the input route with that target; a query that is not valid gets 400. Every other file goes as its bytes.
+ */
+async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+	const file = req.method === "GET" ? await readPage(url.pathname) : undefined;
+
+	if (file === undefined) {
+		notFound(req, res, url);
+
+		return;
+	}
+
+	const headers = { "content-type": file.type, "cache-control": "no-cache" };
+	const targeted = Object.keys(TargetFields).some((key) => url.searchParams.has(key));
+
+	if (!file.html || !targeted) {
+		res.writeHead(200, headers).end(file.data);
+
+		return;
+	}
+
+	const target = queryTarget(res, url);
+
+	if (target === undefined) return;
+	const fields = { project: target.project, ...targetRef(target.target) };
+	res.writeHead(200, headers).end(addSend(file.data.toString("utf8"), fields));
 }
 
 /** Whether `host` is an IP address or `localhost`, which no DNS name of another site can be. */
@@ -215,6 +247,10 @@ async function answer<T, R>(
 	} catch (error) {
 		sendJson(res, 500, { error: errorMessage(error) });
 	}
+}
+
+function notFound(req: IncomingMessage, res: ServerResponse, url: URL): void {
+	sendJson(res, 404, { error: `Not found: ${req.method} ${url.pathname}` });
 }
 
 function sendJson<B>(res: ServerResponse, status: number, body: B): void {
@@ -264,6 +300,17 @@ async function bodyOf<T extends TSchema>(req: IncomingMessage, schema: T): Promi
 	if (!Value.Check(schema, body)) throw invalid("body", Value.Errors(schema, body));
 
 	return body;
+}
+
+/** The target of the query of `url`, or undefined after a reply of 400 for a query that is not valid. */
+function queryTarget(res: ServerResponse, url: URL): MirrorTarget | undefined {
+	try {
+		return mirrorTarget(queryOf(url));
+	} catch (error) {
+		sendJson(res, 400, { error: errorMessage(error) });
+
+		return undefined;
+	}
 }
 
 /** The target of the fields of a query or a body. It throws for both `handle` and `conversation`, and for an unknown project. */
@@ -350,16 +397,9 @@ async function toHost(sent: HostRequest, start: boolean): Promise<{ ok: true }> 
  * the reason and the response ends. The mirror closes when the response closes.
  */
 function stream(res: ServerResponse, url: URL, start: boolean): void {
-	let target: MirrorTarget;
+	const target = queryTarget(res, url);
 
-	try {
-		target = mirrorTarget(queryOf(url));
-	} catch (error) {
-		sendJson(res, 400, { error: errorMessage(error) });
-
-		return;
-	}
-
+	if (target === undefined) return;
 	res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
 	const write = frameWriter(res);
 

@@ -197,6 +197,6 @@ function runs(pid: number): boolean {
 }
 
 /** Whether `cause` is a Node.js system error with the code `code`, such as `ENOENT`. */
-function hasCode(cause: unknown, code: string): boolean {
+export function hasCode(cause: unknown, code: string): boolean {
 	return cause instanceof Error && "code" in cause && cause.code === code;
 }

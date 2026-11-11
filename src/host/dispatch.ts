@@ -10,7 +10,7 @@ import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
 import { type ChildInfo, PROTOCOL_VERSION, type Replies, type Request, versionMismatch } from "../protocol/requests.ts";
-import { parseTarget, type Target } from "../protocol/target.ts";
+import { AGENT_HANDLE, parseTarget, type Target } from "../protocol/target.ts";
 import {
 	cutAnswer,
 	MAX_LIVE_CHILDREN,
@@ -27,6 +27,7 @@ import {
 	type ChildRecord,
 	ChildRecords,
 	childRecord,
+	conversationEntry,
 	markRead,
 	ownRecord,
 	recordsByAge,
@@ -121,6 +122,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return todo(request, handler);
 		case "list":
 			return list(request, handler);
+		case "whoami":
+			return whoami(request.caller, handler);
 		case "rename":
 			return rename(request, handler);
 		case "stop":
@@ -231,6 +234,17 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 	);
 
 	return infos.filter((info) => info !== undefined);
+}
+
+/** The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. */
+async function whoami(caller: string, handler: Handler): Promise<Replies["whoami"]> {
+	if (caller === String(handler.root.id)) return { handle: AGENT_HANDLE };
+	const state = await handler.harness.snapshot(ChildRecords, context);
+	const found = conversationEntry(recordsByAge(state), caller);
+
+	if (found === undefined) throw new Error(`The caller ${caller} is not a child or the project agent of this host`);
+
+	return { handle: found[0] };
 }
 
 async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
