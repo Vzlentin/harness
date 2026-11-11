@@ -12,6 +12,7 @@ import { type Component, KeybindingsManager, type TUI, TUI_KEYBINDINGS, TuiMainS
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { ChatView } from "../pi/chat.ts";
 import { registerMirror } from "../pi/mirror.ts";
+import { PolledWidget } from "../pi/polled-widget.ts";
 import * as mirror from "../src/client/mirror.ts";
 import {
 	MIRROR_ENTRY,
@@ -189,8 +190,8 @@ class Session {
 	readonly terminal = new FakeTerminal();
 	readonly ui = new TuiMainScreen(this.terminal);
 	readonly ctx: coding.ExtensionContext;
-	/** The last lines of each widget that the session got as lines; undefined hides the widget. */
-	readonly widgets = new Map<string, readonly string[] | undefined>();
+	/** The lines of each call that set a widget with lines, for each widget, in order; undefined hides the widget. */
+	readonly widgets = new Map<string, (readonly string[] | undefined)[]>();
 	text = "";
 	/** The renderer of the mirror entry. */
 	renderer: coding.EntryRenderer | undefined;
@@ -202,7 +203,7 @@ class Session {
 		branch: readonly coding.SessionEntry[],
 		flags: Readonly<Record<string, string>> = {},
 	) {
-		const ctx: Pick<coding.ExtensionContext, "cwd" | "model" | "mode"> & {
+		const ctx: Pick<coding.ExtensionContext, "cwd" | "hasUI" | "model" | "mode"> & {
 			readonly modelRegistry: Pick<coding.ExtensionContext["modelRegistry"], "find">;
 			readonly sessionManager: Pick<coding.ExtensionContext["sessionManager"], "getBranch">;
 			readonly ui: Pick<
@@ -211,6 +212,7 @@ class Session {
 			>;
 		} = {
 			mode,
+			hasUI: mode !== "print",
 			cwd: "/tmp",
 			model: undefined,
 			modelRegistry: { find: () => undefined },
@@ -219,7 +221,7 @@ class Session {
 				theme: THEME,
 				setWidget: (key: string, content: string[] | ((ui: TUI, theme: coding.Theme) => Component) | undefined) => {
 					if (content instanceof Function) content(this.ui, THEME);
-					else this.widgets.set(key, content);
+					else this.widgets.set(key, [...(this.widgets.get(key) ?? []), content]);
 				},
 				setEditorComponent: (factory) => {
 					this.#editorFactory = factory;
@@ -279,10 +281,13 @@ class Session {
 			viewState,
 		};
 
+		// No test reads the list of a session that is not a mirror session.
+		const todos = new PolledWidget("todos", async () => undefined, protocol.errorMessage);
+
 		// SAFETY: the mirror calls only these functions of Pi. It uses only these modules of the harness, from `src/` in
 		// place of `dist/`, and only the members of `Mirror` that `FakeMirror` has. The fake mirror makes sure that no test
 		// starts a host. The classes of `src/` are not those of `dist/` for the type check, so the harness goes as `never`.
-		registerMirror(pi as coding.ExtensionAPI, harness as never);
+		registerMirror(pi as coding.ExtensionAPI, harness as never, todos);
 	}
 
 	/** Calls the handler of `event`, with `data`. */
@@ -436,23 +441,30 @@ describe("mirror sessions in Pi", () => {
 		expect(header({ ...unnamed, kind: "rlm" })).toBe("harness │ abc123 │ rlm │ /tmp");
 	});
 
-	it("shows the todos of the agent below the editor while one is open or doing, until the session ends", () => {
+	it("shows the todos of the agent below the editor while one is open or doing, only on a change, until the session ends", () => {
 		const { session, mirror } = attached();
 		const plan: Todo = { id: 1, text: "Write the plan", state: "open" };
 		mirror.mirror.view = withTodos([plan]);
 		mirror.change({ kind: "open" });
-		expect(session.widgets.get("todos")).toEqual(["○ 1 Write the plan"]);
+		// A change of the mirror with the same lines does not set the widget again, which would move it below the others.
+		mirror.change({ kind: "open" });
+		mirror.change({ kind: "reconnecting" });
 		mirror.mirror.view = withTodos([{ ...plan, state: "done" }]);
 		mirror.change({ kind: "open" });
-		expect(session.widgets.get("todos")).toBeUndefined();
+		mirror.change({ kind: "open" });
 		mirror.mirror.view = withTodos([
 			{ ...plan, state: "done" },
 			{ id: 2, text: "Ship it", state: "doing" },
 		]);
 		mirror.change({ kind: "open" });
-		expect(session.widgets.get("todos")).toEqual(["✓ 1 Write the plan", "◉ 2 Ship it"]);
+		mirror.change({ kind: "open" });
 		session.emit("session_shutdown");
-		expect(session.widgets.get("todos")).toBeUndefined();
+		expect(session.widgets.get("todos")).toEqual([
+			["○ 1 Write the plan"],
+			undefined,
+			["✓ 1 Write the plan", "◉ 2 Ship it"],
+			undefined,
+		]);
 	});
 
 	it("reports the state of the agent again when a dialog of Pi ends, until Pi leaves the session", () => {

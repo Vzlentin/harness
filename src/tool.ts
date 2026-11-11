@@ -9,7 +9,7 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
-import { AGENT_HANDLE } from "./protocol/target.ts";
+import { AGENT_HANDLE, type ListTarget } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
 /** The signal of a call that its adapter cannot abort. */
@@ -375,21 +375,23 @@ type TodoSchemas = ReturnType<typeof todoToolSchemas>;
 
 export type TodoToolArgs = Static<TodoSchemas["parameters"]>;
 
-/** A list that only the CLI targets: a child or the project agent by handle, a library conversation, or a task by key. */
-export type TodoTarget = { readonly handle: string } | { readonly conversation: string } | { readonly key: string };
-
 /** The result of a call of the todo tool: the output of `harness todo`, and the host's reply. */
 export type TodoToolResult = { readonly text: string; readonly data: Static<TodoSchemas["output"]> };
 
-/** Runs one call of the todo tool on the list of `target`, of `args.list`, or of the caller. */
+/** The list of a call of the todo tool: the list of the project agent for `list: "project"`, else the caller's own. */
+export function todoToolTarget(args: TodoToolArgs): ListTarget {
+	return args.list === "project" ? { handle: AGENT_HANDLE } : {};
+}
+
+/** Runs one call of the todo tool on the list of `target`. */
 export async function runTodoTool(
-	args: TodoToolArgs,
+	args: Omit<TodoToolArgs, "list">,
 	scope: Pick<ToolScope, "caller" | "send" | "signal">,
-	target?: TodoTarget,
+	target: ListTarget,
 ): Promise<TodoToolResult> {
 	const { action } = args;
 	const signal = scope.signal ?? NO_ABORT;
-	const list = { type: "todo", caller: scope.caller, ...listTarget(args, target) } as const;
+	const list = { type: "todo", caller: scope.caller, ...target } as const;
 
 	switch (action) {
 		case "add": {
@@ -422,15 +424,6 @@ export async function runTodoTool(
 		default:
 			throw new Error(`Unknown action: ${String(action)}`);
 	}
-}
-
-/** The target of the list of a todo call: `target`, the project agent for `list: "project"`, or none for the caller's. */
-function listTarget(args: TodoToolArgs, target: TodoTarget | undefined): TodoTarget | undefined {
-	if (args.list === undefined) return target;
-
-	if (target !== undefined) throw new Error("Give list or a target, not both");
-
-	return { handle: AGENT_HANDLE };
 }
 
 function replyTodo(reply: Replies["todo"]): Todo {
@@ -467,11 +460,9 @@ export function todoTool(
 			// pi-durable has validated the arguments, but its types do not narrow TypeBox enums.
 			if (!Value.Check(parameters, args)) throw new Error("Invalid todo arguments");
 
-			const { text, data } = await runTodoTool(args, {
-				caller: await scope.caller(api, context),
-				send: scope.send,
-				signal: context.abortSignal,
-			});
+			const caller = await scope.caller(api, context);
+			const signal = context.abortSignal;
+			const { text, data } = await runTodoTool(args, { caller, send: scope.send, signal }, todoToolTarget(args));
 
 			return { output: [{ type: "text", text }], structuredOutput: data };
 		},

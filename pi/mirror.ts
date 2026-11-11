@@ -17,6 +17,7 @@ import * as tui from "@earendil-works/pi-tui";
 import type { MirrorTarget } from "../dist/client/mirror.js";
 import { Attachment } from "./attachment.ts";
 import type { Harness } from "./index.ts";
+import type { PolledWidget } from "./polled-widget.ts";
 
 /** The mirror entry of a session: its ID and its target. */
 type MirrorEntry = { readonly id: string; readonly target: MirrorTarget };
@@ -42,10 +43,11 @@ function registerFlags(pi: ExtensionAPI, harness: Harness): void {
 }
 
 /**
- * Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. It
- * gives whether the session is a mirror session now, from its `session_start` to its `session_shutdown`.
+ * Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. At the
+ * start of each session, the todo widget `todos.widget` gets its source: the attachment of a mirror session gives it the
+ * list of the mirrored agent, and the reads of `todos` give it the list of any other session. At the end, `todos` stops.
  */
-export function registerMirror(pi: ExtensionAPI, harness: Harness): () => boolean {
+export function registerMirror(pi: ExtensionAPI, harness: Harness, todos: PolledWidget): void {
 	const { MIRROR_ENTRY, toMirrorEntry } = harness.mirror;
 	const { errorMessage } = harness.protocol;
 	// The frame of each mirror entry in Pi's chat. Pi can draw the entry before or after `session_start`.
@@ -100,7 +102,12 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): () => boolea
 		refused = false;
 
 		if (ctx.mode !== "tui") {
-			if (existing === undefined && !hasFlags(pi, harness)) return;
+			if (existing === undefined && !hasFlags(pi, harness)) {
+				todos.start(ctx);
+
+				return;
+			}
+
 			refused = true;
 			// Pi shows the error of a handler on stderr in print mode, and as an `extension_error` in RPC mode.
 			throw new Error("harness: a mirror session works only in Pi's interactive mode");
@@ -118,13 +125,22 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): () => boolea
 
 		const entry = existing ?? (event.reason === "startup" ? flagEntry(pi, harness, ctx) : undefined);
 
-		if (entry !== undefined) attached = new Attachment(pi, harness, ctx, entry.id, entry.target, frameOf(entry.id));
+		if (entry === undefined) {
+			todos.start(ctx);
+
+			return;
+		}
+
+		// The widget starts without the reads, and before the mirror can show its first view in it.
+		todos.widget.start(ctx);
+		attached = new Attachment(pi, harness, ctx, entry.id, entry.target, frameOf(entry.id), todos.widget);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		refused = false;
 		attached?.close();
 		attached = undefined;
+		todos.stop(ctx);
 	});
 
 	// When a dialog ends, Pi writes its own state to the terminal over the state of the agent, so the agent's goes again.
@@ -151,8 +167,6 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): () => boolea
 	pi.on("model_select", (event) => {
 		if (event.source !== "restore") attached?.models.piSelected(event.model.provider, event.model.id);
 	});
-
-	return () => attached !== undefined;
 }
 
 /** The newest mirror entry of `entries` with a valid target. */

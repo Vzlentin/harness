@@ -119,17 +119,14 @@ describe("harness todo", { timeout: 30_000 }, () => {
 		const scope = { caller: "session-tool", send: sendToHost, signal: undefined };
 		const todoAdded = { id: 1, text: "By the tool", state: "open" };
 
-		const added = await runTodoTool({ action: "add", text: "By the tool" }, scope);
+		const added = await runTodoTool({ action: "add", text: "By the tool" }, scope, {});
 		expect(added).toEqual({ text: "○ 1 By the tool\n", data: { action: "add", value: todoAdded } });
 		const { output } = todoToolSchemas({ Type });
 		expect(Value.Check(output, added.data)).toBe(true);
 		expect(Value.Check(output, { action: "add", value: { ...todoAdded, state: "later" } })).toBe(false);
-		expect(await runTodoTool({ action: "list" }, scope)).toEqual({
+		expect(await runTodoTool({ action: "list" }, scope, {})).toEqual({
 			text: "○ 1 By the tool\n",
 			data: { action: "list", value: { todos: [todoAdded] } },
 		});
-		await expect(runTodoTool({ action: "list", list: "project" }, scope, { handle: "agent" })).rejects.toThrow(
-			"Give list or a target, not both",
-		);
 	});
 });

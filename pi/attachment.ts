@@ -19,8 +19,9 @@ import type { ChildInfo } from "../dist/protocol/index.js";
 import { ChatView } from "./chat.ts";
 import type { Harness } from "./index.ts";
 import { ModelSync } from "./model-sync.ts";
+import type { LinesWidget } from "./polled-widget.ts";
 import { ProgramStatusReport } from "./program-status.ts";
-import { TODO_WIDGET, todoWidgetLines } from "./todo.ts";
+import { todoWidgetLines } from "./todo.ts";
 import { usageLine } from "./usage-line.ts";
 
 /** The key of the status widget above the editor. */
@@ -37,6 +38,8 @@ export class Attachment {
 	#theme: Theme;
 	readonly #frame: tui.Container;
 	readonly #status = new StatusArea();
+	/** The todo widget below the editor, which shows the list of the agent. The session stops it at its end. */
+	readonly #todos: LinesWidget;
 	readonly #mirror: Mirror;
 	#ui: TUI | undefined;
 	#chat: ChatView | undefined;
@@ -52,6 +55,7 @@ export class Attachment {
 		entryId: string,
 		target: MirrorTarget,
 		frame: tui.Container,
+		todos: LinesWidget,
 	) {
 		this.entryId = entryId;
 		this.#pi = pi;
@@ -59,6 +63,7 @@ export class Attachment {
 		this.#ctx = ctx;
 		this.#theme = ctx.ui.theme;
 		this.#frame = frame;
+		this.#todos = todos;
 		this.#frame.clear();
 		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${harness.mirror.targetTitle(target)}...`));
 		// Pi calls the factory at once, which gives the TUI that the tool cards need.
@@ -157,7 +162,6 @@ export class Attachment {
 		this.#chat?.stopTimers();
 		this.#status.dispose();
 		this.#ctx.ui.setWidget(WIDGET, undefined);
-		this.#ctx.ui.setWidget(TODO_WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
 		this.#programStatus?.leave(this.#mirror);
 	}
@@ -230,11 +234,10 @@ export class Attachment {
 		this.#status.show(ui, this.#theme, working, lines);
 	}
 
-	/** Shows below the editor the list of todos of the agent, from the last view, as the todo widget of Pi does. */
+	/** Shows below the editor the list of todos of the agent, from the last view, in the todo widget. */
 	#showTodos(view: ConversationView | undefined): void {
 		const { todosOf } = this.#harness.viewState;
-		const lines = view === undefined ? undefined : todoWidgetLines(todosOf(view), this.#harness.protocol.todoLine);
-		this.#ctx.ui.setWidget(TODO_WIDGET, lines, { placement: "belowEditor" });
+		this.#todos.show(view === undefined ? undefined : todoWidgetLines(todosOf(view), this.#harness.protocol.todoLine));
 	}
 
 	#showFailure(reason: string): void {

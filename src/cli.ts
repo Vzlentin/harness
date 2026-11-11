@@ -21,9 +21,9 @@ import {
 	readProjects,
 } from "./protocol/projects.ts";
 import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
-import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
+import { AGENT_HANDLE, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { Todo, TodoState } from "./protocol/todo.ts";
-import { runTodoTool, runTool, type TodoTarget, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
+import { runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -153,12 +153,12 @@ function listArgs(args: string[]): ToolArgs {
 	return { action: "list" };
 }
 
-/** A call of the todo tool from the arguments of `todo`, with the target that only the command has. */
-type TodoCall = { readonly args: TodoToolArgs; readonly target: TodoTarget | undefined };
+/** A call of the todo tool from the arguments of `todo`, with the list of its target option. */
+type TodoCall = { readonly args: Omit<TodoToolArgs, "list">; readonly target: ListTarget };
 
 function todoArgs(args: string[]): TodoCall {
 	const words: string[] = [];
-	let target: TodoTarget | "project" | undefined;
+	let target: ListTarget | undefined;
 	let text: string | undefined;
 
 	for (let i = 0; i < args.length; i++) {
@@ -178,7 +178,7 @@ function todoArgs(args: string[]): TodoCall {
 				i++;
 				break;
 			case "--project-list":
-				target = onlyTarget(target, "project");
+				target = onlyTarget(target, { handle: AGENT_HANDLE });
 				break;
 			case "--text":
 				if (text !== undefined) usage();
@@ -192,7 +192,7 @@ function todoArgs(args: string[]): TodoCall {
 	}
 
 	const [action = "list", ...rest] = words;
-	let call: TodoToolArgs;
+	let call: Omit<TodoToolArgs, "list">;
 
 	switch (action) {
 		case "list":
@@ -217,14 +217,11 @@ function todoArgs(args: string[]): TodoCall {
 			usage();
 	}
 
-	if (target !== "project") return { args: call, target };
-	call.list = "project";
-
-	return { args: call, target: undefined };
+	return { args: call, target: target ?? {} };
 }
 
 /** `next`, the target of a todo option, when no option gave a target before. Otherwise it prints the usage. */
-function onlyTarget(current: TodoTarget | "project" | undefined, next: TodoTarget | "project"): TodoTarget | "project" {
+function onlyTarget(current: ListTarget | undefined, next: ListTarget): ListTarget {
 	if (current !== undefined) usage();
 
 	return next;

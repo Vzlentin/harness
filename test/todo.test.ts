@@ -7,18 +7,14 @@ import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { AGENT_HANDLE, type ListTarget } from "../src/protocol/target.ts";
 import type { TodoState } from "../src/protocol/todo.ts";
 import { cli, models, requests, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
 
 /** The caller and the target of a list, as a `todo` request has them. */
-type ListRef =
-	| { readonly caller: string; readonly handle: string }
-	| { readonly caller: string; readonly conversation: string }
-	| { readonly caller: string; readonly key: string }
-	| { readonly caller: string };
+type ListRef = { readonly caller: string } & ListTarget;
 
 let host: Host | undefined;
 

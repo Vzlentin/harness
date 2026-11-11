@@ -79,10 +79,9 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	// Pi's own modules, so Pi does not load the copy of pi-coding-agent that harness installs.
 	const piTrust = { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore, SettingsManager };
 	const savedTrust = (cwd: string) => harness.trust.savedTrust(cwd, piTrust);
-	// Pi runs the handlers in the order of registration, so the todo widget knows a mirror session at its start.
-	const mirrored = registerMirror(pi, harness);
+	// The mirror knows at the start of a session whether it is a mirror session, so it starts the todo widget.
+	registerMirror(pi, harness, registerTodo(pi, harness));
 	registerRlm(pi, harness, sessionScope);
-	registerTodo(pi, harness, mirrored);
 	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 

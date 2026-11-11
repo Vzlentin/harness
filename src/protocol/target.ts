@@ -45,6 +45,14 @@ export function withListTarget<F extends TProperties>(fields: F) {
 	return branches;
 }
 
+/**
+ * The target of a list on the wire, as `withListTarget` gives it: a handle, which can be `AGENT_HANDLE`, a conversation
+ * ID, the key of a started task, or none of them (`{}`) for the list of the caller.
+ */
+export const ListTarget = Type.Union(withListTarget({}));
+
+export type ListTarget = Static<typeof ListTarget>;
+
 /** A target on the wire: a handle, which can be `AGENT_HANDLE`, or a conversation ID. */
 export const TargetRef = Type.Union(withTarget({}));
 
