@@ -1,15 +1,17 @@
 /**
- * What the Pi extension reads from a durable conversation view: its live state, its inbox, its usage and
- * the texts of its user messages. It imports only types, so the Pi extension can load it.
+ * What the Pi extension reads from a durable conversation view: its live state, its inbox, its usage, its list of todos
+ * and the texts of its user messages. It imports no Pi package at run time, so the Pi extension can load it.
  */
 import type { JsonRepresentation } from "@earendil-works/chord";
 import type { Usage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, InboxState, JsonObject, LiveState, UsageState } from "@earendil-works/pi-durable";
+import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
 
-/** The built-in document of the kind `kind` in `view`, if the conversation has it. */
+/** The document of the kind `kind` in `view`, if the conversation has it: a built-in one, or the list of todos. */
 function docOf<T extends JsonObject>(view: ConversationView, kind: string): T | undefined {
 	// SAFETY: pi-durable keeps each built-in conversation document in `docs` under its kind: `pi.live` holds a
-	// `LiveState`, `pi.inbox` an `InboxState` and `pi.usage` a `UsageState`. Each caller passes the kind of its type.
+	// `LiveState`, `pi.inbox` an `InboxState` and `pi.usage` a `UsageState`. The watch of the host adds the list of
+	// todos under `harness.todos`, a `TodoList` that only the host writes. Each caller passes the kind of its type.
 	return view.docs[kind] as T | undefined;
 }
 
@@ -23,6 +25,11 @@ export function inboxOf(view: ConversationView): InboxState {
 
 export function usageOf(view: ConversationView): UsageState | undefined {
 	return docOf<UsageState>(view, "pi.usage");
+}
+
+/** The list of todos of the conversation; empty when it has none. */
+export function todosOf(view: ConversationView): TodoList {
+	return docOf<TodoList>(view, TODO_LIST_KIND) ?? { todos: [] };
 }
 
 /** The tokens and the cost of a conversation. */

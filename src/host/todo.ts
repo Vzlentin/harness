@@ -3,10 +3,11 @@
  * caller that is not a conversation of the host, such as a Pi session. The `todo` request of the host and the tasks of
  * the entries change them with these functions, in their own commits.
  */
+import { Watch, type WatchCall, type WatchEnd, type WatchHandle } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
-import type { ConversationId, DocumentReader, TaskId, Tx } from "@earendil-works/pi-durable";
+import type { CommitChange, ConversationId, DocumentReader, Session, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import type { Todo, TodoList, TodoState } from "../protocol/todo.ts";
+import { TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
 
 export * from "../protocol/todo.ts";
 
@@ -18,7 +19,7 @@ export type TodoOwner =
 
 /** The list of a conversation. */
 const ConversationTodos = durable.defineDoc<TodoList>({
-	kind: "harness.todos",
+	kind: TODO_LIST_KIND,
 	version: 1,
 	scope: "conversation",
 	history: "latest",
@@ -91,6 +92,80 @@ export async function readTodos(
 	const list = await snapshotOf(reader, owner, context);
 
 	return { todos: (list?.todos ?? []).map((todo) => ({ ...todo })) };
+}
+
+/**
+ * A watch of the list of the conversation `id`, from the list now: its value is the list, or `null` while the
+ * conversation has none. Each stored commit that changes the list gives a call, also the commit that creates it, which a
+ * `watchDoc` of an absent document cannot give. Aborting `context` ends it, as does the close of `session`. A throw
+ * of its listener ends it, and `closed` gives the error.
+ */
+export async function watchTodos(
+	session: Pick<Session, "observeCommits" | "snapshot">,
+	id: ConversationId,
+	context: Context,
+): Promise<WatchHandle<Readonly<TodoList> | null>> {
+	// The observer attaches before the read, so no commit goes between them. The newest list of a commit during the read
+	// goes to the watch once it exists: at worst the list of the read again.
+	let watch: Watch<Readonly<TodoList> | null> | undefined;
+	let early: { readonly list: Readonly<TodoList> | null; readonly context: Context } | undefined;
+	let ended: WatchEnd | undefined;
+
+	const observation = session.observeCommits({
+		advance: (publication, frameContext) => {
+			for (const change of publication.changes) {
+				const list = listAfter(change, id);
+
+				if (list === undefined) continue;
+
+				if (watch === undefined) early = { list, context: frameContext };
+				else watch.advance(listCall(list), frameContext);
+			}
+		},
+		end: (end) => {
+			if (watch === undefined) ended = end;
+			else watch.end(end);
+		},
+	});
+
+	let list: Readonly<TodoList> | undefined;
+
+	try {
+		list = await session.snapshot(ConversationTodos, id, context);
+	} catch (error) {
+		observation.detach();
+		throw error;
+	}
+
+	// A throw of the listener ends the watch, and `closed` gives it.
+	watch = new Watch<Readonly<TodoList> | null>(
+		list ?? null,
+		() => observation.detach(),
+		() => {},
+	);
+
+	if (early !== undefined) watch.advance(listCall(early.list), early.context);
+
+	if (ended !== undefined) watch.end(ended);
+
+	if (context.abortSignal !== undefined) watch.observeAbort(context.abortSignal);
+
+	return watch;
+}
+
+/** The list of the conversation `id` after `change`: `null` when it removed the list, nothing when it is not about it. */
+function listAfter(change: CommitChange, id: ConversationId): Readonly<TodoList> | null | undefined {
+	if (change.type !== "document" || change.record.kind !== TODO_LIST_KIND || change.conversationId !== id) {
+		return undefined;
+	}
+
+	// SAFETY: only `ConversationTodos` has the kind `TODO_LIST_KIND`, and its value is a `TodoList`.
+	return change.kind === "retire" ? null : (change.value as TodoList);
+}
+
+/** The frame of a list watch that replaces its value with `list`. */
+function listCall(list: Readonly<TodoList> | null): WatchCall<Readonly<TodoList> | null> {
+	return { kind: "value", value: list, ops: [["r", list]], retired: list === null };
 }
 
 function refuseEmpty(text: string): void {

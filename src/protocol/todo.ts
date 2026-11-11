@@ -17,5 +17,8 @@ export const Todo = Type.Object({
 
 export type Todo = Static<typeof Todo>;
 
+/** The kind of the document of the list of a conversation, in the store and in the `docs` of a watched view. */
+export const TODO_LIST_KIND = "harness.todos";
+
 /** One list of todos, in ID order. */
 export type TodoList = { todos: Todo[] };

@@ -18,13 +18,14 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { ConversationView } from "@earendil-works/pi-durable";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { vi } from "vite-plus/test";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, ChildKind, WatchLine } from "../src/protocol/requests.ts";
-import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
@@ -372,21 +373,28 @@ export async function setDepthLimit(limit: number | undefined): Promise<void> {
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
 }
 
-/** A watch of the project agent of the running host, with its first reply and its events. */
-export async function watchAgent(): Promise<{
+/**
+ * A watch of `target` in the running host, on a connection of its own: the reply, the lines that came so far, and the
+ * end of the lines.
+ */
+export async function openWatch(target: Target): Promise<{
 	client: Client;
-	lines: { first: { child: ChildInfo }; events: WatchLine[] };
+	view: ConversationView;
+	child: ChildInfo;
+	lines: WatchLine[];
+	ended: Promise<void>;
 }> {
 	const client = await connect({ start: false });
 
 	if (client === undefined) throw new Error("no host");
-	const first = await client.watch({ kind: "agent" });
-	const events: WatchLine[] = [];
-	void (async () => {
-		for await (const line of first.lines) events.push(line);
+	const watched = await client.watch(target);
+	const lines: WatchLine[] = [];
+
+	const ended = (async () => {
+		for await (const line of watched.lines) lines.push(line);
 	})();
 
-	return { client, lines: { first, events } };
+	return { client, view: watched.view, child: watched.child, lines, ended };
 }
 
 /** Sends `message` to the project agent and gives the verb. */
@@ -412,11 +420,11 @@ export async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<
 
 /** Sends `message` to the project agent, and waits until its turn ends. */
 export async function agentTurn(message: string): Promise<void> {
-	const { client, lines } = await watchAgent();
+	const { client, lines } = await openWatch({ kind: "agent" });
 
 	try {
 		await inputAgent(client, message);
-		await untilIdleAfterBusy(lines.events);
+		await untilIdleAfterBusy(lines);
 	} finally {
 		client.close();
 	}

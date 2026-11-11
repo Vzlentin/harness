@@ -1,26 +1,31 @@
 /**
- * The watch of a mirror: the view of one conversation, then a line for each of its commits and renames.
+ * The watch of a mirror: the view of one conversation with its list of todos, then a line for each of its commits, each
+ * change of its list and each rename.
  */
 import { once } from "node:events";
-import type { Context } from "@earendil-works/chord";
+import type { Context, WatchHandle } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Conversation, ConversationView, DocumentWatch } from "@earendil-works/pi-durable";
 import type { ChildInfo, Replies, WatchLine } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";
+import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
 import { type ViewChange, viewChange } from "../protocol/view-change.ts";
 import type { Connection } from "./push.ts";
 import { ChildRecords, type ChildrenState, recordOf } from "./records.ts";
 import { childInfo, type Found, type TargetHost, target } from "./targets.ts";
+import { watchTodos } from "./todo.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /**
  * Opens a watch of `ref` on `connection` and returns the reply, with the view and the child. After the reply, each
- * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, and each rename one with
- * an empty change. It waits for a slow socket to drain, so pi-durable replaces the frames it holds back with one frame
- * of the whole view. The watches stop when the socket closes, when setup fails, or when the connection ends; a wait for
- * `drain` then stays on the closed socket and goes with it. When the child stops, the client gets one line of the whole view, then a `stopped` event, and the connection ends; when the conversation
- * watch ends for another reason, the connection ends.
+ * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, each change of its list of
+ * todos one with the list in `docs`, and each rename one with an empty change. The reply and each line of the whole
+ * view have the list in `docs` when the conversation has one. It waits for a slow socket to drain, so the watches
+ * replace the frames they hold back with one frame of the whole view or of the newest list. The watches stop when the
+ * socket closes, when setup fails, or when the connection ends; a wait for `drain` then stays on the closed socket and
+ * goes with it. When the child stops, the client gets one line of the whole view, then a `stopped` event, and the
+ * connection ends; when the conversation watch or the list watch ends for another reason, the connection ends.
  */
 export async function serveWatch(
 	handler: TargetHost & { readonly signal: AbortSignal },
@@ -30,7 +35,7 @@ export async function serveWatch(
 	const { harness } = handler;
 	const { socket } = connection;
 	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
-	// pi-durable stops both watches when `signal` aborts: on socket close, or when `watching` aborts.
+	// The watches stop when `signal` aborts: on socket close, or when `watching` aborts.
 	const watching = new AbortController();
 	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
 
@@ -44,6 +49,8 @@ export async function serveWatch(
 	/** The `ChildRecords` watch of a child target, and its handle. */
 	let children: { readonly watch: DocumentWatch<ChildrenState>; readonly handle: string } | undefined;
 	let conversation: Awaited<ReturnType<Conversation["watch"]>>;
+	/** The watch of the list of todos of the conversation, which pi-durable's view does not have. */
+	let todos: WatchHandle<Readonly<TodoList> | null>;
 	let last: ChildInfo;
 
 	try {
@@ -63,6 +70,7 @@ export async function serveWatch(
 		}
 
 		last = await found.info();
+		todos = await watchTodos(harness, found.conversation.id, watchContext);
 		conversation = await found.conversation.watch(watchContext);
 	} catch (error) {
 		watching.abort();
@@ -70,12 +78,13 @@ export async function serveWatch(
 	}
 
 	const childrenWatch = children;
-	// pi-durable delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
+	// A watch delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
 	connection.afterReply(() => {
 		// Only microtasks run between the last `await` above and this call, so a socket close cannot abort the signal
 		// before the watches start.
 		void conversation.closed.then(end);
-		// pi-durable runs the callbacks of one watch in order, but not those of two watches. Both watches write through
+		void todos.closed.then(end);
+		// A watch runs its own callbacks in order, but not in order with the other watches. All the watches write through
 		// this one chain, so a line never has older info than the line before it.
 		let queue: Promise<void> = Promise.resolve();
 
@@ -86,8 +95,10 @@ export async function serveWatch(
 			const child = await found.info().catch(() => undefined);
 
 			if (child === undefined || !socket.writable) return;
+			// pi-durable's view has no list, so a line of the whole view gets the newest list of the list watch.
+			const whole = "view" in change ? { view: withTodos(change.view, todos.value) } : change;
 
-			if (!write({ change, child })) await once(socket, "drain").catch(() => {});
+			if (!write({ change: whole, child })) await once(socket, "drain").catch(() => {});
 		};
 
 		const send = (change: ViewChange) => {
@@ -131,9 +142,20 @@ export async function serveWatch(
 		conversation.start(async (call) => {
 			if (call.kind === "value") await send(viewChange(call.value, call.ops));
 		});
+
+		todos.start(async (call) => {
+			if (call.kind === "value") await send({ docs: { [TODO_LIST_KIND]: call.value } });
+		});
 	});
 
-	return { view: conversation.value, child: last };
+	return { view: withTodos(conversation.value, todos.value), child: last };
+}
+
+/** `view` with the list of todos `list` of its conversation, when it has one. */
+function withTodos(view: ConversationView, list: Readonly<TodoList> | null): ConversationView {
+	if (list === null) return view;
+
+	return { ...view, docs: { ...view.docs, [TODO_LIST_KIND]: list } };
 }
 
 /** The view of `conversation` now, from a watch that never starts; nothing when it cannot be read. */

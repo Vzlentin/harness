@@ -42,6 +42,7 @@ import {
 	handleOf,
 	inputAgent,
 	models,
+	openWatch,
 	requests,
 	root,
 	setDepthLimit,
@@ -53,7 +54,6 @@ import {
 	toolWaits,
 	until,
 	untilIdleAfterBusy,
-	watchAgent,
 } from "./helpers.ts";
 
 /** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
@@ -1482,10 +1482,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("runs the project agent, which keeps its history after a restart", async () => {
-		const { client, lines } = await watchAgent();
+		const { client, child, lines } = await openWatch({ kind: "agent" });
 
 		try {
-			expect(lines.first.child).toMatchObject({
+			expect(child).toMatchObject({
 				handle: AGENT_HANDLE,
 				name: "main agent",
 				state: "idle",
@@ -1495,7 +1495,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				cwd: join(root, "home"),
 			});
 			expect(await inputAgent(client, "Agent hello")).toBe("Prompted");
-			await untilIdleAfterBusy(lines.events);
+			await untilIdleAfterBusy(lines);
 		} finally {
 			client.close();
 		}
@@ -1712,13 +1712,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("gives a note to the project agent", async () => {
-		const { client, lines } = await watchAgent();
+		const { client, lines } = await openWatch({ kind: "agent" });
 
 		try {
 			const note = { type: "note", requestId: "agent", handle: AGENT_HANDLE, text: "Agent note" } as const;
 			expect((await client.request(note)).child.handle).toBe(AGENT_HANDLE);
 			expect(await inputAgent(client, "Agent after note")).toBe("Prompted");
-			await untilIdleAfterBusy(lines.events);
+			await untilIdleAfterBusy(lines);
 		} finally {
 			client.close();
 		}
