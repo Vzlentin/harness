@@ -19,12 +19,16 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
+import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { RLM_SECTION } from "../src/rlm/prompt.ts";
-import { TOOL_DESCRIPTION } from "../src/tool.ts";
+import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
 import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
@@ -44,15 +48,21 @@ type PiEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent;
  */
 type Handler = ExtensionHandler<PiEvent>;
 
-/** A registered tool: its description, and a call with `args` that gives its text. */
+/**
+ * A registered tool: its description, its schemas, its execution mode, a call with `args` that gives its text, and the
+ * structured contents of its calls, in order.
+ */
 type Tool = {
 	readonly description: string;
 	readonly parameters: unknown;
+	readonly outputSchema: unknown;
+	readonly executionMode: string | undefined;
 	readonly call: (args: Args) => Promise<string>;
+	readonly structured: unknown[];
 };
 
 /** The arguments of a tool call in the tests. */
-type Args = Readonly<Record<string, string | readonly string[]>>;
+type Args = Readonly<Record<string, string | number | readonly string[]>>;
 
 /** A message that the extension sent to Pi, with its options. */
 type Sent = { readonly text: string; readonly details: unknown; readonly options: unknown };
@@ -170,14 +180,24 @@ async function load(): Promise<Registered> {
 	> = {
 		events: registered.events,
 		registerTool: (tool) => {
+			const structured: unknown[] = [];
+
 			const call = async (args: Args) => {
 				// SAFETY: the tests give the arguments of the tool's schema.
 				const result = await tool.execute(`call-${++calls}`, args as never, undefined, undefined, toolContext());
+				structured.push(result.structuredContent);
 
 				return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 			};
 
-			registered.tools.set(tool.name, { description: tool.description, parameters: tool.parameters, call });
+			registered.tools.set(tool.name, {
+				description: tool.description,
+				parameters: tool.parameters,
+				outputSchema: tool.outputSchema,
+				executionMode: tool.executionMode,
+				call,
+				structured,
+			});
 		},
 		registerCommand: (name, command) => {
 			registered.commands.set(name, command);
@@ -219,29 +239,57 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 	return tool.call(args);
 }
 
-/** The lines of the subagents widget that the extension set, in order; undefined hides the widget. */
-type Widgets = (readonly string[] | undefined)[];
+/** The lines of the subagents widget and of the todo widget that the extension set, in order; undefined hides one. */
+type Widgets = {
+	readonly subagents: (readonly string[] | undefined)[];
+	readonly todos: (readonly string[] | undefined)[];
+};
+
+/** Widgets that the extension did not set yet. */
+function noWidgets(): Widgets {
+	return { subagents: [], todos: [] };
+}
+
+/** The mirror entry of a mirror session of the project agent of `main`. */
+const MIRROR = {
+	type: "custom",
+	customType: MIRROR_ENTRY,
+	data: toMirrorEntry({ project: MAIN_PROJECT, target: { kind: "agent" } }),
+	id: "mirror-1",
+	parentId: null,
+	timestamp: "",
+} as const;
 
 /**
  * Calls the handlers of `event` with harness, for the session `session` without entries, in `root` with the faux
  * model. Without `widgets`, the session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and
- * `widgets` gets each content of the subagents widget. The notifications go to `registered`.
+ * `widgets` gets each content of the subagents widget and of the todo widget. With `mirror`, the session is a mirror
+ * session of the project agent in Pi's interactive mode, whose components are never drawn. The notifications go to
+ * `registered`.
  */
-async function sessionEvent(registered: Registered, event: PiEvent, widgets?: Widgets): Promise<void> {
-	const ctx: Pick<ExtensionContext, "hasUI" | "cwd"> & {
+async function sessionEvent(registered: Registered, event: PiEvent, widgets?: Widgets, mirror = false): Promise<void> {
+	const ctx: Pick<ExtensionContext, "hasUI" | "cwd" | "mode"> & {
 		readonly model: Pick<NonNullable<ExtensionContext["model"]>, "provider" | "id">;
 		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntries" | "getBranch">;
-		readonly ui: Pick<ExtensionContext["ui"], "setWidget" | "notify"> & { readonly theme: Pick<Theme, "fg"> };
+		readonly ui: Pick<ExtensionContext["ui"], "setWidget" | "notify" | "setEditorComponent"> & {
+			readonly theme: Pick<Theme, "fg">;
+		};
 	} = {
 		hasUI: widgets !== undefined,
+		mode: mirror ? "tui" : "print",
 		cwd: root,
 		model: { provider: "faux", id: "faux-1" },
-		sessionManager: { getSessionId: () => "session", getEntries: () => [], getBranch: () => [] },
+		sessionManager: {
+			getSessionId: () => "session",
+			getEntries: () => [],
+			getBranch: () => (mirror ? [MIRROR] : []),
+		},
 		ui: {
-			// The extension gives the widget lines, never a component.
+			// The extension gives the widget lines; only a mirror session gives components, which the tests do not draw.
 			setWidget: (key: string, content: string[] | ((...args: never[]) => Component) | undefined) => {
-				if (key === "subagents" && !(content instanceof Function)) widgets?.push(content);
+				if ((key === "subagents" || key === "todos") && !(content instanceof Function)) widgets?.[key].push(content);
 			},
+			setEditorComponent: () => {},
 			notify: (message, type) => {
 				registered.notifications.push({ message, type });
 			},
@@ -425,9 +473,9 @@ describe("the Pi extension", () => {
 
 	it("shows the children in the widget, an RLM child marked, and nothing without children or without a host", async () => {
 		const registered = await load();
-		const quiet: Widgets = [];
+		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
-		await vi.waitFor(() => expect(quiet).toEqual([undefined]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(quiet.subagents).toEqual([undefined]), { timeout: 10_000 });
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
 		host = await startHost();
@@ -435,10 +483,10 @@ describe("the Pi extension", () => {
 		await untilIdle(handle);
 		const { handle: rlm } = await spawnAs("session", "Task:\nWidget RLM", { notify: false, kind: "rlm" });
 		await untilIdle(rlm);
-		const widgets: Widgets = [];
+		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
 		const line = `<dim>subagents: <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`;
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual([line]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(widgets.subagents.at(-1)).toEqual([line]), { timeout: 10_000 });
 
 		const options: string[][] = [];
 
@@ -466,7 +514,7 @@ describe("the Pi extension", () => {
 		]);
 		await host?.close();
 		host = undefined;
-		await vi.waitFor(() => expect(widgets.at(-1)).toBeUndefined(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(widgets.subagents.at(-1)).toBeUndefined(), { timeout: 10_000 });
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 
@@ -521,6 +569,74 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 		await expect(rawReply(restarted, "{}")).rejects.toThrow("ENOENT");
 		expect(existsSync(dirname(restarted))).toBe(false);
+	});
+
+	it("gives the todo tool of the host, on the list of the session and on the list of the project", async () => {
+		host = await startHost();
+		const registered = await load();
+		const todo = registered.tools.get("todo");
+		const { parameters, output } = todoToolSchemas({ Type });
+
+		expect(todo).toMatchObject({
+			description: TODO_TOOL_DESCRIPTION,
+			parameters,
+			outputSchema: output,
+			executionMode: "sequential",
+		});
+		expect(await todo?.call({ action: "add", text: "Write the plan" })).toBe("○ 1 Write the plan\n");
+		expect(await todo?.call({ action: "add", text: "Ship it", list: "project" })).toBe("○ 1 Ship it\n");
+		expect(await todo?.call({ action: "set", id: 1, state: "doing" })).toBe("◉ 1 Write the plan\n");
+		expect(todo?.structured).toEqual([
+			{ action: "add", value: { id: 1, text: "Write the plan", state: "open" } },
+			{ action: "add", value: { id: 1, text: "Ship it", state: "open" } },
+			{ action: "set", value: { id: 1, text: "Write the plan", state: "doing" } },
+		]);
+
+		const own = await request({ type: "todo", caller: "session", action: "list" }, { start: false });
+		expect(own).toEqual({ todos: [{ id: 1, text: "Write the plan", state: "doing" }] });
+		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
+		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
+	});
+
+	it("shows the todos of the session while one is open or doing, at once after a call, only on a change, and nothing without a host", async () => {
+		const registered = await load();
+		const quiet = noWidgets();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
+		await vi.waitFor(() => expect(quiet.todos).toEqual([undefined]), { timeout: 10_000 });
+		expect(existsSync(statePaths(MAIN_PROJECT).socket)).toBe(false);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
+
+		host = await startHost();
+		const todo = registered.tools.get("todo");
+		const widgets = noWidgets();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
+		await vi.waitFor(() => expect(widgets.todos).toEqual([undefined]), { timeout: 10_000 });
+		await todo?.call({ action: "add", text: "Write the plan" });
+		expect(widgets.todos.at(-1)).toEqual(["○ 1 Write the plan"]);
+		await todo?.call({ action: "add", text: "Ship it" });
+		await todo?.call({ action: "set", id: 1, state: "done" });
+		await todo?.call({ action: "set", id: 2, state: "doing" });
+		expect(widgets.todos.at(-1)).toEqual(["✓ 1 Write the plan", "◉ 2 Ship it"]);
+
+		// A tick with the same lines does not set the widget again, which would move it below the subagents widget.
+		const shown = widgets.todos.length;
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		expect(widgets.todos).toHaveLength(shown);
+		await todo?.call({ action: "set", id: 2, state: "done" });
+		expect(widgets.todos.at(-1)).toBeUndefined();
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
+	});
+
+	it("does not show the todos of the local session in a mirror session", async () => {
+		host = await startHost();
+		await request({ type: "todo", caller: "session", action: "add", text: "Local" }, { start: false });
+		const registered = await load();
+		const widgets = noWidgets();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets, true);
+		await vi.waitFor(() => expect(widgets.subagents).toEqual([undefined]), { timeout: 10_000 });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(widgets.todos).toEqual([]);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets, true);
 	});
 
 	it("gives the rlm section to a session with the ipython tool only", async () => {

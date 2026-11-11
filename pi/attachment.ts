@@ -20,6 +20,7 @@ import { ChatView } from "./chat.ts";
 import type { Harness } from "./index.ts";
 import { ModelSync } from "./model-sync.ts";
 import { ProgramStatusReport } from "./program-status.ts";
+import { TODO_WIDGET, todoWidgetLines } from "./todo.ts";
 import { usageLine } from "./usage-line.ts";
 
 /** The key of the status widget above the editor. */
@@ -156,6 +157,7 @@ export class Attachment {
 		this.#chat?.stopTimers();
 		this.#status.dispose();
 		this.#ctx.ui.setWidget(WIDGET, undefined);
+		this.#ctx.ui.setWidget(TODO_WIDGET, undefined);
 		this.#ctx.ui.setEditorComponent(undefined);
 		this.#programStatus?.leave(this.#mirror);
 	}
@@ -169,6 +171,7 @@ export class Attachment {
 
 		if (view !== undefined && child !== undefined) this.#showTranscript(ui, view, child, previous);
 		this.#showStatus(ui, view, child);
+		this.#showTodos(view);
 
 		if (status.kind === "failed" && previous.kind !== "failed") this.#showFailure(status.reason);
 		this.#programStatus?.update(this.#mirror);
@@ -225,6 +228,13 @@ export class Attachment {
 					: "";
 
 		this.#status.show(ui, this.#theme, working, lines);
+	}
+
+	/** Shows below the editor the list of todos of the agent, from the last view, as the todo widget of Pi does. */
+	#showTodos(view: ConversationView | undefined): void {
+		const { todosOf } = this.#harness.viewState;
+		const lines = view === undefined ? undefined : todoWidgetLines(todosOf(view), this.#harness.protocol.todoLine);
+		this.#ctx.ui.setWidget(TODO_WIDGET, lines, { placement: "belowEditor" });
 	}
 
 	#showFailure(reason: string): void {

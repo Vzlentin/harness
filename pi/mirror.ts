@@ -41,8 +41,11 @@ function registerFlags(pi: ExtensionAPI, harness: Harness): void {
 	});
 }
 
-/** Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. */
-export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
+/**
+ * Registers `/harness`, the flags and the handlers that turn a session with a mirror entry into a mirror session. It
+ * gives whether the session is a mirror session now, from its `session_start` to its `session_shutdown`.
+ */
+export function registerMirror(pi: ExtensionAPI, harness: Harness): () => boolean {
 	const { MIRROR_ENTRY, toMirrorEntry } = harness.mirror;
 	const { errorMessage } = harness.protocol;
 	// The frame of each mirror entry in Pi's chat. Pi can draw the entry before or after `session_start`.
@@ -148,6 +151,8 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness): void {
 	pi.on("model_select", (event) => {
 		if (event.source !== "restore") attached?.models.piSelected(event.model.provider, event.model.id);
 	});
+
+	return () => attached !== undefined;
 }
 
 /** The newest mirror entry of `entries` with a valid target. */

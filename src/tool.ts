@@ -439,7 +439,8 @@ function replyTodo(reply: Replies["todo"]): Todo {
 	return reply;
 }
 
-function replyList(reply: Replies["todo"]): TodoList {
+/** The list of the host's reply to a `todo` request with the action `list`. It throws when the reply is a todo. */
+export function replyList(reply: Replies["todo"]): TodoList {
 	if (!("todos" in reply)) throw new Error("The host replied with a todo, not a list");
 
 	return reply;

@@ -25,6 +25,7 @@ import * as protocol from "../src/protocol/index.ts";
 import * as projects from "../src/protocol/projects.ts";
 import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { TODO_LIST_KIND, type Todo } from "../src/protocol/todo.ts";
 import { FakeTerminal, until } from "./helpers.ts";
 
 const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
@@ -112,6 +113,13 @@ function viewOf(live: LiveState, entries: readonly EntryRecord[] = []): Conversa
 	return { conversation: { id: conversationId }, entries, docs: { "pi.live": live } };
 }
 
+/** A conversation view with the list of todos `todos`. */
+function withTodos(todos: Todo[]): ConversationView {
+	const view = viewOf({});
+
+	return { ...view, docs: { ...view.docs, [TODO_LIST_KIND]: { todos } } };
+}
+
 /** An answer as the live document streams it, and as its entry holds it. */
 type Answer = NonNullable<NonNullable<LiveState["generation"]>["message"]>;
 
@@ -181,6 +189,8 @@ class Session {
 	readonly terminal = new FakeTerminal();
 	readonly ui = new TuiMainScreen(this.terminal);
 	readonly ctx: coding.ExtensionContext;
+	/** The last lines of each widget that the session got as lines; undefined hides the widget. */
+	readonly widgets = new Map<string, readonly string[] | undefined>();
 	text = "";
 	/** The renderer of the mirror entry. */
 	renderer: coding.EntryRenderer | undefined;
@@ -207,8 +217,9 @@ class Session {
 			sessionManager: { getBranch: () => [...branch] },
 			ui: {
 				theme: THEME,
-				setWidget: (_key: string, content: string[] | ((ui: TUI, theme: coding.Theme) => Component) | undefined) => {
+				setWidget: (key: string, content: string[] | ((ui: TUI, theme: coding.Theme) => Component) | undefined) => {
 					if (content instanceof Function) content(this.ui, THEME);
+					else this.widgets.set(key, content);
 				},
 				setEditorComponent: (factory) => {
 					this.#editorFactory = factory;
@@ -423,6 +434,25 @@ describe("mirror sessions in Pi", () => {
 		expect(header(child)).toBe("harness │ sub (abc123) │ /tmp");
 		const { name: _, ...unnamed } = child;
 		expect(header({ ...unnamed, kind: "rlm" })).toBe("harness │ abc123 │ rlm │ /tmp");
+	});
+
+	it("shows the todos of the agent below the editor while one is open or doing, until the session ends", () => {
+		const { session, mirror } = attached();
+		const plan: Todo = { id: 1, text: "Write the plan", state: "open" };
+		mirror.mirror.view = withTodos([plan]);
+		mirror.change({ kind: "open" });
+		expect(session.widgets.get("todos")).toEqual(["○ 1 Write the plan"]);
+		mirror.mirror.view = withTodos([{ ...plan, state: "done" }]);
+		mirror.change({ kind: "open" });
+		expect(session.widgets.get("todos")).toBeUndefined();
+		mirror.mirror.view = withTodos([
+			{ ...plan, state: "done" },
+			{ id: 2, text: "Ship it", state: "doing" },
+		]);
+		mirror.change({ kind: "open" });
+		expect(session.widgets.get("todos")).toEqual(["✓ 1 Write the plan", "◉ 2 Ship it"]);
+		session.emit("session_shutdown");
+		expect(session.widgets.get("todos")).toBeUndefined();
 	});
 
 	it("reports the state of the agent again when a dialog of Pi ends, until Pi leaves the session", () => {

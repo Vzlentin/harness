@@ -1,8 +1,8 @@
 /**
- * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children, the mirror
- * sessions of `/harness` and `rlm` in the IPython kernels of the session. They use the client of `@vzlentin/harness`,
- * the dependency of this package, from its built `dist/`, and start the host of that install. The `.bin` folder that
- * holds its `harness` command goes last on `PATH`.
+ * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children, the `todo`
+ * tool and the todo widget, the mirror sessions of `/harness` and `rlm` in the IPython kernels of the session. They use
+ * the client of `@vzlentin/harness`, the dependency of this package, from its built `dist/`, and start the host of that
+ * install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -28,7 +28,9 @@ import type * as trust from "../dist/protocol/trust.js";
 import type * as rlm from "../dist/rlm/index.js";
 import type * as tool from "../dist/tool.js";
 import { registerMirror } from "./mirror.ts";
+import { PolledWidget } from "./polled-widget.ts";
 import { registerRlm } from "./rlm.ts";
+import { registerTodo } from "./todo.ts";
 
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
@@ -77,8 +79,10 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	// Pi's own modules, so Pi does not load the copy of pi-coding-agent that harness installs.
 	const piTrust = { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore, SettingsManager };
 	const savedTrust = (cwd: string) => harness.trust.savedTrust(cwd, piTrust);
-	registerMirror(pi, harness);
+	// Pi runs the handlers in the order of registration, so the todo widget knows a mirror session at its start.
+	const mirrored = registerMirror(pi, harness);
 	registerRlm(pi, harness, sessionScope);
+	registerTodo(pi, harness, mirrored);
 	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 
@@ -162,37 +166,18 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		},
 	});
 
-	let widgetTimer: ReturnType<typeof setInterval> | undefined;
-	let widgetContext: ExtensionContext | undefined;
-	let refreshing = false;
+	const subagents = new PolledWidget(
+		"subagents",
+		async (ctx) => {
+			const children = await client.request(
+				{ type: "list", caller: ctx.sessionManager.getSessionId() },
+				{ start: false },
+			);
 
-	// The widget does not start the host: when none runs, it shows nothing.
-	const refreshWidget = async (): Promise<void> => {
-		if (!widgetContext || refreshing) return;
-		refreshing = true;
-
-		try {
-			const context = widgetContext;
-
-			let lines: string[] | undefined;
-
-			try {
-				const children = await client.request(
-					{ type: "list", caller: context.sessionManager.getSessionId() },
-					{ start: false },
-				);
-
-				lines = widgetLines(context.ui.theme, children);
-			} catch (cause) {
-				lines = [context.ui.theme.fg("error", `subagents: ${protocol.errorMessage(cause).split("\n", 1)[0]}`)];
-			}
-
-			if (context !== widgetContext) return;
-			context.ui.setWidget("subagents", lines, { placement: "belowEditor" });
-		} finally {
-			refreshing = false;
-		}
-	};
+			return widgetLines(ctx.ui.theme, children);
+		},
+		protocol.errorMessage,
+	);
 
 	pi.on("session_start", (_event, ctx) => {
 		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
@@ -204,21 +189,13 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 				ctx.ui.notify(`Could not show the answer of a subagent: ${protocol.errorMessage(error)}`, "error"),
 		});
 
-		if (!ctx.hasUI) return;
-		widgetContext = ctx;
-		void refreshWidget();
-		widgetTimer = setInterval(() => void refreshWidget(), 1000);
-		widgetTimer.unref();
+		subagents.start(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		listener?.close();
 		listener = undefined;
-
-		if (widgetTimer) clearInterval(widgetTimer);
-		widgetTimer = undefined;
-		widgetContext = undefined;
-		ctx.ui.setWidget("subagents", undefined);
+		subagents.stop(ctx);
 	});
 }
 
