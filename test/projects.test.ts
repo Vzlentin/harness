@@ -69,6 +69,7 @@ describe("projects", { timeout: 30_000 }, () => {
 			[["create", "Bad", "--cwd", dirA], "A project name has 1 to 32 characters"],
 			[["create", "main", "--cwd", dirA], "A project cannot have the name main"],
 			[["create", "spawn", "--cwd", dirA], "A project cannot have the name spawn"],
+			[["create", "todo", "--cwd", dirA], "A project cannot have the name todo"],
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];
 

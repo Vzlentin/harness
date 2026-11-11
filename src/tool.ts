@@ -9,9 +9,16 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
+import { AGENT_HANDLE } from "./protocol/target.ts";
+import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
 /** The signal of a call that its adapter cannot abort. */
 const NO_ABORT = new AbortController().signal;
+
+/** `words` as one choice in text: `a, b or c`. */
+function oneOf(words: readonly string[]): string {
+	return `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
+}
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
 When a child finishes, its answer comes to you as a message that starts a turn. Use \`wait\` only when you need the answer in this turn.
@@ -49,7 +56,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		model: text("spawn: the model; default yours"),
 		thinking: Type.Optional(
 			Type.Enum(THINKING_LEVELS, {
-				description: `spawn: ${THINKING_LEVELS.slice(0, -1).join(", ")} or ${THINKING_LEVELS.at(-1)}; default yours`,
+				description: `spawn: ${oneOf(THINKING_LEVELS)}; default yours`,
 			}),
 		),
 		cwd: text("spawn: the child's working directory; default yours"),
@@ -263,7 +270,7 @@ function fileText(file: string): string {
 	return `<file name="${file}">\n${readFileSync(file, "utf8").replace(/^\uFEFF/, "")}\n</file>\n`;
 }
 
-function required(value: string | undefined, argument: string, action: string): string {
+function required<T extends string | number>(value: T | undefined, argument: string, action: string): T {
 	if (value === undefined || value === "") throw new Error(`${action} requires ${argument}`);
 
 	return value;
@@ -327,4 +334,103 @@ export function subagentTool(
 	});
 
 	return durable.defineExtension({ name: "pi-subagent", tools: [tool] });
+}
+
+export const TODO_TOOL_DESCRIPTION = `Keep a list of todos: lines of intent, each with an ID and a state.
+- add: add a todo with \`text\`. It starts open, with the next ID of the list.
+- set: set the \`state\` of the todo \`id\`, and its \`text\` when you give one.
+- list: the todos, in ID order.
+Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.
+Without \`list\`, the list is your own. \`list: "project"\` is the list of the project, from any place.`;
+
+/** The parameters of the todo tool, built with the caller's TypeBox `Type`, as `toolSchemas` builds them. */
+export function todoToolParameters(typebox: Pick<typeof TypeBox, "Type">) {
+	const { Type } = typebox;
+
+	return Type.Object({
+		action: Type.Union([Type.Literal("add"), Type.Literal("set"), Type.Literal("list")], { description: "What to do" }),
+		text: Type.Optional(Type.String({ description: "add: the text of the todo; set: its new text" })),
+		id: Type.Optional(Type.Integer({ minimum: 1, description: "set: the ID of the todo" })),
+		state: Type.Optional(Type.Enum(TODO_STATES, { description: `set: ${oneOf(TODO_STATES)}` })),
+		list: Type.Optional(
+			Type.Literal("project", { description: "add, set, list: project for the list of the project; default your own" }),
+		),
+	});
+}
+
+export type TodoToolArgs = Static<ReturnType<typeof todoToolParameters>>;
+
+/** A list that only the CLI targets: a child or the project agent by handle, a library conversation, or a task by key. */
+export type TodoTarget = { readonly handle: string } | { readonly conversation: string } | { readonly key: string };
+
+/** The result of a call of the todo tool: the output of `harness todo`, and the host's reply. */
+export type TodoToolResult = {
+	readonly text: string;
+	readonly data:
+		| { readonly action: "add" | "set"; readonly value: Todo }
+		| { readonly action: "list"; readonly value: TodoList };
+};
+
+/** Runs one call of the todo tool on the list of `target`, of `args.list`, or of the caller. */
+export async function runTodoTool(
+	args: TodoToolArgs,
+	scope: Pick<ToolScope, "caller" | "send" | "signal">,
+	target?: TodoTarget,
+): Promise<TodoToolResult> {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+	const list = { type: "todo", caller: scope.caller, ...listTarget(args, target) } as const;
+
+	switch (action) {
+		case "add": {
+			const todo = replyTodo(await scope.send({ ...list, action, text: required(args.text, "text", action) }, signal));
+
+			return { text: `${todoLine(todo)}\n`, data: { action, value: todo } };
+		}
+
+		case "set": {
+			const change = {
+				...list,
+				action,
+				id: required(args.id, "id", action),
+				state: required(args.state, "state", action),
+			};
+
+			const request = args.text === undefined ? change : { ...change, text: args.text };
+			const todo = replyTodo(await scope.send(request, signal));
+
+			return { text: `${todoLine(todo)}\n`, data: { action, value: todo } };
+		}
+
+		case "list": {
+			const todos = replyList(await scope.send({ ...list, action }, signal));
+			const text = todos.todos.length === 0 ? "No todos\n" : todos.todos.map((todo) => `${todoLine(todo)}\n`).join("");
+
+			return { text, data: { action, value: todos } };
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+/** The target of the list of a todo call: `target`, the project agent for `list: "project"`, or none for the caller's. */
+function listTarget(args: TodoToolArgs, target: TodoTarget | undefined): TodoTarget | undefined {
+	if (args.list === undefined) return target;
+
+	if (target !== undefined) throw new Error("Give list or a target, not both");
+
+	return { handle: AGENT_HANDLE };
+}
+
+function replyTodo(reply: Replies["todo"]): Todo {
+	if ("todos" in reply) throw new Error("The host replied with a list, not a todo");
+
+	return reply;
+}
+
+function replyList(reply: Replies["todo"]): TodoList {
+	if (!("todos" in reply)) throw new Error("The host replied with a todo, not a list");
+
+	return reply;
 }

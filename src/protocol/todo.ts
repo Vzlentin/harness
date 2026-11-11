@@ -22,3 +22,16 @@ export const TODO_LIST_KIND = "harness.todos";
 
 /** One list of todos, in ID order. */
 export type TodoList = { todos: Todo[] };
+
+/** The mark of each state in the line of a todo. */
+export const TODO_MARKS = {
+	open: "○",
+	doing: "◉",
+	done: "✓",
+	dropped: "✗",
+} as const satisfies Record<TodoState, string>;
+
+/** The line of `todo` in a list: `<mark> <id> <text>`, with the mark of its state. */
+export function todoLine(todo: Todo): string {
+	return `${TODO_MARKS[todo.state]} ${todo.id} ${todo.text}`;
+}

@@ -17,6 +17,7 @@ const COMMANDS = [
 	"wait",
 	"stop",
 	"list",
+	"todo",
 	"attach",
 	"host",
 	"create",

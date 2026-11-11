@@ -22,7 +22,8 @@ import {
 } from "./protocol/projects.ts";
 import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { parseTarget, type Target, targetRef } from "./protocol/target.ts";
-import { runTool, type ToolArgs } from "./tool.ts";
+import { Todo, TodoState } from "./protocol/todo.ts";
+import { runTodoTool, runTool, type TodoTarget, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -150,6 +151,105 @@ function listArgs(args: string[]): ToolArgs {
 	if (args.length !== 0) usage();
 
 	return { action: "list" };
+}
+
+/** A call of the todo tool from the arguments of `todo`, with the target that only the command has. */
+type TodoCall = { readonly args: TodoToolArgs; readonly target: TodoTarget | undefined };
+
+function todoArgs(args: string[]): TodoCall {
+	const words: string[] = [];
+	let target: TodoTarget | "project" | undefined;
+	let text: string | undefined;
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+
+		switch (arg) {
+			case "--handle":
+				target = onlyTarget(target, { handle: valueAfter(args, i, arg) });
+				i++;
+				break;
+			case "--conversation":
+				target = onlyTarget(target, { conversation: valueAfter(args, i, arg) });
+				i++;
+				break;
+			case "--task":
+				target = onlyTarget(target, { key: valueAfter(args, i, arg) });
+				i++;
+				break;
+			case "--project-list":
+				target = onlyTarget(target, "project");
+				break;
+			case "--text":
+				if (text !== undefined) usage();
+				text = valueAfter(args, i, arg);
+				i++;
+				break;
+			default:
+				if (arg.startsWith("--")) fail(`Unknown todo argument: ${arg}`);
+				words.push(arg);
+		}
+	}
+
+	const [action = "list", ...rest] = words;
+	let call: TodoToolArgs;
+
+	switch (action) {
+		case "list":
+			if (rest.length !== 0 || text !== undefined) usage();
+			call = { action };
+			break;
+		case "add":
+			if (rest.length === 0 || text !== undefined) usage();
+			call = { action, text: rest.join(" ") };
+			break;
+		case "set": {
+			const [id, state] = rest;
+
+			if (rest.length !== 2 || id === undefined || state === undefined) usage();
+			call = { action, id: todoId(id), state: todoState(state) };
+
+			if (text !== undefined) call.text = text;
+			break;
+		}
+
+		default:
+			usage();
+	}
+
+	if (target !== "project") return { args: call, target };
+	call.list = "project";
+
+	return { args: call, target: undefined };
+}
+
+/** `next`, the target of a todo option, when no option gave a target before. Otherwise it prints the usage. */
+function onlyTarget(current: TodoTarget | "project" | undefined, next: TodoTarget | "project"): TodoTarget | "project" {
+	if (current !== undefined) usage();
+
+	return next;
+}
+
+function todoId(value: string): number {
+	const id = Number(value);
+
+	if (!Value.Check(Todo.properties.id, id)) fail(`Invalid todo id: ${value}`);
+
+	return id;
+}
+
+function todoState(value: string): TodoState {
+	if (!Value.Check(TodoState, value)) fail(`Invalid todo state: ${value}`);
+
+	return value;
+}
+
+/** Runs `todo` as a call of the todo tool, and prints its output. */
+async function todoCommand(args: string[], project: string | undefined): Promise<void> {
+	const call = todoArgs(args);
+	const { text } = await runTodoTool(call.args, cliScope(project), call.target);
+
+	process.stdout.write(text);
 }
 
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
@@ -336,23 +436,28 @@ function versionCommand(args: string[], project: string | undefined): void {
 }
 
 /**
- * A command that runs as a call of the `subagent` tool. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and the
- * defaults of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
+ * The scope of a tool call of the CLI, to the host of `project`. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and
+ * the defaults of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
  */
+function cliScope(project: string | undefined): ToolScope {
+	return {
+		caller: cliCaller(process.env),
+		callKey: randomUUID(),
+		provider: process.env[PI_PROVIDER],
+		model: process.env[PI_MODEL],
+		thinking: process.env[PI_REASONING_LEVEL] || "medium",
+		cwd: process.cwd(),
+		send: (message, signal) => request(message, { start: true, signal, project }),
+		signal: undefined,
+	};
+}
+
+/** A command that runs as a call of the `subagent` tool. */
 function toolCommand(lines: readonly string[], parse: (args: string[]) => ToolArgs): Command {
 	return {
 		usage: lines,
 		async run(args, project) {
-			const { text } = await runTool(parse(args), {
-				caller: cliCaller(process.env),
-				callKey: randomUUID(),
-				provider: process.env[PI_PROVIDER],
-				model: process.env[PI_MODEL],
-				thinking: process.env[PI_REASONING_LEVEL] || "medium",
-				cwd: process.cwd(),
-				send: (message, signal) => request(message, { start: true, signal, project }),
-				signal: undefined,
-			});
+			const { text } = await runTool(parse(args), cliScope(project));
 
 			process.stdout.write(text);
 		},
@@ -375,6 +480,13 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		wait: toolCommand(["  harness wait <handle> [--timeout <seconds>]"], waitArgs),
 		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
 		list: toolCommand(["  harness list"], listArgs),
+		todo: {
+			usage: [
+				"  harness todo [list | add <text> | set <id> <state> [--text <text>]]",
+				"    [--handle <handle> | --conversation <id> | --task <key> | --project-list]",
+			],
+			run: todoCommand,
+		},
 		attach: {
 			usage: ["  harness attach <handle>", "  harness attach --conversation <id>"],
 			run: attachCommand,
