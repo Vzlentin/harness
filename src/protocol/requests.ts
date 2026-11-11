@@ -1,4 +1,4 @@
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";

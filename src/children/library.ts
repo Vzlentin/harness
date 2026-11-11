@@ -2,8 +2,8 @@
  * The children library: creates and drives child conversations on whatever pi-durable store its caller hands it. Its
  * caller passes its pi-durable module, so a process never holds two copies.
  */
-import type { JsonValue } from "@earendil-works/chord";
 import { type Context, withCancel } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {

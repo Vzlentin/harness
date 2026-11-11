@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as context, withCancel } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as durable from "@earendil-works/pi-durable";
 import { Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";

@@ -3,8 +3,8 @@
  * answers of, their text, and whether a child holds its caller.
  */
 import { randomBytes } from "node:crypto";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";

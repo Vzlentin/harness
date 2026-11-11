@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as ai from "@earendil-works/pi-ai";
 import {
 	createEventBus,

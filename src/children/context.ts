@@ -5,7 +5,7 @@
  */
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
 	createFindTool,

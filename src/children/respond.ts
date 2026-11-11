@@ -2,8 +2,8 @@
  * Schema answers: the `respond` tool, its `answer_schema` section and its reminders, in the `harness-answer`
  * extension. Its caller passes its pi-durable module, so a process never holds two copies.
  */
-import { copyJson, type JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
+import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import { type AssistantMessage, type Message, validateToolArguments } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ConversationId, Extension, HookApi, JsonObject, SubmissionId, Tx } from "@earendil-works/pi-durable";

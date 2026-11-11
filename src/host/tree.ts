@@ -2,8 +2,8 @@
  * The tree of a project: the project agent, the children by handle, and the started tasks with their child tasks and
  * the conversations of the children library that these tasks own, each with its state and its list of todos.
  */
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type {
 	ConversationId,
 	ConversationRecord,

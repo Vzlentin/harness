@@ -3,8 +3,8 @@
  * change of its list and each rename.
  */
 import { once } from "node:events";
-import type { Context, WatchHandle } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
+import type { WatchHandle } from "@earendil-works/chord/watch";
 import type { Conversation, ConversationView, DocumentWatch } from "@earendil-works/pi-durable";
 import type { ChildInfo, Replies, WatchLine } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";

@@ -4,7 +4,7 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import {
 	createSyntheticSourceInfo,
 	type loadSkills,

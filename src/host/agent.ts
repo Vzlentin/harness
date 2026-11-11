@@ -5,8 +5,8 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-durable";

@@ -2,7 +2,7 @@
  * What the Pi extension reads from a durable conversation view: its live state, its inbox, its usage, its list of todos
  * and the texts of its user messages. It imports no Pi package at run time, so the Pi extension can load it.
  */
-import type { JsonRepresentation } from "@earendil-works/chord";
+import type { JsonRepresentation } from "@earendil-works/chord/json";
 import type { Usage, UserMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, InboxState, JsonObject, LiveState, UsageState } from "@earendil-works/pi-durable";
 import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
