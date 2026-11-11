@@ -8,7 +8,6 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
-	AssistantEntry,
 	type ConversationId,
 	Harness,
 	ROOT_CONVERSATION_ID,
@@ -34,6 +33,7 @@ import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	agentTurn,
+	answerContent,
 	called,
 	calls,
 	cli,
@@ -42,7 +42,9 @@ import {
 	handleOf,
 	inputAgent,
 	models,
+	openDurableHost,
 	openWatch,
+	reports,
 	requests,
 	root,
 	setDepthLimit,
@@ -59,51 +61,32 @@ import {
 /** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
 type ContextSubmit = { submit(draft: SubmissionDraft, context: Context): Promise<Submission> };
 
-/** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
-const reports: unknown[] = [];
-
 /** A pi-durable host over `store` with the `piDurable` entry of this package. */
-async function openDurable(store: string): Promise<Harness> {
-	const entry = subagentEntry({ durable });
-	const registry = durable.createRegistry();
-
-	for (const extension of entry.extensions) registry.install(extension);
-
-	return Harness.open(
-		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (report) => reports.push(report) },
-		BACKGROUND_CONTEXT,
-	);
+function openDurable(store: string): Promise<Harness> {
+	return openDurableHost(store, subagentEntry({ durable }).extensions);
 }
 
 /**
  * A pi-durable host over `store` with the `subagent` tool, where the caller is `durable-test:<conversation ID>`. With
  * `hangSpawn`, a spawn reaches the harness host, but the tool call never finishes.
  */
-async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
-	const registry = durable.createRegistry();
-	registry.install(
-		subagentTool(
-			durable,
-			{ Type },
-			{
-				caller: async (api) => `durable-test:${api.conversationId}`,
-				send: async (message, signal) => {
-					const reply = await request(message, { start: true, signal });
+function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
+	const tool = subagentTool(
+		durable,
+		{ Type },
+		{
+			caller: async (api) => `durable-test:${api.conversationId}`,
+			send: async (message, signal) => {
+				const reply = await request(message, { start: true, signal });
 
-					if (!hangSpawn || message.type !== "spawn") return reply;
+				if (!hangSpawn || message.type !== "spawn") return reply;
 
-					return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
-				},
+				return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
 			},
-		),
+		},
 	);
 
-	return Harness.open(
-		await openNodeSqliteStorage(store),
-		{ models, registry, onReport: (report) => reports.push(report) },
-		BACKGROUND_CONTEXT,
-	);
+	return openDurableHost(store, [tool]);
 }
 
 /** An error reply of a host. */
@@ -233,7 +216,18 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain("Use the read tool to load a skill's file");
 		expect(seen?.system).not.toContain("<name>local</name>");
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
-		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "codemode"]);
+		expect(seen?.tools).toEqual([
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"write",
+			"edit",
+			"bash",
+			"subagent",
+			"todo",
+			"codemode",
+		]);
 
 		// Once `/trust` saves the decision, the next request loads the project skill.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
@@ -547,6 +541,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"write",
 			"edit",
 			"bash",
+			"todo",
 			"codemode",
 		]);
 		expect(called("Task:\nNest tool")).toBe(2);
@@ -596,11 +591,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const submission = await reopened.submit({ type: "input", content: "Durable", requestId: "durable" }, context);
 			const settled = await submission.wait(context);
 
-			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
-			const answer = settled.answer;
-			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
-			const message = entry?.model?.[0];
-			expect(message?.role === "assistant" ? message.content : []).toEqual([
+			expect(await answerContent(harness, settled)).toEqual([
 				{ type: "text", text: `Tool said: ${handle} finished\n\nAnswer to Task:\nDurable child\n` },
 			]);
 			expect(called("Task:\nDurable child")).toBe(1);
@@ -635,14 +626,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 			);
 
 			const settled = await submission.wait(context);
-
-			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
+			const content = await answerContent(harness, settled);
 			const children = await request({ type: "list", caller }, { start: false });
 			expect(children).toHaveLength(1);
-			const answer = settled.answer;
-			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
-			const message = entry?.model?.[0];
-			expect(message?.role === "assistant" ? message.content : []).toEqual([
+			expect(content).toEqual([
 				{
 					type: "text",
 					text: `Tool said: ${children?.[0]?.handle} finished\n\nAnswer to Task:\nDurable spawned\n`,
@@ -663,13 +650,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		try {
 			const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 			const submission = await conversation.submit({ type: "input", content: "No cwd", requestId: "no-cwd" }, context);
-			const settled = await submission.wait(context);
-
-			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
-			const answer = settled.answer;
-			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
-			const message = entry?.model?.[0];
-			const text = message?.role === "assistant" && message.content[0]?.type === "text" ? message.content[0].text : "";
+			const [first] = await answerContent(harness, await submission.wait(context));
+			const text = first?.type === "text" ? first.text : "";
 			expect(text).toContain("spawn requires a caller with a working directory");
 			expect(called("Task:\nNo cwd child")).toBe(0);
 			expect(reports).toEqual([]);

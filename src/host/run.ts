@@ -37,7 +37,7 @@ import {
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
 import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
-import { type Send, subagentTool } from "../tool.ts";
+import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
@@ -142,16 +142,24 @@ export async function runHost(options: {
 		}));
 
 	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
-	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on. The
-	// kernels of `rlm` call it the same way.
+	// of a connection. Its caller is its conversation ID, which the depth limit, the owner checks and the default list
+	// of todos key on. The kernels of `rlm` call it the same way.
 	const send: Send = (request, signal) => handleRequest(request, { ...base, signal });
-	const tool = subagentTool(durable, { Type }, { caller: async (api) => String(api.conversationId), send });
+	const scope: DurableScope = { caller: async (api) => String(api.conversationId), send };
 	const rlm = serveRlm(entries.events, place, send, warn);
 
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
+
 	// pi-durable keeps the last section of a key, so the `rlm` section of the host wins over one of an entry.
-	const selected = [ChildContext, tool, createCodemodeExtension({ sandbox }), ...entries.extensions, rlm.extension];
+	const selected = [
+		ChildContext,
+		subagentTool(durable, { Type }, scope),
+		todoTool(durable, { Type }, scope),
+		createCodemodeExtension({ sandbox }),
+		...entries.extensions,
+		rlm.extension,
+	];
 
 	try {
 		for (const extension of selected) registry.install(extension);

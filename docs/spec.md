@@ -31,7 +31,7 @@ harness spawn \
   --prompt "Run the targeted tests"
 ```
 
-Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Limits](#limits)). A child at the depth limit gets no `subagent` and no `workflow`, its IPython kernel has no `rlm`, and its system prompt has no `<rlm>` section (see [Push](#push)). An unknown tool name is an error:
+Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `todo`, `codemode`, and the tools of the host's entries (see [Limits](#limits)). A child at the depth limit gets no `subagent` and no `workflow`, but keeps `todo`; its IPython kernel has no `rlm`, and its system prompt has no `<rlm>` section (see [Push](#push)). An unknown tool name is an error:
 
 ```sh
 harness spawn --tools read,bash --prompt "Investigate the failure"
@@ -122,7 +122,7 @@ harness todo list --handle a1b2c3
 - Without a target option, the list is the list of the caller, `PI_SESSION_ID` or `cli` (see [Projects](#projects)). One target option gives another list: `--handle <handle>` the list of a child, or of the project agent with `agent`; `--conversation <id>` the list of a conversation that the children library opened; `--task <key>` the list of the task of a `start`; `--project-list` the list of the project, which is the list of the project agent.
 - `add` and `set` print the line of the todo. `list` prints the line of each todo, in ID order, or `No todos` for an empty list. A line is `<mark> <id> <text>`, with the mark of the state: `○` open, `◉` doing, `✓` done, `✗` dropped. A text with a line break prints as it is.
 - The command refuses a state that is not one of the four with `Invalid todo state: <state>`, an ID that is not an integer from 1 with `Invalid todo id: <id>`, an unknown option with `Unknown todo argument: <option>`, and an empty `add` text with `add requires text`, before it sends the request. The other errors come from the host, such as `The text of a todo is empty` and `Unknown todo: <id>` (see [Host](#host)). An unknown word, more words than the action takes, `add` or `set` without its words, `--text` without `set`, two `--text` options and two target options print the usage.
-- The command runs as a call of `runTodoTool(args, scope, target?)` of `@vzlentin/harness/tool`, the runner of the todo tool. `args` are the parameters of the tool, `{ action, text?, id?, state?, list? }`, and `--project-list` is `list: "project"`, which the runner sends with the handle `agent`. `target` is `{ handle }`, `{ conversation }` or `{ key }`, from the other target options, which only the command has. The runner refuses `list` together with a target with `Give list or a target, not both`, and an `add` without `text`, or a `set` without `id` or `state`, with `<action> requires <argument>`. Its result is the text that the command prints, and `{ action, value }`, where `value` is the reply of the host: the todo for `add` and `set`, and `{ todos }` for `list`.
+- The command runs as a call of `runTodoTool(args, scope, target?)` of `@vzlentin/harness/tool`, the runner of the todo tool. `args` are the parameters of the tool, `{ action, text?, id?, state?, list? }`, and `--project-list` is `list: "project"`, which the runner sends with the handle `agent`. `target` is `{ handle }`, `{ conversation }` or `{ key }`, from the other target options, which only the command has. The runner refuses `list` together with a target with `Give list or a target, not both`, and an `add` without `text`, or a `set` without `id` or `state`, with `<action> requires <argument>`. Its result is the text that the command prints, and `{ action, value }`, where `value` is the reply of the host: the todo for `add` and `set`, and `{ todos }` for `list`. The `todo` tool of the host runs the same runner (see [Tool](#tool)).
 
 ## Open in Pi
 
@@ -211,7 +211,7 @@ The depth of the subagent tree is the setting `agentDepthLimit` in Pi's global `
 
 ## Limits
 
-- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `codemode`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions. A child at the depth limit also gets no `subagent`, no `workflow` and no `rlm` (see [Push](#push)). `codemode` runs JavaScript that calls the other tools of the child, as Pi's `codemode` does. A script that a host stop interrupts continues when the host starts again.
+- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `todo`, `codemode`, and the tools of the host's entries (see [Host](#host)). They get no MCP tools and no Pi extensions. A child at the depth limit also gets no `subagent`, no `workflow` and no `rlm`, and keeps `todo` (see [Push](#push)). `codemode` runs JavaScript that calls the other tools of the child, as Pi's `codemode` does. A script that a host stop interrupts continues when the host starts again.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - The children that `rlm` spawns have more limits: how many are live, the size of their requests, the time of a turn, the size of an answer, and the model requests of a tree at the same time (see [RLM limits](#rlm-limits)).
 - `--file` gives text only; images are not attached.
@@ -245,6 +245,8 @@ The CLI runs `spawn`, `status`, `rename`, `send`, `wait`, `stop` and `list` as c
 - In an IPython kernel of the host or of interactive Pi, `rlm` gives the actions of the tool as coroutines (see [RLM](#rlm)). The caller is the conversation of the kernel, or the Pi session, as for the tool of that conversation or session.
 
 The children get the tool too. Their caller is their conversation ID, as for their bash commands.
+
+The `todo` tool keeps a list of todos (see [Todos](#todos)). It takes one `action` and its arguments: `add` with `text`, `set` with `id`, `state` and an optional `text`, and `list`. Each action also takes `list: "project"`, for the list of the project, which is the list of the project agent. Without `list`, the list is the caller's own. The text result is the output of `harness todo` for the same call: the line of the todo for `add` and `set`, and the line of each todo, or `No todos`, for `list`. The structured result is `{ action, value }`, where `value` is the reply of the host: the todo `{ id, text, state }` for `add` and `set`, and `{ todos }` for `list`. The tool declares the schema of this result. The host gives the tool to the project agent and to each child, also at the depth limit. The call runs in the host process, as a call of the `subagent` tool does, and its caller is the conversation ID, so without `list` the list is the list of that conversation. A call that a host restart interrupts does not run again. It ends with `Tool todo was interrupted and may have partially run`, so an `add` is never made twice, and `list` shows whether it was made. The entry `@vzlentin/harness/durable-entry` does not give the tool.
 
 ## RLM
 

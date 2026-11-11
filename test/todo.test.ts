@@ -9,7 +9,7 @@ import { setEntry } from "../src/protocol/entries.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import type { TodoState } from "../src/protocol/todo.ts";
-import { cli, models, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
+import { cli, models, requests, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
 
@@ -109,6 +109,8 @@ describe("todo lists", { timeout: 30_000 }, () => {
 
 	it("gives a caller that is a conversation of the host the list of its conversation", async () => {
 		const ids = await askTask("caller");
+		// A child that a task opens without tools gets the todo tool.
+		expect(requests.get("Todo caller")?.tools).toContain("todo");
 		const byConversation = { caller: "session-1", conversation: ids.child };
 		const first = await add(byConversation, "Added by conversation");
 		const second = await add({ caller: ids.child }, "Added by the caller");

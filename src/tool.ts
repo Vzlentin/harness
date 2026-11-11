@@ -61,7 +61,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		),
 		cwd: text("spawn: the child's working directory; default yours"),
 		tools: texts(
-			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash, codemode and the package tools",
+			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash, todo, codemode and the package tools",
 		),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),
@@ -293,7 +293,7 @@ function checkHandle(handle: string): string {
 
 /** How a host reaches the harness host. */
 export type DurableScope = {
-	/** The caller that owns the children of the calling conversation. */
+	/** The caller of the calling conversation: it owns the children, and its list of todos is the default list. */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;
 	readonly send: Send;
 };
@@ -343,11 +343,11 @@ export const TODO_TOOL_DESCRIPTION = `Keep a list of todos: lines of intent, eac
 Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.
 Without \`list\`, the list is your own. \`list: "project"\` is the list of the project, from any place.`;
 
-/** The parameters of the todo tool, built with the caller's TypeBox `Type`, as `toolSchemas` builds them. */
-export function todoToolParameters(typebox: Pick<typeof TypeBox, "Type">) {
+/** The parameters and the output schema of the todo tool, built with the caller's TypeBox `Type`, as in `toolSchemas`. */
+export function todoToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 	const { Type } = typebox;
 
-	return Type.Object({
+	const parameters = Type.Object({
 		action: Type.Union([Type.Literal("add"), Type.Literal("set"), Type.Literal("list")], { description: "What to do" }),
 		text: Type.Optional(Type.String({ description: "add: the text of the todo; set: its new text" })),
 		id: Type.Optional(Type.Integer({ minimum: 1, description: "set: the ID of the todo" })),
@@ -356,20 +356,30 @@ export function todoToolParameters(typebox: Pick<typeof TypeBox, "Type">) {
 			Type.Literal("project", { description: "add, set, list: project for the list of the project; default your own" }),
 		),
 	});
+
+	const todo = Type.Object({
+		id: Type.Integer({ minimum: 1 }),
+		text: Type.String(),
+		state: Type.Enum(TODO_STATES),
+	});
+
+	const output = Type.Union([
+		Type.Object({ action: Type.Union([Type.Literal("add"), Type.Literal("set")]), value: todo }),
+		Type.Object({ action: Type.Literal("list"), value: Type.Object({ todos: Type.Array(todo) }) }),
+	]);
+
+	return { parameters, output };
 }
 
-export type TodoToolArgs = Static<ReturnType<typeof todoToolParameters>>;
+type TodoSchemas = ReturnType<typeof todoToolSchemas>;
+
+export type TodoToolArgs = Static<TodoSchemas["parameters"]>;
 
 /** A list that only the CLI targets: a child or the project agent by handle, a library conversation, or a task by key. */
 export type TodoTarget = { readonly handle: string } | { readonly conversation: string } | { readonly key: string };
 
 /** The result of a call of the todo tool: the output of `harness todo`, and the host's reply. */
-export type TodoToolResult = {
-	readonly text: string;
-	readonly data:
-		| { readonly action: "add" | "set"; readonly value: Todo }
-		| { readonly action: "list"; readonly value: TodoList };
-};
+export type TodoToolResult = { readonly text: string; readonly data: Static<TodoSchemas["output"]> };
 
 /** Runs one call of the todo tool on the list of `target`, of `args.list`, or of the caller. */
 export async function runTodoTool(
@@ -433,4 +443,38 @@ function replyList(reply: Replies["todo"]): TodoList {
 	if (!("todos" in reply)) throw new Error("The host replied with a todo, not a list");
 
 	return reply;
+}
+
+/**
+ * The pi-durable extension with the `todo` tool. The `todo` request has no request ID, so a call that a restart
+ * interrupts does not run again: an `add` is never made twice.
+ */
+export function todoTool(
+	durable: typeof Durable,
+	typebox: Pick<typeof TypeBox, "Type">,
+	scope: DurableScope,
+): Extension {
+	const { parameters, output } = todoToolSchemas(typebox);
+
+	const tool = durable.defineTool({
+		name: "todo",
+		description: TODO_TOOL_DESCRIPTION,
+		parameters,
+		structuredOutputSchema: output,
+		replay: "unsafe",
+		async execute(args, api, context) {
+			// pi-durable has validated the arguments, but its types do not narrow TypeBox enums.
+			if (!Value.Check(parameters, args)) throw new Error("Invalid todo arguments");
+
+			const { text, data } = await runTodoTool(args, {
+				caller: await scope.caller(api, context),
+				send: scope.send,
+				signal: context.abortSignal,
+			});
+
+			return { output: [{ type: "text", text }], structuredOutput: data };
+		},
+	});
+
+	return durable.defineExtension({ name: "harness-todo", tools: [tool] });
 }

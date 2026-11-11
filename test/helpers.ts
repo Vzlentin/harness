@@ -4,11 +4,13 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	type AssistantMessage,
 	getSystemMessageText,
 	type Message,
 	type SimpleStreamOptions,
+	type ToolCall,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -18,7 +20,15 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { ConversationView } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	type ConversationView,
+	createRegistry,
+	type Extension,
+	Harness,
+	type SettledSubmissionRecord,
+} from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { vi } from "vite-plus/test";
 import { type Client, connect, request } from "../src/client/client.ts";
@@ -26,6 +36,7 @@ import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, ChildKind, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
+import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
@@ -108,13 +119,19 @@ export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 export const toolWaits = new Map<string, PromiseWithResolvers<string>>();
 
+/** One tool call of the model: the name of the tool and its arguments. */
+type ScriptedCall = { readonly name: string; readonly arguments: ToolCall["arguments"] };
+
 /**
- * The cells that the model of a prompt runs with the `ipython` tool, one in each round, by prompt. After the last one,
- * it answers `Tool said: <result>`.
+ * The tool calls that the model of a prompt makes, one in each round, by prompt. After the last one, it answers
+ * `Tool said: <result>`.
  */
+export const scripts = new Map<string, readonly ScriptedCall[]>();
+
+/** The cells that the model of a prompt runs with the `ipython` tool, as `scripts` runs its calls, by prompt. */
 export const cells = new Map<string, readonly string[]>();
 
-/** The text of each tool result of the current turn of a prompt of `cells`, by prompt. */
+/** The text of each tool result of the current turn of a prompt of `scripts` or `cells`, by prompt. */
 export const cellResults = new Map<string, string[]>();
 
 async function respond(
@@ -157,14 +174,16 @@ async function respond(
 		return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
 	}
 
-	const cellCodes = cells.get(prompt);
+	const script = scripts.get(prompt) ?? cells.get(prompt)?.map((code) => ({ name: "ipython", arguments: { code } }));
 
-	if (cellCodes !== undefined && last?.role === "toolResult") {
+	if (script !== undefined && last?.role === "toolResult") {
 		const done = turn.flatMap((message) => (message.role === "toolResult" ? [textOf(message)] : []));
 		cellResults.set(prompt, done);
-		const code = cellCodes[done.length];
+		const next = script[done.length];
 
-		if (code !== undefined) return fauxAssistantMessage(fauxToolCall("ipython", { code }), { stopReason: "toolUse" });
+		if (next !== undefined) {
+			return fauxAssistantMessage(fauxToolCall(next.name, next.arguments), { stopReason: "toolUse" });
+		}
 	}
 
 	if (last?.role === "toolResult") {
@@ -203,10 +222,12 @@ async function respond(
 		]);
 	}
 
-	if (cellCodes?.[0] !== undefined) {
+	const [first] = script ?? [];
+
+	if (first !== undefined) {
 		cellResults.set(prompt, []);
 
-		return fauxAssistantMessage(fauxToolCall("ipython", { code: cellCodes[0] }), { stopReason: "toolUse" });
+		return fauxAssistantMessage(fauxToolCall(first.name, first.arguments), { stopReason: "toolUse" });
 	}
 
 	if (child !== undefined) {
@@ -397,6 +418,16 @@ export async function openWatch(target: Target): Promise<{
 	return { client, view: watched.view, child: watched.child, lines, ended };
 }
 
+/** The lists of todos that the list events of `lines` gave, in order. */
+export function listsOf(lines: readonly WatchLine[]): unknown[] {
+	return lines.flatMap((line) => {
+		if (line.stopped || "view" in line.change) return [];
+		const list = line.change.docs?.[TODO_LIST_KIND];
+
+		return list === undefined ? [] : [list];
+	});
+}
+
 /** Sends `message` to the project agent and gives the verb. */
 export async function inputAgent(client: Client, message: string): Promise<string> {
 	const reply = await client.request({
@@ -472,6 +503,38 @@ export async function answerOf(handle: string, project?: string): Promise<string
 	if (reply === undefined) throw new Error("no host");
 
 	return reply.answer;
+}
+
+/** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
+export const reports: unknown[] = [];
+
+/** A pi-durable host over `store` with `extensions`, which adds its reports to `reports`. */
+export async function openDurableHost(store: string, extensions: readonly Extension[]): Promise<Harness> {
+	const registry = createRegistry();
+
+	for (const extension of extensions) registry.install(extension);
+
+	return Harness.open(
+		await openNodeSqliteStorage(store),
+		{ models, registry, onReport: (report) => reports.push(report) },
+		BACKGROUND_CONTEXT,
+	);
+}
+
+/**
+ * The content of the first assistant message of the answer of `settled`, a submission of `harness`. It throws when the
+ * submission is not done or has no answer.
+ */
+export async function answerContent(
+	harness: Harness,
+	settled: SettledSubmissionRecord,
+): Promise<AssistantMessage["content"]> {
+	if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
+	const answer = settled.answer;
+	const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), BACKGROUND_CONTEXT);
+	const message = entry?.model?.[0];
+
+	return message?.role === "assistant" ? message.content : [];
 }
 
 /** Makes a temporary root with the agent dir, home and state, points `process.env` at it and sets up the faux provider. */

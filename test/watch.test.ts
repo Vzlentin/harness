@@ -9,7 +9,7 @@ import type { WatchLine } from "../src/protocol/requests.ts";
 import { type Target, targetRef } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type TodoState } from "../src/protocol/todo.ts";
 import { applyChange } from "../src/protocol/view-change.ts";
-import { cli, handleOf, openWatch, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { cli, handleOf, listsOf, openWatch, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -26,16 +26,6 @@ afterAll(async () => {
 /** Adds the note `text` to the conversation of `handle`. */
 async function note(handle: string, requestId: string, text: string): Promise<void> {
 	await request({ type: "note", requestId, handle, text }, { start: false });
-}
-
-/** The lists of todos that the list events of `lines` gave, in order. */
-function listsOf(lines: readonly WatchLine[]): unknown[] {
-	return lines.flatMap((line) => {
-		if (line.stopped || "view" in line.change) return [];
-		const list = line.change.docs?.[TODO_LIST_KIND];
-
-		return list === undefined ? [] : [list];
-	});
 }
 
 /** Adds the todo `text` to the list of `target`. */

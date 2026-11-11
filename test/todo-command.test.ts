@@ -1,7 +1,9 @@
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
-import { runTodoTool, sendToHost } from "../src/tool.ts";
+import { runTodoTool, sendToHost, todoToolSchemas } from "../src/tool.ts";
 import { cli, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const USAGE_LINE = "  harness todo [list | add <text> | set <id> <state> [--text <text>]]\n";
@@ -117,10 +119,11 @@ describe("harness todo", { timeout: 30_000 }, () => {
 		const scope = { caller: "session-tool", send: sendToHost, signal: undefined };
 		const todoAdded = { id: 1, text: "By the tool", state: "open" };
 
-		expect(await runTodoTool({ action: "add", text: "By the tool" }, scope)).toEqual({
-			text: "○ 1 By the tool\n",
-			data: { action: "add", value: todoAdded },
-		});
+		const added = await runTodoTool({ action: "add", text: "By the tool" }, scope);
+		expect(added).toEqual({ text: "○ 1 By the tool\n", data: { action: "add", value: todoAdded } });
+		const { output } = todoToolSchemas({ Type });
+		expect(Value.Check(output, added.data)).toBe(true);
+		expect(Value.Check(output, { action: "add", value: { ...todoAdded, state: "later" } })).toBe(false);
 		expect(await runTodoTool({ action: "list" }, scope)).toEqual({
 			text: "○ 1 By the tool\n",
 			data: { action: "list", value: { todos: [todoAdded] } },
