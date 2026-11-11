@@ -103,8 +103,9 @@ export async function readPage(pathname: string): Promise<PageFile | undefined> 
 
 /**
  * `html` with the script of the Send before its first `</head>`, or `html` as it is without one. The script defines
- * `window.sendPrompt(text)`, which posts `{ ...fields, message: text }` to `/api/inspect/input`, and shows `sent` or
- * `not sent: <reason>` on one line of the page.
+ * `window.sendPrompt(text)`, which posts `{ ...fields, message: text }` to `/api/inspect/input`. During a post, a dim layer
+ * covers the page and blocks clicks, and a line at the top shows `sending…`; other calls do nothing. The line then shows
+ * `sent ✓` or `not sent: <reason>`. A call with the text of the last success posts nothing and shows `already sent ✓`.
  */
 export function addSend(html: string, fields: Readonly<Record<string, string>>): string {
 	const head = html.search(/<\/head>/i);
@@ -119,15 +120,7 @@ function sendScript(fields: Readonly<Record<string, string>>): string {
 	return `<script>
 (() => {
 	const fields = ${JSON.stringify(fields).replaceAll("<", "\\u003c")};
-	let line;
-	window.sendPrompt = async (text) => {
-		if (line === undefined) {
-			line = document.createElement("div");
-			line.className = "harness-send";
-			line.style.cssText = "position:fixed;top:8px;right:8px;z-index:2147483647;padding:2px 8px;font:12px monospace;background:#222;color:#eee";
-			document.body.append(line);
-		}
-		let reason;
+	const post = async (text) => {
 		try {
 			const response = await fetch("/api/inspect/input", {
 				method: "POST",
@@ -135,11 +128,40 @@ function sendScript(fields: Readonly<Record<string, string>>): string {
 				body: JSON.stringify({ ...fields, message: text }),
 			});
 			const body = await response.json().catch(() => ({}));
-			if (!response.ok) reason = body?.error ?? response.status;
+			if (!response.ok) return body?.error ?? response.status;
 		} catch (error) {
-			reason = error.message;
+			return error.message;
 		}
-		line.textContent = reason === undefined ? "sent" : \`not sent: \${reason}\`;
+	};
+	let line;
+	let layer;
+	let lastSent;
+	window.sendPrompt = async (text) => {
+		if (layer !== undefined) return;
+		if (line === undefined) {
+			line = document.createElement("div");
+			line.className = "harness-send";
+			line.style.cssText = "position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:4px 12px;font:16px monospace;background:#222;color:#eee";
+			document.body.append(line);
+		}
+		if (text === lastSent) {
+			line.textContent = "already sent \\u2713";
+			return;
+		}
+		layer = document.createElement("div");
+		layer.className = "harness-send-layer";
+		layer.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.08);z-index:2147483646";
+		document.body.append(layer);
+		line.textContent = "sending\\u2026";
+		const [reason] = await Promise.all([post(text), new Promise((resolve) => setTimeout(resolve, 400))]);
+		layer.remove();
+		layer = undefined;
+		if (reason === undefined) {
+			line.textContent = "sent \\u2713";
+			lastSent = text;
+		} else {
+			line.textContent = \`not sent: \${reason}\`;
+		}
 	};
 })();
 </script>

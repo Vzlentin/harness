@@ -7,6 +7,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { type InspectServer, startInspectServer } from "../src/inspect/index.ts";
+import { addSend } from "../src/inspect/pages.ts";
 import { pageDir } from "../src/protocol/paths.ts";
 import { answerOf, called, cli, openWatch, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
 
@@ -111,25 +112,101 @@ function addedScript(served: string, original: string): string {
 	return code;
 }
 
-/** An element of the stub document: the line of the Send. */
-type Line = { className: string; style: { cssText?: string }; textContent: string };
+/** An element of the stub document: the line or the layer of the Send. */
+type Element = { className: string; style: { cssText?: string }; textContent: string; remove: () => void };
 
-/** The page of a script that runs in `node:vm`: its `window`, and the lines that it added to the body. */
-type Page = { readonly window: { sendPrompt?: (text: string) => Promise<void> }; readonly lines: Line[] };
+/** The page of a script that runs in `node:vm`: its `window`, and the elements in its body. */
+type Page = { readonly window: { sendPrompt?: (text: string) => Promise<void> }; readonly body: Element[] };
 
-/** Runs `code` with a stub document and the real `fetch`, with paths against the inspect server. */
-function runPage(code: string): Page {
-	const page: Page = { window: {}, lines: [] };
+/** What a page script gets in place of the browser's `fetch` and `setTimeout`. */
+type PageGlobals = {
+	readonly fetch: (path: string, init: RequestInit) => Promise<Response>;
+	readonly setTimeout: (callback: () => void, ms: number) => void;
+};
+
+/** The real `fetch`, with paths against the inspect server, and the real `setTimeout`. */
+function liveGlobals(): PageGlobals {
+	return {
+		fetch: (path, init) => fetch(new URL(path, base), init),
+		setTimeout: (callback, ms) => {
+			setTimeout(callback, ms);
+		},
+	};
+}
+
+/** Runs `code` with a stub document and `globals`. */
+function runPage(code: string, globals: PageGlobals = liveGlobals()): Page {
+	const page: Page = { window: {}, body: [] };
 
 	const document = {
-		createElement: (): Line => ({ className: "", style: {}, textContent: "" }),
-		body: { append: (line: Line) => page.lines.push(line) },
+		createElement: (): Element => {
+			const element: Element = {
+				className: "",
+				style: {},
+				textContent: "",
+				remove: () => page.body.splice(page.body.indexOf(element), 1),
+			};
+
+			return element;
+		},
+		body: { append: (element: Element) => page.body.push(element) },
 	};
 
-	const pageFetch = (path: string, init: RequestInit) => fetch(new URL(path, base), init);
-	runInNewContext(code, { window: page.window, document, fetch: pageFetch });
+	runInNewContext(code, { window: page.window, document, ...globals });
 
 	return page;
+}
+
+/** The texts of the lines of the Send in `page`. */
+function lines(page: Page): string[] {
+	return page.body.filter((element) => element.className === "harness-send").map((element) => element.textContent);
+}
+
+/** The number of layers of the Send in `page`. */
+function layers(page: Page): number {
+	return page.body.filter((element) => element.className === "harness-send-layer").length;
+}
+
+/** A post of the fake `fetch`: its body, and the function that answers it. */
+type Post = { readonly body: Promise<string>; readonly answer: (response: Response | Error) => void };
+
+/** Fake `fetch` and `setTimeout`: the test answers each post and fires each timer. */
+type FakePage = {
+	readonly page: Page;
+	readonly posts: Post[];
+	readonly timers: Array<{ ms: number; fire: () => void }>;
+};
+
+function fakePage(): FakePage {
+	const posts: Post[] = [];
+	const timers: Array<{ ms: number; fire: () => void }> = [];
+
+	const globals: PageGlobals = {
+		fetch: (_path, init) =>
+			new Promise((resolve, reject) => {
+				posts.push({
+					body: new Response(init.body).text(),
+					answer: (response) => (response instanceof Error ? reject(response) : resolve(response)),
+				});
+			}),
+		setTimeout: (callback, ms) => {
+			timers.push({ ms, fire: callback });
+		},
+	};
+
+	const page = runPage(addedScript(addSend(INDEX, { project: "main", handle: "a1b2c3" }), INDEX), globals);
+
+	return { page, posts, timers };
+}
+
+/** Lets the pending promise callbacks run. */
+async function flush(): Promise<void> {
+	for (let i = 0; i < 5; i += 1) await new Promise(setImmediate);
+}
+
+/** A reply of the input route. */
+function inputReply(status: number, body: { readonly error?: string } = {}): Response {
+	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -301,7 +378,8 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 
 		await sendPrompt(page, "[demo] 1a ok");
 		await until(() => called("[demo] 1a ok") === 1);
-		expect(page.lines.map((line) => line.textContent)).toEqual(["sent"]);
+		expect(lines(page)).toEqual(["sent \u2713"]);
+		expect(layers(page)).toBe(0);
 	});
 
 	it("shows the refusal of the server, and keeps a target that closes the script as text", async () => {
@@ -315,8 +393,101 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 
 		await sendPrompt(page, "Page refused");
 		await sendPrompt(page, "Page refused");
-		expect(page.lines.map((line) => line.textContent)).toEqual([`not sent: Unknown subagent: ${handle}`]);
+		expect(lines(page)).toEqual([`not sent: Unknown subagent: ${handle}`]);
 		expect(called("Page refused")).toBe(0);
+	});
+
+	it("covers the page while it posts, and shows sent at the later of the reply and 400 ms", async () => {
+		const { page, posts, timers } = fakePage();
+
+		const sending = sendPrompt(page, "one");
+		await flush();
+		expect(lines(page)).toEqual(["sending\u2026"]);
+		expect(layers(page)).toBe(1);
+		expect(await Promise.all(posts.map(async (post) => post.body))).toEqual([
+			JSON.stringify({ project: "main", handle: "a1b2c3", message: "one" }),
+		]);
+		expect(timers.map((timer) => timer.ms)).toEqual([400]);
+
+		posts[0]?.answer(inputReply(200));
+		await flush();
+		expect(lines(page)).toEqual(["sending\u2026"]);
+		expect(layers(page)).toBe(1);
+
+		timers[0]?.fire();
+		await sending;
+		expect(lines(page)).toEqual(["sent \u2713"]);
+		expect(layers(page)).toBe(0);
+	});
+
+	it("waits for a slow reply after the 400 ms", async () => {
+		const { page, posts, timers } = fakePage();
+
+		const sending = sendPrompt(page, "one");
+		await flush();
+		timers[0]?.fire();
+		await flush();
+		expect(lines(page)).toEqual(["sending\u2026"]);
+		expect(layers(page)).toBe(1);
+
+		posts[0]?.answer(inputReply(409, { error: "busy" }));
+		await sending;
+		expect(lines(page)).toEqual(["not sent: busy"]);
+		expect(layers(page)).toBe(0);
+	});
+
+	it("ignores a call while a post runs", async () => {
+		const { page, posts, timers } = fakePage();
+
+		const sending = sendPrompt(page, "one");
+		await flush();
+		await sendPrompt(page, "two");
+		expect(posts).toHaveLength(1);
+		expect(lines(page)).toEqual(["sending\u2026"]);
+		expect(layers(page)).toBe(1);
+
+		posts[0]?.answer(inputReply(200));
+		timers[0]?.fire();
+		await sending;
+		expect(lines(page)).toEqual(["sent \u2713"]);
+	});
+
+	it("does not post the text of the last success again, and posts a failed text again", async () => {
+		const { page, posts, timers } = fakePage();
+
+		const first = sendPrompt(page, "A");
+		await flush();
+		posts[0]?.answer(inputReply(200));
+		timers[0]?.fire();
+		await first;
+
+		await sendPrompt(page, "A");
+		expect(posts).toHaveLength(1);
+		expect(lines(page)).toEqual(["already sent \u2713"]);
+		expect(layers(page)).toBe(0);
+
+		const second = sendPrompt(page, "B");
+		await flush();
+		posts[1]?.answer(new Error("offline"));
+		timers[1]?.fire();
+		await second;
+		expect(lines(page)).toEqual(["not sent: offline"]);
+
+		const third = sendPrompt(page, "B");
+		await flush();
+		expect(posts).toHaveLength(3);
+		posts[2]?.answer(inputReply(500));
+		timers[2]?.fire();
+		await third;
+		expect(lines(page)).toEqual(["not sent: 500"]);
+
+		await sendPrompt(page, "A");
+		expect(posts).toHaveLength(3);
+		expect(lines(page)).toEqual(["already sent \u2713"]);
+	});
+
+	it("serves the script as ASCII", () => {
+		expect(addSend(INDEX, { project: "main" })).not.toMatch(/[^\t\n -~]/);
 	});
 });
 
