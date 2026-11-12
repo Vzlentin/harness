@@ -5,7 +5,7 @@ description: Gives the depth limit, the `tools` allowlists and the `harness` CLI
 
 # Subagent
 
-Use the `subagent` tool to delegate work to a separate agent with its own context. Each subagent is a conversation in one background host process, which starts when needed. A subagent can spawn its own subagents, down to the depth limit: the `agentDepthLimit` setting in Pi's global `settings.json` (default 4), or 2 in a tree that a library such as workflows starts without a limit. A deeper spawn fails with `Nested subagents are disabled`. A subagent at the depth limit has no `subagent` tool and cannot spawn.
+Use the `subagent` tool to delegate work to a separate agent with its own context. Each subagent is a conversation in one background host process, which starts when needed. A subagent can spawn its own subagents, down to the depth limit: the `agentDepthLimit` setting in Pi's global `settings.json` (default 4), or 2 in a tree that a library such as workflows starts without a limit. A deeper spawn fails with `Nested subagents are disabled`. A subagent at the depth limit has no `subagent` tool and cannot spawn. The same file can set the default model and thinking level of every spawn (see [Spawn](#spawn)).
 
 When the tool is not available, use the `harness` CLI in bash. It has the same commands (see [CLI](#cli)).
 
@@ -17,7 +17,7 @@ Give each child a short, descriptive name. The name appears in the parent UI, wh
 { "action": "spawn", "name": "implementation", "prompts": ["Complete task"] }
 ```
 
-By default, the child uses your provider, model, and thinking level. Set `provider`, `model`, or `thinking` only when you deliberately choose a different configuration, for example a faster model for simple investigation or a stronger model for difficult review.
+By default, the child uses the `subagentModel` (`<provider>/<model>`) and `subagentThinkingLevel` settings in Pi's global `settings.json`, and your provider, model, or thinking level for a setting that is not there. Set `provider`, `model`, or `thinking` only when you deliberately choose a different configuration, for example a faster model for simple investigation or a stronger model for difficult review.
 
 `cwd` defaults to your working directory. Give the task in `prompts` and the files to read in `files`; the child receives the text of the files and all prompts in its first message.
 

@@ -542,8 +542,9 @@ function versionCommand(args: string[], project: string | undefined): void {
 }
 
 /**
- * The scope of a tool call of the CLI, to the host of `project`. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and
- * the defaults of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
+ * The scope of a tool call of the CLI, to the host of `project`. The caller is `PI_SESSION_ID`, or `cli` outside Pi. The
+ * host gives a spawn the `subagentModel` and `subagentThinkingLevel` of Pi's global settings, else `PI_PROVIDER`,
+ * `PI_MODEL` and `PI_REASONING_LEVEL`.
  */
 function cliScope(project: string | undefined): ToolScope {
 	return {

@@ -15,12 +15,14 @@ import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {
 	aborted,
 	called,
+	calls,
 	cli,
 	fakePi,
 	gates,
 	logLines,
 	models,
 	root,
+	setSettings,
 	setUp,
 	startHost,
 	startHostProcess,
@@ -144,6 +146,24 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		);
 		await expect(taskRequest("task", "nope")).rejects.toThrow("Unknown task: nope");
 		await expect(taskRequest("wait-task", "nope")).rejects.toThrow("Unknown task: nope");
+	});
+
+	it("opens a library child with its own model and the caller's level, whatever the subagent settings give", async () => {
+		await setSettings({ packages: [FIXTURE], subagentModel: "faux/faux-2", subagentThinkingLevel: "low" });
+
+		try {
+			await start("settings", "Fixture settings");
+			expect(await taskRequest("wait-task", "settings")).toMatchObject({ outcome: { status: "completed" } });
+		} finally {
+			await setSettings({ packages: [FIXTURE] });
+		}
+
+		expect(calls.find((call) => call.prompt === "Fixture settings")).toEqual({
+			provider: "faux",
+			model: "faux-1",
+			thinking: "medium",
+			prompt: "Fixture settings",
+		});
 	});
 
 	it("keeps a task running through an abort of the agent, and stops it and its child with abort-task", async () => {

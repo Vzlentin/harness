@@ -17,7 +17,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
@@ -47,7 +47,7 @@ import {
 	reports,
 	requests,
 	root,
-	setDepthLimit,
+	setSettings,
 	setUp,
 	startHost,
 	startHostProcess,
@@ -119,6 +119,89 @@ beforeAll(async () => {
 afterAll(async () => {
 	await host?.close();
 	await tearDown();
+});
+
+/** The model and thinking level of a child that `harness spawn <args>` opens, as `status` gives them, after its answer. */
+async function spawnedWith(args: readonly string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+	const handle = handleOf(await cli(["spawn", ...args, "--prompt", "Defaults"], env));
+	await cli(["wait", handle]);
+
+	return /\((.+)\)\n$/.exec((await cli(["status", handle])).stdout)?.[1] ?? "";
+}
+
+describe("subagent defaults", { timeout: 30_000 }, () => {
+	afterEach(() => setSettings());
+
+	it("takes the spawn's model, else subagentModel, else the caller's", async () => {
+		await setSettings({ subagentModel: "faux/faux-2" });
+		expect(await spawnedWith([])).toBe("faux/faux-2, medium");
+		expect(await spawnedWith(["--model", "faux-1"])).toBe("faux/faux-1, medium");
+		expect(await spawnedWith(["--provider", "faux"])).toBe("faux/faux-1, medium");
+		await setSettings();
+		expect(await spawnedWith([])).toBe("faux/faux-1, medium");
+	});
+
+	it("takes the spawn's thinking level, else subagentThinkingLevel, else the caller's", async () => {
+		await setSettings({ subagentThinkingLevel: "low" });
+		expect(await spawnedWith([])).toBe("faux/faux-1, low");
+		expect(await spawnedWith(["--thinking", "high"])).toBe("faux/faux-1, high");
+		expect(await spawnedWith([], { PI_REASONING_LEVEL: "minimal" })).toBe("faux/faux-1, low");
+		await setSettings();
+		expect(await spawnedWith([], { PI_REASONING_LEVEL: "minimal" })).toBe("faux/faux-1, minimal");
+	});
+
+	it("uses both settings in the child's model call", async () => {
+		await setSettings({ subagentModel: "faux/faux-2", subagentThinkingLevel: "low" });
+		const handle = handleOf(await cli(["spawn", "--prompt", "Both defaults"]));
+		await cli(["wait", handle]);
+		expect(calls.find((call) => call.prompt === "Task:\nBoth defaults")).toEqual({
+			provider: "faux",
+			model: "faux-2",
+			thinking: "low",
+			prompt: "Task:\nBoth defaults",
+		});
+	});
+
+	it("clamps subagentThinkingLevel to the model, and still refuses an explicit level that the model does not have", async () => {
+		await setSettings({ subagentModel: "faux/faux-2", subagentThinkingLevel: "xhigh" });
+		expect(await spawnedWith([])).toBe("faux/faux-2, high");
+		expect((await cli(["spawn", "--thinking", "xhigh", "--prompt", "x"])).stderr).toBe(
+			"faux/faux-2 has no thinking level xhigh\n",
+		);
+	});
+
+	it("reads a changed settings file at the next spawn", async () => {
+		await setSettings({ subagentModel: "faux/faux-2" });
+		expect(await spawnedWith([])).toBe("faux/faux-2, medium");
+		await setSettings({ subagentModel: "faux/faux-1", subagentThinkingLevel: "low" });
+		expect(await spawnedWith([])).toBe("faux/faux-1, low");
+	});
+
+	it("refuses an unknown subagentModel, and ignores an invalid key alone", async () => {
+		await setSettings({ subagentModel: "faux/nope" });
+		expect((await cli(["spawn", "--prompt", "x"])).stderr).toBe("Unknown model: faux/nope\n");
+		await setSettings({ subagentModel: "faux-2", subagentThinkingLevel: "low" });
+		expect(await spawnedWith([])).toBe("faux/faux-1, low");
+		await setSettings({ subagentModel: "faux/faux-2", subagentThinkingLevel: "huge" });
+		expect(await spawnedWith([])).toBe("faux/faux-2, medium");
+	});
+
+	it("gives the setting to a nested spawn of a child that was spawned with an explicit model", async () => {
+		await setSettings({ subagentModel: "faux/faux-2" });
+		const handle = handleOf(await cli(["spawn", "--model", "faux-1", "--prompt", "Nest default"]));
+		expect((await cli(["wait", handle])).stdout).toContain("Answer to Task:\nNest default child");
+		const used = (prompt: string) => calls.find((call) => call.prompt === prompt)?.model;
+		expect([used("Task:\nNest default"), used("Task:\nNest default child")]).toEqual(["faux-1", "faux-2"]);
+	});
+
+	it("lets a CLI caller without PI_PROVIDER and PI_MODEL spawn when subagentModel is set", async () => {
+		const env = { PI_PROVIDER: undefined, PI_MODEL: undefined };
+		expect((await cli(["spawn", "--prompt", "x"], env)).stderr).toBe(
+			"No provider specified and the caller has no model\n",
+		);
+		await setSettings({ subagentModel: "faux/faux-2" });
+		expect(await spawnedWith([], env)).toBe("faux/faux-2, medium");
+	});
 });
 
 describe("subagent", { timeout: 30_000 }, () => {
@@ -504,7 +587,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("lets a child spawn a child, but not a third level, with agentDepthLimit 2", async () => {
-		await setDepthLimit(2);
+		await setSettings({ agentDepthLimit: 2 });
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
 		const { stdout } = await cli(["wait", handle]);
 		// A nested child that ends before its parent's wait comes also gives its answer as a message to the parent.
@@ -516,7 +599,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("stops the children that a child spawned with it", async () => {
-		await setDepthLimit(2);
+		await setSettings({ agentDepthLimit: 2 });
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
 		const nested = /Spawned nested \(([a-z0-9]+)\)/.exec((await cli(["wait", handle])).stdout)?.[1] ?? "";
 		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested})`);
@@ -525,7 +608,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("lets a child spawn a child with the tool, and gives the child at agentDepthLimit 2 no subagent tool", async () => {
-		await setDepthLimit(2);
+		await setSettings({ agentDepthLimit: 2 });
 		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
 		const { stdout } = await cli(["wait", handle]);
 		expect(stdout).toMatch(
@@ -548,7 +631,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("nests subagents 4 levels deep without agentDepthLimit", async () => {
-		await setDepthLimit(undefined);
+		await setSettings();
 		const before = called("Task:\nNest");
 		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Nest"]))]);
 		expect(stdout).toContain("Nested subagents are disabled");
