@@ -20,17 +20,20 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
 import { statePaths } from "../src/protocol/paths.ts";
+import { Message } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
-import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
+import { projectTools, TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
 import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
+const LoggedMessage = Type.Object({ action: Type.Literal("log"), value: Message });
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FAUX = { provider: "faux", model: "faux-1" };
 
@@ -61,7 +64,7 @@ type Tool = {
 };
 
 /** The arguments of a tool call in the tests. */
-type Args = Readonly<Record<string, string | number | readonly string[]>>;
+type Args = Readonly<Record<string, string | number | readonly string[] | readonly number[]>>;
 
 /** A message that the extension sent to Pi, with its options. */
 type Sent = { readonly text: string; readonly details: unknown; readonly options: unknown };
@@ -595,6 +598,62 @@ describe("the Pi extension", () => {
 		expect(own).toEqual({ todos: [{ id: 1, text: "Write the plan", state: "doing" }] });
 		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
 		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
+	});
+
+	it("gives the thread, rule, term and part tools of the host, on the store of the project", async () => {
+		host = await startHost();
+		const registered = await load();
+
+		const expected = projectTools({ Type }, (tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			outputSchema: tool.output,
+			executionMode: "sequential",
+		}));
+
+		for (const { name, ...tool } of expected) expect(registered.tools.get(name)).toMatchObject(tool);
+
+		const person = await request({ type: "person", action: "add", name: "Sam" }, { start: false });
+		const thread = await request({ type: "thread", action: "add", topic: "Pi", persons: [1] }, { start: false });
+
+		if (person === undefined || thread === undefined || !("id" in thread)) throw new Error("no host");
+		const tools = registered.tools;
+		const at = Date.UTC(2026, 10, 12);
+		const logged = await tools.get("thread")?.call({ action: "log", thread: thread.id, from: 1, at, text: "Hello" });
+		const source = Value.Parse(LoggedMessage, tools.get("thread")?.structured[0]).value.id;
+		expect(logged).toBe(`${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`);
+		const rule = { action: "set", name: "hello", kind: "conduct", value: "Say hello.", saidBy: 1, source };
+
+		expect(await tools.get("rule")?.call(rule)).toBe(
+			`1 hello (conduct, open): Say hello. [said by Sam (1) in message ${source}]\n`,
+		);
+		expect(await tools.get("term")?.call({ action: "set", name: "hi", meaning: "hello", saidBy: "user", source })).toBe(
+			`1 hi: hello [said by user in message ${source}]\n`,
+		);
+		expect(await tools.get("part")?.call({ action: "add", kind: "example", path: "parts/hi.md", rules: [1] })).toMatch(
+			/^1 example parts\/hi\.md \[rules 1; terms none; checked .+\]\n$/,
+		);
+		await expect(tools.get("rule")?.call({ action: "set", id: 1, status: "retired", saidBy: 1 })).rejects.toThrow(
+			"set requires source",
+		);
+		expect(await tools.get("thread")?.call({ action: "read", thread: thread.id })).toBe(
+			`${thread.id} Pi with Sam (1): last message 2026-11-12T00:00:00.000Z\n${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`,
+		);
+		// The host keeps the session ID as the caller of each write.
+		expect(await request({ type: "rule", action: "list" }, { start: false })).toMatchObject({
+			rules: [{ id: 1, name: "hello", saidBy: 1, source, by: "session" }],
+		});
+		expect(await request({ type: "term", action: "list" }, { start: false })).toMatchObject({
+			terms: [{ id: 1, by: "session" }],
+		});
+		expect(await request({ type: "part", action: "list" }, { start: false })).toMatchObject({
+			parts: [{ id: 1, by: "session" }],
+		});
+		expect(await request({ type: "thread", action: "read", id: thread.id }, { start: false })).toMatchObject({
+			thread: { last: at },
+			messages: [{ id: source, text: "Hello", by: "session" }],
+		});
 	});
 
 	it("shows the todos of the session while one is open or doing, at once after a call, only on a change, and nothing without a host", async () => {

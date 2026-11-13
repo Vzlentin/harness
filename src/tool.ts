@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Agent, Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type * as TypeBox from "typebox";
@@ -8,6 +9,29 @@ import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
+import {
+	type Author,
+	Message,
+	messageLine,
+	Part,
+	PART_KINDS,
+	PartList,
+	partLine,
+	PersonList,
+	type PersonNames,
+	personNames,
+	Rule,
+	RULE_KINDS,
+	RULE_STATES,
+	RuleList,
+	ruleLine,
+	Term,
+	TermList,
+	termLine,
+	ThreadList,
+	threadLine,
+	ThreadMessages,
+} from "./protocol/project.ts";
 import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListTarget } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
@@ -295,7 +319,10 @@ function checkHandle(handle: string): string {
 
 /** How a host reaches the harness host. */
 export type DurableScope = {
-	/** The caller of the calling conversation: it owns the children, and its list of todos is the default list. */
+	/**
+	 * The caller of the calling conversation: it owns the children, its list of todos is the default list, and the store
+	 * of the project keeps it as the writer of each object that a call writes.
+	 */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;
 	readonly send: Send;
 };
@@ -418,9 +445,8 @@ export async function runTodoTool(
 
 		case "list": {
 			const todos = replyList(await scope.send({ ...list, action }, signal));
-			const text = todos.todos.length === 0 ? "No todos\n" : todos.todos.map((todo) => `${todoLine(todo)}\n`).join("");
 
-			return { text, data: { action, value: todos } };
+			return { text: listText(todos.todos, todoLine, "No todos"), data: { action, value: todos } };
 		}
 
 		default:
@@ -471,4 +497,385 @@ export function todoTool(
 	});
 
 	return durable.defineExtension({ name: "harness-todo", tools: [tool] });
+}
+
+export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages between the user and the persons of the project.
+- list: the threads, each as \`<id> <topic> with <persons>: <time of the last message>\`.
+- read: the thread \`thread\` and its messages, oldest first, each as \`<id> <time> <author> (<state>): <text>\`. The ID of a message is the \`source\` of a rule or a term.
+- log: add a message that the person \`from\` wrote in the thread \`thread\`, with \`text\`, and \`at\` when you know it.
+- draft: add a draft of the user to the persons of the thread \`thread\`, with \`text\`. It sends nothing.
+A person prints as \`<name> (<id>)\`: its ID is the \`from\` of \`log\`, and the \`saidBy\` of a rule or a term.`;
+
+export const RULE_TOOL_DESCRIPTION = `Keep the rules of the project. A conduct rule says how to act. A domain rule says what is true for the project.
+- set: without \`id\`, add a rule with \`name\`, \`kind\`, \`value\`, and \`status\` (default open); \`replaces\` retires the rule that it replaces. With \`id\`, change the fields that you give. Each set needs \`saidBy\`, the ID of the person who said it or user, and \`source\`, the ID of the message that says it (see the \`thread\` tool).
+- list: the rules, only those of \`kind\` and of \`status\` when you give them.
+Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> in message <source>]\`, where the author is \`user\` or \`<name> (<id>)\`.`;
+
+export const TERM_TOOL_DESCRIPTION = `Keep the terms of the project: a word, its meaning, and the words not to use for it.
+- set: without \`id\`, add a term with \`name\`, \`meaning\` and \`avoid\`. With \`id\`, change the fields that you give. Each set needs \`saidBy\` and \`source\`, as a rule does.
+- list: the terms.
+Each term prints as \`<id> <name>: <meaning> [avoid <words>; said by <author> in message <source>]\`.`;
+
+export const PART_TOOL_DESCRIPTION = `Keep the parts of the vault: the files that explain rules and terms. A part becomes stale when one of its rules or terms changes.
+- add: add a part of \`kind\` at \`path\`, its file in the vault, that explains the rules \`rules\` and the terms \`terms\`.
+- list: the parts, only those that explain the rule \`rule\` when you give it.
+Each part prints as \`<id> <kind> <path> [rules <ids>; terms <ids>; checked <time>]\`, with \`stale\` at the end when it is stale.`;
+
+/**
+ * The parameters and the output schemas of the tools of the store of the project, built with the caller's TypeBox
+ * `Type`, as in `toolSchemas`. The outputs hold the protocol schemas of the objects, which are plain JSON schemas.
+ */
+export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
+	const { Type } = typebox;
+	const id = (description: string) => Type.Optional(Type.Integer({ minimum: 1, description }));
+	const ids = (description: string) => Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description }));
+	const text = (description: string) => Type.Optional(Type.String({ pattern: "\\S", description }));
+
+	const provenance = {
+		saidBy: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("user")], {
+				description: "set: who said it: the ID of a person, or user",
+			}),
+		),
+		source: id("set: the ID of the message that says it"),
+	};
+
+	const thread = {
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("list"), Type.Literal("read"), Type.Literal("log"), Type.Literal("draft")], {
+				description: "What to do",
+			}),
+			thread: id("read, log, draft: the ID of the thread"),
+			from: id("log: the ID of the person who wrote the message"),
+			text: text("log, draft: the text of the message"),
+			at: Type.Optional(
+				Type.Integer({ minimum: 0, description: "log: when the person wrote it, in epoch milliseconds; default now" }),
+			),
+		}),
+		output: Type.Union([
+			Type.Object({ action: Type.Literal("list"), value: ThreadList }),
+			Type.Object({ action: Type.Literal("read"), value: ThreadMessages }),
+			Type.Object({ action: Type.Union([Type.Literal("log"), Type.Literal("draft")]), value: Message }),
+		]),
+	};
+
+	const rule = {
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("set"), Type.Literal("list")], { description: "What to do" }),
+			id: id("set: the ID of the rule to change; without it, set adds a rule"),
+			name: text("set: the name of the rule"),
+			kind: Type.Optional(
+				Type.Enum(RULE_KINDS, { description: `set: ${oneOf(RULE_KINDS)}; list: only the rules of this kind` }),
+			),
+			value: text("set: what the rule says"),
+			status: Type.Optional(
+				Type.Enum(RULE_STATES, {
+					description: `set: ${oneOf(RULE_STATES)}, default open for a new rule; list: only the rules with this status`,
+				}),
+			),
+			...provenance,
+			replaces: id("set: on a new rule, the ID of the rule that it replaces and retires"),
+		}),
+		output: Type.Union([
+			Type.Object({ action: Type.Literal("set"), value: Rule }),
+			Type.Object({ action: Type.Literal("list"), value: RuleList }),
+		]),
+	};
+
+	const term = {
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("set"), Type.Literal("list")], { description: "What to do" }),
+			id: id("set: the ID of the term to change; without it, set adds a term"),
+			name: text("set: the word"),
+			meaning: text("set: what the word means in the project"),
+			avoid: Type.Optional(
+				Type.Array(Type.String({ pattern: "\\S" }), { description: "set: the words not to use for it" }),
+			),
+			...provenance,
+		}),
+		output: Type.Union([
+			Type.Object({ action: Type.Literal("set"), value: Term }),
+			Type.Object({ action: Type.Literal("list"), value: TermList }),
+		]),
+	};
+
+	const part = {
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("add"), Type.Literal("list")], { description: "What to do" }),
+			kind: Type.Optional(Type.Enum(PART_KINDS, { description: `add: ${oneOf(PART_KINDS)}` })),
+			path: text("add: the file of the part in the vault"),
+			rules: ids("add: the IDs of the rules that it explains; default none"),
+			terms: ids("add: the IDs of the terms that it explains; default none"),
+			rule: id("list: only the parts that explain this rule"),
+		}),
+		output: Type.Union([
+			Type.Object({ action: Type.Literal("add"), value: Part }),
+			Type.Object({ action: Type.Literal("list"), value: PartList }),
+		]),
+	};
+
+	return { thread, rule, term, part };
+}
+
+type ProjectSchemas = ReturnType<typeof projectToolSchemas>;
+
+/** What a call of a tool of the store of the project gets from its adapter. The store keeps the caller of each write. */
+type ProjectScope = Pick<ToolScope, "caller" | "send" | "signal">;
+
+/** A tool of the store of the project, as the host and the Pi extension register it. */
+export type ProjectTool<P extends TSchema, O extends TSchema> = {
+	readonly name: string;
+	readonly label: string;
+	readonly description: string;
+	readonly parameters: P;
+	readonly output: O;
+	readonly run: (args: Static<P>, scope: ProjectScope) => Promise<{ readonly text: string; readonly data: JsonValue }>;
+};
+
+/** Registers one tool of the store of the project, whatever its schemas, and gives what the adapter keeps of it. */
+export type ProjectToolAdapter<R> = <P extends TSchema, O extends TSchema>(tool: ProjectTool<P, O>) => R;
+
+/** The tools of the store of the project, `thread`, `rule`, `term` and `part`, each given to `adapt`. */
+export function projectTools<R>(typebox: Pick<typeof TypeBox, "Type">, adapt: ProjectToolAdapter<R>): R[] {
+	const { thread, rule, term, part } = projectToolSchemas(typebox);
+
+	return [
+		adapt({ name: "thread", label: "Thread", description: THREAD_TOOL_DESCRIPTION, ...thread, run: runThreadTool }),
+		adapt({ name: "rule", label: "Rule", description: RULE_TOOL_DESCRIPTION, ...rule, run: runRuleTool }),
+		adapt({ name: "term", label: "Term", description: TERM_TOOL_DESCRIPTION, ...term, run: runTermTool }),
+		adapt({ name: "part", label: "Part", description: PART_TOOL_DESCRIPTION, ...part, run: runPartTool }),
+	];
+}
+
+/** `reply` as `schema`, the reply that the request expects. It throws when the host replied with another object. */
+function replyOf<T extends TSchema, R extends object>(schema: T, reply: R, expected: string): R & Static<T> {
+	if (!Value.Check(schema, reply)) throw new Error(`The host replied with no ${expected}`);
+
+	return reply;
+}
+
+/** One line for each item of `items`, or the line `empty` when there are none. */
+function listText<T>(items: readonly T[], line: (item: T) => string, empty: string): string {
+	return items.length === 0 ? `${empty}\n` : items.map((item) => `${line(item)}\n`).join("");
+}
+
+/** The names of the persons of the project, by ID, from a `person list` request. */
+async function sendPersonNames(scope: ProjectScope, signal: AbortSignal): Promise<PersonNames> {
+	return personNames(replyOf(PersonList, await scope.send({ type: "person", action: "list" }, signal), "persons"));
+}
+
+/**
+ * The fields of a `set` of a rule or a term: its author and its source, which each set needs, then the fields of a new
+ * one from `fresh` without `id`, or the change with `id`.
+ */
+function setFields<A extends { id?: number; saidBy?: Author; source?: number }, F extends object>(
+	args: A,
+	fresh: () => F,
+) {
+	const { id, ...fields } = args;
+
+	const said = {
+		...fields,
+		saidBy: required(args.saidBy, "saidBy", "set"),
+		source: required(args.source, "source", "set"),
+	};
+
+	return id === undefined ? { ...said, ...fresh() } : { ...said, id };
+}
+
+async function runThreadTool(args: Static<ProjectSchemas["thread"]["parameters"]>, scope: ProjectScope) {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+
+	switch (action) {
+		case "list": {
+			const reply = replyOf(ThreadList, await scope.send({ type: "thread", action }, signal), "list of threads");
+			const names = await sendPersonNames(scope, signal);
+
+			return {
+				text: listText(reply.threads, (thread) => threadLine(thread, names), "No threads"),
+				data: { action, value: reply },
+			};
+		}
+
+		case "read": {
+			const id = required(args.thread, "thread", action);
+			const reply = replyOf(ThreadMessages, await scope.send({ type: "thread", action, id }, signal), "messages");
+			const names = await sendPersonNames(scope, signal);
+			const messages = listText(reply.messages, (message) => messageLine(message, names), "No messages");
+
+			return { text: `${threadLine(reply.thread, names)}\n${messages}`, data: { action, value: reply } };
+		}
+
+		case "log":
+		case "draft": {
+			const thread = required(args.thread, "thread", action);
+
+			const { at, ...sender } =
+				action === "log"
+					? { from: required(args.from, "from", action), direction: "in" as const, at: args.at }
+					: { from: "user" as const, direction: "out" as const, at: undefined };
+
+			const log = {
+				type: "message",
+				action: "log",
+				caller: scope.caller,
+				thread,
+				...sender,
+				text: required(args.text, "text", action),
+			} as const;
+
+			const names = await sendPersonNames(scope, signal);
+			const message = await scope.send(at === undefined ? log : { ...log, at }, signal);
+
+			return { text: `${messageLine(message, names)}\n`, data: { action, value: message } };
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+async function runRuleTool(args: Static<ProjectSchemas["rule"]["parameters"]>, scope: ProjectScope) {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+
+	switch (action) {
+		case "set": {
+			const fields = setFields(args, () => ({
+				name: required(args.name, "name", action),
+				kind: required(args.kind, "kind", action),
+				value: required(args.value, "value", action),
+			}));
+
+			const names = await sendPersonNames(scope, signal);
+
+			const rule = replyOf(
+				Rule,
+				await scope.send({ ...fields, type: "rule", action, caller: scope.caller }, signal),
+				"rule",
+			);
+
+			return { text: `${ruleLine(rule, names)}\n`, data: { action, value: rule } };
+		}
+
+		case "list": {
+			let request: Extract<Request, { type: "rule"; action: "list" }> = { type: "rule", action };
+
+			if (args.kind !== undefined) request = { ...request, kind: args.kind };
+
+			if (args.status !== undefined) request = { ...request, status: args.status };
+			const reply = replyOf(RuleList, await scope.send(request, signal), "list of rules");
+			const names = await sendPersonNames(scope, signal);
+
+			return {
+				text: listText(reply.rules, (rule) => ruleLine(rule, names), "No rules"),
+				data: { action, value: reply },
+			};
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+async function runTermTool(args: Static<ProjectSchemas["term"]["parameters"]>, scope: ProjectScope) {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+
+	switch (action) {
+		case "set": {
+			const fields = setFields(args, () => ({
+				name: required(args.name, "name", action),
+				meaning: required(args.meaning, "meaning", action),
+			}));
+
+			const names = await sendPersonNames(scope, signal);
+
+			const term = replyOf(
+				Term,
+				await scope.send({ ...fields, type: "term", action, caller: scope.caller }, signal),
+				"term",
+			);
+
+			return { text: `${termLine(term, names)}\n`, data: { action, value: term } };
+		}
+
+		case "list": {
+			const reply = replyOf(TermList, await scope.send({ type: "term", action }, signal), "list of terms");
+			const names = await sendPersonNames(scope, signal);
+
+			return {
+				text: listText(reply.terms, (term) => termLine(term, names), "No terms"),
+				data: { action, value: reply },
+			};
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+async function runPartTool(args: Static<ProjectSchemas["part"]["parameters"]>, scope: ProjectScope) {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+
+	switch (action) {
+		case "add": {
+			const add = {
+				type: "part",
+				action,
+				caller: scope.caller,
+				kind: required(args.kind, "kind", action),
+				path: required(args.path, "path", action),
+				rules: args.rules ?? [],
+				terms: args.terms ?? [],
+			} as const;
+
+			const part = replyOf(Part, await scope.send(add, signal), "part");
+
+			return { text: `${partLine(part)}\n`, data: { action, value: part } };
+		}
+
+		case "list": {
+			const list = { type: "part", action } as const;
+			const request = args.rule === undefined ? list : { ...list, rule: args.rule };
+			const reply = replyOf(PartList, await scope.send(request, signal), "list of parts");
+
+			return { text: listText(reply.parts, partLine, "No parts"), data: { action, value: reply } };
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+/**
+ * The pi-durable extension with the tools of the store of the project. Their requests have no request ID, so a call
+ * that a restart interrupts does not run again: a message is never logged twice.
+ */
+export function projectToolsExtension(
+	durable: typeof Durable,
+	typebox: Pick<typeof TypeBox, "Type">,
+	scope: Pick<DurableScope, "caller" | "send">,
+): Extension {
+	const tools = projectTools(typebox, (tool) =>
+		durable.defineTool({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			structuredOutputSchema: tool.output,
+			replay: "unsafe",
+			async execute(args, api, context) {
+				// pi-durable has validated the arguments, but its types do not narrow TypeBox schemas.
+				if (!Value.Check(tool.parameters, args)) throw new Error(`Invalid ${tool.name} arguments`);
+				const caller = await scope.caller(api, context);
+				const { text, data } = await tool.run(args, { caller, send: scope.send, signal: context.abortSignal });
+
+				return { output: [{ type: "text", text }], structuredOutput: data };
+			},
+		}),
+	);
+
+	return durable.defineExtension({ name: "harness-project", tools });
 }

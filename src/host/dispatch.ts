@@ -158,7 +158,7 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 		case "thread":
 			return thread(request, handler);
 		case "message":
-			return handler.harness.commit((tx) => logMessage(tx, request), context);
+			return handler.harness.commit((tx) => logMessage(tx, request, request.caller), context);
 		case "rule":
 			return rule(request, handler);
 		case "term":
@@ -301,7 +301,7 @@ function thread(request: Extract<Request, { type: "thread" }>, handler: Handler)
 function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Promise<Replies["rule"]> {
 	switch (request.action) {
 		case "set":
-			return handler.harness.commit((tx) => setRule(tx, request), context);
+			return handler.harness.commit((tx) => setRule(tx, request, request.caller), context);
 		case "list":
 			return readRules(handler.harness, request, context);
 	}
@@ -310,7 +310,7 @@ function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Pr
 function term(request: Extract<Request, { type: "term" }>, handler: Handler): Promise<Replies["term"]> {
 	switch (request.action) {
 		case "set":
-			return handler.harness.commit((tx) => setTerm(tx, request), context);
+			return handler.harness.commit((tx) => setTerm(tx, request, request.caller), context);
 		case "list":
 			return readTerms(handler.harness, context);
 	}
@@ -319,9 +319,9 @@ function term(request: Extract<Request, { type: "term" }>, handler: Handler): Pr
 function part(request: Extract<Request, { type: "part" }>, handler: Handler): Promise<Replies["part"]> {
 	switch (request.action) {
 		case "add":
-			return handler.harness.commit((tx) => addPart(tx, request), context);
+			return handler.harness.commit((tx) => addPart(tx, request, request.caller), context);
 		case "check":
-			return handler.harness.commit((tx) => checkPart(tx, request.id), context);
+			return handler.harness.commit((tx) => checkPart(tx, request.id, request.caller), context);
 		case "list":
 			return readParts(handler.harness, request, context);
 	}

@@ -37,7 +37,7 @@ import {
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
 import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
-import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
+import { type DurableScope, projectToolsExtension, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
@@ -169,6 +169,7 @@ export async function runHost(options: {
 		ChildContext,
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
+		projectToolsExtension(durable, { Type }, scope),
 		createCodemodeExtension({ sandbox }),
 		...entries.extensions,
 		rlm.extension,

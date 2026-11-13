@@ -82,10 +82,10 @@ export async function addThread(tx: Tx, input: ThreadAdd): Promise<Thread> {
 
 /**
  * Adds a message to the thread `input.thread`, with the state `received` for a message in and `draft` for a message out,
- * and gives it. `at` defaults to now.
+ * logged by the caller `by`, and gives it. `at` defaults to now. The `last` of the thread becomes `at` when `at` is later.
  */
-export async function logMessage(tx: Tx, input: MessageLog): Promise<Message> {
-	known((await tx.doc(Threads)).threads, input.thread, "thread");
+export async function logMessage(tx: Tx, input: MessageLog, by: string): Promise<Message> {
+	const thread = known((await tx.doc(Threads)).threads, input.thread, "thread");
 	await knownAuthor(tx, input.from);
 
 	const data: MessageData = {
@@ -94,18 +94,20 @@ export async function logMessage(tx: Tx, input: MessageLog): Promise<Message> {
 		state: input.direction === "in" ? "received" : "draft",
 		at: input.at ?? Date.now(),
 		text: input.text,
+		by,
 	};
 
 	const entry = await tx.appendEntry(MessageEntry, conversationId(input.thread), { data });
+	thread.last = Math.max(thread.last ?? data.at, data.at);
 
 	return { id: entry.id, thread: input.thread, ...data };
 }
 
 /**
- * Adds or changes a rule, and gives it. A new rule has the status `open` by default, and retires the rule that it
+ * Adds or changes a rule for the caller `by`, and gives it. A new rule has the status `open` by default, and retires the rule that it
  * replaces; the retired rule keeps its own author and source. A change of a rule makes each part that explains it, or the rule that it replaces, stale.
  */
-export async function setRule(tx: Tx, change: RuleSet): Promise<Rule> {
+export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule> {
 	if (change.id !== undefined && change.replaces !== undefined) {
 		throw new Error("A change of a rule cannot replace a rule: set replaces on a new rule");
 	}
@@ -128,18 +130,19 @@ export async function setRule(tx: Tx, change: RuleSet): Promise<Rule> {
 			saidBy: change.saidBy,
 			source: change.source,
 			at,
+			by,
 		};
 
 		if (replaced !== undefined) {
 			rule.replaces = replaced.id;
-			Object.assign(replaced, { status: "retired", at });
+			Object.assign(replaced, { status: "retired", at, by });
 			changed.push(replaced.id);
 		}
 
 		list.rules.push(rule);
 	} else {
 		rule = known(list.rules, change.id, "rule");
-		Object.assign(rule, { saidBy: change.saidBy, source: change.source, at });
+		Object.assign(rule, { saidBy: change.saidBy, source: change.source, at, by });
 
 		if (change.name !== undefined) rule.name = change.name;
 
@@ -157,8 +160,8 @@ export async function setRule(tx: Tx, change: RuleSet): Promise<Rule> {
 	return { ...rule };
 }
 
-/** Adds or changes a term, and gives it. A change of a term makes each part that explains it stale. */
-export async function setTerm(tx: Tx, change: TermSet): Promise<Term> {
+/** Adds or changes a term for the caller `by`, and gives it. A change of a term makes each part that explains it stale. */
+export async function setTerm(tx: Tx, change: TermSet, by: string): Promise<Term> {
 	await knownSource(tx, change.source);
 	await knownAuthor(tx, change.saidBy);
 	const list = await tx.doc(Terms);
@@ -174,11 +177,12 @@ export async function setTerm(tx: Tx, change: TermSet): Promise<Term> {
 			saidBy: change.saidBy,
 			source: change.source,
 			at,
+			by,
 		};
 		list.terms.push(term);
 	} else {
 		term = known(list.terms, change.id, "term");
-		Object.assign(term, { saidBy: change.saidBy, source: change.source, at });
+		Object.assign(term, { saidBy: change.saidBy, source: change.source, at, by });
 
 		if (change.name !== undefined) term.name = change.name;
 
@@ -191,8 +195,8 @@ export async function setTerm(tx: Tx, change: TermSet): Promise<Term> {
 	return { ...term, avoid: [...term.avoid] };
 }
 
-/** Adds a part that explains `rules` and `terms`, checked now, and gives it. */
-export async function addPart(tx: Tx, input: PartAdd): Promise<Part> {
+/** Adds a part that explains `rules` and `terms`, checked now by the caller `by`, and gives it. */
+export async function addPart(tx: Tx, input: PartAdd, by: string): Promise<Part> {
 	const rules = (await tx.doc(Rules)).rules;
 	const terms = (await tx.doc(Terms)).terms;
 
@@ -209,6 +213,7 @@ export async function addPart(tx: Tx, input: PartAdd): Promise<Part> {
 		terms: [...input.terms],
 		checked: Date.now(),
 		stale: false,
+		by,
 	};
 
 	list.parts.push(copyPart(part));
@@ -216,11 +221,10 @@ export async function addPart(tx: Tx, input: PartAdd): Promise<Part> {
 	return part;
 }
 
-/** Marks the part `id` checked now and not stale, and gives it. */
-export async function checkPart(tx: Tx, id: number): Promise<Part> {
+/** Marks the part `id` checked now by the caller `by` and not stale, and gives it. */
+export async function checkPart(tx: Tx, id: number, by: string): Promise<Part> {
 	const part = known((await tx.doc(Parts)).parts, id, "part");
-	part.checked = Date.now();
-	part.stale = false;
+	Object.assign(part, { checked: Date.now(), stale: false, by });
 
 	return copyPart(part);
 }

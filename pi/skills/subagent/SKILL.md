@@ -23,7 +23,7 @@ By default, the child uses the `subagentModel` (`<provider>/<model>`) and `subag
 
 ## Tools
 
-Without `tools`, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `todo`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
+Without `tools`, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `todo`, `thread`, `rule`, `term`, `part`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
 
 A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi session in its working directory does. It gets the project skills only when the project is trusted. It gets no MCP tools and no other Pi extensions, so put what it needs from them in the prompt.
 

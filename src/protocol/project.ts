@@ -12,6 +12,9 @@ const Text = Type.String({ pattern: "\\S" });
 /** A time in epoch milliseconds. */
 const Time = Type.Integer({ minimum: 0 });
 
+/** The caller of the request that wrote an object last: the conversation ID of a hosted agent, or a Pi session ID. */
+const Caller = Type.String();
+
 /** Who said or wrote something: the ID of a person, or `user`. */
 export const Author = Type.Union([LocalId, Type.Literal("user")]);
 
@@ -22,8 +25,16 @@ export const Person = Type.Object({ id: LocalId, name: Text });
 
 export type Person = Static<typeof Person>;
 
-/** A thread of messages with one or more persons. Its ID is the ID of its conversation. */
-export const Thread = Type.Object({ id: StoreId, topic: Text, persons: Type.Array(LocalId, { minItems: 1 }) });
+/**
+ * A thread of messages with one or more persons. Its ID is the ID of its conversation, and `last` is the latest `at` of
+ * its messages, absent while it has none.
+ */
+export const Thread = Type.Object({
+	id: StoreId,
+	topic: Text,
+	persons: Type.Array(LocalId, { minItems: 1 }),
+	last: Type.Optional(Time),
+});
 
 export type Thread = Static<typeof Thread>;
 
@@ -41,7 +52,10 @@ export const MessageState = Type.Enum(MESSAGE_STATES);
 
 export type MessageState = Static<typeof MessageState>;
 
-/** A message of a thread. Its ID is the ID of its entry, and `at` is in epoch milliseconds. */
+/**
+ * A message of a thread. Its ID is the ID of its entry, `at` is in epoch milliseconds, and `by` is the caller that logged
+ * it.
+ */
 export const Message = Type.Object({
 	id: StoreId,
 	thread: StoreId,
@@ -50,6 +64,7 @@ export const Message = Type.Object({
 	state: MessageState,
 	at: Time,
 	text: Text,
+	by: Caller,
 });
 
 export type Message = Static<typeof Message>;
@@ -70,7 +85,7 @@ export type RuleStatus = Static<typeof RuleStatus>;
 
 /**
  * A rule of the project, with who said it and the message that is its source. `at` is the time of its last change, in
- * epoch milliseconds.
+ * epoch milliseconds, and `by` is the caller of that change.
  */
 export const Rule = Type.Object({
 	id: LocalId,
@@ -82,11 +97,15 @@ export const Rule = Type.Object({
 	source: StoreId,
 	replaces: Type.Optional(LocalId),
 	at: Time,
+	by: Caller,
 });
 
 export type Rule = Static<typeof Rule>;
 
-/** A term of the project, its meaning and the words not to use for it, with who said it and its source message. */
+/**
+ * A term of the project, its meaning and the words not to use for it, with who said it and its source message. `at` is
+ * the time of its last change, and `by` is the caller of that change.
+ */
 export const Term = Type.Object({
 	id: LocalId,
 	name: Text,
@@ -95,6 +114,7 @@ export const Term = Type.Object({
 	saidBy: Author,
 	source: StoreId,
 	at: Time,
+	by: Caller,
 });
 
 export type Term = Static<typeof Term>;
@@ -108,7 +128,7 @@ export type PartKind = Static<typeof PartKind>;
 
 /**
  * A part of the vault that explains rules and terms. `checked` is the time of its last check, in epoch milliseconds,
- * and `stale` is true once one of its rules or terms changed after it.
+ * and `stale` is true once one of its rules or terms changed after it. `by` is the caller that added or checked it last.
  */
 export const Part = Type.Object({
 	id: LocalId,
@@ -118,6 +138,7 @@ export const Part = Type.Object({
 	terms: Type.Array(LocalId),
 	checked: Time,
 	stale: Type.Boolean(),
+	by: Caller,
 });
 
 export type Part = Static<typeof Part>;
@@ -235,15 +256,87 @@ export const PARTS_KIND = "harness.parts";
 /** The kind of the entry of a message in the conversation of its thread. */
 export const MESSAGE_KIND = "harness.message";
 
-export type PersonList = { persons: Person[] };
+export const PersonList = Type.Object({ persons: Type.Array(Person) });
 
-export type ThreadList = { threads: Thread[] };
+export type PersonList = Static<typeof PersonList>;
 
-export type RuleList = { rules: Rule[] };
+export const ThreadList = Type.Object({ threads: Type.Array(Thread) });
 
-export type TermList = { terms: Term[] };
+export type ThreadList = Static<typeof ThreadList>;
 
-export type PartList = { parts: Part[] };
+export const RuleList = Type.Object({ rules: Type.Array(Rule) });
+
+export type RuleList = Static<typeof RuleList>;
+
+export const TermList = Type.Object({ terms: Type.Array(Term) });
+
+export type TermList = Static<typeof TermList>;
+
+export const PartList = Type.Object({ parts: Type.Array(Part) });
+
+export type PartList = Static<typeof PartList>;
 
 /** A thread and its messages, oldest first. */
-export type ThreadMessages = { thread: Thread; messages: Message[] };
+export const ThreadMessages = Type.Object({ thread: Thread, messages: Type.Array(Message) });
+
+export type ThreadMessages = Static<typeof ThreadMessages>;
+
+/** The names of the persons, by ID. */
+export type PersonNames = ReadonlyMap<number, string>;
+
+/** The names of the persons of `list`, by ID. */
+export function personNames(list: PersonList): PersonNames {
+	return new Map(list.persons.map((person) => [person.id, person.name]));
+}
+
+/**
+ * `author` in a line: `user`, the name of the person and its ID, as `Sam (1)`, or `person <id>` for a person that
+ * `names` does not have.
+ */
+export function authorText(author: Author, names: PersonNames): string {
+	if (author === "user") return author;
+	const name = names.get(author);
+
+	return name === undefined ? `person ${author}` : `${name} (${author})`;
+}
+
+function time(at: number): string {
+	return new Date(at).toISOString();
+}
+
+export function threadLine(thread: Thread, names: PersonNames): string {
+	const persons = thread.persons.map((person) => authorText(person, names)).join(", ");
+	const last = thread.last === undefined ? "no messages" : `last message ${time(thread.last)}`;
+
+	return `${thread.id} ${thread.topic} with ${persons}: ${last}`;
+}
+
+export function messageLine(message: Message, names: PersonNames): string {
+	return `${message.id} ${time(message.at)} ${authorText(message.from, names)} (${message.state}): ${message.text}`;
+}
+
+function saidLine(fact: Pick<Rule, "saidBy" | "source">, names: PersonNames): string {
+	return `said by ${authorText(fact.saidBy, names)} in message ${fact.source}`;
+}
+
+export function ruleLine(rule: Rule, names: PersonNames): string {
+	const replaces = rule.replaces === undefined ? "" : `; replaces ${rule.replaces}`;
+
+	return `${rule.id} ${rule.name} (${rule.kind}, ${rule.status}): ${rule.value} [${saidLine(rule, names)}${replaces}]`;
+}
+
+export function termLine(term: Term, names: PersonNames): string {
+	const avoid = term.avoid.length === 0 ? "" : `avoid ${term.avoid.join(", ")}; `;
+
+	return `${term.id} ${term.name}: ${term.meaning} [${avoid}${saidLine(term, names)}]`;
+}
+
+function idsText(ids: readonly number[]): string {
+	return ids.length === 0 ? "none" : ids.join(", ");
+}
+
+export function partLine(part: Part): string {
+	const stale = part.stale ? " stale" : "";
+
+	return `${part.id} ${part.kind} ${part.path} [rules ${idsText(part.rules)}; terms ${idsText(part.terms)}; checked ${time(part.checked)}]${stale}`;
+}

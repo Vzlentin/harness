@@ -59,6 +59,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "message",
 				action: "log",
+				caller: "cli",
 				thread: thread.id,
 				from: sam.id,
 				direction: "in",
@@ -67,12 +68,20 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			}),
 		);
 
-		expect(asked).toMatchObject({ thread: thread.id, from: 1, direction: "in", state: "received", at: 1_000 });
+		expect(asked).toMatchObject({
+			thread: thread.id,
+			from: 1,
+			direction: "in",
+			state: "received",
+			at: 1_000,
+			by: "cli",
+		});
 		const before = Date.now();
 
 		const answer = await send({
 			type: "message",
 			action: "log",
+			caller: "cli",
 			thread: thread.id,
 			from: "user",
 			direction: "out",
@@ -87,6 +96,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "rule",
 				action: "set",
+				caller: "cli",
 				name: "scope",
 				kind: "domain",
 				value: "Sale types in scope are 45, 54 and 56.",
@@ -102,6 +112,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "rule",
 				action: "set",
+				caller: "cli",
 				name: "ask first",
 				kind: "conduct",
 				value: "Ask before a write that Sam sees.",
@@ -116,6 +127,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "term",
 				action: "set",
+				caller: "cli",
 				name: "mandat",
 				meaning: "A signed order of sale.",
 				avoid: ["contract"],
@@ -131,6 +143,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "part",
 				action: "add",
+				caller: "cli",
 				kind: "diagram",
 				path: "parts/scope.md",
 				rules: [scope.id],
@@ -143,6 +156,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "part",
 				action: "add",
+				caller: "cli",
 				kind: "table",
 				path: "parts/terms.md",
 				rules: [ask.id],
@@ -159,6 +173,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "rule",
 				action: "set",
+				caller: "cli",
 				name: "scope",
 				kind: "domain",
 				value: "Sale types in scope are 45, 54, 56 and 61.",
@@ -184,6 +199,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		await send({
 			type: "term",
 			action: "set",
+			caller: "cli",
 			id: term.id,
 			meaning: "A signed mandate.",
 			saidBy: sam.id,
@@ -192,7 +208,10 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		expect(await send({ type: "part", action: "list", term: term.id })).toMatchObject({
 			parts: [{ id: table.id, stale: true }],
 		});
-		expect(await send({ type: "part", action: "check", id: table.id })).toMatchObject({ id: table.id, stale: false });
+		expect(await send({ type: "part", action: "check", caller: "cli", id: table.id })).toMatchObject({
+			id: table.id,
+			stale: false,
+		});
 		expect(await send({ type: "part", action: "list", rule: scope.id })).toMatchObject({ parts: [{ id: diagram.id }] });
 
 		const stored = {
@@ -204,7 +223,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			parts: await send({ type: "part", action: "list" }),
 		};
 
-		expect(stored.read).toEqual({ thread, messages: [asked, answer] });
+		expect(stored.read).toEqual({ thread: { ...thread, last: answer.at }, messages: [asked, answer] });
 		expect(stored.rules).toMatchObject({
 			rules: [
 				{ id: scope.id, status: "retired" },
@@ -238,6 +257,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		const message = await send({
 			type: "message",
 			action: "log",
+			caller: "cli",
 			thread: thread.id,
 			from: person.id,
 			direction: "in",
@@ -249,6 +269,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await send({
 				type: "rule",
 				action: "set",
+				caller: "cli",
 				name: "SQL",
 				kind: "conduct",
 				value: "Numbers come from the product's SQL.",
@@ -271,6 +292,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		const rule2 = {
 			type: "rule",
 			action: "set",
+			caller: "cli",
 			name: "fact",
 			kind: "domain",
 			value: "A fact.",
@@ -288,11 +310,11 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			[noName, "Invalid rule request: name is required"],
 			[{ ...newRule, name: " " }, "Invalid rule request: name is not valid"],
 			[
-				{ type: "rule", action: "set", id: rule.id, status: "retired", saidBy: "user" },
+				{ type: "rule", action: "set", caller: "cli", id: rule.id, status: "retired", saidBy: "user" },
 				"Invalid rule request: source is required",
 			],
 			[
-				{ type: "term", action: "set", name: "x", meaning: "y", saidBy: "user" },
+				{ type: "term", action: "set", caller: "cli", name: "x", meaning: "y", saidBy: "user" },
 				"Invalid term request: source is required",
 			],
 			[{ ...newRule, status: "final" }, "Invalid rule request: status is not valid"],
@@ -314,6 +336,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		const log = {
 			type: "message",
 			action: "log",
+			caller: "cli",
 			thread: thread.id,
 			from: person.id,
 			direction: "in",
@@ -329,16 +352,34 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		await expect(send({ ...rule2, saidBy: 99, source: message.id })).rejects.toThrow("Unknown person: 99");
 		await expect(send({ ...rule2, source: message.id, replaces: 99 })).rejects.toThrow("Unknown rule: 99");
 		await expect(
-			send({ type: "rule", action: "set", id: 99, status: "retired", saidBy: "user", source: message.id }),
+			send({
+				type: "rule",
+				action: "set",
+				caller: "cli",
+				id: 99,
+				status: "retired",
+				saidBy: "user",
+				source: message.id,
+			}),
 		).rejects.toThrow("Unknown rule: 99");
 		await expect(
-			send({ type: "term", action: "set", id: 99, meaning: "z", saidBy: "user", source: message.id }),
+			send({ type: "term", action: "set", caller: "cli", id: 99, meaning: "z", saidBy: "user", source: message.id }),
 		).rejects.toThrow("Unknown term: 99");
-		const part = { type: "part", action: "add", kind: "example", path: "parts/x.md", rules: [], terms: [] } as const;
+
+		const part = {
+			type: "part",
+			action: "add",
+			caller: "cli",
+			kind: "example",
+			path: "parts/x.md",
+			rules: [],
+			terms: [],
+		} as const;
+
 		const none: number[] = [];
 		await expect(send({ ...part, rules: [rule.id, 99], terms: none })).rejects.toThrow("Unknown rule: 99");
 		await expect(send({ ...part, rules: none, terms: [99] })).rejects.toThrow("Unknown term: 99");
-		await expect(send({ type: "part", action: "check", id: 99 })).rejects.toThrow("Unknown part: 99");
+		await expect(send({ type: "part", action: "check", caller: "cli", id: 99 })).rejects.toThrow("Unknown part: 99");
 
 		expect(await read()).toEqual(before);
 	});
@@ -360,12 +401,20 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 
 			const source = (
 				await send(
-					{ type: "message", action: "log", thread: thread.id, from: "user", direction: "out", text: "Rules." },
+					{
+						type: "message",
+						action: "log",
+						caller: "cli",
+						thread: thread.id,
+						from: "user",
+						direction: "out",
+						text: "Rules.",
+					},
 					"rules",
 				)
 			).id;
 
-			const said = { type: "rule", action: "set", saidBy: "user", source } as const;
+			const said = { type: "rule", action: "set", caller: "cli", saidBy: "user", source } as const;
 
 			const add = async (name: string, kind: "conduct" | "domain", status: "open" | "decided" | "retired") =>
 				Value.Parse(Rule, await send({ ...said, name, kind, value: `The rule ${name}.`, status }, "rules")).id;

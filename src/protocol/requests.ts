@@ -35,7 +35,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -297,26 +297,61 @@ export const RequestLine = Type.Union([
 	/** Replies with the thread `id` and its messages, oldest first. */
 	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("read"), id: Thread.properties.id }),
 	/** Adds a message to a thread, and replies with it. The host sets its state from its direction. */
-	Type.Object({ type: Type.Literal("message"), action: Type.Literal("log"), ...MessageLog.properties }),
+	Type.Object({
+		type: Type.Literal("message"),
+		action: Type.Literal("log"),
+		caller: Type.String(),
+		...MessageLog.properties,
+	}),
 	/** Adds a rule, which retires the rule `replaces`, and replies with it. */
-	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("set"), ...RuleNew.properties }),
+	Type.Object({
+		type: Type.Literal("rule"),
+		action: Type.Literal("set"),
+		caller: Type.String(),
+		...RuleNew.properties,
+	}),
 	/**
 	 * Changes the rule `id`, and replies with it. It comes after the new rule, so a new rule without `source` fails on
 	 * `source`. The host refuses a change with `replaces`.
 	 */
-	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("set"), ...RuleEdit.properties }),
+	Type.Object({
+		type: Type.Literal("rule"),
+		action: Type.Literal("set"),
+		caller: Type.String(),
+		...RuleEdit.properties,
+	}),
 	/** Replies with the rules, in ID order: with `kind` or `status`, only those that have it. */
 	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("list"), ...RuleFilter.properties }),
 	/** Adds a term, and replies with it. */
-	Type.Object({ type: Type.Literal("term"), action: Type.Literal("set"), ...TermNew.properties }),
+	Type.Object({
+		type: Type.Literal("term"),
+		action: Type.Literal("set"),
+		caller: Type.String(),
+		...TermNew.properties,
+	}),
 	/** Changes the term `id`, and replies with it. */
-	Type.Object({ type: Type.Literal("term"), action: Type.Literal("set"), ...TermEdit.properties }),
+	Type.Object({
+		type: Type.Literal("term"),
+		action: Type.Literal("set"),
+		caller: Type.String(),
+		...TermEdit.properties,
+	}),
 	/** Replies with the terms, in ID order. */
 	Type.Object({ type: Type.Literal("term"), action: Type.Literal("list") }),
 	/** Adds a part that explains rules and terms, and replies with it. */
-	Type.Object({ type: Type.Literal("part"), action: Type.Literal("add"), ...PartAdd.properties }),
+	Type.Object({
+		type: Type.Literal("part"),
+		action: Type.Literal("add"),
+		caller: Type.String(),
+		...PartAdd.properties,
+	}),
 	/** Marks the part `id` checked now and not stale, and replies with it. */
-	Type.Object({ type: Type.Literal("part"), action: Type.Literal("check"), id: Part.properties.id }),
+	Type.Object({
+		type: Type.Literal("part"),
+		action: Type.Literal("check"),
+		caller: Type.String(),
+		id: Part.properties.id,
+	}),
 	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
 	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
