@@ -21,7 +21,7 @@ import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
 import { answerOf, askClassifier, classifierFailed, classifierModel } from "./classify.ts";
-import { heldFor, holdAction, readHeld, readRules, runApproved, runsFor } from "./project.ts";
+import { heldFor, holdAction, markSent, readHeld, readRules, runApproved, runsFor } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -34,6 +34,9 @@ const WRITES_ABOVE = 0.5;
 const RUNS: GateReply = { runs: true };
 
 const NO_ABORT = new AbortController().signal;
+
+/** The marker of a draft in a command, `draft:<id>`, such as in the shell comment `# draft:12`. */
+const DRAFT_MARKER = /\bdraft:(\d+)\b/g;
 
 /** Step 1: whether the command can write outside the machine or change a decided rule. */
 const WRITES: ClassifierQuestion = {
@@ -63,13 +66,30 @@ type Hold = Pick<HeldInput, "rule" | "reason">;
  * that ran for no call, or for this call, runs, and is marked as run by this call. A held or dropped action of the same
  * agent and request ID is given again. With no decided conduct rule, the call runs. Otherwise the classifier answers
  * step 1 with the command, and step 2 with the command, the messages and the rules, and a call that breaks a rule is
- * held with it. A failure of the classifier holds the call with no rule and the error as the reason.
+ * held with it. A failure of the classifier holds the call with no rule and the error as the reason. A call that runs
+ * marks each draft that its command names with `draft:<id>` as sent by the agent.
  */
 export async function gateCall(request: Extract<Request, { type: "gate" }>, host: GateHost): Promise<GateReply> {
-	const { harness } = host;
-
 	if (asksNoQuestion(request.tool, request.arguments)) return RUNS;
 	const command = gateCommand(request.tool, request.arguments);
+	const reply = await checkCall(request, command, host);
+	const drafts = [...command.matchAll(DRAFT_MARKER)].map((match) => Number(match[1]));
+
+	// A call that runs again, such as a gate of Pi after an approve, finds its drafts sent, and changes nothing.
+	if (reply.runs && drafts.length > 0) {
+		await host.harness.commit((tx) => markSent(tx, drafts, request.caller), context);
+	}
+
+	return reply;
+}
+
+/** The reply of the gate to `request`, a call of `command` that the gate asks about, as `gateCall` gives it. */
+async function checkCall(
+	request: Extract<Request, { type: "gate" }>,
+	command: string,
+	host: GateHost,
+): Promise<GateReply> {
+	const { harness } = host;
 	const { requestId, caller: agent, tool } = request;
 	const { held } = await readHeld(harness, context);
 	const call = { agent, tool, command, requestId };

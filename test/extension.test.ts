@@ -349,6 +349,43 @@ async function agentStartSections(registered: Registered, selectedTools: string[
 	return sections;
 }
 
+/** The result of a `before_agent_start` handler that gives the session a custom message. */
+const AgentStartMessage = Type.Object({
+	message: Type.Object({ customType: Type.String(), content: Type.String(), display: Type.Boolean() }),
+});
+
+/** The custom message that the `before_agent_start` handlers give the session `session` with no UI, if one does. */
+async function agentStartMessage(
+	registered: Registered,
+): Promise<Static<typeof AgentStartMessage>["message"] | undefined> {
+	const selectedTools: string[] = [];
+	// SAFETY: the extension reads only the selected tools and the sections of the options.
+	const systemPromptOptions = { selectedTools, sections: {} } as NormalizedBuildSystemPromptOptions;
+
+	const event = {
+		type: "before_agent_start",
+		messageType: "user",
+		prompt: "Hello",
+		systemPrompt: "",
+		systemPromptOptions,
+	} as const;
+
+	const ctx: Pick<ExtensionContext, "hasUI"> & {
+		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+	} = { hasUI: false, sessionManager: { getSessionId: () => "session" } };
+
+	let message: Static<typeof AgentStartMessage>["message"] | undefined;
+
+	for (const handler of registered.handlers.get("before_agent_start") ?? []) {
+		// SAFETY: the handlers of `before_agent_start` read only these fields of the context.
+		const result: unknown = await handler(event, ctx as ExtensionContext);
+
+		if (Value.Check(AgentStartMessage, result)) message = result.message;
+	}
+
+	return message;
+}
+
 /**
  * A kernel of the Pi session: it runs the startup code in its argument, then, as cells would, spawns a child without a
  * model and waits for it, spawns a quiet child, and spawns with a context of 1 MiB + 1 byte. It prints the results as
@@ -765,6 +802,24 @@ describe("the Pi extension", () => {
 			thread: { last: at },
 			messages: [{ id: source, text: "Hello", by: "session" }],
 		});
+
+		// Before a turn, the session gets its digest when it changed, and a mark of the draft changes it.
+		expect(await agentStartMessage(registered)).toBeUndefined();
+		await tools.get("thread")?.call({ action: "draft", thread: thread.id, text: "Hi Sam" });
+		const draft = Value.Parse(Type.Object({ value: Message }), tools.get("thread")?.structured.at(-1)).value;
+		expect(await agentStartMessage(registered)).toEqual({
+			customType: "harness-digest",
+			content: "waiting on: Sam (Pi, draft not sent)\nheld: none",
+			display: true,
+		});
+		expect(await agentStartMessage(registered)).toBeUndefined();
+		expect(await tools.get("thread")?.call({ action: "mark", message: draft.id, state: "dropped" })).toMatch(
+			new RegExp(`^${draft.id} \\S+ user \\(dropped\\): Hi Sam\n$`),
+		);
+		await expect(tools.get("thread")?.call({ action: "mark", message: draft.id })).rejects.toThrow(
+			"mark requires state",
+		);
+		expect(await agentStartMessage(registered)).toMatchObject({ content: "waiting on: none\nheld: none" });
 	});
 
 	it("shows the todos of the session while one is open or doing, at once after a call, only on a change, and nothing without a host", async () => {

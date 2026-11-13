@@ -11,6 +11,8 @@ import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import {
 	type Author,
+	MESSAGE_MARKS,
+	MESSAGE_STATES,
 	Message,
 	messageLine,
 	Part,
@@ -501,9 +503,11 @@ export function todoTool(
 
 export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages between the user and the persons of the project.
 - list: the threads, each as \`<id> <topic> with <persons>: <time of the last message>\`.
-- read: the thread \`thread\` and its messages, oldest first, each as \`<id> <time> <author> (<state>): <text>\`. The ID of a message is the \`source\` of a rule or a term.
-- log: add a message that the person \`from\` wrote in the thread \`thread\`, with \`text\`, and \`at\` when you know it.
+- read: the thread \`thread\` and its messages, oldest first, each as \`<id> <time> <author> (<state>): <text>\`, where the state is ${oneOf(MESSAGE_STATES)}. The ID of a message is the \`source\` of a rule or a term.
+- log: add a message that the person \`from\` wrote in the thread \`thread\`, with \`text\`, and \`at\` when you know it. It moves each earlier draft of the thread to sent, and each sent message to answered.
 - draft: add a draft of the user to the persons of the thread \`thread\`, with \`text\`. It sends nothing.
+- mark: set the state of the draft or sent message \`message\` to \`state\`: sent when the user sent it, draft when it was not sent, dropped when it will not go.
+When you send a draft yourself, put \`draft:<id>\` in the command, such as the shell comment \`# draft:12\`: the draft is sent once the call runs.
 A person prints as \`<name> (<id>)\`: its ID is the \`from\` of \`log\`, and the \`saidBy\` of a rule or a term.`;
 
 export const RULE_TOOL_DESCRIPTION = `Keep the rules of the project. A conduct rule says how to act. A domain rule says what is true for the project.
@@ -542,20 +546,26 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 
 	const thread = {
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("read"), Type.Literal("log"), Type.Literal("draft")], {
-				description: "What to do",
-			}),
+			action: Type.Union(
+				[Type.Literal("list"), Type.Literal("read"), Type.Literal("log"), Type.Literal("draft"), Type.Literal("mark")],
+				{ description: "What to do" },
+			),
 			thread: id("read, log, draft: the ID of the thread"),
 			from: id("log: the ID of the person who wrote the message"),
 			text: text("log, draft: the text of the message"),
 			at: Type.Optional(
 				Type.Integer({ minimum: 0, description: "log: when the person wrote it, in epoch milliseconds; default now" }),
 			),
+			message: id("mark: the ID of the message"),
+			state: Type.Optional(Type.Enum(MESSAGE_MARKS, { description: `mark: ${oneOf(MESSAGE_MARKS)}` })),
 		}),
 		output: Type.Union([
 			Type.Object({ action: Type.Literal("list"), value: ThreadList }),
 			Type.Object({ action: Type.Literal("read"), value: ThreadMessages }),
-			Type.Object({ action: Type.Union([Type.Literal("log"), Type.Literal("draft")]), value: Message }),
+			Type.Object({
+				action: Type.Union([Type.Literal("log"), Type.Literal("draft"), Type.Literal("mark")]),
+				value: Message,
+			}),
 		]),
 	};
 
@@ -727,6 +737,21 @@ async function runThreadTool(args: Static<ProjectSchemas["thread"]["parameters"]
 
 			const names = await sendPersonNames(scope, signal);
 			const message = await scope.send(at === undefined ? log : { ...log, at }, signal);
+
+			return { text: `${messageLine(message, names)}\n`, data: { action, value: message } };
+		}
+
+		case "mark": {
+			const mark = {
+				type: "message",
+				action,
+				caller: scope.caller,
+				message: required(args.message, "message", action),
+				state: required(args.state, "state", action),
+			} as const;
+
+			const names = await sendPersonNames(scope, signal);
+			const message = await scope.send(mark, signal);
 
 			return { text: `${messageLine(message, names)}\n`, data: { action, value: message } };
 		}

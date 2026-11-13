@@ -1,7 +1,8 @@
 /**
  * The store of the project: the persons that the user talks with, the threads of messages with them, the rules and the
  * terms of the project, the parts of the vault that explain them, and the tool calls that the gate held. Each list is one document of the session, and
- * each thread is an ownerless conversation whose entries are its messages. The requests of the host change them with
+ * each thread is an ownerless conversation whose entries are its messages. The states of the messages out are in the
+ * outbox, a document of the session, because an entry cannot change. The requests of the host change them with
  * these functions, each in its own commit.
  */
 import type { Context } from "@earendil-works/chord/context";
@@ -24,6 +25,10 @@ import {
 	MESSAGE_KIND,
 	type Message,
 	type MessageLog,
+	type MessageMarkInput,
+	type MessageState,
+	messageTransition,
+	OUTBOX_KIND,
 	type Part,
 	type PartAdd,
 	type PartFilter,
@@ -58,9 +63,22 @@ const Rules = sessionDoc<RuleList>(RULES_KIND, () => ({ rules: [] }));
 const Terms = sessionDoc<TermList>(TERMS_KIND, () => ({ terms: [] }));
 const Parts = sessionDoc<PartList>(PARTS_KIND, () => ({ parts: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
+const Outbox = sessionDoc<{ messages: OutState[] }>(OUTBOX_KIND, () => ({ messages: [] }));
 
-/** The data of the entry of a message. The entry has no model message: no model reads a thread. */
-type MessageData = Omit<Message, "id" | "thread">;
+/**
+ * The data of the entry of a message. The entry has no model message: no model reads a thread. Its state is in the
+ * outbox for a message out, and `received` for a message in.
+ */
+type MessageData = Omit<Message, "id" | "thread" | "state">;
+
+/** A message with no state: the data of its entry, its ID and its thread. */
+export type StoredMessage = MessageData & { id: number; thread: number };
+
+/**
+ * The state of the message out `id` of the thread `thread`, written at `written`, and changed last at `at` by the caller
+ * `by`.
+ */
+export type OutState = { id: number; thread: number; state: MessageState; written: number; at: number; by: string };
 
 const MessageEntry = durable.defineEntry<MessageData>(MESSAGE_KIND);
 
@@ -88,24 +106,73 @@ export async function addThread(tx: Tx, input: ThreadAdd): Promise<Thread> {
 /**
  * Adds a message to the thread `input.thread`, with the state `received` for a message in and `draft` for a message out,
  * logged by the caller `by`, and gives it. `at` defaults to now. The `last` of the thread becomes `at` when `at` is later.
+ * A message in from a person of the thread is a reply to each message out of the thread that waits and is not later:
+ * a draft becomes `sent`, and a sent message `answered`.
  */
 export async function logMessage(tx: Tx, input: MessageLog, by: string): Promise<Message> {
 	const thread = known((await tx.doc(Threads)).threads, input.thread, "thread");
 	await knownAuthor(tx, input.from);
-
-	const data: MessageData = {
-		from: input.from,
-		direction: input.direction,
-		state: input.direction === "in" ? "received" : "draft",
-		at: input.at ?? Date.now(),
-		text: input.text,
-		by,
-	};
-
+	const at = input.at ?? Date.now();
+	const data: MessageData = { from: input.from, direction: input.direction, at, text: input.text, by };
+	const outbox = await tx.doc(Outbox);
 	const entry = await tx.appendEntry(MessageEntry, conversationId(input.thread), { data });
-	thread.last = Math.max(thread.last ?? data.at, data.at);
+	thread.last = Math.max(thread.last ?? at, at);
 
-	return { id: entry.id, thread: input.thread, ...data };
+	if (input.direction === "out")
+		outbox.messages.push({ id: entry.id, thread: input.thread, state: "draft", written: at, at, by });
+	else if (input.from !== "user" && thread.persons.includes(input.from)) reply(outbox.messages, input.thread, at, by);
+
+	return joinMessage({ id: entry.id, thread: input.thread, ...data }, outStates(outbox.messages));
+}
+
+/** Moves each message out of the thread `thread` that was written at `at` or before with a reply by the caller `by`. */
+function reply(messages: OutState[], thread: number, at: number, by: string): void {
+	const now = Date.now();
+
+	for (const out of messages) {
+		const state = out.thread === thread && out.written <= at ? messageTransition(out.state, "reply") : undefined;
+
+		if (state !== undefined) Object.assign(out, { state, at: now, by });
+	}
+}
+
+/**
+ * Marks the message out `input.message` with `input.state` for the caller `by`, and gives it. A message in, and a mark
+ * that its state cannot take, fail.
+ */
+export async function markMessage(tx: Tx, input: MessageMarkInput, by: string): Promise<Message> {
+	const { message: id } = input;
+	const entry = await tx.entry(MessageEntry, entryId(id));
+
+	if (entry === undefined) throw new Error(`Unknown message: ${id}`);
+	const out = (await tx.doc(Outbox)).messages.find((found) => found.id === id);
+
+	if (out === undefined) throw new Error(`Message ${id} is a message in: only a message out has a mark`);
+	const state = messageTransition(out.state, input.state);
+
+	if (state === undefined) throw new Error(`Message ${id} is ${out.state}: it cannot become ${input.state}`);
+	Object.assign(out, { state, at: Date.now(), by });
+
+	return joinMessage({ id, thread: out.thread, ...entry.data }, outStates([out]));
+}
+
+/**
+ * Marks each message out of `ids` that is a draft as sent by the caller `by`. An ID of another message, or of no
+ * message, changes nothing.
+ */
+export async function markSent(tx: Tx, ids: readonly number[], by: string): Promise<void> {
+	const at = Date.now();
+
+	for (const out of (await tx.doc(Outbox)).messages) {
+		if (ids.includes(out.id) && out.state === "draft") Object.assign(out, { state: "sent", at, by });
+	}
+}
+
+/** The state of each message out, in ID order. */
+export async function readOutbox(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<OutState[]> {
+	const list = await reader.snapshot(Outbox, context);
+
+	return (list?.messages ?? []).map((out) => ({ ...out }));
 }
 
 /**
@@ -328,16 +395,29 @@ export async function readThread(
 	return { thread, messages: await readMessages(harness, id, context) };
 }
 
-/** The messages of the thread `id`, oldest first. */
+/** The messages of the thread `id`, oldest first, each with its state in the outbox. */
 export async function readMessages(
-	harness: Pick<Harness, "conversation">,
+	harness: Pick<Harness, "snapshot" | "conversation">,
 	id: number,
 	context: Context,
 ): Promise<Message[]> {
+	// The outbox is read after the entries, so that each message out that they have has its state there.
+	const stored = await readStored(harness, id, context);
+	const states = outStates(await readOutbox(harness, context));
+
+	return stored.map((message) => joinMessage(message, states));
+}
+
+/** The messages of the thread `id`, oldest first, with no state. */
+export async function readStored(
+	harness: Pick<Harness, "conversation">,
+	id: number,
+	context: Context,
+): Promise<StoredMessage[]> {
 	const conversation = await harness.conversation(conversationId(id), context);
 
 	if (conversation === undefined) throw new Error(`Unknown thread: ${id}`);
-	const messages: Message[] = [];
+	const messages: StoredMessage[] = [];
 	let cursor: Cursor | undefined;
 
 	do {
@@ -353,15 +433,22 @@ export async function readMessages(
 	return messages;
 }
 
-/** The messages of the thread `id` in the state `draft`, oldest first. */
-export async function readDrafts(
-	harness: Pick<Harness, "conversation">,
-	id: number,
-	context: Context,
-): Promise<Message[]> {
-	const messages = await readMessages(harness, id, context);
+/** The state of each message of `outbox`, by message ID. */
+export function outStates(outbox: readonly OutState[]): ReadonlyMap<number, MessageState> {
+	return new Map(outbox.map((out) => [out.id, out.state]));
+}
 
-	return messages.filter((message) => message.state === "draft");
+/**
+ * The message `message` with its state: `received` for a message in, and its state in `states` for a message out. A
+ * message out has its state in the outbox from the commit that adds it, so a message out with no state fails.
+ */
+export function joinMessage(message: StoredMessage, states: ReadonlyMap<number, MessageState>): Message {
+	if (message.direction === "in") return { ...message, state: "received" };
+	const state = states.get(message.id);
+
+	if (state === undefined) throw new Error(`Message ${message.id} is a message out with no state in the outbox`);
+
+	return { ...message, state };
 }
 
 /** The rules, in ID order: with `filter`, only those of its kind and its status. */
@@ -405,7 +492,8 @@ export async function readParts(
 	return { parts: parts.map(copyPart) };
 }
 
-function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {
+/** A document of the session of the kind `kind`, which starts as `initial()`. */
+export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {
 	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: () => false, initial });
 }
 

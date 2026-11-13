@@ -1,13 +1,14 @@
 /**
- * The watch of the store of a project: the persons, rules, terms, threads with their drafts, parts and held actions,
+ * The watch of the store of a project: the persons, rules, terms, threads with their waits, parts and held actions,
  * then an event with the objects that changed and the IDs of those that went, after the commits that change them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness } from "@earendil-works/pi-durable";
 import {
 	HELD_KIND,
+	isWaiting,
 	MESSAGE_KIND,
-	type Message,
+	OUTBOX_KIND,
 	PARTS_KIND,
 	PERSONS_KIND,
 	type ProjectEvent,
@@ -18,13 +19,25 @@ import {
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
-import { readDrafts, readHeld, readParts, readPersons, readRules, readTerms, readThreads } from "./project.ts";
+import {
+	joinMessage,
+	outStates,
+	readHeld,
+	readOutbox,
+	readParts,
+	readPersons,
+	readRules,
+	readTerms,
+	readStored,
+	readThreads,
+	type StoredMessage,
+} from "./project.ts";
 import type { Connection } from "./push.ts";
 import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** The kinds of the documents of the project. A message is an entry, not a document. */
+/** The kinds of the documents of the project. A message is an entry, not a document; its state out is in the outbox. */
 const PROJECT_DOCS: ReadonlySet<string> = new Set([
 	PERSONS_KIND,
 	THREADS_KIND,
@@ -32,6 +45,7 @@ const PROJECT_DOCS: ReadonlySet<string> = new Set([
 	TERMS_KIND,
 	PARTS_KIND,
 	HELD_KIND,
+	OUTBOX_KIND,
 ]);
 
 export type ProjectHost = { readonly harness: Harness };
@@ -91,18 +105,18 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 /** The objects of the project, and the commits that can change them. */
 class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	readonly #harness: Harness;
-	/** The IDs of the threads that got a message since the last read, whose drafts the next read reads again. */
+	/** The IDs of the threads that got a message since the last read, whose messages the next read reads again. */
 	#fresh = new Set<number>();
-	/** The drafts of each thread, by thread ID, in the last read. */
-	#drafts = new Map<number, Message[]>();
+	/** The messages out of each thread, by thread ID, as the last read read them, with no state. */
+	#out = new Map<number, StoredMessage[]>();
 
 	constructor(harness: Harness) {
 		this.#harness = harness;
 	}
 
 	/**
-	 * Reads every object. It reads the drafts only of the threads that are new since the last read or got a message since
-	 * then; the other threads keep the drafts of the last read.
+	 * Reads every object. It reads the messages only of the threads that are new since the last read or got a message
+	 * since then; the other threads keep the messages of the last read. The states come from the outbox at each read.
 	 */
 	async read(): Promise<ProjectState> {
 		const fresh = this.#fresh;
@@ -117,17 +131,31 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			readHeld(this.#harness, context),
 		]);
 
-		const withDrafts: ProjectThread[] = await Promise.all(
-			threads.threads.map(async (thread) => {
-				const known = fresh.has(thread.id) ? undefined : this.#drafts.get(thread.id);
+		const out = new Map(
+			await Promise.all(
+				threads.threads.map(async (thread): Promise<[number, StoredMessage[]]> => {
+					const known = fresh.has(thread.id) ? undefined : this.#out.get(thread.id);
+					const messages = known ?? (await readStored(this.#harness, thread.id, context));
 
-				return { ...thread, drafts: known ?? (await readDrafts(this.#harness, thread.id, context)) };
-			}),
+					return [thread.id, messages.filter((message) => message.direction === "out")];
+				}),
+			),
 		);
 
-		this.#drafts = new Map(withDrafts.map((thread) => [thread.id, thread.drafts]));
+		this.#out = out;
+		// The outbox is read after the messages, so that each message out that they have has its state there.
+		const states = outStates(await readOutbox(this.#harness, context));
 
-		return { ...persons, ...rules, ...terms, threads: withDrafts, ...parts, ...held };
+		const withWaits: ProjectThread[] = threads.threads.map((thread) => ({
+			...thread,
+			waits: (out.get(thread.id) ?? []).flatMap((stored) => {
+				const message = joinMessage(stored, states);
+
+				return isWaiting(message.state) ? [message] : [];
+			}),
+		}));
+
+		return { ...persons, ...rules, ...terms, threads: withWaits, ...parts, ...held };
 	}
 
 	events(before: ProjectState, after: ProjectState, all: boolean): ProjectEvent[] {

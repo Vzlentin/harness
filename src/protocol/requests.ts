@@ -4,10 +4,12 @@ import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil
 import { type Static, Type } from "typebox";
 import { type GateReply, ToolArguments } from "./gate.ts";
 import {
+	type DigestReply,
 	type HeldAction,
 	LocalId,
 	type Message,
 	MessageLog,
+	MessageMarkInput,
 	Part,
 	PartAdd,
 	PartFilter,
@@ -39,7 +41,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -300,13 +302,28 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("list") }),
 	/** Replies with the thread `id` and its messages, oldest first. */
 	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("read"), id: Thread.properties.id }),
-	/** Adds a message to a thread, and replies with it. The host sets its state from its direction. */
+	/**
+	 * Adds a message to a thread, and replies with it. The host sets its state from its direction. A message in from a
+	 * person of the thread moves each earlier message out that waits one step: a draft to `sent`, a sent one to `answered`.
+	 */
 	Type.Object({
 		type: Type.Literal("message"),
 		action: Type.Literal("log"),
 		caller: Type.String(),
 		...MessageLog.properties,
 	}),
+	/** Marks the message out `message` with `state`, and replies with it. A mark that its state cannot take fails. */
+	Type.Object({
+		type: Type.Literal("message"),
+		action: Type.Literal("mark"),
+		caller: Type.String(),
+		...MessageMarkInput.properties,
+	}),
+	/**
+	 * Replies with the digest of `caller`, the messages out that wait and its held actions, when it changed since the
+	 * last digest of the caller, and records it as given. A Pi session sends it before each turn.
+	 */
+	Type.Object({ type: Type.Literal("digest"), caller: Type.String() }),
 	/** Adds a rule, which retires the rule `replaces`, and replies with it. */
 	Type.Object({
 		type: Type.Literal("rule"),
@@ -389,7 +406,7 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("watch-tree") }),
 	/**
-	 * Replies with the persons, rules, terms, threads with their drafts, parts and held actions of the project, then sends
+	 * Replies with the persons, rules, terms, threads with their waits, parts and held actions of the project, then sends
 	 * one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("watch-project") }),
@@ -438,6 +455,7 @@ export type Replies = {
 	/** The thread of `add`, the threads of `list`, or the thread and its messages of `read`. */
 	readonly thread: Thread | ThreadList | ThreadMessages;
 	readonly message: Message;
+	readonly digest: DigestReply;
 	/** The rule of `set`, or the rules of `list`. */
 	readonly rule: Rule | RuleList;
 	/** The term of `set`, or the terms of `list`. */

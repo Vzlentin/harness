@@ -102,7 +102,7 @@ afterAll(async () => {
 });
 
 describe("watch-project", { timeout: 60_000 }, () => {
-	it("sends one event with the objects that each commit changed, and the drafts of each thread", async () => {
+	it("sends one event with the objects that each commit changed, and the messages that wait in each thread", async () => {
 		const project = "watched";
 		const host = await projectHost(project);
 		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
@@ -129,7 +129,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
 			);
 
-			expect(await next()).toEqual(event({ threads: [{ ...thread, drafts: [] }] }));
+			expect(await next()).toEqual(event({ threads: [{ ...thread, waits: [] }] }));
 
 			const asked = Value.Parse(
 				Message,
@@ -148,7 +148,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				),
 			);
 
-			expect(await next()).toEqual(event({ threads: [{ ...thread, last: asked.at, drafts: [] }] }));
+			expect(await next()).toEqual(event({ threads: [{ ...thread, last: asked.at, waits: [] }] }));
 
 			const draft = Value.Parse(
 				Message,
@@ -166,7 +166,16 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				),
 			);
 
-			expect(await next()).toEqual(event({ threads: [{ ...thread, last: draft.at, drafts: [draft] }] }));
+			expect(await next()).toEqual(event({ threads: [{ ...thread, last: draft.at, waits: [draft] }] }));
+
+			// A mark changes the outbox, not the entry of the message: the thread gives the message with its new state.
+			const sent = Value.Parse(
+				Message,
+				await send({ type: "message", action: "mark", caller: "cli", message: draft.id, state: "sent" }, project),
+			);
+
+			expect(sent).toEqual({ ...draft, state: "sent" });
+			expect(await next()).toEqual(event({ threads: [{ ...thread, last: draft.at, waits: [sent] }] }));
 
 			const rule = Value.Parse(
 				Rule,
@@ -269,7 +278,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				project,
 			);
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			expect(events).toHaveLength(10);
+			expect(events).toHaveLength(11);
 
 			const again = await openProjectWatch(project);
 			again.socket.destroy();
@@ -278,7 +287,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				persons: [sam],
 				rules: [decided],
 				terms: [changed],
-				threads: [{ ...thread, last: draft.at, drafts: [draft] }],
+				threads: [{ ...thread, last: draft.at, waits: [sent] }],
 				parts: [
 					{ ...part, stale: true },
 					{ ...glossary, stale: true },
@@ -404,7 +413,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("gives the drafts that went, the held actions that changed, the IDs of the objects that went, and no event when nothing changed", () => {
+	it("gives the messages that stopped waiting, the held actions that changed, the IDs of the objects that went, and no event when nothing changed", () => {
 		const sam = { id: 1, name: "Sam" };
 		const rufin = { id: 2, name: "Rufin" };
 
@@ -429,7 +438,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			persons: [sam, rufin],
 			rules: [],
 			terms: [],
-			threads: [{ ...thread, drafts: [draft] }],
+			threads: [{ ...thread, waits: [draft] }],
 			parts: [],
 			held: [push, merge],
 		};
@@ -438,21 +447,21 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			persons: [sam],
 			rules: [],
 			terms: [],
-			threads: [{ ...thread, drafts: [] }],
+			threads: [{ ...thread, waits: [] }],
 			parts: [],
 			held: [approved],
 		};
 
 		expect(projectEvent(before, after, false)).toEqual(
 			event({
-				threads: [{ ...thread, drafts: [] }],
+				threads: [{ ...thread, waits: [] }],
 				held: [approved],
 				removed: { ...NONE, persons: [2], held: [2] },
 			}),
 		);
 		expect(projectEvent(after, after, false)).toBeUndefined();
 		expect(projectEvent(after, after, true)).toEqual(
-			event({ persons: [sam], threads: [{ ...thread, drafts: [] }], held: [approved] }),
+			event({ persons: [sam], threads: [{ ...thread, waits: [] }], held: [approved] }),
 		);
 	});
 });

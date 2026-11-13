@@ -29,6 +29,7 @@ import {
 } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
+import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
@@ -39,6 +40,7 @@ import {
 	checkPart,
 	dropHeld,
 	logMessage,
+	markMessage,
 	readHeld,
 	readParts,
 	readPersons,
@@ -164,7 +166,9 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 		case "thread":
 			return thread(request, handler);
 		case "message":
-			return handler.harness.commit((tx) => logMessage(tx, request, request.caller), context);
+			return message(request, handler);
+		case "digest":
+			return digest(request.caller, handler);
 		case "rule":
 			return rule(request, handler);
 		case "term":
@@ -206,13 +210,16 @@ async function send(request: Extract<Request, { type: "send" }>, handler: Handle
 
 	if (record.kind === "rlm" && overInput(request.message)) throw new Error(SEND_TOO_LARGE);
 
-	return handler.push.whileActive(handle, async () =>
-		sendTo(request, await childTarget(handler, handle, record), handler.harness, {
+	return handler.push.whileActive(handle, async () => {
+		const found = await childTarget(handler, handle, record);
+		await writeDigest(handler, found);
+
+		return sendTo(request, found, handler.harness, {
 			// The request goes into the record's `requests` in the commit that makes it the last request, so a wait
 			// that sees it as the last request finds it there.
 			admitted: (tx) => addRequest(tx, handle, requestId, { notify }),
-		}),
-	);
+		});
+	});
 }
 
 async function input(
@@ -223,6 +230,7 @@ async function input(
 	const found = await target(handler, ref);
 
 	if (ref.kind === "agent") await catchUp(handler, found.write, request.requestId);
+	await writeDigest(handler, found);
 
 	// A conversation takes input only while it works, so its input is always a steer.
 	return sendTo(ref.kind === "conversation" ? { ...request, followUp: false } : request, found, handler.harness);
@@ -314,6 +322,25 @@ function thread(request: Extract<Request, { type: "thread" }>, handler: Handler)
 		case "read":
 			return readThread(handler.harness, request.id, context);
 	}
+}
+
+function message(request: Extract<Request, { type: "message" }>, handler: Handler): Promise<Replies["message"]> {
+	switch (request.action) {
+		case "log":
+			return handler.harness.commit((tx) => logMessage(tx, request, request.caller), context);
+		case "mark":
+			return handler.harness.commit((tx) => markMessage(tx, request, request.caller), context);
+	}
+}
+
+/** The digest of `caller` when it changed since its last one, recorded as given. */
+async function digest(caller: string, handler: Handler): Promise<Replies["digest"]> {
+	const next = await nextDigest(handler.harness, caller);
+
+	if (next === undefined) return {};
+	await recordDigest(handler.harness, caller, next);
+
+	return { text: next.text };
 }
 
 function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Promise<Replies["rule"]> {
@@ -495,13 +522,16 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 	const record = await childRecord(harness, handle);
 	const requestId = `spawn:${request.requestId}`;
+	const found = await childTarget(handler, handle, record);
+	await writeDigest(handler, found);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
 	// the request goes into the record's `requests` in the commit that makes it the last request.
-	await (
-		await childOf(handler, record)
-	).send({ type: "input", content: request.prompt, requestId }, context, {
-		admitted: (tx) => addRequest(tx, handle, requestId, { notify: request.notify }),
-	});
+	await found.send(
+		{ type: "input", content: request.prompt, requestId },
+		{
+			admitted: (tx) => addRequest(tx, handle, requestId, { notify: request.notify }),
+		},
+	);
 
 	return childInfo(handler, handle, record);
 }

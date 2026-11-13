@@ -45,12 +45,50 @@ export const MessageDirection = Type.Enum(MESSAGE_DIRECTIONS);
 
 export type MessageDirection = Static<typeof MessageDirection>;
 
-/** The states of a message: `received` for a message in, `draft` for a message out. */
-export const MESSAGE_STATES = ["received", "draft"] as const;
+/**
+ * The states of a message: `received` for a message in, and for a message out `draft`, `sent`, `answered` or
+ * `dropped`.
+ */
+export const MESSAGE_STATES = ["received", "draft", "sent", "answered", "dropped"] as const;
 
 export const MessageState = Type.Enum(MESSAGE_STATES);
 
 export type MessageState = Static<typeof MessageState>;
+
+/** The states that a request can mark a message out with. */
+export const MESSAGE_MARKS = ["sent", "draft", "dropped"] as const;
+
+export const MessageMark = Type.Enum(MESSAGE_MARKS);
+
+export type MessageMark = Static<typeof MessageMark>;
+
+/** An event of a message out: a mark, or `reply`, a later message in of a person of its thread. */
+export type MessageEvent = MessageMark | "reply";
+
+/**
+ * The state of a message out in the state `state` after `event`, or `undefined` when the event cannot change it. A draft
+ * becomes `sent` with a mark `sent` or a reply, and `dropped` with a mark `dropped`. A sent message becomes `draft` with
+ * a mark `draft`, and `answered` with a reply.
+ */
+export function messageTransition(state: MessageState, event: MessageEvent): MessageState | undefined {
+	switch (state) {
+		case "draft":
+			if (event === "sent" || event === "reply") return "sent";
+
+			return event === "dropped" ? "dropped" : undefined;
+		case "sent":
+			if (event === "reply") return "answered";
+
+			return event === "draft" ? "draft" : undefined;
+		default:
+			return undefined;
+	}
+}
+
+/** Whether a message in the state `state` waits on the user or on a person: a draft, or a sent message. */
+export function isWaiting(state: MessageState): boolean {
+	return state === "draft" || state === "sent";
+}
 
 /**
  * A message of a thread. Its ID is the ID of its entry, `at` is in epoch milliseconds, and `by` is the caller that logged
@@ -207,6 +245,11 @@ export const MessageLog = Type.Object({
 
 export type MessageLog = Static<typeof MessageLog>;
 
+/** The input of a mark of the message out `message` with `state`. */
+export const MessageMarkInput = Type.Object({ message: StoreId, state: MessageMark });
+
+export type MessageMarkInput = Static<typeof MessageMarkInput>;
+
 /** The input of a new rule, which can replace an older rule. Its status defaults to `open`. */
 export const RuleNew = Type.Object({
 	id: Type.Optional(Type.Never()),
@@ -297,8 +340,19 @@ export const TERMS_KIND = "harness.terms";
 export const PARTS_KIND = "harness.parts";
 export const HELD_KIND = "harness.held";
 
+/** The kind of the document of the session with the state of each message out. */
+export const OUTBOX_KIND = "harness.outbox";
+
 /** The kind of the entry of a message in the conversation of its thread. */
 export const MESSAGE_KIND = "harness.message";
+
+/** The kind of the entry of a digest in the conversation of a hosted agent. */
+export const DIGEST_KIND = "harness.digest";
+
+/** The reply of `digest`: the text of the digest that the caller gets, absent when it gets none. */
+export const DigestReply = Type.Object({ text: Type.Optional(Type.String()) });
+
+export type DigestReply = Static<typeof DigestReply>;
 
 export const PersonList = Type.Object({ persons: Type.Array(Person) });
 
@@ -329,13 +383,13 @@ export const ThreadMessages = Type.Object({ thread: Thread, messages: Type.Array
 
 export type ThreadMessages = Static<typeof ThreadMessages>;
 
-/** A thread of `watch-project`, with its messages in the state `draft`, oldest first. */
-export const ProjectThread = Type.Object({ ...Thread.properties, drafts: Type.Array(Message) });
+/** A thread of `watch-project`, with its messages in the state `draft` or `sent`, oldest first. */
+export const ProjectThread = Type.Object({ ...Thread.properties, waits: Type.Array(Message) });
 
 export type ProjectThread = Static<typeof ProjectThread>;
 
 /**
- * The reply of `watch-project`: every person, rule, term, thread with its drafts, part and held action, in ID order.
+ * The reply of `watch-project`: every person, rule, term, thread with its waits, part and held action, in ID order.
  */
 export const ProjectState = Type.Object({
 	persons: Type.Array(Person),

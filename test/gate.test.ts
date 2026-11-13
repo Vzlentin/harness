@@ -24,7 +24,17 @@ import { type Host, runHost } from "../src/host/run.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { type HeldAction, Message, Person, ProjectEvent, ProjectState, Rule, Thread } from "../src/protocol/project.ts";
+import {
+	DigestReply,
+	type HeldAction,
+	Message,
+	Person,
+	ProjectEvent,
+	ProjectState,
+	Rule,
+	Thread,
+	ThreadMessages,
+} from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import {
@@ -469,6 +479,13 @@ describe("gate", { timeout: 60_000 }, () => {
 			// The same call again, such as a hook after a restart, gets the same action, with no question.
 			expect(await gate("khan", "call-1", merge, project)).toEqual({ runs: false, held });
 			expect(asked).toEqual([]);
+
+			// The digest of the agent has its held action; another caller with nothing that waits gets none.
+			const digest = async (caller: string) =>
+				Value.Parse(DigestReply, await send({ type: "digest", caller }, project)).text;
+
+			expect(await digest("khan")).toBe(`waiting on: none\nheld: 1 bash: ${held.reason}`);
+			expect(await digest("other")).toBeUndefined();
 			await until(() => watch.events.some((event) => event.held.length > 0));
 			expect(watch.events.at(-1)).toMatchObject({ held: [held], rules: [], removed: { held: [] } });
 
@@ -497,6 +514,9 @@ describe("gate", { timeout: 60_000 }, () => {
 			// A later call of the same command is asked again, and held as a new action.
 			expect(heldOf(await gate("khan", "call-5", merge, project))).toMatchObject({ id: 4, state: "held" });
 
+			// Only the actions in the state held are there: action 1 is approved, and action 2 is of another agent.
+			const failed = "The classifier openrouter/typesafe/jev-1.14 failed: overloaded";
+			expect(await digest("khan")).toBe(`waiting on: none\nheld: 3 bash: ${failed} · 4 bash: ${held.reason}`);
 			const dropped = await send({ type: "held", action: "drop", caller: "user", id: 2 }, project);
 			expect(dropped).toMatchObject({ id: 2, state: "dropped", by: "user" });
 			expect(await gate("other", "call-2", merge, project)).toEqual({ runs: false, held: dropped });
@@ -505,6 +525,65 @@ describe("gate", { timeout: 60_000 }, () => {
 			);
 		} finally {
 			watch.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("marks the drafts that a command names as sent when the call runs, and not when the gate holds it", async () => {
+		const project = "gate-drafts";
+		const host = await projectHost(project);
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const draft = async (text: string) => {
+				const log = { type: "message", action: "log", caller: "cli", thread: thread.id, from: "user" } as const;
+
+				return Value.Parse(Message, await send({ ...log, direction: "out", text }, project));
+			};
+
+			const states = async () => {
+				const read = await send({ type: "thread", action: "read", id: thread.id }, project);
+
+				return Value.Parse(ThreadMessages, read).messages.map((message) => message.state);
+			};
+
+			const first = await draft("The scope.");
+			const second = await draft("The rule.");
+
+			// With no decided conduct rule, the call runs, and the draft that it names is sent.
+			const sendFirst = `slack send sam 'The scope.' # draft:${first.id}`;
+			expect(await gate("khan", "send-1", sendFirst, project)).toEqual({ runs: true });
+			expect(await states()).toEqual(["sent", "draft"]);
+
+			// A read asks nothing and marks nothing.
+			const read = { type: "gate", requestId: "read-1", caller: "khan", tool: "read", messages: [] } as const;
+			expect(await send({ ...read, arguments: { path: `draft:${second.id}` } }, project)).toEqual({ runs: true });
+			expect(await states()).toEqual(["sent", "draft"]);
+
+			const rule = await addRule(project, first.id, {
+				name: "go",
+				kind: "conduct",
+				value: "Send only with a go.",
+				status: "decided",
+			});
+
+			conduct = [String(rule.id)];
+			const sendSecond = `slack send sam 'The rule.' # draft:${second.id}`;
+			recorded.set(sendSecond, { writes: 0.98, rule: String(rule.id) });
+			const held = heldOf(await gate("khan", "send-2", sendSecond, project));
+			expect(await states()).toEqual(["sent", "draft"]);
+
+			// Once approved, the call runs, and its draft is sent.
+			await send({ type: "held", action: "approve", caller: "user", id: held.id }, project);
+			expect(await gate("khan", "send-3", sendSecond, project)).toEqual({ runs: true });
+			expect(await states()).toEqual(["sent", "sent"]);
+		} finally {
 			await host.close();
 		}
 	});

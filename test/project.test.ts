@@ -6,9 +6,21 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
-import { Message, Part, Person, Rule, Term, Thread } from "../src/protocol/project.ts";
+import {
+	DigestReply,
+	MESSAGE_STATES,
+	Message,
+	type MessageEvent,
+	messageTransition,
+	Part,
+	Person,
+	Rule,
+	Term,
+	Thread,
+	ThreadMessages,
+} from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { cli, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { answerOf, cli, contexts, models, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
 
 const RuleList = Type.Object({ rules: Type.Array(Rule) });
 
@@ -24,6 +36,46 @@ async function send<T extends Request["type"]>(
 	if (reply === undefined) throw new Error("no host");
 
 	return reply;
+}
+
+/** Runs the host of the new project `name` in this process. */
+async function projectHost(name: string): Promise<Host> {
+	const dir = await mkdtemp(join(root, `${name}-`));
+	expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
+	const started = await runHost({ project: name, cwd: dir, models });
+
+	if (started === undefined) throw new Error("no host");
+
+	return started;
+}
+
+/** Logs the message `text` in the thread `thread` of `project`, from `from`, at `at`, and gives it. */
+async function logAt(
+	project: string,
+	thread: number,
+	from: number | "user",
+	at: number,
+	text: string,
+): Promise<Message> {
+	const direction = from === "user" ? "out" : "in";
+	const line = { type: "message", action: "log", caller: "cli", thread, from, direction, at, text } as const;
+
+	return Value.Parse(Message, await send(line, project));
+}
+
+/** The text of the digest of `caller` in `project`, or undefined when it gets none. */
+async function digestOf(project: string, caller: string): Promise<string | undefined> {
+	return Value.Parse(DigestReply, await send({ type: "digest", caller }, project)).text;
+}
+
+/**
+ * `<day> <month> <HH:MM>` of the time `at`, from the UTC text of `Date`, such as `12 Nov 14:22`: the format of a sent
+ * time in a digest.
+ */
+function utcMinute(at: number): string {
+	const [, day = "", month = "", , time = ""] = new Date(at).toUTCString().split(" ");
+
+	return `${Number(day)} ${month} ${time.slice(0, 5)}`;
 }
 
 beforeAll(async () => {
@@ -480,6 +532,180 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			await polling;
 		} finally {
 			await idle.close();
+		}
+	});
+
+	it("moves a message out from draft to sent to answered, or to dropped, and back from sent to draft", () => {
+		const events: readonly MessageEvent[] = ["sent", "draft", "dropped", "reply"];
+
+		const moves = MESSAGE_STATES.flatMap((state) =>
+			events.flatMap((event) => {
+				const next = messageTransition(state, event);
+
+				return next === undefined ? [] : [`${state} ${event} ${next}`];
+			}),
+		);
+
+		expect(moves).toEqual([
+			"draft sent sent",
+			"draft dropped dropped",
+			"draft reply sent",
+			"sent draft draft",
+			"sent reply answered",
+		]);
+	});
+
+	it("marks a draft sent and answered by later messages of a person of its thread, and by a mark", async () => {
+		const project = "outbox";
+		const outbox = await projectHost(project);
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+			const rufin = Value.Parse(Person, await send({ type: "person", action: "add", name: "Rufin" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const states = async () => {
+				const read = Value.Parse(
+					ThreadMessages,
+					await send({ type: "thread", action: "read", id: thread.id }, project),
+				);
+
+				return read.messages.map((message) => `${message.text}: ${message.state}`);
+			};
+
+			await logAt(project, thread.id, "user", 2_000, "Types 45 and 54.");
+			// A pasted message that is older than the draft, and a message of a person out of the thread, do not move it.
+			await logAt(project, thread.id, sam.id, 1_000, "Which types?");
+			await logAt(project, thread.id, rufin.id, 3_000, "Not my thread.");
+			expect(await states()).toEqual(["Types 45 and 54.: draft", "Which types?: received", "Not my thread.: received"]);
+
+			// Each later message of a person of the thread moves the draft one step.
+			await logAt(project, thread.id, sam.id, 3_000, "Got it.");
+			expect((await states())[0]).toBe("Types 45 and 54.: sent");
+			await logAt(project, thread.id, sam.id, 4_000, "Agreed.");
+			expect((await states())[0]).toBe("Types 45 and 54.: answered");
+
+			const draft = await logAt(project, thread.id, "user", 5_000, "And type 56?");
+			const mark = { type: "message", action: "mark", caller: "cli", message: draft.id } as const;
+			expect(await send({ ...mark, state: "sent" }, project)).toEqual({ ...draft, state: "sent" });
+			expect(await send({ ...mark, state: "draft" }, project)).toEqual(draft);
+			expect(await send({ ...mark, state: "dropped" }, project)).toEqual({ ...draft, state: "dropped" });
+			await expect(send({ ...mark, state: "sent" }, project)).rejects.toThrow(
+				`Message ${draft.id} is dropped: it cannot become sent`,
+			);
+			// A later message does not move a dropped message.
+			await logAt(project, thread.id, sam.id, 6_000, "Yes.");
+			expect((await states())[5]).toBe("And type 56?: dropped");
+
+			const asked = await logAt(project, thread.id, sam.id, 7_000, "Done?");
+			await expect(send({ ...mark, message: asked.id, state: "sent" }, project)).rejects.toThrow(
+				`Message ${asked.id} is a message in: only a message out has a mark`,
+			);
+			await expect(send({ ...mark, message: 999_999, state: "sent" }, project)).rejects.toThrow(
+				"Unknown message: 999999",
+			);
+			await expect(send(JSON.parse(JSON.stringify({ ...mark, state: "answered" })), project)).rejects.toThrow(
+				"Invalid message request: state is not valid",
+			);
+		} finally {
+			await outbox.close();
+		}
+	});
+
+	it("gives a caller its digest of the messages that wait only when it changed", async () => {
+		const project = "digest";
+		const digests = await projectHost(project);
+
+		try {
+			// A caller that never got a digest gets none while nothing waits.
+			expect(await digestOf(project, "pi-1")).toBeUndefined();
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+			const benoit = Value.Parse(Person, await send({ type: "person", action: "add", name: "Benoit" }, project));
+
+			const brand = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "own-brand C+P", persons: [sam.id] }, project),
+			);
+
+			const loyalty = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "double loyalty", persons: [benoit.id] }, project),
+			);
+
+			const toSam = await logAt(project, brand.id, "user", 1_000, "The scope.");
+			const toBenoit = await logAt(project, loyalty.id, "user", 1_000, "The rule.");
+			const mark = { type: "message", action: "mark", caller: "cli" } as const;
+			const before = Date.now();
+			await send({ ...mark, message: toSam.id, state: "sent" }, project);
+			const after = Date.now();
+			// The time of the mark is between `before` and `after`, which can be in two minutes.
+			const sent = (at: number) => `Sam (own-brand C+P, sent ${utcMinute(at)})`;
+			const both = (at: number) => `waiting on: ${sent(at)} · Benoit (double loyalty, draft not sent)\nheld: none`;
+			expect([before, after].map(both)).toContain(await digestOf(project, "pi-1"));
+			expect(await digestOf(project, "pi-1")).toBeUndefined();
+
+			await send({ ...mark, message: toBenoit.id, state: "dropped" }, project);
+			const samOnly = (at: number) => `waiting on: ${sent(at)}\nheld: none`;
+			expect([before, after].map(samOnly)).toContain(await digestOf(project, "pi-1"));
+			// Each caller has its own last digest.
+			expect([before, after].map(samOnly)).toContain(await digestOf(project, "pi-2"));
+
+			await logAt(project, brand.id, sam.id, 2_000, "Thanks.");
+			expect(await digestOf(project, "pi-1")).toBe("waiting on: none\nheld: none");
+			expect(await digestOf(project, "pi-1")).toBeUndefined();
+			expect(await digestOf(project, "pi-3")).toBeUndefined();
+		} finally {
+			await digests.close();
+		}
+	});
+
+	it("writes the digest into the conversation of a child before its spawn and its send, only when it changed", async () => {
+		const project = "digest-child";
+		const digests = await projectHost(project);
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const draft = await logAt(project, thread.id, "user", 1_000, "The scope.");
+			const waiting = "waiting on: Sam (Scope, draft not sent)\nheld: none";
+			const child = await spawnAs("digest-test", "Digest one", { notify: false, project });
+			await answerOf(child.handle, project);
+			expect(contexts.get("Digest one")).toEqual([waiting, "Digest one"]);
+
+			const line = {
+				type: "send",
+				caller: "digest-test",
+				handle: child.handle,
+				followUp: false,
+				notify: false,
+			} as const;
+
+			await send({ ...line, requestId: "two", message: "Digest two" }, project);
+			await answerOf(child.handle, project);
+			expect(contexts.get("Digest two")).toEqual([waiting, "Digest one", "Digest two"]);
+
+			const mark = { type: "message", action: "mark", caller: "cli", message: draft.id, state: "dropped" } as const;
+			await send(mark, project);
+			await send({ ...line, requestId: "three", message: "Digest three" }, project);
+			await answerOf(child.handle, project);
+			expect(contexts.get("Digest three")).toEqual([
+				waiting,
+				"Digest one",
+				"Digest two",
+				"waiting on: none\nheld: none",
+				"Digest three",
+			]);
+		} finally {
+			await digests.close();
 		}
 	});
 });

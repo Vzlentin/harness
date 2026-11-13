@@ -21,6 +21,7 @@ const STREAMING = "streaming";
 const NOTE_LABELS = new Map([
 	["harness.note", "note"],
 	["harness.catchup", "catch-up"],
+	["harness.digest", "digest"],
 ]);
 
 /** A new element with the class `className`, and the text `text` when it is given. */
