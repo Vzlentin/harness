@@ -12,7 +12,17 @@ import { type Host, runHost } from "../src/host/run.ts";
 import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { Message, Part, Person, ProjectEvent, ProjectState, Rule, Term, Thread } from "../src/protocol/project.ts";
+import {
+	type HeldAction,
+	Message,
+	Part,
+	Person,
+	ProjectEvent,
+	ProjectState,
+	Rule,
+	Term,
+	Thread,
+} from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, models, root, setUp, tearDown, until } from "./helpers.ts";
@@ -23,11 +33,11 @@ const WatchLine = Type.Union([
 	Type.Object({ event: ProjectEvent }),
 ]);
 
-const NONE: ProjectEvent["removed"] = { persons: [], rules: [], terms: [], threads: [], parts: [] };
+const NONE: ProjectEvent["removed"] = { persons: [], rules: [], terms: [], threads: [], parts: [], held: [] };
 
 /** An event with the objects of `changes`, no other object, and no removed ID. */
 function event(changes: Partial<ProjectEvent>): ProjectEvent {
-	return { persons: [], rules: [], terms: [], threads: [], parts: [], removed: NONE, ...changes };
+	return { persons: [], rules: [], terms: [], threads: [], parts: [], held: [], removed: NONE, ...changes };
 }
 
 /** Runs the host of the new project `name` in this process. */
@@ -100,7 +110,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		try {
 			watch = await openProjectWatch(project);
 			const { events } = watch;
-			expect(watch.state).toEqual({ persons: [], rules: [], terms: [], threads: [], parts: [] });
+			expect(watch.state).toEqual({ persons: [], rules: [], terms: [], threads: [], parts: [], held: [] });
 
 			/** Waits for the next event, and gives it. */
 			const next = async (): Promise<ProjectEvent | undefined> => {
@@ -273,6 +283,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 					{ ...part, stale: true },
 					{ ...glossary, stale: true },
 				],
+				held: [],
 			});
 		} finally {
 			watch?.socket.destroy();
@@ -393,7 +404,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("gives the drafts that went and the IDs of the objects that went, and no event when nothing changed", () => {
+	it("gives the drafts that went, the held actions that changed, the IDs of the objects that went, and no event when nothing changed", () => {
 		const sam = { id: 1, name: "Sam" };
 		const rufin = { id: 2, name: "Rufin" };
 
@@ -409,6 +420,10 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		};
 
 		const thread = { id: 3, topic: "Scope", persons: [1, 2], last: 1_000 };
+		const call = { requestId: "call-1", agent: "7", tool: "bash", rule: 1, reason: "It breaks rule 1.", at: 1_000 };
+		const push: HeldAction = { ...call, id: 1, command: "git push", state: "held", by: "7" };
+		const merge: HeldAction = { ...call, id: 2, command: "glab mr merge 6", state: "held", by: "7" };
+		const approved: HeldAction = { ...push, state: "approved", at: 2_000, by: "user" };
 
 		const before: ProjectState = {
 			persons: [sam, rufin],
@@ -416,6 +431,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			terms: [],
 			threads: [{ ...thread, drafts: [draft] }],
 			parts: [],
+			held: [push, merge],
 		};
 
 		const after: ProjectState = {
@@ -424,12 +440,19 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			terms: [],
 			threads: [{ ...thread, drafts: [] }],
 			parts: [],
+			held: [approved],
 		};
 
 		expect(projectEvent(before, after, false)).toEqual(
-			event({ threads: [{ ...thread, drafts: [] }], removed: { ...NONE, persons: [2] } }),
+			event({
+				threads: [{ ...thread, drafts: [] }],
+				held: [approved],
+				removed: { ...NONE, persons: [2], held: [2] },
+			}),
 		);
 		expect(projectEvent(after, after, false)).toBeUndefined();
-		expect(projectEvent(after, after, true)).toEqual(event({ persons: [sam], threads: [{ ...thread, drafts: [] }] }));
+		expect(projectEvent(after, after, true)).toEqual(
+			event({ persons: [sam], threads: [{ ...thread, drafts: [] }], held: [approved] }),
+		);
 	});
 });

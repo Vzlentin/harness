@@ -5,6 +5,14 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import type {
+	ClassifierApi,
+	ClassifierContext,
+	ClassifierModel,
+	ClassifierOptions,
+	ClassifierResult,
+} from "@earendil-works/pi-ai";
+import { createProvider } from "@earendil-works/pi-ai/models";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import {
 	type BeforeAgentStartEvent,
@@ -17,20 +25,23 @@ import {
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type Theme,
+	type ToolCallEvent,
+	type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
+import { GateReply } from "../src/protocol/gate.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { Message } from "../src/protocol/project.ts";
+import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { projectTools, TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
-import { gates, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
+import { gates, models, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
 const LoggedMessage = Type.Object({ action: Type.Literal("log"), value: Message });
@@ -42,13 +53,13 @@ type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
 /** An event of Pi that the tests give to the extension's handlers. */
-type PiEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent;
+type PiEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent | ToolCallEvent;
 
 /**
- * An event handler that the extension gives to `pi.on`; the tests call those of `session_start`, `session_shutdown` and
- * `before_agent_start`.
+ * An event handler that the extension gives to `pi.on`; the tests call those of `session_start`, `session_shutdown`,
+ * `before_agent_start` and `tool_call`.
  */
-type Handler = ExtensionHandler<PiEvent>;
+type Handler = ExtensionHandler<PiEvent, ToolCallEventResult>;
 
 /**
  * A registered tool: its description, its schemas, its execution mode, a call with `args` that gives its text, and the
@@ -369,6 +380,106 @@ async function untilIdle(handle: string): Promise<void> {
 		async () => expect((await request({ type: "status", handle }, { start: false }))?.state).toBe("idle"),
 		{ timeout: 10_000 },
 	);
+}
+
+/** The result of a `tool_call` handler that refuses the call. */
+const Refused = Type.Object({ block: Type.Literal(true), reason: Type.String() });
+
+/** The states that the classifier of the gate got, in order. */
+const gateStates: unknown[] = [];
+
+/** The classifier of the gate: every command writes, and breaks the rule 1. */
+async function classifyGate(
+	model: ClassifierModel<ClassifierApi>,
+	context: ClassifierContext,
+	_options?: ClassifierOptions,
+): Promise<ClassifierResult> {
+	gateStates.push(context.state);
+
+	const result = {
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		timestamp: Date.now(),
+		stopReason: "stop",
+	} as const;
+
+	if (context.questions.writes !== undefined) {
+		return { ...result, answers: { writes: { type: "bool", probability: 0.9 } } };
+	}
+
+	return { ...result, answers: { rule: { type: "choice", choice: "1", probabilities: { 1: 1 }, confidence: 1 } } };
+}
+
+/** The classifier model of `gateClassifier` by default, with `classifyGate`. */
+function gateClassifier(): ClassifierModel<ClassifierApi> {
+	return {
+		type: "classifier",
+		id: "typesafe/jev-1.14",
+		name: "Jev",
+		api: "test-gate",
+		provider: "openrouter",
+		baseUrl: "http://gate.test",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 4096,
+	};
+}
+
+/**
+ * Calls the `tool_call` handlers of the extension for the call `call`, in the session `session`, whose branch has the
+ * user messages `one` to `four` and a custom entry. With `answer`, the session has a UI whose confirm
+ * prompts go to `prompts` and get `answer`. It gives the refusal, or nothing when the call runs.
+ */
+async function toolCall(
+	registered: Registered,
+	call: { readonly toolName: string; readonly input: Record<string, string>; readonly id: string },
+	answer?: boolean,
+	prompts: string[] = [],
+): Promise<Static<typeof Refused> | undefined> {
+	type Branch = ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
+
+	const user = (id: string, content: string | { type: "text"; text: string }[]): Branch[number] => ({
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: "",
+		message: { role: "user", content, timestamp: 0 },
+	});
+
+	const branch: Branch = [
+		user("one", "one"),
+		user("two", "two"),
+		MIRROR,
+		user("three", "three"),
+		user("four", [{ type: "text", text: "four" }]),
+	];
+
+	const ctx: Pick<ExtensionContext, "hasUI" | "signal"> & {
+		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getBranch">;
+		readonly ui: Pick<ExtensionContext["ui"], "confirm">;
+	} = {
+		hasUI: answer !== undefined,
+		signal: undefined,
+		sessionManager: { getSessionId: () => "session", getBranch: () => branch },
+		ui: {
+			confirm: async (title: string, message: string) => {
+				prompts.push(`${title}\n${message}`);
+
+				return answer === true;
+			},
+		},
+	};
+
+	const event = { type: "tool_call", toolCallId: call.id, toolName: call.toolName, input: call.input } as const;
+	let result: ToolCallEventResult | undefined;
+
+	for (const handler of registered.handlers.get("tool_call") ?? []) {
+		// SAFETY: the gate reads only these fields of the context.
+		result = (await handler(event, ctx as ExtensionContext)) ?? result;
+	}
+
+	return result === undefined ? undefined : Value.Parse(Refused, result);
 }
 
 describe("the Pi extension", () => {
@@ -702,5 +813,91 @@ describe("the Pi extension", () => {
 
 		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({});
 		expect(await agentStartSections(registered, ["read", "bash"])).toEqual({});
+	});
+
+	it("gates each tool call of the session that is not a read, and asks the user about a held call with a UI", async () => {
+		host = await startHost();
+		models.setProvider(
+			createProvider({
+				id: "openrouter",
+				auth: { apiKey: { name: "Test key", resolve: async () => ({ auth: {} }) } },
+				models: [gateClassifier()],
+				classifiers: { "test-gate": { classify: classifyGate } },
+			}),
+		);
+		gateStates.length = 0;
+		const registered = await load();
+		const person = await request({ type: "person", action: "add", name: "Sam" }, { start: false });
+		const thread = await request({ type: "thread", action: "add", topic: "Go", persons: [1] }, { start: false });
+
+		if (person === undefined || thread === undefined || !("id" in thread)) throw new Error("no host");
+
+		const said = await request(
+			{ type: "message", action: "log", caller: "cli", thread: thread.id, from: "user", direction: "in", text: "Ask." },
+			{ start: false },
+		);
+
+		const rule = Value.Parse(
+			Rule,
+			await request(
+				{
+					type: "rule",
+					action: "set",
+					caller: "cli",
+					name: "ask",
+					kind: "conduct",
+					value: "Ask first.",
+					status: "decided",
+					saidBy: "user",
+					source: said?.id ?? 0,
+				},
+				{ start: false },
+			),
+		);
+
+		const reason = `It breaks rule ${rule.id} ask: Ask first.`;
+		const push = { toolName: "bash", input: { command: "git push" } };
+
+		/** The reply of the gate to the call `id` again, as a hook that runs again gets it. */
+		const again = async (id: string) =>
+			Value.Parse(
+				GateReply,
+				await request(
+					{ type: "gate", requestId: id, caller: "session", tool: "bash", arguments: push.input, messages: [] },
+					{ start: false },
+				),
+			);
+
+		expect(
+			await toolCall(registered, { toolName: "read", input: { path: "README.md" }, id: "read-1" }),
+		).toBeUndefined();
+		expect(gateStates).toEqual([]);
+
+		// No refuses the call, and drops the held action.
+		const prompts: string[] = [];
+		expect(await toolCall(registered, { ...push, id: "call-1" }, false, prompts)).toEqual({
+			block: true,
+			reason: `Held as action 1: ${reason}`,
+		});
+		expect(prompts).toEqual([`Held action 1\ngit push\n\n${reason}`]);
+		expect(await again("call-1")).toMatchObject({
+			runs: false,
+			held: { id: 1, state: "dropped", agent: "session", by: "session" },
+		});
+		expect(gateStates.at(-1)).toEqual({ action: "git push", last_user_messages: ["two", "three", "four"] });
+
+		// Yes approves the held action, and the call runs, once.
+		expect(await toolCall(registered, { ...push, id: "call-2" }, true, prompts)).toBeUndefined();
+		expect(prompts).toHaveLength(2);
+		expect(await again("call-2")).toEqual({ runs: true });
+		expect(await again("call-3")).toMatchObject({ runs: false, held: { id: 3, state: "held" } });
+
+		// Without a UI, the call is refused, and the action stays held.
+		expect(await toolCall(registered, { ...push, id: "call-4" })).toEqual({
+			block: true,
+			reason: `Held as action 4: ${reason}`,
+		});
+		expect(prompts).toHaveLength(2);
+		expect(await again("call-4")).toMatchObject({ runs: false, held: { id: 4, state: "held" } });
 	});
 });

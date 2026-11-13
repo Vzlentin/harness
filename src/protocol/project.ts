@@ -1,7 +1,7 @@
 import { type Static, Type } from "typebox";
 
-/** The ID of a person, a rule, a term or a part: its place in its list, 1, 2, 3 and so on. */
-const LocalId = Type.Integer({ minimum: 1 });
+/** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
+export const LocalId = Type.Integer({ minimum: 1 });
 
 /** The ID of a thread, which is the ID of its conversation, or of a message, which is the ID of its entry. */
 const StoreId = Type.Integer({ minimum: 1 });
@@ -143,6 +143,49 @@ export const Part = Type.Object({
 
 export type Part = Static<typeof Part>;
 
+/** The states of a held action: `held` until the user approves or drops it. */
+export const HELD_STATES = ["held", "approved", "dropped"] as const;
+
+export const HeldState = Type.Enum(HELD_STATES);
+
+export type HeldState = Static<typeof HeldState>;
+
+/**
+ * The fields of each held action: the request ID of the call that the gate held, the caller that made it, its tool, its
+ * command as it runs, the decided conduct rule that it breaks, absent when the gate failed, and the reason. `at` is the
+ * time of its last change, and `by` is the caller of that change.
+ */
+const HeldFields = {
+	id: LocalId,
+	requestId: Type.String(),
+	agent: Caller,
+	tool: Type.String(),
+	command: Type.String(),
+	rule: Type.Optional(LocalId),
+	reason: Type.String(),
+	at: Time,
+	by: Caller,
+};
+
+/**
+ * A tool call that the gate held. Only an approved action has `ran`: the request ID of the one call that it let run,
+ * and its time.
+ */
+export const HeldAction = Type.Union([
+	Type.Object({ ...HeldFields, state: Type.Literal("held") }),
+	Type.Object({
+		...HeldFields,
+		state: Type.Literal("approved"),
+		ran: Type.Optional(Type.Object({ requestId: Type.String(), at: Time })),
+	}),
+	Type.Object({ ...HeldFields, state: Type.Literal("dropped") }),
+]);
+
+export type HeldAction = Static<typeof HeldAction>;
+
+/** The input of a new held action. */
+export type HeldInput = Pick<HeldAction, "requestId" | "agent" | "tool" | "command" | "rule" | "reason">;
+
 /** The input of a new person. */
 export const PersonAdd = Type.Object({ name: Text });
 
@@ -252,6 +295,7 @@ export const THREADS_KIND = "harness.threads";
 export const RULES_KIND = "harness.rules";
 export const TERMS_KIND = "harness.terms";
 export const PARTS_KIND = "harness.parts";
+export const HELD_KIND = "harness.held";
 
 /** The kind of the entry of a message in the conversation of its thread. */
 export const MESSAGE_KIND = "harness.message";
@@ -276,6 +320,10 @@ export const PartList = Type.Object({ parts: Type.Array(Part) });
 
 export type PartList = Static<typeof PartList>;
 
+export const HeldList = Type.Object({ held: Type.Array(HeldAction) });
+
+export type HeldList = Static<typeof HeldList>;
+
 /** A thread and its messages, oldest first. */
 export const ThreadMessages = Type.Object({ thread: Thread, messages: Type.Array(Message) });
 
@@ -286,13 +334,16 @@ export const ProjectThread = Type.Object({ ...Thread.properties, drafts: Type.Ar
 
 export type ProjectThread = Static<typeof ProjectThread>;
 
-/** The reply of `watch-project`: every person, rule, term, thread with its drafts, and part, in ID order. */
+/**
+ * The reply of `watch-project`: every person, rule, term, thread with its drafts, part and held action, in ID order.
+ */
 export const ProjectState = Type.Object({
 	persons: Type.Array(Person),
 	rules: Type.Array(Rule),
 	terms: Type.Array(Term),
 	threads: Type.Array(ProjectThread),
 	parts: Type.Array(Part),
+	held: Type.Array(HeldAction),
 });
 
 export type ProjectState = Static<typeof ProjectState>;
@@ -309,6 +360,7 @@ export const ProjectEvent = Type.Object({
 		terms: Type.Array(LocalId),
 		threads: Type.Array(StoreId),
 		parts: Type.Array(LocalId),
+		held: Type.Array(LocalId),
 	}),
 });
 

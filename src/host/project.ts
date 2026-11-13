@@ -1,6 +1,6 @@
 /**
  * The store of the project: the persons that the user talks with, the threads of messages with them, the rules and the
- * terms of the project, and the parts of the vault that explain them. Each list is one document of the session, and
+ * terms of the project, the parts of the vault that explain them, and the tool calls that the gate held. Each list is one document of the session, and
  * each thread is an ownerless conversation whose entries are its messages. The requests of the host change them with
  * these functions, each in its own commit.
  */
@@ -17,6 +17,10 @@ import type {
 import * as durable from "@earendil-works/pi-durable";
 import {
 	type Author,
+	HELD_KIND,
+	type HeldAction,
+	type HeldInput,
+	type HeldList,
 	MESSAGE_KIND,
 	type Message,
 	type MessageLog,
@@ -53,6 +57,7 @@ const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Rules = sessionDoc<RuleList>(RULES_KIND, () => ({ rules: [] }));
 const Terms = sessionDoc<TermList>(TERMS_KIND, () => ({ terms: [] }));
 const Parts = sessionDoc<PartList>(PARTS_KIND, () => ({ parts: [] }));
+const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
 
 /** The data of the entry of a message. The entry has no model message: no model reads a thread. */
 type MessageData = Omit<Message, "id" | "thread">;
@@ -229,6 +234,75 @@ export async function checkPart(tx: Tx, id: number, by: string): Promise<Part> {
 	return copyPart(part);
 }
 
+/**
+ * Holds the call `input` of its agent with the state `held`, and gives the held action. A held or dropped action of the
+ * same agent and request ID is given again, and no action is added.
+ */
+export async function holdAction(tx: Tx, input: HeldInput): Promise<HeldAction> {
+	const list = await tx.doc(Held);
+	const found = heldFor(list.held, input.agent, input.requestId);
+
+	if (found !== undefined) return copyHeld(found);
+	const held: HeldAction = { id: nextId(list.held), ...input, state: "held", at: Date.now(), by: input.agent };
+	list.held.push(copyHeld(held));
+
+	return held;
+}
+
+/** The call that an approved action can run for. */
+type RunCall = Pick<HeldInput, "agent" | "tool" | "command" | "requestId">;
+
+/** Approves the held action `id` for the caller `by`, and gives it. An action that is not held fails. */
+export async function approveHeld(tx: Tx, id: number, by: string): Promise<HeldAction> {
+	return decide(tx, id, { state: "approved", by });
+}
+
+/** Drops the held action `id` for the caller `by`, and gives it. An action that is not held fails. */
+export async function dropHeld(tx: Tx, id: number, by: string): Promise<HeldAction> {
+	return decide(tx, id, { state: "dropped", by });
+}
+
+/**
+ * Marks the approved action of the call `call` as run by it, and gives it: the action of the same agent, tool and
+ * command that ran for no call, or for this call. With no such action, it gives `undefined` and changes nothing.
+ */
+export async function runApproved(tx: Tx, call: RunCall): Promise<HeldAction | undefined> {
+	const list = await tx.doc(Held);
+	const found = list.held.find((held) => runsFor(held, call));
+
+	if (found === undefined) return undefined;
+	const ran: HeldAction = { ...found, ran: found.ran ?? { requestId: call.requestId, at: Date.now() } };
+	list.held[list.held.indexOf(found)] = copyHeld(ran);
+
+	return ran;
+}
+
+/**
+ * Whether the held action `held` is approved for the agent, tool and command of `call`, and lets it run: it ran for no
+ * call, or for this one.
+ */
+export function runsFor(held: HeldAction, call: RunCall): held is Extract<HeldAction, { readonly state: "approved" }> {
+	return (
+		held.state === "approved" &&
+		held.agent === call.agent &&
+		held.tool === call.tool &&
+		held.command === call.command &&
+		(held.ran === undefined || held.ran.requestId === call.requestId)
+	);
+}
+
+/** The held or dropped action of the call `requestId` of `agent`. */
+export function heldFor(held: readonly HeldAction[], agent: string, requestId: string): HeldAction | undefined {
+	return held.find((found) => found.state !== "approved" && found.agent === agent && found.requestId === requestId);
+}
+
+/** The held actions, in ID order. */
+export async function readHeld(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<HeldList> {
+	const list = await reader.snapshot(Held, context);
+
+	return { held: (list?.held ?? []).map(copyHeld) };
+}
+
 /** The persons, in ID order. */
 export async function readPersons(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<PersonList> {
 	const list = await reader.snapshot(Persons, context);
@@ -356,6 +430,22 @@ function known<T extends { readonly id: number }>(items: readonly T[], id: numbe
 	return item;
 }
 
+/** Sets the held action `id` to the decision `decision`, and gives it. An action that is not held fails. */
+async function decide(
+	tx: Tx,
+	id: number,
+	decision: Pick<Extract<HeldAction, { readonly state: "approved" | "dropped" }>, "state" | "by">,
+): Promise<HeldAction> {
+	const list = await tx.doc(Held);
+	const found = known(list.held, id, "held action");
+
+	if (found.state !== "held") throw new Error(`Held action ${id} is ${found.state}, not held`);
+	const decided: HeldAction = { ...found, ...decision, at: Date.now() };
+	list.held[list.held.indexOf(found)] = copyHeld(decided);
+
+	return decided;
+}
+
 async function knownAuthor(tx: Tx, author: Author): Promise<void> {
 	if (author !== "user") known((await tx.doc(Persons)).persons, author, "person");
 }
@@ -366,6 +456,10 @@ async function knownSource(tx: Tx, id: number): Promise<void> {
 
 function copyThread(thread: Thread): Thread {
 	return { ...thread, persons: [...thread.persons] };
+}
+
+function copyHeld(held: HeldAction): HeldAction {
+	return held.state === "approved" && held.ran !== undefined ? { ...held, ran: { ...held.ran } } : { ...held };
 }
 
 function copyPart(part: Part): Part {

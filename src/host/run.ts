@@ -43,6 +43,7 @@ import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
+import { gateExtension } from "./gate.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { serveRlm } from "./rlm.ts";
@@ -171,6 +172,7 @@ export async function runHost(options: {
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
 		projectToolsExtension(durable, { Type }, scope),
+		gateExtension(send),
 		createCodemodeExtension({ sandbox }),
 		...entries.extensions,
 		rlm.extension,

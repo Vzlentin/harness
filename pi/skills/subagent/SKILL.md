@@ -27,6 +27,8 @@ Without `tools`, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `ba
 
 A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi session in its working directory does. It gets the project skills only when the project is trusted. It gets no MCP tools and no other Pi extensions, so put what it needs from them in the prompt.
 
+When the project has decided conduct rules, the host gates each tool call that is not a read, for you and for each child. A call that breaks a rule does not run: it fails with `Held as action <id>: <reason>`. Read the reason, and do not call the same command again to get around it. When the user approves the action, a message tells you so: call the command again, and it runs one time.
+
 `tools` is an allowlist. An unknown name is an error. Common choices:
 
 - `["read", "grep", "find", "ls"]`: enforced read-only repository investigation.

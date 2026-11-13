@@ -1,19 +1,35 @@
 /**
- * The questions of `classify-todos` to a classifier model of Pi: whether an open todo needs the user's call, and whether
- * it repeats an earlier todo of its list.
+ * The classifier models of Pi's settings, and the questions of `classify-todos` to one of them: whether an open todo
+ * needs the user's call, and whether it repeats an earlier todo of its list.
  */
-import type { ClassifierApi, ClassifierModel, ClassifierQuestion } from "@earendil-works/pi-ai";
+import type {
+	ClassifierApi,
+	ClassifierAnswer,
+	ClassifierContext,
+	ClassifierModel,
+	ClassifierQuestion,
+	ClassifierResult,
+} from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Todo, TodoAnswer } from "../protocol/todo.ts";
 
-/** The classifier when Pi's settings have no `todoClassifier`. */
-const DEFAULT_CLASSIFIER = "typesafe/jev-latest";
+/** The classifier of each setting when Pi's settings do not have it. */
+const DEFAULT_CLASSIFIERS = {
+	todoClassifier: "typesafe/jev-latest",
+	gateClassifier: "openrouter/typesafe/jev-1.14",
+} as const;
 
-/** The `todoClassifier` of Pi's settings, of any type. */
-const ClassifierSetting = Type.Object({ todoClassifier: Type.Unknown() });
+/** A setting of Pi that names a classifier model. */
+export type ClassifierKey = keyof typeof DEFAULT_CLASSIFIERS;
+
+/** The classifier settings of Pi's settings, of any type. */
+const ClassifierSettings = Type.Object({
+	todoClassifier: Type.Optional(Type.Unknown()),
+	gateClassifier: Type.Optional(Type.Unknown()),
+});
 
 /** A probability of `needsYou` from which the answer is yes. */
 const NEEDS_YOU_FROM = 0.5;
@@ -28,16 +44,19 @@ const NEEDS_YOU: ClassifierQuestion = {
 };
 
 /**
- * The classifier model of `todoClassifier` in Pi's effective settings, `<provider>/<id>`, read again at each call, or
- * `typesafe/jev-latest` without it. It fails when the model is unknown or its provider has no credential.
+ * The classifier model of the setting `key` in Pi's effective settings, `<provider>/<id>`, read again at each call, or
+ * its default without it: `typesafe/jev-latest` for `todoClassifier`, and `openrouter/typesafe/jev-1.14` for
+ * `gateClassifier`. It fails when the model is unknown or its provider has no credential.
  */
-export async function todoClassifier(
+export async function classifierModel(
 	settings: SettingsManager,
 	models: Models,
+	key: ClassifierKey,
 ): Promise<ClassifierModel<ClassifierApi>> {
 	await settings.reload();
 	const effective = settings.getSettings();
-	const value = Value.Check(ClassifierSetting, effective) ? effective.todoClassifier : DEFAULT_CLASSIFIER;
+	const set = Value.Check(ClassifierSettings, effective) ? effective[key] : undefined;
+	const value = set === undefined ? DEFAULT_CLASSIFIERS[key] : set;
 	// A value that is not a string names no model: it fails as its JSON text.
 	const name = Value.Check(Type.String(), value) ? value : JSON.stringify(value);
 	const slash = name.indexOf("/");
@@ -46,9 +65,54 @@ export async function todoClassifier(
 	const available = await models.getAvailableOfType("classifier", provider);
 	const model = available.find((found) => found.provider === provider && found.id === id);
 
-	if (model === undefined) throw new Error(`No classifier: log in to ${provider} or set todoClassifier`);
+	if (model === undefined) throw new Error(`No classifier: log in to ${provider} or set ${key}`);
 
 	return model;
+}
+
+/** The answers of `model` in `context`. A call that does not end with the stop reason `stop` fails. */
+export async function askClassifier(
+	models: Models,
+	model: ClassifierModel<ClassifierApi>,
+	context: ClassifierContext,
+	signal: AbortSignal,
+): Promise<ClassifierResult["answers"]> {
+	const result = await models.classify(model, context, { signal });
+
+	if (result.stopReason !== "stop") {
+		throw new Error(`${classifierFailed(model)}: ${result.errorMessage ?? result.stopReason}`);
+	}
+
+	return result.answers;
+}
+
+/**
+ * The answer of `model` in `answers` to the question `key`, of the type `type`. A missing answer, or one of another type,
+ * fails with `<failed>: no answer to <key>`.
+ */
+export function answerOf<T extends "bool" | "choice">(
+	model: ClassifierModel<ClassifierApi>,
+	answers: ClassifierResult["answers"],
+	key: string,
+	type: T,
+): Extract<ClassifierAnswer, { type: T }> {
+	const answer = answers[key];
+
+	if (!hasType(answer, type)) throw new Error(`${classifierFailed(model)}: no answer to ${key}`);
+
+	return answer;
+}
+
+function hasType<T extends ClassifierAnswer["type"]>(
+	answer: ClassifierAnswer | undefined,
+	type: T,
+): answer is Extract<ClassifierAnswer, { type: T }> {
+	return answer?.type === type;
+}
+
+/** The start of the error of a call of `model` that failed. */
+export function classifierFailed(model: ClassifierModel<ClassifierApi>): string {
+	return `The classifier ${model.provider}/${model.id} failed`;
 }
 
 /**
@@ -85,15 +149,10 @@ async function classifyTodo(
 	const questions =
 		earlier.length === 0 ? { needsYou: NEEDS_YOU } : { needsYou: NEEDS_YOU, repeats: repeatsQuestion(earlier) };
 
-	const result = await models.classify(model, { state, questions }, { signal });
-	const failed = `The classifier ${model.provider}/${model.id} failed`;
-
-	if (result.stopReason !== "stop") throw new Error(`${failed}: ${result.errorMessage ?? result.stopReason}`);
-	const needsYou = result.answers.needsYou;
-
-	if (needsYou?.type !== "bool") throw new Error(`${failed}: no answer to needsYou`);
+	const answers = await askClassifier(models, model, { state, questions }, signal);
+	const needsYou = answerOf(model, answers, "needsYou", "bool");
 	const answer: TodoAnswer = { id: todo.id, needsYou: needsYou.probability >= NEEDS_YOU_FROM };
-	const repeats = result.answers.repeats;
+	const repeats = answers.repeats;
 
 	const repeated =
 		repeats?.type === "choice" ? earlier.find((found) => String(found.id) === repeats.choice) : undefined;

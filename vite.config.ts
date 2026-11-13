@@ -21,7 +21,14 @@ export default defineConfig({
 		printWidth: 120,
 		singleQuote: false,
 		sortImports: { newlinesBetween: false },
-		ignorePatterns: ["dist/**", "tools/oxlint/anti-slop/**", ".release-please-manifest.json", "CHANGELOG.md"],
+		ignorePatterns: [
+			"dist/**",
+			"tools/oxlint/anti-slop/**",
+			".release-please-manifest.json",
+			"CHANGELOG.md",
+			// A copy of the cases of the gate spike, kept as it was recorded.
+			"test/fixtures/gate-cases.json",
+		],
 	},
 	lint: {
 		ignorePatterns: [

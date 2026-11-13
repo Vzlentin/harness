@@ -2,7 +2,10 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { type GateReply, ToolArguments } from "./gate.ts";
 import {
+	type HeldAction,
+	LocalId,
 	type Message,
 	MessageLog,
 	Part,
@@ -36,7 +39,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -356,6 +359,26 @@ export const RequestLine = Type.Union([
 	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
 	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
+	 * Checks the call of the tool `tool` with `arguments` by the agent `caller` against the decided conduct rules of the
+	 * project, with `messages`, the last messages of the user in the conversation of the caller, oldest first. It replies
+	 * that the call runs, or holds it. A held or dropped call with the same caller and `requestId` is given again.
+	 */
+	Type.Object({
+		type: Type.Literal("gate"),
+		requestId: Type.String(),
+		caller: Type.String(),
+		tool: Type.String(),
+		arguments: ToolArguments,
+		messages: Type.Immutable(Type.Array(Type.String())),
+	}),
+	/** Approves or drops the held action `id`, and replies with it. An approve tells its agent. */
+	Type.Object({
+		type: Type.Literal("held"),
+		action: Type.Union([Type.Literal("approve"), Type.Literal("drop")]),
+		caller: Type.String(),
+		id: LocalId,
+	}),
+	/**
 	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
 	 * child tasks and the conversations of the children library that the tasks own.
 	 */
@@ -366,8 +389,8 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("watch-tree") }),
 	/**
-	 * Replies with the persons, rules, terms, threads with their drafts, and parts of the project, then sends one
-	 * `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
+	 * Replies with the persons, rules, terms, threads with their drafts, parts and held actions of the project, then sends
+	 * one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("watch-project") }),
 	/**
@@ -421,6 +444,8 @@ export type Replies = {
 	readonly term: Term | TermList;
 	/** The part of `add` and `check`, or the parts of `list`. */
 	readonly part: Part | PartList;
+	readonly gate: GateReply;
+	readonly held: HeldAction;
 };
 
 /**

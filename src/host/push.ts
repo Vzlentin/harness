@@ -410,6 +410,14 @@ export class Push {
 		this.#retry.unref();
 	}
 
+	/**
+	 * The input of `caller` when it is a conversation of the host: a child, the project agent, or another conversation of
+	 * the children library. Nothing for another caller, such as a Pi session.
+	 */
+	async inputOf(caller: string): Promise<((input: Input) => Promise<void>) | undefined> {
+		return this.#input(caller, recordsByAge(await this.#host.harness.snapshot(ChildRecords, context)));
+	}
+
 	/** The input of `caller` when it is a conversation of the host. */
 	async #input(caller: string, entries: readonly Entry[]): Promise<((input: Input) => Promise<void>) | undefined> {
 		const parent = conversationEntry(entries, caller);

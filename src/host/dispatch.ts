@@ -9,6 +9,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { resolveModel } from "../children/model.ts";
+import { approvedText } from "../protocol/gate.ts";
 import {
 	type ChildInfo,
 	PROTOCOL_VERSION,
@@ -27,14 +28,18 @@ import {
 	TOO_MANY_LIVE,
 } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
-import { classifyTodos, todoClassifier } from "./classify.ts";
+import { classifierModel, classifyTodos } from "./classify.ts";
+import { gateCall } from "./gate.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
 	addPart,
 	addPerson,
 	addThread,
+	approveHeld,
 	checkPart,
+	dropHeld,
 	logMessage,
+	readHeld,
 	readParts,
 	readPersons,
 	readRules,
@@ -98,7 +103,7 @@ export type Base = Omit<TaskHost, "signal"> &
 	CatchUpHost & {
 		/**
 		 * Pi's settings, for the depth limit of the subagent tree, the default model and thinking level of a spawn, and the
-		 * classifier of the todos.
+		 * classifiers of the todos and of the gate.
 		 */
 		readonly settings: SettingsManager;
 		readonly push: Push;
@@ -166,6 +171,10 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return term(request, handler);
 		case "part":
 			return part(request, handler);
+		case "gate":
+			return gateCall(request, { ...handler, models: handler.place.models });
+		case "held":
+			return held(request, handler);
 		case "tree":
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
@@ -337,6 +346,28 @@ function part(request: Extract<Request, { type: "part" }>, handler: Handler): Pr
 }
 
 /**
+ * Approves or drops the held action of `request`. An approve tells the agent of the action with a follow-up input, so
+ * that it calls the command again. The input is found before the commit, and a failed delivery is a warning.
+ */
+async function held(request: Extract<Request, { type: "held" }>, handler: Handler): Promise<Replies["held"]> {
+	const { id, caller } = request;
+
+	if (request.action === "drop") return handler.harness.commit((tx) => dropHeld(tx, id, caller), context);
+	const agent = (await readHeld(handler.harness, context)).held.find((found) => found.id === id)?.agent;
+	const tell = agent === undefined ? undefined : await handler.push.inputOf(agent);
+	const approved = await handler.harness.commit((tx) => approveHeld(tx, id, caller), context);
+
+	await tell?.({
+		type: "input",
+		content: approvedText(approved),
+		whenBusy: "followUp",
+		requestId: `approve:${approved.id}`,
+	}).catch(handler.warn);
+
+	return approved;
+}
+
+/**
  * The answers of the classifier about the open todos of the list of `request`, default the list of the project. The
  * classifier is found first, so a client without a credential gets that error for any list.
  */
@@ -344,7 +375,7 @@ async function classify(
 	request: Extract<Request, { type: "classify-todos" }>,
 	handler: Handler,
 ): Promise<Replies["classify-todos"]> {
-	const model = await todoClassifier(handler.settings, handler.place.models);
+	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier");
 
 	const owner: TodoOwner =
 		request.list === undefined ? { kind: "conversation", id: handler.root.id } : await listOwner(request.list, handler);

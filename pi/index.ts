@@ -1,9 +1,9 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children, the `todo`
- * tool and the todo widget, the `thread`, `rule`, `term` and `part` tools of the store of the project, the mirror
- * sessions of `/harness` and `rlm` in the IPython kernels of the session. They use the client of `@vzlentin/harness`,
- * the dependency of this package, from its built `dist/`, and start the host of that install. The `.bin` folder that
- * holds its `harness` command goes last on `PATH`.
+ * tool and the todo widget, the `thread`, `rule`, `term` and `part` tools of the store of the project, the gate on the
+ * tool calls of the session, the mirror sessions of `/harness` and `rlm` in the IPython kernels of the session. They
+ * use the client of `@vzlentin/harness`, the dependency of this package, from its built `dist/`, and start the host of
+ * that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -28,6 +28,7 @@ import type * as projects from "../dist/protocol/projects.js";
 import type * as trust from "../dist/protocol/trust.js";
 import type * as rlm from "../dist/rlm/index.js";
 import type * as tool from "../dist/tool.js";
+import { registerGate } from "./gate.ts";
 import { registerMirror } from "./mirror.ts";
 import { PolledWidget } from "./polled-widget.ts";
 import { registerProject } from "./project.ts";
@@ -85,6 +86,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	registerMirror(pi, harness, registerTodo(pi, harness));
 	registerRlm(pi, harness, sessionScope);
 	registerProject(pi, harness);
+	registerGate(pi, harness);
 	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 
