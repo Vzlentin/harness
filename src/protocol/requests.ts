@@ -12,6 +12,7 @@ import {
 	type Person,
 	PersonAdd,
 	type PersonList,
+	type ProjectState,
 	type Rule,
 	RuleEdit,
 	RuleFilter,
@@ -35,7 +36,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 19;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -365,6 +366,11 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("watch-tree") }),
 	/**
+	 * Replies with the persons, rules, terms, threads with their drafts, and parts of the project, then sends one
+	 * `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
+	 */
+	Type.Object({ type: Type.Literal("watch-project") }),
+	/**
 	 * Asks the classifier of Pi's settings about the todos `ids` that are open, default every open todo, of the list
 	 * `list`, default the list of the project. It stores nothing.
 	 */
@@ -402,6 +408,7 @@ export type Replies = {
 	readonly todo: Todo | TodoList;
 	readonly tree: TreeReply;
 	readonly "watch-tree": TreeReply;
+	readonly "watch-project": ProjectState;
 	readonly "classify-todos": ClassifyReply;
 	/** The person of `add`, or the persons of `list`. */
 	readonly person: Person | PersonList;

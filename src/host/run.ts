@@ -65,6 +65,7 @@ const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
 	"answers",
 	"tree",
 	"watch-tree",
+	"watch-project",
 	"classify-todos",
 ]);
 

@@ -28,6 +28,7 @@ import {
 } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifyTodos, todoClassifier } from "./classify.ts";
+import { serveProjectWatch } from "./project-watch.ts";
 import {
 	addPart,
 	addPerson,
@@ -169,6 +170,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
 			return watchTree(handler);
+		case "watch-project":
+			return watchProject(handler);
 		case "list":
 			return list(request, handler);
 		case "whoami":
@@ -232,6 +235,12 @@ function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
 	if (handler.connection === undefined) throw new Error("A tree watch needs a connection");
 
 	return serveTreeWatch(handler, handler.connection);
+}
+
+function watchProject(handler: Handler): Promise<Replies["watch-project"]> {
+	if (handler.connection === undefined) throw new Error("A project watch needs a connection");
+
+	return serveProjectWatch(handler, handler.connection);
 }
 
 async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {

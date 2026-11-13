@@ -281,6 +281,39 @@ export const ThreadMessages = Type.Object({ thread: Thread, messages: Type.Array
 
 export type ThreadMessages = Static<typeof ThreadMessages>;
 
+/** A thread of `watch-project`, with its messages in the state `draft`, oldest first. */
+export const ProjectThread = Type.Object({ ...Thread.properties, drafts: Type.Array(Message) });
+
+export type ProjectThread = Static<typeof ProjectThread>;
+
+/** The reply of `watch-project`: every person, rule, term, thread with its drafts, and part, in ID order. */
+export const ProjectState = Type.Object({
+	persons: Type.Array(Person),
+	rules: Type.Array(Rule),
+	terms: Type.Array(Term),
+	threads: Type.Array(ProjectThread),
+	parts: Type.Array(Part),
+});
+
+export type ProjectState = Static<typeof ProjectState>;
+
+/**
+ * An event of `watch-project` after its reply: the objects of each kind that are new or changed, and in `removed` the
+ * IDs of each kind of the objects that went. Every list is there, empty when nothing of its kind changed.
+ */
+export const ProjectEvent = Type.Object({
+	...ProjectState.properties,
+	removed: Type.Object({
+		persons: Type.Array(LocalId),
+		rules: Type.Array(LocalId),
+		terms: Type.Array(LocalId),
+		threads: Type.Array(StoreId),
+		parts: Type.Array(LocalId),
+	}),
+});
+
+export type ProjectEvent = Static<typeof ProjectEvent>;
+
 /** The names of the persons, by ID. */
 export type PersonNames = ReadonlyMap<number, string>;
 

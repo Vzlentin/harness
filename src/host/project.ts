@@ -250,6 +250,16 @@ export async function readThread(
 	context: Context,
 ): Promise<ThreadMessages> {
 	const thread = known((await readThreads(harness, context)).threads, id, "thread");
+
+	return { thread, messages: await readMessages(harness, id, context) };
+}
+
+/** The messages of the thread `id`, oldest first. */
+export async function readMessages(
+	harness: Pick<Harness, "conversation">,
+	id: number,
+	context: Context,
+): Promise<Message[]> {
 	const conversation = await harness.conversation(conversationId(id), context);
 
 	if (conversation === undefined) throw new Error(`Unknown thread: ${id}`);
@@ -266,7 +276,18 @@ export async function readThread(
 		cursor = page.next;
 	} while (cursor !== undefined);
 
-	return { thread, messages };
+	return messages;
+}
+
+/** The messages of the thread `id` in the state `draft`, oldest first. */
+export async function readDrafts(
+	harness: Pick<Harness, "conversation">,
+	id: number,
+	context: Context,
+): Promise<Message[]> {
+	const messages = await readMessages(harness, id, context);
+
+	return messages.filter((message) => message.state === "draft");
 }
 
 /** The rules, in ID order: with `filter`, only those of its kind and its status. */
