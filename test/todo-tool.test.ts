@@ -23,7 +23,7 @@ import {
 	requests,
 	root,
 	scripts,
-	setDepthLimit,
+	setSettings,
 	setUp,
 	startHost,
 	tearDown,
@@ -123,7 +123,7 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 	});
 
 	it("gives the tool to a child at the depth limit, which has no subagent tool", async () => {
-		await setDepthLimit(1);
+		await setSettings({ agentDepthLimit: 1 });
 
 		try {
 			scripts.set("Task:\nLeaf todo", [{ name: "todo", arguments: { action: "add", text: "From a leaf" } }]);
@@ -133,7 +133,7 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 			expect(requests.get("Task:\nLeaf todo")?.tools).toContain("todo");
 			expect(requests.get("Task:\nLeaf todo")?.tools).not.toContain("subagent");
 		} finally {
-			await setDepthLimit(undefined);
+			await setSettings();
 		}
 	});
 

@@ -92,6 +92,7 @@ const toolSpawns = new Map([
 	["Durable", "Durable child"],
 	["Durable spawn", "Durable spawned"],
 	["Task:\nNest tool", "Nest tool"],
+	["Task:\nNest default", "Nest default child"],
 	["Task:\nResume wait", "Resume wait child"],
 	["No cwd", "No cwd child"],
 	["Task:\nSend and wait", "Send and wait child"],
@@ -386,12 +387,17 @@ export function called(prompt: string): number {
 	return calls.filter((call) => call.prompt === prompt).length;
 }
 
-/** Writes Pi's global settings of the tests, with `agentDepthLimit` when `limit` is set. */
-export async function setDepthLimit(limit: number | undefined): Promise<void> {
-	const settings =
-		limit === undefined ? { retry: { enabled: false } } : { retry: { enabled: false }, agentDepthLimit: limit };
+/** The keys of Pi's global settings that the tests set. */
+export type TestSettings = {
+	readonly agentDepthLimit?: number;
+	readonly subagentModel?: string;
+	readonly subagentThinkingLevel?: string;
+	readonly packages?: readonly string[];
+};
 
-	await writeFile(join(root, "agent", "settings.json"), JSON.stringify(settings));
+/** Writes Pi's global settings of the tests: no retry, and `settings`. */
+export async function setSettings(settings: TestSettings = {}): Promise<void> {
+	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false }, ...settings }));
 }
 
 /**

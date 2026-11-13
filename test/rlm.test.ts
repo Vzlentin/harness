@@ -20,6 +20,7 @@ import {
 	answerOf,
 	called,
 	cellResults,
+	calls,
 	cells,
 	cli,
 	gates,
@@ -28,7 +29,7 @@ import {
 	rawReply,
 	requests,
 	root,
-	setDepthLimit,
+	setSettings,
 	setUp,
 	spawnAs,
 	startHost,
@@ -191,7 +192,7 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 	});
 
 	it("gives a child at the depth limit no rlm in its kernel", async () => {
-		await setDepthLimit(2);
+		await setSettings({ agentDepthLimit: 2 });
 
 		try {
 			cells.set("RLM nested", ['print(await rlm.wait(await rlm.spawn("RLM nest")))']);
@@ -199,13 +200,29 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 			cells.set("Task:\nRLM leaf", ['print("rlm" in globals())']);
 			await agentTurn("RLM nested");
 		} finally {
-			await setDepthLimit(undefined);
+			await setSettings();
 		}
 
 		expect(cellResults.get("Task:\nRLM leaf")?.map((text) => text.trim())).toEqual(["False"]);
 		expect(cellResults.get("RLM nested")?.[0]).toContain("Tool said: Tool said: False");
 		expect(requests.get("Task:\nRLM leaf")?.tools).toContain("ipython");
 		expect(requests.get("Task:\nRLM leaf")?.tools).not.toContain("subagent");
+	});
+
+	it("gives an rlm.spawn without a model the subagent settings, and one with a model its own", async () => {
+		await setSettings({ subagentModel: "faux/faux-2", subagentThinkingLevel: "low" });
+
+		try {
+			cells.set("RLM defaults", [
+				'import json\nfor prompt, model in (("RLM defaulted", None), ("RLM own model", "faux-1")):\n    child = await rlm.spawn(prompt, model=model)\n    await rlm.wait(child)\n    print(json.dumps([child["model"], child["thinking"]]))',
+			]);
+			await agentTurn("RLM defaults");
+		} finally {
+			await setSettings();
+		}
+
+		expect(cellResults.get("RLM defaults")?.[0]).toBe('["faux-2", "low"]\n["faux-1", "low"]\n');
+		expect(calls.find((call) => call.prompt === "Task:\nRLM defaulted")).toMatchObject({ model: "faux-2" });
 	});
 
 	it("raises RlmError for the arguments that the client or the tool refuses", async () => {

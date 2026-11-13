@@ -112,7 +112,7 @@ export type Spec = (
 		readonly provider?: string;
 		readonly model?: string;
 		readonly thinking?: string;
-		/** The caller's thinking level, used without `thinking`: the nearest level that the model has, not refused. */
+		/** The level used without `thinking`, clamped to the nearest level that the model has, not refused. */
 		readonly fallbackThinking?: string;
 		readonly cwd?: string;
 		/** The only tools the child gets, by name. */

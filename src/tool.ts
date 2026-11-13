@@ -22,7 +22,7 @@ function oneOf(words: readonly string[]): string {
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
 When a child finishes, its answer comes to you as a message that starts a turn. Use \`wait\` only when you need the answer in this turn.
-- spawn: start a child with \`prompts\` and \`files\`. It uses your provider, model and thinking level unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
+- spawn: start a child with \`prompts\` and \`files\`. It uses the model and thinking level of the user's subagent settings, else yours, unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer, after the earlier answers of the spawn and the sends that no \`wait\` gave. \`stop\` also stops the children the child spawned. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.
 - list: your children.
@@ -53,11 +53,11 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 			{ description: "What to do" },
 		),
 		name: text("spawn, rename: the child's name, 1 to 64 characters"),
-		provider: text("spawn: the provider; default yours"),
-		model: text("spawn: the model; default yours"),
+		provider: text("spawn: the provider; default the subagent setting, else yours"),
+		model: text("spawn: the model; default the subagent setting, else yours"),
 		thinking: Type.Optional(
 			Type.Enum(THINKING_LEVELS, {
-				description: `spawn: ${oneOf(THINKING_LEVELS)}; default yours`,
+				description: `spawn: ${oneOf(THINKING_LEVELS)}; default the subagent setting, else yours`,
 			}),
 		),
 		cwd: text("spawn: the child's working directory; default yours"),
@@ -125,10 +125,11 @@ export type ToolScope = {
 	readonly caller: string;
 	/** The identity of the call. Without `key`, it is the key of a spawn or send. */
 	readonly callKey: string;
+	/** The caller's own provider, model and thinking level. A spawn uses them when its arguments and the settings give none. */
 	readonly provider: string | undefined;
 	readonly model: string | undefined;
 	readonly thinking: string;
-	/** Relative `cwd` and `files` paths resolve against it. A caller without one cannot spawn. */
+	/** The caller's own working directory. Relative `cwd` and `files` paths resolve against it. A caller without one cannot spawn. */
 	readonly cwd: string | undefined;
 	readonly send: Send;
 	readonly signal: AbortSignal | undefined;
@@ -136,7 +137,7 @@ export type ToolScope = {
 	readonly kind?: ChildKind;
 };
 
-/** The spawn defaults of a caller from its agent: its provider, model, thinking level and working directory. */
+/** The caller's own provider, model, thinking level and working directory, from its agent. */
 export function callerDefaults(
 	agent: Pick<Agent, "model" | "thinkingLevel" | "cwd">,
 ): Pick<ToolScope, "provider" | "model" | "thinking" | "cwd"> {
@@ -211,15 +212,8 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 	}
 }
 
-/** The spawn request of `args`, with the defaults of `scope`. */
+/** The spawn request of `args`, with the caller's own provider, model, thinking level and working directory from `scope`. */
 function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extract<Request, { type: "spawn" }> {
-	const provider = args.provider ?? scope.provider;
-	const model = args.model ?? scope.model;
-
-	if (!provider) throw new Error("No provider specified and the caller has no model");
-
-	if (!model) throw new Error("No model specified and the caller has no model");
-
 	const base = scope.cwd;
 
 	if (base === undefined) throw new Error("spawn requires a caller with a working directory");
@@ -246,12 +240,19 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 		requestId,
 		caller: scope.caller,
 		notify: args.notify !== false,
-		provider,
-		model,
 		callerThinking: scope.thinking,
 		cwd,
 		prompt,
 	};
+
+	// The host picks the model: the spawn's, else `subagentModel` in Pi's global settings, else the caller's.
+	if (args.provider) request = { ...request, provider: args.provider };
+
+	if (args.model) request = { ...request, model: args.model };
+
+	if (scope.provider) request = { ...request, callerProvider: scope.provider };
+
+	if (scope.model) request = { ...request, callerModel: scope.model };
 
 	if (name !== undefined) request = { ...request, name };
 

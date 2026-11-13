@@ -11,7 +11,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 15;
+export const PROTOCOL_VERSION = 16;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -136,11 +136,21 @@ export const RequestLine = Type.Union([
 		/** Whether the host pushes the answers of this request to the caller. */
 		notify: Type.Boolean(),
 		name: Type.Optional(Type.String()),
-		provider: Type.String(),
-		model: Type.String(),
+		/**
+		 * The provider and the model that the caller asks for. Without both, the host takes `subagentModel` from Pi's global
+		 * settings, else the caller's. With only one, the other is the caller's.
+		 */
+		provider: Type.Optional(Type.String()),
+		model: Type.Optional(Type.String()),
 		/** The level the caller asks for. The host refuses a level that the model does not have. */
 		thinking: Type.Optional(ThinkingLevel),
-		/** The caller's own level, used without `thinking`, clamped to the nearest level that the model has. */
+		/** The caller's own provider and model, used when the request and the settings give none. */
+		callerProvider: Type.Optional(Type.String()),
+		callerModel: Type.Optional(Type.String()),
+		/**
+		 * The caller's own level, used without `thinking` and without `subagentThinkingLevel` in Pi's global settings,
+		 * clamped to the nearest level that the model has.
+		 */
 		callerThinking: Type.String(),
 		cwd: Type.String({ minLength: 1 }),
 		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
