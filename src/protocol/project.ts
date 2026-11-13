@@ -181,13 +181,6 @@ export const Part = Type.Object({
 
 export type Part = Static<typeof Part>;
 
-/** The states of a held action: `held` until the user approves or drops it. */
-export const HELD_STATES = ["held", "approved", "dropped"] as const;
-
-export const HeldState = Type.Enum(HELD_STATES);
-
-export type HeldState = Static<typeof HeldState>;
-
 /**
  * The fields of each held action: the request ID of the call that the gate held, the caller that made it, its tool, its
  * command as it runs, the decided conduct rule that it breaks, absent when the gate failed, and the reason. `at` is the
@@ -206,7 +199,8 @@ const HeldFields = {
 };
 
 /**
- * A tool call that the gate held. Only an approved action has `ran`: the request ID of the one call that it let run,
+ * A tool call that the gate held, in one of its three states: `held` until the user approves or drops it, then `approved`
+ * or `dropped`. Only an approved action has `ran`: the request ID of the one call that it let run,
  * and its time.
  */
 export const HeldAction = Type.Union([
