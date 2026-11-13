@@ -94,6 +94,7 @@ type KernelStarting = {
 type Registered = {
 	readonly tools: Map<string, Tool>;
 	readonly commands: Map<string, Command>;
+	readonly shortcuts: string[];
 	readonly flags: string[];
 	readonly handlers: Map<string, Handler[]>;
 	readonly messages: Sent[];
@@ -171,6 +172,7 @@ async function load(): Promise<Registered> {
 	const registered: Registered = {
 		tools: new Map(),
 		commands: new Map(),
+		shortcuts: [],
 		flags: [],
 		handlers: new Map(),
 		messages: [],
@@ -183,6 +185,7 @@ async function load(): Promise<Registered> {
 		| "events"
 		| "registerTool"
 		| "registerCommand"
+		| "registerShortcut"
 		| "registerFlag"
 		| "registerEntryRenderer"
 		| "on"
@@ -214,6 +217,9 @@ async function load(): Promise<Registered> {
 		},
 		registerCommand: (name, command) => {
 			registered.commands.set(name, command);
+		},
+		registerShortcut: (shortcut) => {
+			registered.shortcuts.push(shortcut);
 		},
 		registerFlag: (name) => {
 			registered.flags.push(name);
@@ -526,6 +532,13 @@ describe("the Pi extension", () => {
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
+	});
+
+	it("registers /vc and its shortcut", async () => {
+		const registered = await load();
+
+		expect(registered.commands.has("vc")).toBe(true);
+		expect(registered.shortcuts).toEqual(["ctrl+shift+y"]);
 	});
 
 	it("takes for the tool's thinking only pi-ai's levels, in their order", async () => {
