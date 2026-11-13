@@ -250,10 +250,14 @@ export class Push {
 		for (const end of ends) end();
 	}
 
-	/** Sweeps, sets the timer of the next retry, and calls the functions that wait for the end of the sweep. */
+	/**
+	 * Sweeps, sets the timer of the next retry, and calls the functions that wait for the end of the sweep. The sweep and
+	 * the timer use one reading of the clock, so each child that the sweep skips after a failed push gets a timer.
+	 */
 	async #pass(): Promise<void> {
-		await this.#sweep().catch(this.#warn);
-		this.#setRetry();
+		const now = Date.now();
+		await this.#sweep(now).catch(this.#warn);
+		this.#setRetry(now);
 		const ends = [...this.#sweepEnds];
 		this.#sweepEnds.clear();
 
@@ -261,11 +265,10 @@ export class Push {
 	}
 
 	/** Pushes the answers of the children that are done, for each caller with a destination, oldest child first. */
-	async #sweep(): Promise<void> {
+	async #sweep(now: number): Promise<void> {
 		const state = await this.#host.harness.snapshot(ChildRecords, context);
 		const entries: Entry[] = recordsByAge(state);
 		const done = new Map<string, Entry[]>();
-		const now = Date.now();
 
 		for (const handle of this.#failures.keys()) {
 			if (state?.children[handle] === undefined) this.#failures.delete(handle);
@@ -392,15 +395,17 @@ export class Push {
 		this.#host.warn(cause);
 	}
 
-	/** Sets the timer of a sweep at the earliest wait of `#failures` that has not ended, in place of the last one. */
-	#setRetry(): void {
+	/**
+	 * Sets the timer of a sweep at the earliest wait of `#failures` that had not ended at `now`, the time of the last
+	 * sweep, in place of the last timer.
+	 */
+	#setRetry(now: number): void {
 		clearTimeout(this.#retry);
 		this.#retry = undefined;
-		const now = Date.now();
 		const next = Math.min(...[...this.#failures.values()].flatMap(({ retryAt }) => (retryAt > now ? [retryAt] : [])));
 
 		if (!Number.isFinite(next) || this.#closed) return;
-		this.#retry = setTimeout(() => this.schedule(), next - now);
+		this.#retry = setTimeout(() => this.schedule(), Math.max(0, next - Date.now()));
 		// The timer alone does not keep the host running.
 		this.#retry.unref();
 	}
