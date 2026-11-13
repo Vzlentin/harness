@@ -157,14 +157,16 @@ export async function markMessage(tx: Tx, input: MessageMarkInput, by: string): 
 }
 
 /**
- * Marks each message out of `ids` that is a draft as sent by the caller `by`. An ID of another message, or of no
- * message, changes nothing.
+ * Marks each message out of `ids` that the mark `sent` can change as sent by the caller `by`. An ID of another message,
+ * or of no message, changes nothing.
  */
 export async function markSent(tx: Tx, ids: readonly number[], by: string): Promise<void> {
 	const at = Date.now();
 
 	for (const out of (await tx.doc(Outbox)).messages) {
-		if (ids.includes(out.id) && out.state === "draft") Object.assign(out, { state: "sent", at, by });
+		const state = ids.includes(out.id) ? messageTransition(out.state, "sent") : undefined;
+
+		if (state !== undefined) Object.assign(out, { state, at, by });
 	}
 }
 
