@@ -68,12 +68,18 @@ const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
 	"classify-todos",
 ]);
 
+/** The request types whose `list` and `read` actions are passive. */
+const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set(["todo", "person", "thread", "rule", "term", "part"]);
+
 /**
- * Whether `request` does not count as activity for the idle exit. A `todo` list does not, because a widget can poll it,
- * but a change of a list does.
+ * Whether `request` does not count as activity for the idle exit. A `list` or a `read` of a todo list or of the store of
+ * the project does not, because a widget can poll it, but a change does.
  */
 function isPassive(request: Request): boolean {
-	return PASSIVE_REQUESTS.has(request.type) || (request.type === "todo" && request.action === "list");
+	return (
+		PASSIVE_REQUESTS.has(request.type) ||
+		(LIST_REQUESTS.has(request.type) && "action" in request && (request.action === "list" || request.action === "read"))
+	);
 }
 
 /** A JSON object with a string `type`, which names the request that a line meant. */

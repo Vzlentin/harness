@@ -7,6 +7,8 @@ export * from "./lines.ts";
 
 export * from "./paths.ts";
 
+export * from "./project.ts";
+
 export * from "./requests.ts";
 
 export * from "./target.ts";

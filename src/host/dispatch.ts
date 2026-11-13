@@ -28,6 +28,21 @@ import {
 } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifyTodos, todoClassifier } from "./classify.ts";
+import {
+	addPart,
+	addPerson,
+	addThread,
+	checkPart,
+	logMessage,
+	readParts,
+	readPersons,
+	readRules,
+	readTerms,
+	readThread,
+	readThreads,
+	setRule,
+	setTerm,
+} from "./project.ts";
 import type { Connection, Push } from "./push.ts";
 import {
 	addRecord,
@@ -138,6 +153,18 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return todo(request, handler);
 		case "classify-todos":
 			return classify(request, handler);
+		case "person":
+			return person(request, handler);
+		case "thread":
+			return thread(request, handler);
+		case "message":
+			return handler.harness.commit((tx) => logMessage(tx, request), context);
+		case "rule":
+			return rule(request, handler);
+		case "term":
+			return term(request, handler);
+		case "part":
+			return part(request, handler);
 		case "tree":
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
@@ -249,6 +276,55 @@ async function listOwner(ref: ListRef, handler: Handler): Promise<TodoOwner> {
 	if (ref.key !== undefined) return { kind: "task", id: await taskId(handler.harness, ref.key) };
 
 	return { kind: "conversation", id: await targetConversation(handler, parseTarget(ref)) };
+}
+
+function person(request: Extract<Request, { type: "person" }>, handler: Handler): Promise<Replies["person"]> {
+	switch (request.action) {
+		case "add":
+			return handler.harness.commit((tx) => addPerson(tx, request), context);
+		case "list":
+			return readPersons(handler.harness, context);
+	}
+}
+
+function thread(request: Extract<Request, { type: "thread" }>, handler: Handler): Promise<Replies["thread"]> {
+	switch (request.action) {
+		case "add":
+			return handler.harness.commit((tx) => addThread(tx, request), context);
+		case "list":
+			return readThreads(handler.harness, context);
+		case "read":
+			return readThread(handler.harness, request.id, context);
+	}
+}
+
+function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Promise<Replies["rule"]> {
+	switch (request.action) {
+		case "set":
+			return handler.harness.commit((tx) => setRule(tx, request), context);
+		case "list":
+			return readRules(handler.harness, request, context);
+	}
+}
+
+function term(request: Extract<Request, { type: "term" }>, handler: Handler): Promise<Replies["term"]> {
+	switch (request.action) {
+		case "set":
+			return handler.harness.commit((tx) => setTerm(tx, request), context);
+		case "list":
+			return readTerms(handler.harness, context);
+	}
+}
+
+function part(request: Extract<Request, { type: "part" }>, handler: Handler): Promise<Replies["part"]> {
+	switch (request.action) {
+		case "add":
+			return handler.harness.commit((tx) => addPart(tx, request), context);
+		case "check":
+			return handler.harness.commit((tx) => checkPart(tx, request.id), context);
+		case "list":
+			return readParts(handler.harness, request, context);
+	}
 }
 
 /**

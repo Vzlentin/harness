@@ -2,6 +2,30 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import {
+	type Message,
+	MessageLog,
+	Part,
+	PartAdd,
+	PartFilter,
+	type PartList,
+	type Person,
+	PersonAdd,
+	type PersonList,
+	type Rule,
+	RuleEdit,
+	RuleFilter,
+	type RuleList,
+	RuleNew,
+	type Term,
+	TermEdit,
+	type TermList,
+	TermNew,
+	Thread,
+	ThreadAdd,
+	type ThreadList,
+	type ThreadMessages,
+} from "./project.ts";
 import { ListRef, withListTarget, withTarget } from "./target.ts";
 import { type ClassifyReply, Todo, type TodoList, TodoState } from "./todo.ts";
 import type { TreeReply } from "./tree.ts";
@@ -11,7 +35,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -262,6 +286,39 @@ export const RequestLine = Type.Union([
 	}),
 	/** Replies with the list, in ID order. */
 	...withListTarget({ type: Type.Literal("todo"), caller: Type.String(), action: Type.Literal("list") }),
+	/** Adds a person, and replies with it. */
+	Type.Object({ type: Type.Literal("person"), action: Type.Literal("add"), ...PersonAdd.properties }),
+	/** Replies with the persons, in ID order. */
+	Type.Object({ type: Type.Literal("person"), action: Type.Literal("list") }),
+	/** Adds a thread with one or more persons, in a new ownerless conversation, and replies with it. */
+	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("add"), ...ThreadAdd.properties }),
+	/** Replies with the threads, in ID order. */
+	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("list") }),
+	/** Replies with the thread `id` and its messages, oldest first. */
+	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("read"), id: Thread.properties.id }),
+	/** Adds a message to a thread, and replies with it. The host sets its state from its direction. */
+	Type.Object({ type: Type.Literal("message"), action: Type.Literal("log"), ...MessageLog.properties }),
+	/** Adds a rule, which retires the rule `replaces`, and replies with it. */
+	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("set"), ...RuleNew.properties }),
+	/**
+	 * Changes the rule `id`, and replies with it. It comes after the new rule, so a new rule without `source` fails on
+	 * `source`. The host refuses a change with `replaces`.
+	 */
+	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("set"), ...RuleEdit.properties }),
+	/** Replies with the rules, in ID order: with `kind` or `status`, only those that have it. */
+	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("list"), ...RuleFilter.properties }),
+	/** Adds a term, and replies with it. */
+	Type.Object({ type: Type.Literal("term"), action: Type.Literal("set"), ...TermNew.properties }),
+	/** Changes the term `id`, and replies with it. */
+	Type.Object({ type: Type.Literal("term"), action: Type.Literal("set"), ...TermEdit.properties }),
+	/** Replies with the terms, in ID order. */
+	Type.Object({ type: Type.Literal("term"), action: Type.Literal("list") }),
+	/** Adds a part that explains rules and terms, and replies with it. */
+	Type.Object({ type: Type.Literal("part"), action: Type.Literal("add"), ...PartAdd.properties }),
+	/** Marks the part `id` checked now and not stale, and replies with it. */
+	Type.Object({ type: Type.Literal("part"), action: Type.Literal("check"), id: Part.properties.id }),
+	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
+	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
 	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
 	 * child tasks and the conversations of the children library that the tasks own.
@@ -311,6 +368,17 @@ export type Replies = {
 	readonly tree: TreeReply;
 	readonly "watch-tree": TreeReply;
 	readonly "classify-todos": ClassifyReply;
+	/** The person of `add`, or the persons of `list`. */
+	readonly person: Person | PersonList;
+	/** The thread of `add`, the threads of `list`, or the thread and its messages of `read`. */
+	readonly thread: Thread | ThreadList | ThreadMessages;
+	readonly message: Message;
+	/** The rule of `set`, or the rules of `list`. */
+	readonly rule: Rule | RuleList;
+	/** The term of `set`, or the terms of `list`. */
+	readonly term: Term | TermList;
+	/** The part of `add` and `check`, or the parts of `list`. */
+	readonly part: Part | PartList;
 };
 
 /**
