@@ -34,7 +34,7 @@ describe("the manifests", () => {
 		});
 	});
 
-	it("make Pi load the extension once and the subagent skill from the Pi package", async () => {
+	it("make Pi load the extension once and the subagent and parley skills from the Pi package", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "harness-manifest-"));
 
 		try {
@@ -45,11 +45,14 @@ describe("the manifests", () => {
 			const skillPaths = resolved.skills.filter(({ enabled }) => enabled).map(({ path }) => path);
 
 			expect(resolved.extensions.map(({ path }) => path)).toEqual([join(repo, "pi", "index.ts")]);
-			expect(skillPaths).toEqual([join(repo, "pi", "skills", "subagent", "SKILL.md")]);
+			expect(skillPaths.toSorted()).toEqual([
+				join(repo, "pi", "skills", "parley", "SKILL.md"),
+				join(repo, "pi", "skills", "subagent", "SKILL.md"),
+			]);
 
 			const { skills, diagnostics } = loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false });
 
-			expect(skills.map(({ name }) => name)).toEqual(["subagent"]);
+			expect(skills.map(({ name }) => name).toSorted()).toEqual(["parley", "subagent"]);
 			expect(diagnostics).toEqual([]);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
