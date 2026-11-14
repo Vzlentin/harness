@@ -10,6 +10,7 @@ import {
 	getSystemMessageText,
 	type Message,
 	type SimpleStreamOptions,
+	type Tool,
 	type ToolCall,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
@@ -56,8 +57,11 @@ export const calls: Call[] = [];
 /** The texts of the user messages of the last request for each prompt, in order. */
 export const contexts = new Map<string, string[]>();
 
-/** The system prompt and the tools of the last request for each prompt. */
-export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
+/** The system prompt and the tools of the last request for each prompt: their names, and their full declarations. */
+export const requests = new Map<
+	string,
+	{ readonly system: string; readonly tools: readonly string[]; readonly declarations: readonly Tool[] }
+>();
 
 /** Requests that wait for a test to release them, by prompt. */
 export const gates = new Map<string, PromiseWithResolvers<void>>();
@@ -207,6 +211,7 @@ async function respond(
 		requests.set(prompt, {
 			system: getSystemMessageText(system),
 			tools: (system.toolsAdded ?? []).map(({ name }) => name),
+			declarations: system.toolsAdded ?? [],
 		});
 	}
 

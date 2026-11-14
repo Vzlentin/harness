@@ -39,6 +39,7 @@ import { savedTrust } from "../protocol/trust.ts";
 import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
 import { type DurableScope, projectToolsExtension, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
+import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
@@ -106,8 +107,18 @@ export async function runHost(options: {
 	readonly idleExitMs?: number;
 	/** For tests: the time of a turn of an RLM child, after which the host aborts it. Default 5 minutes. */
 	readonly rlmDeadlineMs?: number;
+	/** For tests: the time after which a bash call that sets no timeout stops. Default 300 seconds. */
+	readonly bashTimeoutSeconds?: number;
 }): Promise<Host | undefined> {
-	const { project, cwd: projectCwd, models, idleExitMs = IDLE_EXIT_MS, rlmDeadlineMs = TURN_DEADLINE_MS } = options;
+	const {
+		project,
+		cwd: projectCwd,
+		models,
+		idleExitMs = IDLE_EXIT_MS,
+		rlmDeadlineMs = TURN_DEADLINE_MS,
+		bashTimeoutSeconds = BASH_TIMEOUT_SECONDS,
+	} = options;
+
 	const { dir: stateDir, socket: socketPath } = statePaths(project);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
@@ -173,6 +184,7 @@ export async function runHost(options: {
 		todoTool(durable, { Type }, scope),
 		projectToolsExtension(durable, { Type }, scope),
 		gateExtension(send),
+		bashTimeoutExtension(bashTimeoutSeconds),
 		createCodemodeExtension({ sandbox }),
 		...entries.extensions,
 		rlm.extension,
