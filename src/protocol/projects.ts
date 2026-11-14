@@ -18,6 +18,7 @@ const COMMANDS = [
 	"stop",
 	"list",
 	"tree",
+	"parley",
 	"todo",
 	"attach",
 	"host",

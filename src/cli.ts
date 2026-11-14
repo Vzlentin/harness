@@ -20,6 +20,7 @@ import {
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
 import { pageDir } from "./protocol/paths.ts";
+import { ParleyAsks, parleyShowText } from "./protocol/project.ts";
 import {
 	addProject,
 	type CommandName,
@@ -309,6 +310,17 @@ async function treeCommand(args: string[], project: string | undefined): Promise
 	);
 }
 
+/** Prints the parley `slug` of the project as Markdown: its frame, its asks with their answers, and its contract. */
+async function parleyCommand(args: string[], project: string | undefined): Promise<void> {
+	const [action, slug] = args;
+
+	if (args.length !== 2 || action !== "show" || slug === undefined) usage();
+	const reply = await request({ type: "parley", action: "read", slug }, { start: true, project });
+
+	if (!Value.Check(ParleyAsks, reply)) throw new Error("The host replied with no parley");
+	process.stdout.write(parleyShowText(reply));
+}
+
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
 function createCommand(args: string[]): void {
 	const [name, option, dir] = args;
@@ -588,6 +600,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
 		list: toolCommand(["  harness list"], listArgs),
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
+		parley: { usage: ["  harness parley show <slug>"], run: parleyCommand },
 		todo: {
 			usage: [
 				"  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]",

@@ -694,6 +694,11 @@ function optionLabel(ask: Ask, key: string | undefined): string | undefined {
 	return ask.options?.find((option) => option.key === key)?.label;
 }
 
+/** The label of the answer of `ask`: its own label, else the label of the chosen option, else the label of the answer. */
+function answerLabel(ask: Extract<Ask, { readonly state: "answered" }>): string | undefined {
+	return ask.answer === "own" ? ask.label : (optionLabel(ask, ask.answer) ?? ask.label);
+}
+
 /** The number of `ask` in its parley, or its ID when it has no parley. */
 function askNumber(ask: Ask): number {
 	return ask.parley?.n ?? ask.id;
@@ -714,11 +719,7 @@ export function askLine(ask: Ask): string {
 		}
 
 		case "answered":
-			return fieldsText([
-				...head,
-				ask.answer,
-				ask.answer === "own" ? ask.label : (optionLabel(ask, ask.answer) ?? ask.label),
-			]);
+			return fieldsText([...head, ask.answer, answerLabel(ask)]);
 
 		default:
 			return fieldsText([...head, ask.state]);
@@ -753,4 +754,47 @@ export function parleyText(reply: ParleyAsks): string {
 	return [parleyLine(reply.parley), ...reply.asks.map(askLine), parleyAnswerLine(reply.parley, reply.asks)]
 		.map((line) => `${line}\n`)
 		.join("");
+}
+
+/** The state line of `ask` in the text of `harness parley show`: its answer, its plan when it is open, or `Dropped`. */
+function askStateText(ask: Ask): string {
+	switch (ask.state) {
+		case "open": {
+			const label = optionLabel(ask, ask.plan);
+
+			return ask.plan === undefined ? "Open" : `Open, plan ${ask.plan}${label === undefined ? "" : `: ${label}`}`;
+		}
+
+		case "answered":
+			return `Answer: ${answerLabel(ask) ?? ask.answer}`;
+
+		default:
+			return "Dropped";
+	}
+}
+
+/**
+ * The text of `harness parley show`, in Markdown: the title of the parley, with its status when it is done or dropped,
+ * its goal, then each ask with options, with its state and the words of the user, then the design sense and the
+ * evidence when they are set. It leaves out the read-back, which is the ask with no options.
+ */
+export function parleyShowText(reply: ParleyAsks): string {
+	const { parley } = reply;
+	const status = parley.status === "done" || parley.status === "dropped" ? ` (${parley.status})` : "";
+	const blocks = [`# ${parley.title}${status}`, parley.goal];
+
+	for (const ask of reply.asks) {
+		if (ask.options === undefined) continue;
+		blocks.push(`## ${askNumber(ask)}. ${ask.title}`, askStateText(ask));
+
+		if (ask.state === "answered") blocks.push(...(ask.words ?? []));
+	}
+
+	if (parley.design_sense !== undefined) blocks.push("## Design sense", parley.design_sense);
+
+	if (parley.evidence !== undefined) {
+		blocks.push("## Evidence", parley.evidence.map((item) => `- ${item}`).join("\n"));
+	}
+
+	return `${blocks.join("\n\n")}\n`;
 }
