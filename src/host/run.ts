@@ -45,6 +45,7 @@ import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
+import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { serveRlm } from "./rlm.ts";
@@ -109,6 +110,8 @@ export async function runHost(options: {
 	readonly rlmDeadlineMs?: number;
 	/** For tests: the time after which a bash call that sets no timeout stops. Default 300 seconds. */
 	readonly bashTimeoutSeconds?: number;
+	/** For tests: the system of the hold that keeps the Mac awake. Default the system of this process. */
+	readonly keepAwake?: AwakeSystem;
 }): Promise<Host | undefined> {
 	const {
 		project,
@@ -117,6 +120,7 @@ export async function runHost(options: {
 		idleExitMs = IDLE_EXIT_MS,
 		rlmDeadlineMs = TURN_DEADLINE_MS,
 		bashTimeoutSeconds = BASH_TIMEOUT_SECONDS,
+		keepAwake: awakeSystem = NODE_AWAKE_SYSTEM,
 	} = options;
 
 	const { dir: stateDir, socket: socketPath } = statePaths(project);
@@ -252,6 +256,8 @@ export async function runHost(options: {
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
 
+	const awake = keepAwake({ active: () => harness.wake().active, warn, system: awakeSystem });
+
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();
 	/** The request chains in flight, which the close awaits. */
@@ -329,6 +335,7 @@ export async function runHost(options: {
 	}).catch(async (cause: unknown) => {
 		push.close();
 		deadlines.close();
+		awake.close();
 		await rlm.close();
 		await entries.close();
 		await sandbox.close();
@@ -346,6 +353,7 @@ export async function runHost(options: {
 			clearInterval(timer);
 			push.close();
 			deadlines.close();
+			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
 
