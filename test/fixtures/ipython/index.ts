@@ -1,9 +1,10 @@
 /**
- * An entry with an `ipython` tool that follows the contract of pi-ipython. Before the first cell of a conversation,
- * and before the first cell after a `%restart`, it emits `ipython:kernel-starting` with `{ conversationId, env,
- * startupCode, waitFor }` on the host's bus and waits for the `waitFor` promises. It then starts `python3 -I -S
- * kernel.py`, as pi-ipython does, in the agent's working directory with `env`, and runs the startup code, whose failure
- * fails the start.
+ * An entry with an `ipython` tool that follows the contract of pi-ipython. Each cell first emits `ipython:cell-start`
+ * with `{ conversationId, api, context }` on the host's bus, and emits `ipython:cell-end` with `{ conversationId }` when
+ * it ends. Before the first cell of a conversation, and before the first cell after a `%restart`, it emits
+ * `ipython:kernel-starting` with `{ conversationId, env, startupCode, waitFor }` and waits for the `waitFor` promises.
+ * It then starts `python3 -I -S kernel.py`, as pi-ipython does, in the agent's working directory with `env`, and runs
+ * the startup code, whose failure fails the start.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -28,7 +29,7 @@ class Kernel {
 	readonly #pending: { resolve: (reply: CellReply) => void; reject: (error: Error) => void }[] = [];
 
 	constructor(cwd: string, env: Record<string, string>) {
-		// -B writes no bytecode next to harness_rlm.py in the checkout.
+		// -B writes no bytecode next to harness_tools.py in the checkout.
 		this.#process = spawn("python3", ["-B", "-I", "-S", KERNEL], { cwd, env: { ...process.env, ...env } });
 		this.#process.stderr.resume();
 		createInterface({ input: this.#process.stdout }).on("line", (line) =>
@@ -87,28 +88,35 @@ export default function ipythonEntry({
 		parameters: Type.Object({ code: Type.String() }),
 		executionMode: "sequential",
 		async execute(args, api, context) {
-			const key = String(api.conversationId);
-			let kernel = kernels.get(key);
+			const { conversationId } = api;
+			const key = String(conversationId);
+			events.emit("ipython:cell-start", { conversationId, api, context });
 
-			if (args.code.trim() === "%restart") {
-				kernels.delete(key);
-				(await kernel?.catch(() => undefined))?.kill();
+			try {
+				let kernel = kernels.get(key);
 
-				return { output: [{ type: "text", text: "Restarted" }] };
+				if (args.code.trim() === "%restart") {
+					kernels.delete(key);
+					(await kernel?.catch(() => undefined))?.kill();
+
+					return { output: [{ type: "text", text: "Restarted" }] };
+				}
+
+				if (kernel === undefined) {
+					const { cwd = process.cwd() } = await api.agent(context);
+					const started = startKernel(conversationId, cwd);
+					kernel = started;
+					kernels.set(key, started);
+					// A failed start runs again at the next cell.
+					started.catch(() => kernels.get(key) === started && kernels.delete(key));
+				}
+
+				const reply = await (await kernel).run(args.code);
+
+				return { output: [{ type: "text", text: reply.output || "[no output]" }], isError: reply.error };
+			} finally {
+				events.emit("ipython:cell-end", { conversationId });
 			}
-
-			if (kernel === undefined) {
-				const { cwd = process.cwd() } = await api.agent(context);
-				const started = startKernel(api.conversationId, cwd);
-				kernel = started;
-				kernels.set(key, started);
-				// A failed start runs again at the next cell.
-				started.catch(() => kernels.get(key) === started && kernels.delete(key));
-			}
-
-			const reply = await (await kernel).run(args.code);
-
-			return { output: [{ type: "text", text: reply.output || "[no output]" }], isError: reply.error };
 		},
 	});
 

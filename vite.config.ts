@@ -11,8 +11,8 @@ function restrictImports(files: string[], ...patterns: ImportPattern[]): OxlintO
 
 // An override replaces the options of a rule, so `src/host/durable-entry.ts` repeats the pattern of `src/host/**`.
 const hostImports: ImportPattern = {
-	group: ["../**", "!../protocol/**", "!../children/**", "!../rlm/**", "!../tool.ts", "!../project-tool.ts"],
-	message: "host/ imports only protocol/, children/, rlm/, tool.ts and project-tool.ts.",
+	group: ["../**", "!../protocol/**", "!../children/**", "!../bridge/**", "!../tool.ts", "!../project-tool.ts"],
+	message: "host/ imports only protocol/, children/, bridge/, tool.ts and project-tool.ts.",
 };
 
 export default defineConfig({
@@ -82,11 +82,11 @@ export default defineConfig({
 						"../dist/**",
 						"!../dist/protocol/**",
 						"!../dist/client/**",
-						"!../dist/rlm/**",
+						"!../dist/bridge/**",
 						"!../dist/tool.js",
 						"!../dist/project-tool.js",
 					],
-					message: "pi/ loads only protocol/, client/, rlm/, tool.ts and project-tool.ts.",
+					message: "pi/ loads only protocol/, client/, bridge/, tool.ts and project-tool.ts.",
 				},
 			),
 			restrictImports(["src/protocol/**"], { group: ["../**"], message: "protocol/ imports nothing else from src/." }),
@@ -103,15 +103,15 @@ export default defineConfig({
 				message: "inspect/ imports only protocol/ and client/ from src/.",
 			}),
 			restrictImports(
-				["src/rlm/**"],
+				["src/bridge/**"],
 				{
-					group: ["../**", "!../protocol/**", "!../tool.ts"],
-					message: "rlm/ imports only protocol/ and tool.ts from src/.",
+					group: ["../**", "!../protocol/**"],
+					message: "bridge/ imports only protocol/ from src/.",
 				},
 				{
 					group: ["@earendil-works/**"],
 					allowTypeImports: true,
-					message: "The Pi extension loads rlm/ from dist/: import the types of Pi packages only.",
+					message: "The Pi extension loads bridge/ from dist/: import the types of Pi packages only.",
 				},
 			),
 			restrictImports(["src/host/**"], hostImports),

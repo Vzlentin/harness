@@ -16,7 +16,7 @@ pi install npm:@vzlentin/pi-agents
 ```
 
 This adds the `subagent` tool, the `subagent` skill, the `/subagent`, `/harness` and `/vc` commands, the subagents
-widget and `rlm` in the IPython kernels of pi-ipython to Pi. Pi installs `@vzlentin/harness` with it, in its own npm
+widget and the tools bridge in the IPython kernels of pi-ipython to Pi. Pi installs `@vzlentin/harness` with it, in its own npm
 folder, and Pi's tools find the `harness` command. Pi and the `harness` command use the same host. With
 [workflows](https://github.com/Vzlentin/workflows), install `npm:@vzlentin/pi-workflows` instead: it brings pi-agents
 with it.

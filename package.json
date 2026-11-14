@@ -20,6 +20,10 @@
 			"types": "./dist/client/answers.d.ts",
 			"default": "./dist/client/answers.js"
 		},
+		"./bridge": {
+			"types": "./dist/bridge/index.d.ts",
+			"default": "./dist/bridge/index.js"
+		},
 		"./children": {
 			"types": "./dist/children/library.d.ts",
 			"default": "./dist/children/library.js"
@@ -67,10 +71,6 @@
 		"./respond": {
 			"types": "./dist/children/respond.d.ts",
 			"default": "./dist/children/respond.js"
-		},
-		"./rlm": {
-			"types": "./dist/rlm/index.d.ts",
-			"default": "./dist/rlm/index.js"
 		},
 		"./project-tool": {
 			"types": "./dist/project-tool.d.ts",

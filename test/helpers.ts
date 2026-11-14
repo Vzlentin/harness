@@ -487,7 +487,7 @@ type SpawnOptions = {
 	readonly project?: string;
 };
 
-/** Spawns a child of `caller` with the first message `prompt` through the socket, as `rlm` or the tool does. */
+/** Spawns a child of `caller` with the first message `prompt` through the socket, as the tool does. */
 export async function spawnAs(caller: string, prompt: string, options: SpawnOptions): Promise<ChildInfo> {
 	const spawn = {
 		type: "spawn",

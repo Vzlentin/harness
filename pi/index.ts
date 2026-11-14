@@ -2,8 +2,8 @@
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the answers
  * of the user to the asks of the session, the `todo` tool and the todo widget, the `thread`, `rule`, `term`, `part`
  * and `parley` tools of the store of the project, the gate on the tool calls of the session, the mirror sessions of
- * `/harness`, `rlm` in the IPython kernels of the session, and `/vc`, the visual copy of the transcript, which marks a
- * copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
+ * `/harness`, the tools bridge in the IPython kernels of the session, and `/vc`, the visual copy of the transcript,
+ * which marks a copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
  * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
@@ -19,6 +19,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type * as bridge from "../dist/bridge/index.js";
 import type * as answers from "../dist/client/answers.js";
 import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";
@@ -28,26 +29,25 @@ import type * as projectTool from "../dist/project-tool.js";
 import type * as protocol from "../dist/protocol/index.js";
 import type * as projects from "../dist/protocol/projects.js";
 import type * as trust from "../dist/protocol/trust.js";
-import type * as rlm from "../dist/rlm/index.js";
 import type * as tool from "../dist/tool.js";
+import { registerBridge } from "./bridge.ts";
 import { registerGate } from "./gate.ts";
 import { registerMirror } from "./mirror.ts";
 import { PolledWidget } from "./polled-widget.ts";
 import { registerProject } from "./project.ts";
-import { registerRlm } from "./rlm.ts";
 import { registerTodo } from "./todo.ts";
 import { registerVisualCopy } from "./visual-copy.ts";
 
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
 	readonly answers: typeof answers;
+	readonly bridge: typeof bridge;
 	readonly client: typeof client;
 	readonly herdr: typeof herdr;
 	readonly mirror: typeof mirror;
 	readonly projectTool: typeof projectTool;
 	readonly projects: typeof projects;
 	readonly protocol: typeof protocol;
-	readonly rlm: typeof rlm;
 	readonly tool: typeof tool;
 	readonly trust: typeof trust;
 	readonly viewState: typeof viewState;
@@ -88,7 +88,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	const savedTrust = (cwd: string) => harness.trust.savedTrust(cwd, piTrust);
 	// The mirror knows at the start of a session whether it is a mirror session, so it starts the todo widget.
 	registerMirror(pi, harness, registerTodo(pi, harness));
-	registerRlm(pi, harness, sessionScope);
+	registerBridge(pi, harness);
 	registerProject(pi, harness);
 	registerGate(pi, harness);
 	registerVisualCopy(pi, harness);
@@ -238,10 +238,13 @@ const STATE_COLORS: Record<protocol.ChildState, "warning" | "success" | "error" 
 };
 
 /**
- * The caller of the calls of the session of `ctx`, with its tool or its `rlm`, and their spawn defaults: the session ID,
+ * The caller of the calls of the `subagent` tool of the session of `ctx`, and their spawn defaults: the session ID,
  * the model, the thinking level and the working directory, read now.
  */
-function sessionScope(pi: ExtensionAPI, ctx: ExtensionContext): rlm.KernelScope {
+function sessionScope(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): Pick<tool.ToolScope, "caller" | "provider" | "model" | "thinking" | "cwd"> {
 	return {
 		caller: ctx.sessionManager.getSessionId(),
 		provider: ctx.model?.provider,
@@ -267,13 +270,13 @@ function hasSpawned(ctx: ExtensionContext): boolean {
 async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 	const names = [
 		"answers",
+		"bridge",
 		"client",
 		"herdr",
 		"mirror",
 		"project-tool",
 		"projects",
 		"protocol",
-		"rlm",
 		"tool",
 		"trust",
 		"view-state",
@@ -281,9 +284,9 @@ async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, client, herdr, mirror, projectTool, projects, protocol, rlm, tool, trust, viewState] =
+	const [answers, bridge, client, herdr, mirror, projectTool, projects, protocol, tool, trust, viewState] =
 		await Promise.all(urls.map((url) => import(url)));
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { answers, client, herdr, mirror, projectTool, projects, protocol, rlm, tool, trust, viewState } as Harness;
+	return { answers, bridge, client, herdr, mirror, projectTool, projects, protocol, tool, trust, viewState } as Harness;
 }

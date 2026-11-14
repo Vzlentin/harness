@@ -29,7 +29,7 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 - list: your children.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.
-With the \`ipython\` tool, the kernel also has \`rlm\`, a client for the same children: \`print(rlm.__doc__)\` prints its API and its limits.`;
+With the \`ipython\` tool, a cell has \`tools\`, which runs the tools of this conversation, this one too: \`await tools.<name>(**args)\`. \`print(tools.__doc__)\` lists them, and \`print(tools.<name>.__doc__)\` gives the arguments of one.`;
 
 /**
  * The parameters and the output schema of the tool, built with the caller's TypeBox `Type`, so the schemas come from the

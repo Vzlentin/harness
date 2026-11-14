@@ -11,10 +11,13 @@ import type {
 	ClassifierModel,
 	ClassifierOptions,
 	ClassifierResult,
+	ToolCall,
 } from "@earendil-works/pi-ai";
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
+import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
+	type AgentToolResult,
 	type BeforeAgentStartEvent,
 	createEventBus,
 	type EventBus,
@@ -52,6 +55,20 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FAUX = { provider: "faux", model: "faux-1" };
 
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
+
+/** A registered tool, as a nested call of a cell runs it. */
+type Definition = {
+	readonly name: string;
+	readonly description: string;
+	readonly parameters: object;
+	readonly outputSchema: object | undefined;
+	readonly execute: (
+		id: string,
+		params: ToolCall["arguments"],
+		signal: AbortSignal | undefined,
+		ctx: ToolContext,
+	) => Promise<AgentToolResult<unknown>>;
+};
 
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
@@ -101,6 +118,8 @@ type KernelStarting = {
 /** What the extension registers in Pi. */
 type Registered = {
 	readonly tools: Map<string, Tool>;
+	/** The tools as the extension registered them, for the nested calls of a cell. */
+	readonly definitions: Map<string, Definition>;
 	readonly commands: Map<string, Command>;
 	readonly shortcuts: string[];
 	readonly flags: string[];
@@ -173,12 +192,50 @@ function toolContext(): ToolContext {
 	return ctx as ToolContext;
 }
 
+/**
+ * The context of the call of a cell, as Pi gives it: `toolContext()`, the tools that the extension registered, and
+ * `executeTool`, which checks the arguments with pi-ai's validator, as Pi does, then runs the registered tool.
+ */
+function cellContext(registered: Registered): ToolContext {
+	let nested = 0;
+
+	const executeTool = async (
+		name: string,
+		args: ToolCall["arguments"],
+		options?: { readonly signal?: AbortSignal },
+	) => {
+		const toolCall = { type: "toolCall", id: `cell/${++nested}`, name, arguments: args } as const;
+
+		const tool = registered.definitions.get(name);
+
+		try {
+			if (tool === undefined) throw new Error(`Tool ${name} not found`);
+			const params = validateToolArguments(tool, toolCall);
+			const result = await tool.execute(toolCall.id, params, options?.signal, ctx);
+
+			return { toolCall, result, isError: false };
+		} catch (error) {
+			const text = error instanceof Error ? error.message : String(error);
+
+			return { toolCall, result: { content: [{ type: "text", text }], details: {} }, isError: true };
+		}
+	};
+
+	const ctx: ToolContext = Object.assign(toolContext(), {
+		tools: [...registered.definitions.values()],
+		executeTool,
+	});
+
+	return ctx;
+}
+
 /** Runs the extension against a fake Pi without flags, and gives what it registers. */
 async function load(): Promise<Registered> {
 	let calls = 0;
 
 	const registered: Registered = {
 		tools: new Map(),
+		definitions: new Map(),
 		commands: new Map(),
 		shortcuts: [],
 		flags: [],
@@ -214,6 +271,14 @@ async function load(): Promise<Registered> {
 				return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 			};
 
+			registered.definitions.set(tool.name, {
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters,
+				outputSchema: tool.outputSchema,
+				// SAFETY: pi-ai's validator checked the arguments against the tool's schema.
+				execute: (id, params, signal, ctx) => tool.execute(id, params as never, signal, undefined, ctx),
+			});
 			registered.tools.set(tool.name, {
 				description: tool.description,
 				parameters: tool.parameters,
@@ -429,22 +494,43 @@ async function agentStartMessage(
 	return message;
 }
 
-/**
- * A kernel of the Pi session: it runs the startup code in its argument, then, as cells would, spawns a child without a
- * model and waits for it, and spawns a quiet child. It prints the results as JSON.
- */
-const KERNEL_SCRIPT = [
+/** The start of a kernel of the Pi session: it runs the startup code in its argument, and binds `tools` and `ToolError`. */
+const KERNEL_START = [
 	"import asyncio, json, sys",
 	"namespace = {}",
 	"for line in json.loads(sys.argv[1]):",
 	"    exec(line, namespace)",
-	"rlm = namespace['rlm']",
+	"tools = namespace['tools']",
+	"from harness_tools import ToolError",
+];
+
+/**
+ * A cell of the Pi session: it spawns a child that notifies and a quiet child that it waits for, adds a todo, and gives
+ * a bad argument. It prints the results and the docstring of `tools` as JSON.
+ */
+const CELL_SCRIPT = [
+	...KERNEL_START,
 	"async def main():",
-	"    child = await rlm.spawn('From the Pi kernel')",
-	"    answer = await rlm.wait(child)",
-	"    quiet = await rlm.spawn('Quiet from the Pi kernel')",
-	"    print(json.dumps({'child': child, 'answer': answer, 'quiet': quiet['handle']}))",
-	"asyncio.run(main())",
+	"    loud = await tools.subagent(action='spawn', prompts=['From the Pi kernel'], provider='faux', model='faux-1')",
+	"    quiet = await tools.subagent(action='spawn', prompts=['Quiet'], provider='faux', model='faux-1', notify=False)",
+	"    waited = await tools.subagent(action='wait', handle=quiet['value']['handle'])",
+	"    todo = await tools.todo(action='add', text='From the Pi kernel')",
+	"    try:",
+	"        await tools.subagent(action='wait', handle='abc123', timeout=0)",
+	"        refused = None",
+	"    except ToolError as error:",
+	"        refused = str(error)",
+	"    return dict(loud=loud, quiet=quiet, waited=waited, todo=todo, refused=refused, doc=tools.__doc__)",
+	"print(json.dumps(asyncio.run(main())))",
+].join("\n");
+
+/** A call of the Pi session after its cell ended: it prints the error of the call. */
+const LATE_SCRIPT = [
+	...KERNEL_START,
+	"try:",
+	"    asyncio.run(tools.todo(action='list'))",
+	"except ToolError as error:",
+	"    print(error)",
 ].join("\n");
 
 /** Waits until the child `handle` of the main host is idle. */
@@ -741,50 +827,62 @@ describe("the Pi extension", () => {
 		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
 	});
 
-	it("serves rlm to each kernel start of the session through the host, and closes its server at the session end", async () => {
+	it("serves the tools of each cell of the session to its kernel, and closes its server at the session end", async () => {
 		host = await startHost();
 		const registered = await load();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" });
 
 		registered.events.emit("ipython:kernel-starting", { env: {}, startupCode: [] });
+		registered.events.emit("ipython:cell-start", { toolCallId: "cell-0" });
 		expect(registered.notifications).toEqual([
-			{ message: "The ipython:kernel-starting event has an invalid payload; its kernel gets no rlm", type: "warning" },
+			{
+				message: "The ipython:kernel-starting event has an invalid payload; its kernel gets no tools",
+				type: "warning",
+			},
+			{ message: "The ipython:cell-start event has an invalid payload; its cell gets no tools", type: "warning" },
 		]);
 
 		const { env, startupCode } = await kernelStart(registered);
-		const socket = env.HARNESS_RLM_SOCKET ?? "";
-		expect(socket).toMatch(/^\/tmp\/harness-rlm-[^/]+\/kernel\.sock$/);
-		expect(env.HARNESS_RLM_TOKEN).toMatch(/^[0-9a-f]{64}$/);
-		expect(process.env.HARNESS_RLM_SOCKET).toBeUndefined();
-		expect(process.env.HARNESS_RLM_TOKEN).toBeUndefined();
+		const socket = env.HARNESS_TOOLS_SOCKET ?? "";
+		expect(socket).toMatch(/^\/tmp\/harness-tools-[^/]+\/kernel\.sock$/);
+		expect(env.HARNESS_TOOLS_TOKEN).toMatch(/^[0-9a-f]{64}$/);
+		expect(process.env.HARNESS_TOOLS_SOCKET).toBeUndefined();
+		expect(process.env.HARNESS_TOOLS_TOKEN).toBeUndefined();
 
-		const { stdout } = await run("python3", ["-I", "-B", "-c", KERNEL_SCRIPT, JSON.stringify(startupCode)], {
-			env: { ...process.env, ...env },
-			timeout: 30_000,
-		});
+		const python = async (script: string) =>
+			(
+				await run("python3", ["-I", "-B", "-c", script, JSON.stringify(startupCode)], {
+					env: { ...process.env, ...env },
+					timeout: 30_000,
+				})
+			).stdout;
 
-		const kernel = JSON.parse(stdout);
+		registered.events.emit("ipython:cell-start", { toolCallId: "cell-1", ctx: cellContext(registered) });
+		const cell = JSON.parse(await python(CELL_SCRIPT));
+		registered.events.emit("ipython:cell-end", { toolCallId: "cell-1" });
 
-		// The child takes the model and the working directory of the session, and has no kind.
-		expect(kernel).toMatchObject({
-			child: { ...FAUX, cwd: root },
-			answer: "Answer to Task:\nFrom the Pi kernel",
-		});
-		expect(kernel.child).not.toHaveProperty("kind");
+		expect(cell.loud).toMatchObject({ action: "spawn", value: { ...FAUX, cwd: root } });
+		expect(cell.waited).toEqual({ action: "wait", value: { answer: "Answer to Task:\nQuiet" } });
+		expect(cell.todo).toEqual({ action: "add", value: { id: 1, text: "From the Pi kernel", state: "open" } });
+		expect(cell.refused).toMatch(/^Validation failed for tool "subagent":\n {2}- timeout: /);
+		expect(cell.doc).toContain("\n- subagent: Spawn and manage subagents");
+		expect(cell.doc).not.toContain("\n- ipython:");
 
-		// The children of the kernel are those of the session's tool.
+		// The children of the cell are those of the session's tool, and only the child without notify: false notifies.
 		const listed = await callTool(registered, { action: "list" });
-		expect(listed).toContain(kernel.child.handle);
-		expect(listed).toContain(kernel.quiet);
+		expect(listed).toContain(cell.loud.value.handle);
+		expect(listed).toContain(cell.quiet.value.handle);
+		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
+		expect(registered.messages[0]?.text).toBe(
+			`subagent ${cell.loud.value.handle} finished\n\nAnswer to Task:\nFrom the Pi kernel`,
+		);
 
-		// The spawns have `notify: false`, so no answer comes as a message.
-		await untilIdle(kernel.quiet);
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		expect(registered.messages).toEqual([]);
+		// After the end of its cell, a call raises.
+		expect(await python(LATE_SCRIPT)).toBe("No cell of this kernel runs: tools runs a tool only while a cell runs\n");
 
 		// A new kernel start replaces the server.
-		const restarted = (await kernelStart(registered)).env.HARNESS_RLM_SOCKET ?? "";
-		expect(restarted).toMatch(/^\/tmp\/harness-rlm-[^/]+\/kernel\.sock$/);
+		const restarted = (await kernelStart(registered)).env.HARNESS_TOOLS_SOCKET ?? "";
+		expect(restarted).toMatch(/^\/tmp\/harness-tools-[^/]+\/kernel\.sock$/);
 		expect(restarted).not.toBe(socket);
 		expect(existsSync(dirname(socket))).toBe(false);
 
@@ -955,7 +1053,7 @@ describe("the Pi extension", () => {
 		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
 	});
 
-	it("gives no rlm section to a session, also with the ipython tool", async () => {
+	it("gives no section about the tools of a cell to a session, also with the ipython tool", async () => {
 		const registered = await load();
 
 		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({});
