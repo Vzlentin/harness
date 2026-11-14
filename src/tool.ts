@@ -368,6 +368,7 @@ export function subagentTool(
 }
 
 export const TODO_TOOL_DESCRIPTION = `Keep a list of todos: lines of intent, each with an ID and a state.
+Use it for each task of 3 steps or more: add one todo for each step before you start, set a todo to doing when you start its step, and to done when the step is finished.
 - add: add a todo with \`text\`. It starts open, with the next ID of the list.
 - set: set the \`state\` of the todo \`id\`, and its \`text\` when you give one.
 - list: the todos, in ID order.

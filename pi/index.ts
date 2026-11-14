@@ -175,6 +175,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 
 	const subagents = new PolledWidget(
 		"subagents",
+		"belowEditor",
 		async (ctx) => {
 			const children = await client.request(
 				{ type: "list", caller: ctx.sessionManager.getSessionId() },
@@ -207,8 +208,9 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 }
 
 /**
- * The lines of the subagents widget for `children`, the reply of `list`: nothing for no host (undefined) and for no
- * children. An RLM child starts with its marker.
+ * The lines of the subagents widget for `children`, the reply of `list`: a dim header `subagents`, then the first 5
+ * children and `+<n>` for the others. Nothing for no host (undefined) and for no children. An RLM child starts with its
+ * marker.
  */
 function widgetLines(
 	theme: ExtensionContext["ui"]["theme"],
@@ -224,7 +226,7 @@ function widgetLines(
 
 	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
 
-	return [theme.fg("dim", "subagents: ") + visible.join(theme.fg("dim", " | "))];
+	return [theme.fg("dim", "subagents"), visible.join(theme.fg("dim", " | "))];
 }
 
 /** The theme colour of a child in each state. */

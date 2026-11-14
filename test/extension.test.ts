@@ -21,14 +21,16 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	type ExtensionHandler,
+	type ExtensionWidgetOptions,
 	type NormalizedBuildSystemPromptOptions,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type Theme,
 	type ToolCallEvent,
 	type ToolCallEventResult,
+	type WidgetPlacement,
 } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -41,7 +43,7 @@ import { statePaths } from "../src/protocol/paths.ts";
 import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { projectTools, TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
-import { gates, models, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
+import { drawWidget, gates, models, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const run = promisify(execFile);
 const LoggedMessage = Type.Object({ action: Type.Literal("log"), value: Message });
@@ -258,15 +260,26 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 	return tool.call(args);
 }
 
-/** The lines of the subagents widget and of the todo widget that the extension set, in order; undefined hides one. */
-type Widgets = {
-	readonly subagents: (readonly string[] | undefined)[];
-	readonly todos: (readonly string[] | undefined)[];
+/**
+ * What the extension did with one widget: its placement, its number of sets and of removals, and each render of its
+ * component.
+ */
+type WidgetLog = {
+	placement: WidgetPlacement | undefined;
+	sets: number;
+	removals: number;
+	renders: (readonly string[])[];
 };
+
+/** The subagents widget and the todo widget. */
+type Widgets = { readonly subagents: WidgetLog; readonly todos: WidgetLog };
 
 /** Widgets that the extension did not set yet. */
 function noWidgets(): Widgets {
-	return { subagents: [], todos: [] };
+	return {
+		subagents: { placement: undefined, sets: 0, removals: 0, renders: [] },
+		todos: { placement: undefined, sets: 0, removals: 0, renders: [] },
+	};
 }
 
 /** The mirror entry of a mirror session of the project agent of `main`. */
@@ -282,7 +295,8 @@ const MIRROR = {
 /**
  * Calls the handlers of `event` with harness, for the session `session` without entries, in `root` with the faux
  * model. Without `widgets`, the session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and
- * `widgets` gets each content of the subagents widget and of the todo widget. With `mirror`, the session is a mirror
+ * `widgets` logs the sets and the removals of the subagents widget and of the todo widget, and each render of their components, at 80
+ * columns, when they are set and when they ask for one. With `mirror`, the session is a mirror
  * session of the project agent in Pi's interactive mode, whose components are never drawn. The notifications go to
  * `registered`.
  */
@@ -304,9 +318,26 @@ async function sessionEvent(registered: Registered, event: PiEvent, widgets?: Wi
 			getBranch: () => (mirror ? [MIRROR] : []),
 		},
 		ui: {
-			// The extension gives the widget lines; only a mirror session gives components, which the tests do not draw.
-			setWidget: (key: string, content: string[] | ((...args: never[]) => Component) | undefined) => {
-				if ((key === "subagents" || key === "todos") && !(content instanceof Function)) widgets?.[key].push(content);
+			// The tests do not draw the components of a mirror session.
+			setWidget: (
+				key: string,
+				content: string[] | ((tui: TUI, theme: Theme) => Component) | undefined,
+				options?: ExtensionWidgetOptions,
+			) => {
+				if (widgets === undefined || (key !== "subagents" && key !== "todos")) return;
+
+				const log = widgets[key];
+
+				if (!(content instanceof Function)) {
+					if (content !== undefined) throw new Error(`${key} is set with lines`);
+					log.removals++;
+
+					return;
+				}
+
+				log.sets++;
+				log.placement = options?.placement;
+				drawWidget(content, ctx.ui.theme, log.renders);
 			},
 			setEditorComponent: () => {},
 			notify: (message, type) => {
@@ -638,7 +669,7 @@ describe("the Pi extension", () => {
 		const registered = await load();
 		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
-		await vi.waitFor(() => expect(quiet.subagents).toEqual([undefined]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(quiet.subagents.renders).toEqual([[], []]), { timeout: 10_000 });
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
 		host = await startHost();
@@ -648,8 +679,9 @@ describe("the Pi extension", () => {
 		await untilIdle(rlm);
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
-		const line = `<dim>subagents: <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`;
-		await vi.waitFor(() => expect(widgets.subagents.at(-1)).toEqual([line]), { timeout: 10_000 });
+		const lines = [" <dim>subagents", ` <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`];
+		await vi.waitFor(() => expect(widgets.subagents.renders.at(-1)).toEqual(lines), { timeout: 10_000 });
+		expect(widgets.subagents).toMatchObject({ placement: "belowEditor", sets: 1 });
 
 		const options: string[][] = [];
 
@@ -677,8 +709,10 @@ describe("the Pi extension", () => {
 		]);
 		await host?.close();
 		host = undefined;
-		await vi.waitFor(() => expect(widgets.subagents.at(-1)).toBeUndefined(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(widgets.subagents.renders.at(-1)).toEqual([]), { timeout: 10_000 });
+		expect(widgets.subagents.sets).toBe(1);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
+		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
 	});
 
 	it("serves rlm to each kernel start of the session through the host, and closes its server at the session end", async () => {
@@ -839,7 +873,7 @@ describe("the Pi extension", () => {
 		const registered = await load();
 		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
-		await vi.waitFor(() => expect(quiet.todos).toEqual([undefined]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(quiet.todos.renders).toEqual([[], []]), { timeout: 10_000 });
 		expect(existsSync(statePaths(MAIN_PROJECT).socket)).toBe(false);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
@@ -847,21 +881,24 @@ describe("the Pi extension", () => {
 		const todo = registered.tools.get("todo");
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
-		await vi.waitFor(() => expect(widgets.todos).toEqual([undefined]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(widgets.todos.renders).toEqual([[], []]), { timeout: 10_000 });
 		await todo?.call({ action: "add", text: "Write the plan" });
-		expect(widgets.todos.at(-1)).toEqual(["○ 1 Write the plan"]);
+		expect(widgets.todos.renders.at(-1)).toEqual([" <dim>todos 0/1", " ○ 1 Write the plan"]);
 		await todo?.call({ action: "add", text: "Ship it" });
 		await todo?.call({ action: "set", id: 1, state: "done" });
 		await todo?.call({ action: "set", id: 2, state: "doing" });
-		expect(widgets.todos.at(-1)).toEqual(["✓ 1 Write the plan", "◉ 2 Ship it"]);
+		expect(widgets.todos.renders.at(-1)).toEqual([" <dim>todos 1/2", " ◉ 2 Ship it"]);
 
-		// A tick with the same lines does not set the widget again, which would move it below the subagents widget.
-		const shown = widgets.todos.length;
+		// A tick with the same lines does not draw again.
+		const shown = widgets.todos.renders.length;
 		await new Promise((resolve) => setTimeout(resolve, 1500));
-		expect(widgets.todos).toHaveLength(shown);
+		expect(widgets.todos.renders).toHaveLength(shown);
 		await todo?.call({ action: "set", id: 2, state: "done" });
-		expect(widgets.todos.at(-1)).toBeUndefined();
+		expect(widgets.todos.renders.at(-1)).toEqual([]);
+		// Pi moves a widget that is set again, so each change only draws the widget that was set at the start.
+		expect(widgets.todos).toMatchObject({ placement: "aboveEditor", sets: 1, removals: 0 });
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
+		expect(widgets.todos).toMatchObject({ sets: 1, removals: 1 });
 	});
 
 	it("does not show the todos of the local session in a mirror session", async () => {
@@ -870,10 +907,13 @@ describe("the Pi extension", () => {
 		const registered = await load();
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets, true);
-		await vi.waitFor(() => expect(widgets.subagents).toEqual([undefined]), { timeout: 10_000 });
+		await vi.waitFor(() => expect(widgets.subagents.renders).toEqual([[], []]), { timeout: 10_000 });
 		await new Promise((resolve) => setTimeout(resolve, 300));
-		expect(widgets.todos).toEqual([]);
+		expect(widgets.todos.sets).toBe(1);
+		expect(widgets.todos.renders.every((lines) => lines.length === 0)).toBe(true);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets, true);
+		expect(widgets.todos).toMatchObject({ sets: 1, removals: 1 });
+		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
 	});
 
 	it("gives no rlm section to a session, also with the ipython tool", async () => {

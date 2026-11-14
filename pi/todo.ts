@@ -1,21 +1,36 @@
 /**
- * The `todo` tool of a Pi session, and the todo widget below the editor, which shows the list of the agent of the
+ * The `todo` tool of a Pi session, and the todo widget above the editor, which shows the list of the agent of the
  * session: the session itself, or the agent that a mirror session shows.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Todo, TodoList } from "../dist/protocol/index.js";
 import type { Harness } from "./index.ts";
 import { PolledWidget } from "./polled-widget.ts";
 
-/**
- * The lines of the todo widget for `list`: the line of each todo, as `harness todo list` prints it, while one of them
- * is open or doing. Otherwise none, which hides the widget.
- */
-export function todoWidgetLines(list: TodoList, todoLine: (todo: Todo) => string): string[] | undefined {
-	const active = list.todos.some(({ state }) => state === "open" || state === "doing");
+/** The most lines that the todo widget shows, with its header. */
+const MAX_LINES = 10;
 
-	return active ? list.todos.map(todoLine) : undefined;
+/**
+ * The lines of the todo widget for `list`, while one of its todos is open or doing: a dim header `todos <done>/<total>`,
+ * whose total leaves out the dropped todos, then the line of each open and doing todo, as `harness todo list` prints
+ * it. When they do not fit in `MAX_LINES`, the last line is a dim `+<n> more`. Otherwise none, which hides the widget.
+ */
+export function todoWidgetLines(
+	list: TodoList,
+	todoLine: (todo: Todo) => string,
+	theme: Pick<Theme, "fg">,
+): string[] | undefined {
+	const active = list.todos.filter(({ state }) => state === "open" || state === "doing");
+
+	if (active.length === 0) return undefined;
+	const done = list.todos.filter(({ state }) => state === "done").length;
+	const header = theme.fg("dim", `todos ${done}/${done + active.length}`);
+
+	if (active.length < MAX_LINES) return [header, ...active.map(todoLine)];
+	const shown = active.slice(0, MAX_LINES - 2);
+
+	return [header, ...shown.map(todoLine), theme.fg("dim", `+${active.length - shown.length} more`)];
 }
 
 /**
@@ -29,11 +44,12 @@ export function registerTodo(pi: ExtensionAPI, harness: Pick<Harness, "client" |
 
 	const todos = new PolledWidget(
 		"todos",
+		"aboveEditor",
 		async (ctx) => {
 			const caller = ctx.sessionManager.getSessionId();
 			const list = await client.request({ type: "todo", caller, action: "list" }, { start: false });
 
-			return list === undefined ? undefined : todoWidgetLines(tool.replyList(list), protocol.todoLine);
+			return list === undefined ? undefined : todoWidgetLines(tool.replyList(list), protocol.todoLine, ctx.ui.theme);
 		},
 		protocol.errorMessage,
 	);

@@ -38,7 +38,7 @@ export class Attachment {
 	#theme: Theme;
 	readonly #frame: tui.Container;
 	readonly #status = new StatusArea();
-	/** The todo widget below the editor, which shows the list of the agent. The session stops it at its end. */
+	/** The todo widget above the editor, which shows the list of the agent. The session stops it at its end. */
 	readonly #todos: LinesWidget;
 	readonly #mirror: Mirror;
 	#ui: TUI | undefined;
@@ -234,10 +234,12 @@ export class Attachment {
 		this.#status.show(ui, this.#theme, working, lines);
 	}
 
-	/** Shows below the editor the list of todos of the agent, from the last view, in the todo widget. */
+	/** Shows above the editor the list of todos of the agent, from the last view, in the todo widget. */
 	#showTodos(view: ConversationView | undefined): void {
 		const { todosOf } = this.#harness.viewState;
-		this.#todos.show(view === undefined ? undefined : todoWidgetLines(todosOf(view), this.#harness.protocol.todoLine));
+		this.#todos.show(
+			view === undefined ? undefined : todoWidgetLines(todosOf(view), this.#harness.protocol.todoLine, this.#theme),
+		);
 	}
 
 	#showFailure(reason: string): void {

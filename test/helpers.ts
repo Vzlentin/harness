@@ -20,6 +20,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
 	AssistantEntry,
 	type ConversationView,
@@ -29,7 +30,7 @@ import {
 	type SettledSubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import type { Component, ProgramStatus, Terminal, TUI } from "@earendil-works/pi-tui";
 import { vi } from "vite-plus/test";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
@@ -653,4 +654,27 @@ export class FakeTerminal implements Terminal {
 	setProgramStatus(status: ProgramStatus): void {
 		this.statuses.push(status);
 	}
+}
+
+/**
+ * Makes the component of the widget factory `factory` with a TUI whose `requestRender` draws it at `width` columns
+ * into `renders`, and draws it once, as Pi does when it sets a widget.
+ */
+export function drawWidget(
+	factory: (tui: TUI, theme: Theme) => Component,
+	theme: Pick<Theme, "fg">,
+	renders: (readonly string[])[],
+	width = 80,
+): void {
+	let component: Component | undefined;
+
+	const tui: Pick<TUI, "requestRender"> = {
+		requestRender: () => {
+			if (component !== undefined) renders.push(component.render(width));
+		},
+	};
+
+	// SAFETY: the widgets of the extension use only `requestRender` of the TUI, and `fg` of the theme.
+	component = factory(tui as TUI, theme as Theme);
+	tui.requestRender();
 }

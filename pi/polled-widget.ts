@@ -1,53 +1,81 @@
-/** Widgets below the editor, such as the subagents widget and the todo widget, and the reads of their lines. */
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+/**
+ * The widgets of a Pi session, such as the subagents widget below the editor and the todo widget above it, and the reads
+ * of their lines.
+ */
+import type { ExtensionContext, WidgetPlacement } from "@earendil-works/pi-coding-agent";
+import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
 
 /** Gives the lines of a widget for the session of `ctx`, or undefined to hide it. */
 type ReadLines = (ctx: ExtensionContext) => Promise<string[] | undefined>;
 
 /**
- * A widget below the editor of a session with a UI, which shows the lines that it gets. It sets the widget again only
- * when its lines change: Pi puts the widget that was set last at the bottom, so two widgets that are set at each tick
- * would swap their places.
+ * A widget set in one session: the TUI that draws its component, once Pi gives it, and the lines that it shows, or
+ * undefined before the first `show()` gives them. A factory of an earlier session writes only into its own object.
+ */
+type WidgetSession = { tui: TUI | undefined; shown: { lines: string[] | undefined } | undefined };
+
+/**
+ * A widget of a session with a UI, at `placement`, which shows the lines that it gets. It is set one time, as a
+ * component, at its start: Pi puts the widget that was set last at the end of its side, so a widget that is set again
+ * moves. A change of the lines asks the TUI for a render. The component cuts each line at the width with `…`, after
+ * the 1-column indent of Pi's string widgets, and draws no line when the widget shows nothing.
  */
 export class LinesWidget {
 	readonly key: string;
-	#context: ExtensionContext | undefined;
-	/** The lines that the widget shows, or undefined before the first `show()` sets them. */
-	#shown: { lines: string[] | undefined } | undefined;
+	readonly #placement: WidgetPlacement;
+	/** The session where the widget is set, between `start()` and `stop()`. */
+	#session: WidgetSession | undefined;
 
-	constructor(key: string) {
+	constructor(key: string, placement: WidgetPlacement) {
 		this.key = key;
+		this.#placement = placement;
 	}
 
-	/** Starts to show the widget in the session of `ctx`, when it has a UI. */
+	/** Sets the widget in the session of `ctx`, when it has a UI. */
 	start(ctx: ExtensionContext): void {
-		if (ctx.hasUI) this.#context = ctx;
+		if (!ctx.hasUI) return;
+		const session: WidgetSession = { tui: undefined, shown: undefined };
+		this.#session = session;
+
+		const component: Component = {
+			render: (width) => (session.shown?.lines ?? []).map((line) => truncateToWidth(` ${line}`, width, "…")),
+			invalidate: () => {},
+		};
+
+		ctx.ui.setWidget(
+			this.key,
+			(tui) => {
+				session.tui = tui;
+
+				return component;
+			},
+			{ placement: this.#placement },
+		);
 	}
 
-	/** Shows `lines`, or hides the widget for undefined. It does nothing before `start()`, after `stop()` and without a UI. */
+	/** Shows `lines`, or nothing for undefined. It does nothing before `start()`, after `stop()` and without a UI. */
 	show(lines: string[] | undefined): void {
-		const context = this.#context;
+		const session = this.#session;
 
-		if (context === undefined) return;
+		if (session === undefined) return;
 
-		if (this.#shown !== undefined && Value.Equal(this.#shown.lines, lines)) return;
-		this.#shown = { lines };
-		context.ui.setWidget(this.key, lines, { placement: "belowEditor" });
+		if (session.shown !== undefined && Value.Equal(session.shown.lines, lines)) return;
+		session.shown = { lines };
+		session.tui?.requestRender();
 	}
 
-	/** Hides the widget at the end of the session of `ctx`, and shows nothing more until the next `start()`. */
+	/** Removes the widget at the end of the session of `ctx`, and shows nothing more until the next `start()`. */
 	stop(ctx: ExtensionContext): void {
-		this.#context = undefined;
-		this.#shown = undefined;
 		ctx.ui.setWidget(this.key, undefined);
+		this.#session = undefined;
 	}
 }
 
 /**
- * A widget below the editor whose lines come from the host. It reads them at the start, every second, and at once on
- * `refresh()`. A read must not start the host, so the widget is hidden when no host runs. When a read fails, the widget
- * shows `<key>: <first line of the error>` in the error colour. A tick does not read while another read runs, and only
+ * A widget whose lines come from the host. It reads them at the start, every second, and at once on `refresh()`. A
+ * read must not start the host, so the widget is hidden when no host runs. When a read fails, the widget shows only
+ * `<key>: <first line of the error>` in the error colour, with no header. A tick does not read while another read runs, and only
  * the newest read shows its lines, so a read that started before a change does not hide it.
  */
 export class PolledWidget {
@@ -62,8 +90,8 @@ export class PolledWidget {
 	/** How many reads run now. */
 	#reading = 0;
 
-	constructor(key: string, read: ReadLines, errorMessage: (cause: unknown) => string) {
-		this.widget = new LinesWidget(key);
+	constructor(key: string, placement: WidgetPlacement, read: ReadLines, errorMessage: (cause: unknown) => string) {
+		this.widget = new LinesWidget(key, placement);
 		this.#read = read;
 		this.#errorMessage = errorMessage;
 	}

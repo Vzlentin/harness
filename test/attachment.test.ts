@@ -27,7 +27,7 @@ import * as projects from "../src/protocol/projects.ts";
 import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type Todo } from "../src/protocol/todo.ts";
-import { FakeTerminal, until } from "./helpers.ts";
+import { drawWidget, FakeTerminal, until } from "./helpers.ts";
 
 const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
 
@@ -190,8 +190,10 @@ class Session {
 	readonly terminal = new FakeTerminal();
 	readonly ui = new TuiMainScreen(this.terminal);
 	readonly ctx: coding.ExtensionContext;
-	/** The lines of each call that set a widget with lines, for each widget, in order; undefined hides the widget. */
-	readonly widgets = new Map<string, (readonly string[] | undefined)[]>();
+	/** The key of each call that set a widget, in order, and `-<key>` for each call that removed one. */
+	readonly sets: string[] = [];
+	/** Each render of the todo widget, at 80 columns, when it is set and when it asks for one. */
+	readonly todoRenders: (readonly string[])[] = [];
 	text = "";
 	/** The renderer of the mirror entry. */
 	renderer: coding.EntryRenderer | undefined;
@@ -220,8 +222,22 @@ class Session {
 			ui: {
 				theme: THEME,
 				setWidget: (key: string, content: string[] | ((ui: TUI, theme: coding.Theme) => Component) | undefined) => {
-					if (content instanceof Function) content(this.ui, THEME);
-					else this.widgets.set(key, [...(this.widgets.get(key) ?? []), content]);
+					if (content === undefined) {
+						this.sets.push(`-${key}`);
+
+						return;
+					}
+
+					if (!(content instanceof Function)) throw new Error(`${key} is set with lines`);
+					this.sets.push(key);
+
+					if (key !== "todos") {
+						content(this.ui, THEME);
+
+						return;
+					}
+
+					drawWidget(content, THEME, this.todoRenders);
 				},
 				setEditorComponent: (factory) => {
 					this.#editorFactory = factory;
@@ -282,7 +298,7 @@ class Session {
 		};
 
 		// No test reads the list of a session that is not a mirror session.
-		const todos = new PolledWidget("todos", async () => undefined, protocol.errorMessage);
+		const todos = new PolledWidget("todos", "aboveEditor", async () => undefined, protocol.errorMessage);
 
 		// SAFETY: the mirror calls only these functions of Pi. It uses only these modules of the harness, from `src/` in
 		// place of `dist/`, and only the members of `Mirror` that `FakeMirror` has. The fake mirror makes sure that no test
@@ -441,12 +457,12 @@ describe("mirror sessions in Pi", () => {
 		expect(header({ ...unnamed, kind: "rlm" })).toBe("harness │ abc123 │ rlm │ /tmp");
 	});
 
-	it("shows the todos of the agent below the editor while one is open or doing, only on a change, until the session ends", () => {
+	it("shows the todos of the agent above the editor while one is open or doing, only on a change, until the session ends", () => {
 		const { session, mirror } = attached();
 		const plan: Todo = { id: 1, text: "Write the plan", state: "open" };
 		mirror.mirror.view = withTodos([plan]);
 		mirror.change({ kind: "open" });
-		// A change of the mirror with the same lines does not set the widget again, which would move it below the others.
+		// A change of the mirror with the same lines does not draw again.
 		mirror.change({ kind: "open" });
 		mirror.change({ kind: "reconnecting" });
 		mirror.mirror.view = withTodos([{ ...plan, state: "done" }]);
@@ -459,12 +475,15 @@ describe("mirror sessions in Pi", () => {
 		mirror.change({ kind: "open" });
 		mirror.change({ kind: "open" });
 		session.emit("session_shutdown");
-		expect(session.widgets.get("todos")).toEqual([
-			["○ 1 Write the plan"],
-			undefined,
-			["✓ 1 Write the plan", "◉ 2 Ship it"],
-			undefined,
+		expect(session.todoRenders).toEqual([
+			[],
+			[" todos 0/1", " ○ 1 Write the plan"],
+			[],
+			[" todos 1/2", " ◉ 2 Ship it"],
 		]);
+		// Pi moves a widget that is set again, so the todo widget is set one time, above the status of the mirror. It
+		// goes away when the session ends.
+		expect(session.sets).toEqual(["todos", "harness-mirror", "-harness-mirror", "-todos"]);
 	});
 
 	it("reports the state of the agent again when a dialog of Pi ends, until Pi leaves the session", () => {
