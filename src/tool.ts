@@ -7,6 +7,7 @@ import type * as TypeBox from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
+import { CUT_LINE, MAX_ANSWER } from "./protocol/answer-cut.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListTarget } from "./protocol/target.ts";
@@ -21,7 +22,7 @@ export function oneOf(words: readonly string[]): string {
 }
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
-When a child finishes, its answer comes to you as a message that starts a turn. Use \`wait\` only when you need the answer in this turn.
+When a child finishes, its answer comes to you as a message that starts a turn. An answer longer than ${MAX_ANSWER.text} is cut, and ends with the line \`${CUT_LINE}\`. Use \`wait\` only when you need the answer in this turn.
 - spawn: start a child with \`prompts\` and \`files\`. It uses the model and thinking level of the user's subagent settings, else yours, unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer, after the earlier answers of the spawn and the sends that no \`wait\` gave. \`stop\` also stops the children the child spawned. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.

@@ -9,6 +9,7 @@ import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
+import { cutAnswer } from "../protocol/answer-cut.ts";
 import type { ChildKind } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 
@@ -275,7 +276,7 @@ export type UnreadAnswers = { readonly text: string; readonly failed: boolean; r
 
 /**
  * The unread answers of `record` that a wait for `main` gives, oldest first. `answer` is the answer to `main`, and
- * `atStart` the requests of the record when the wait started. `cut` changes the text of each answer and failure.
+ * `atStart` the requests of the record when the wait started. `cutAnswer` cuts the text of each answer and failure.
  */
 export async function unreadAnswers(
 	child: Child,
@@ -285,7 +286,6 @@ export async function unreadAnswers(
 	answer: Answer,
 	atStart: readonly ChildRequest[],
 	waiting: Context,
-	cut: (text: string) => string = (text) => text,
 ): Promise<UnreadAnswers> {
 	const unread = unreadBefore(record.requests, record.read, main, atStart);
 	const earlier: Answer[] = [];
@@ -300,11 +300,11 @@ export async function unreadAnswers(
 	const texts = earlier.map((before) => {
 		const text = answerText(handle, before);
 
-		return text.failed ? `(no answer: ${cut(text.text)})` : cut(text.text);
+		return text.failed ? `(no answer: ${cutAnswer(text.text)})` : cutAnswer(text.text);
 	});
 
 	const last = answerText(handle, answer);
-	const lastText = cut(last.text);
+	const lastText = cutAnswer(last.text);
 	const all = [...texts, lastText];
 	const parts = all.map((text, index) => `--- Answer ${index + 1} of ${all.length} ---\n${text}`);
 

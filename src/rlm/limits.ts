@@ -28,9 +28,6 @@ const LINE_MARGIN = kib(64);
 /** The UTF-8 bytes of a request line on a kernel socket, before its newline: the input and the JSON around it. */
 export const MAX_LINE_BYTES = MAX_INPUT.bytes + LINE_MARGIN.bytes;
 
-/** The UTF-8 size of an answer of an RLM child that `wait` gives. */
-export const MAX_ANSWER = kib(256);
-
 /** The time of a turn of an RLM child, after which the host aborts it. */
 export const TURN_DEADLINE_MS = 5 * 60_000;
 
@@ -42,25 +39,7 @@ export const SPAWN_TOO_LARGE = `The prompt of an RLM spawn, with its files and c
 export const SEND_TOO_LARGE = `The message of an RLM send is more than ${MAX_INPUT.text}`;
 export const LINE_TOO_LONG = `Invalid rlm request: the line is longer than ${MAX_INPUT.text} plus ${LINE_MARGIN.text}`;
 
-/** The last line of an answer that `cutAnswer` cut. */
-export const CUT_LINE = `[The answer was cut at ${MAX_ANSWER.text}]`;
-
-/** `CUT_LINE` on its own line, after the kept text. */
-const CUT_NOTICE = `\n${CUT_LINE}`;
-
 /** Whether `text` has more than `MAX_INPUT` in UTF-8. */
 export function overInput(text: string): boolean {
 	return Buffer.byteLength(text, "utf8") > MAX_INPUT.bytes;
-}
-
-/**
- * `text`, or for a text of more than `MAX_ANSWER` in UTF-8, its longest start in that size that ends on a character
- * boundary, then the line `CUT_LINE`.
- */
-export function cutAnswer(text: string): string {
-	if (Buffer.byteLength(text, "utf8") <= MAX_ANSWER.bytes) return text;
-	// `encodeInto` writes only whole characters, and `read` counts the UTF-16 units of the characters that it wrote.
-	const { read } = new TextEncoder().encodeInto(text, new Uint8Array(MAX_ANSWER.bytes));
-
-	return `${text.slice(0, read)}${CUT_NOTICE}`;
 }

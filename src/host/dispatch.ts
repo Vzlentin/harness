@@ -19,14 +19,7 @@ import {
 	versionMismatch,
 } from "../protocol/requests.ts";
 import { type ListRef, parseTarget, type Target } from "../protocol/target.ts";
-import {
-	cutAnswer,
-	MAX_LIVE_CHILDREN,
-	overInput,
-	SEND_TOO_LARGE,
-	SPAWN_TOO_LARGE,
-	TOO_MANY_LIVE,
-} from "../rlm/limits.ts";
+import { MAX_LIVE_CHILDREN, overInput, SEND_TOO_LARGE, SPAWN_TOO_LARGE, TOO_MANY_LIVE } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
@@ -660,8 +653,7 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 		const latest = await childRecord(handler.harness, request.handle);
 
 		if (main !== null && main === latest.pushed) return { answer: NO_NEW_ANSWERS };
-		const cut = record.kind === "rlm" ? cutAnswer : undefined;
-		text = await unreadAnswers(child, request.handle, latest, main, answer, record.requests, waiting, cut);
+		text = await unreadAnswers(child, request.handle, latest, main, answer, record.requests, waiting);
 		await markRead(handler.harness, request.handle, text.read);
 	} catch (error) {
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);

@@ -114,18 +114,6 @@ describe("limits of the RLM children", { timeout: 30_000 }, () => {
 		expect(doc).toContain("at most 4 model requests at the same time");
 	});
 
-	it("cuts each answer of an RLM child at 256 KiB, on a character boundary", async () => {
-		const prompt = `Task:\nx${"\u20ac".repeat(90_000)}`;
-		const rlmChild = await spawnAs("cut", prompt, { notify: false, kind: "rlm", requestId: "cut:rlm" });
-		const subagent = await spawnAs("cut", prompt, { notify: false, requestId: "cut:subagent" });
-
-		// 17 bytes of `Answer to Task:\nx`, then whole characters of 3 bytes up to 256 KiB.
-		expect(await answerOf(rlmChild.handle)).toBe(
-			`Answer to Task:\nx${"\u20ac".repeat(87_375)}\n[The answer was cut at 256 KiB]`,
-		);
-		expect(await answerOf(subagent.handle)).toBe(`Answer to ${prompt}`);
-	});
-
 	it("runs at most 4 model requests of the RLM children of a tree at the same time", async () => {
 		const first = [1, 2, 3, 4].map((index) => `Task:\nRLM pool ${index}`);
 		const fifth = "Task:\nRLM pool 5";

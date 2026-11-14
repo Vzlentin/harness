@@ -1,4 +1,5 @@
-import { CUT_LINE, MAX_ANSWER, MAX_INPUT, MAX_LIVE_CHILDREN, POOL_SIZE, TURN_DEADLINE_MS } from "./limits.ts";
+import { CUT_LINE, MAX_ANSWER } from "../protocol/answer-cut.ts";
+import { MAX_INPUT, MAX_LIVE_CHILDREN, POOL_SIZE, TURN_DEADLINE_MS } from "./limits.ts";
 
 /** The docstring of `rlm`, which the startup code of a kernel sets: the API of the client and the limits. */
 export const RLM_DOC = `The IPython kernel has \`rlm\`, a client for your subagents. Each method is a coroutine: call it with \`await\`.
