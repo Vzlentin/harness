@@ -36,7 +36,7 @@ import { vi } from "vite-plus/test";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import type { ChildInfo, ChildKind, WatchLine } from "../src/protocol/requests.ts";
+import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 
@@ -478,12 +478,11 @@ export async function agentTurn(message: string): Promise<void> {
 }
 
 /**
- * The options of a spawn through the socket: whether its answers are pushed, its kind, its request ID
+ * The options of a spawn through the socket: whether its answers are pushed, its request ID
  * (`<caller>:<prompt>` by default), and the project of its host.
  */
 type SpawnOptions = {
 	readonly notify: boolean;
-	readonly kind?: ChildKind;
 	readonly requestId?: string;
 	readonly project?: string;
 };
@@ -502,7 +501,7 @@ export async function spawnAs(caller: string, prompt: string, options: SpawnOpti
 		prompt,
 	} as const;
 
-	const spawned = await request(options.kind === undefined ? spawn : { ...spawn, kind: options.kind }, {
+	const spawned = await request(spawn, {
 		start: false,
 		project: options.project,
 	});

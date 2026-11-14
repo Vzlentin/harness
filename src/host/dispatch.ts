@@ -535,7 +535,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 					caller: request.caller,
 					conversationId: id,
 					name: request.name,
-					kind: request.kind,
 				});
 			});
 

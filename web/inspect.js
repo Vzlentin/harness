@@ -142,9 +142,9 @@ function firstLine(text) {
 	return text.split("\n", 1)[0] ?? "";
 }
 
-/** The model of an agent, as the header and the picker show it: `<provider>/<model> • <thinking>`, and its kind. */
+/** The model of an agent, as the header and the picker show it: `<provider>/<model> • <thinking>`. */
 function modelText(child) {
-	return [`${child.provider}/${child.model}`, child.thinking, child.kind].filter((part) => part).join(" • ");
+	return [`${child.provider}/${child.model}`, child.thinking].filter((part) => part).join(" • ");
 }
 
 /** The key of the call `callId` of the answer of `owner`: the ID of its entry, or `STREAMING` for the streamed answer. */

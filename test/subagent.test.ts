@@ -22,7 +22,7 @@ import { createChildren } from "../src/children/library.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
 import { Push } from "../src/host/push.ts";
-import { ChildRecords } from "../src/host/records.ts";
+import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { library } from "../src/host/targets.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -34,6 +34,7 @@ import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts
 import {
 	agentTurn,
 	answerContent,
+	answerOf,
 	called,
 	calls,
 	cli,
@@ -1537,52 +1538,23 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("keeps the children and the requests of a store from version 2", async () => {
 		process.env.XDG_STATE_HOME = join(root, "state-v2");
-		const stateDir = statePaths("main").dir;
 		const caller = "v2-session";
 
 		try {
-			await mkdir(stateDir, { recursive: true });
-			const registry = durable.createRegistry();
-			registry.install(library.extension);
-			registry.install(library.answerExtension);
-
-			const store = await Harness.open(
-				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
-				{ models, registry },
-				BACKGROUND_CONTEXT,
-			);
-
-			const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
-			const place = { store, models, registry: registry.snapshot() };
-			const spec = { root: caller, provider: "faux", model: "faux-1", cwd: root };
-			const child = await library.open(place, owner, "v2:child", spec, BACKGROUND_CONTEXT);
-
-			const ChildrenV2 = durable.defineDoc<{
-				children: Record<string, durable.JsonObject>;
-				requests: Record<string, string>;
-			}>({
-				kind: "subagent.children",
-				version: 2,
-				scope: "session",
-				checkpointWhen: () => false,
-				initial: () => ({ children: {}, requests: {} }),
-			});
-
-			await store.commit(async (tx) => {
-				const state = await tx.doc(ChildrenV2);
-
-				state.children.v2kid = {
-					caller,
-					createdAt: new Date().toISOString(),
-					conversationId: child.id,
-					sent: ["spawn:x", "q"],
-					quiet: ["q"],
-					read: 1,
-					pushed: "spawn:x",
-				};
-				state.requests.x = "v2kid";
-			}, BACKGROUND_CONTEXT);
-			await store.close(BACKGROUND_CONTEXT);
+			const conversationId = await olderChildrenStore(2, caller, (id) => ({
+				children: {
+					v2kid: {
+						caller,
+						createdAt: new Date().toISOString(),
+						conversationId: id,
+						sent: ["spawn:x", "q"],
+						quiet: ["q"],
+						read: 1,
+						pushed: "spawn:x",
+					},
+				},
+				requests: { x: "v2kid" },
+			}));
 
 			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
 
@@ -1593,40 +1565,81 @@ describe("subagent", { timeout: 30_000 }, () => {
 				await migrated?.close();
 			}
 
-			const reopened = await Harness.open(
-				await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
-				{ models, registry: durable.createRegistry() },
-				BACKGROUND_CONTEXT,
-			);
+			expect(await storedChildren()).toMatchObject({
+				children: {
+					v2kid: {
+						caller,
+						conversationId,
+						requests: [
+							{ id: "spawn:x", notify: true },
+							{ id: "q", notify: false },
+						],
+						read: 1,
+						pushed: "spawn:x",
+					},
+				},
+				requests: { x: "v2kid" },
+			});
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
+	it("loads a child that a store from version 3 marked rlm as any child", async () => {
+		process.env.XDG_STATE_HOME = join(root, "state-v3");
+		const caller = "v3-session";
+
+		try {
+			const conversationId = await olderChildrenStore(3, caller, (id) => ({
+				children: {
+					v3kid: {
+						caller,
+						createdAt: new Date().toISOString(),
+						conversationId: id,
+						requests: [],
+						read: 0,
+						kind: "rlm",
+					},
+				},
+				requests: {},
+			}));
+
+			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
 
 			try {
-				expect(await reopened.snapshot(ChildRecords, BACKGROUND_CONTEXT)).toMatchObject({
-					children: {
-						v2kid: {
-							caller,
-							conversationId: child.id,
-							requests: [
-								{ id: "spawn:x", notify: true },
-								{ id: "q", notify: false },
-							],
-							read: 1,
-							pushed: "spawn:x",
-						},
+				const children = await request({ type: "list", caller }, { start: false });
+				expect(children?.map((info) => info.handle)).toEqual(["v3kid"]);
+				expect(children?.[0]).not.toHaveProperty("kind");
+
+				await request(
+					{
+						type: "send",
+						requestId: "v3-send",
+						caller,
+						handle: "v3kid",
+						message: "After the migration",
+						followUp: false,
+						notify: false,
 					},
-					requests: { x: "v2kid" },
-				});
+					{ start: false },
+				);
+				expect(await answerOf("v3kid")).toBe("Answer to After the migration");
 			} finally {
-				await reopened.close(BACKGROUND_CONTEXT);
+				await migrated?.close();
 			}
+
+			const state = await storedChildren();
+			expect(state?.children.v3kid).toMatchObject({ caller, conversationId });
+			expect(state?.children.v3kid).not.toHaveProperty("kind");
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
 		}
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 4);
+		const stateDir = await childrenStore("new-state", 5);
 		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 4 than 3");
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 5 than 4");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
@@ -2103,6 +2116,67 @@ async function childrenStore(name: string, version: number): Promise<string> {
 	await store.close(BACKGROUND_CONTEXT);
 
 	return stateDir;
+}
+
+type OlderChildren = { children: Record<string, durable.JsonObject>; requests: Record<string, string> };
+
+/**
+ * Writes the `subagent.children` document at `version` into the store of the project "main", as an older pi-subagent
+ * writes it. The document is what `state` gives for the conversation of one library child of `caller`, whose id it
+ * returns.
+ */
+async function olderChildrenStore(
+	version: number,
+	caller: string,
+	state: (conversationId: ConversationId) => OlderChildren,
+): Promise<ConversationId> {
+	const stateDir = statePaths("main").dir;
+	await mkdir(stateDir, { recursive: true });
+
+	const registry = durable.createRegistry();
+	registry.install(library.extension);
+	registry.install(library.answerExtension);
+
+	const store = await Harness.open(
+		await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+		{ models, registry },
+		BACKGROUND_CONTEXT,
+	);
+
+	const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
+	const place = { store, models, registry: registry.snapshot() };
+	const spec = { root: caller, provider: "faux", model: "faux-1", cwd: root };
+	const child = await library.open(place, owner, `v${version}:child`, spec, BACKGROUND_CONTEXT);
+
+	const Children = durable.defineDoc<OlderChildren>({
+		kind: "subagent.children",
+		version,
+		scope: "session",
+		checkpointWhen: () => false,
+		initial: () => ({ children: {}, requests: {} }),
+	});
+
+	await store.commit(async (tx) => {
+		Object.assign(await tx.doc(Children), state(child.id));
+	}, BACKGROUND_CONTEXT);
+	await store.close(BACKGROUND_CONTEXT);
+
+	return child.id;
+}
+
+/** The `ChildRecords` document in the store of the project "main", read with no extension installed. */
+async function storedChildren(): Promise<Readonly<ChildrenState> | null | undefined> {
+	const store = await Harness.open(
+		await openNodeSqliteStorage(join(statePaths("main").dir, "durable.sqlite")),
+		{ models, registry: durable.createRegistry() },
+		BACKGROUND_CONTEXT,
+	);
+
+	try {
+		return await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
+	} finally {
+		await store.close(BACKGROUND_CONTEXT);
+	}
 }
 
 /** Spawns a child of `project` (the suite host when undefined) that prints its MEMORY_DIR, while the host has its own. */

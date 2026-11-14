@@ -132,7 +132,6 @@ export class KernelServers {
 			const { data } = await runTool(args, {
 				...(await scope()),
 				callKey: `rlm:${randomBytes(8).toString("hex")}`,
-				kind: "rlm",
 				send: this.#send,
 				signal,
 			});

@@ -10,7 +10,6 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
-import type { ChildKind } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -27,7 +26,6 @@ export type ChildRecord = {
 	read: number;
 	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
 	pushed?: string;
-	kind?: ChildKind;
 };
 
 /** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
@@ -55,23 +53,50 @@ const ChildrenV2 = Type.Object({
 	requests: Type.Record(Type.String(), Type.String()),
 });
 
+/** A record of version 3: a child that a kernel spawned through `rlm` has `kind: "rlm"`. */
+const RecordV3 = Type.Object({
+	name: Type.Optional(Type.String()),
+	caller: Type.String(),
+	createdAt: Type.String(),
+	conversationId: Type.Unsafe<ConversationId>(Type.Integer()),
+	requests: Type.Array(Type.Object({ id: Type.String(), notify: Type.Boolean() })),
+	read: Type.Number(),
+	pushed: Type.Optional(Type.String()),
+	kind: Type.Optional(Type.String()),
+});
+
+const ChildrenV3 = Type.Object({
+	children: Type.Record(Type.String(), RecordV3),
+	requests: Type.Record(Type.String(), Type.String()),
+});
+
 /**
- * The children by handle, and the handle of each spawn request ID. Version 3 keeps the requests of a child in one list;
- * version 2 kept their IDs in `sent` and those without `notify` in `quiet`. Version 2 leaves each child's last request
- * to the children library; a store with version 1 has children that the library does not know.
+ * The children by handle, and the handle of each spawn request ID. Version 4 has no kind of a child; version 3 marked
+ * the children of a kernel with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their
+ * IDs in `sent` and those without `notify` in `quiet`. Version 2 leaves each child's last request to the children
+ * library; a store with version 1 has children that the library does not know.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
-	version: 3,
+	version: 4,
 	scope: "session",
 	checkpointWhen: () => false,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
 
-		return migrateV2(Value.Parse(ChildrenV2, value));
+		if (fromVersion === 2) return migrateV2(Value.Parse(ChildrenV2, value));
+
+		return migrateV3(Value.Parse(ChildrenV3, value));
 	},
 });
+
+/** Drops the kind of each child of `state`. */
+function migrateV3(state: Static<typeof ChildrenV3>): ChildrenState {
+	for (const record of Object.values(state.children)) delete record.kind;
+
+	return state;
+}
 
 function migrateV2(state: Static<typeof ChildrenV2>): ChildrenState {
 	const children = Object.fromEntries(
@@ -115,7 +140,6 @@ export async function addRecord(
 		readonly caller: string;
 		readonly conversationId: ConversationId;
 		readonly name: string | undefined;
-		readonly kind: ChildKind | undefined;
 	},
 ): Promise<void> {
 	const current = await tx.doc(ChildRecords);
@@ -132,8 +156,6 @@ export async function addRecord(
 	};
 
 	if (child.name !== undefined) record = { name: child.name, ...record };
-
-	if (child.kind !== undefined) record = { ...record, kind: child.kind };
 	current.children[fresh] = record;
 	current.requests[requestId] = fresh;
 }

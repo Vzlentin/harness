@@ -437,7 +437,7 @@ describe("mirror sessions in Pi", () => {
 		]);
 	});
 
-	it("shows the marker of an RLM child in the first line, between the title and the directory", () => {
+	it("shows the title and the directory of the child in the first line", () => {
 		const header = (child: ChildInfo): string => {
 			const { session, mirror } = attached();
 			mirror.mirror.child = child;
@@ -454,7 +454,7 @@ describe("mirror sessions in Pi", () => {
 		const child = { ...CHILD, handle: "abc123", name: "sub" };
 		expect(header(child)).toBe("harness │ sub (abc123) │ /tmp");
 		const { name: _, ...unnamed } = child;
-		expect(header({ ...unnamed, kind: "rlm" })).toBe("harness │ abc123 │ rlm │ /tmp");
+		expect(header(unnamed)).toBe("harness │ abc123 │ /tmp");
 	});
 
 	it("shows the todos of the agent above the editor while one is open or doing, only on a change, until the session ends", () => {

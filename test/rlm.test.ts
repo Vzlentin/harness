@@ -94,7 +94,8 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		const tour = JSON.parse(cellResults.get("RLM tour")?.[0] ?? "");
 		one = tour.one.handle;
 		two = tour.two.handle;
-		expect(tour.one).toMatchObject({ name: "one", provider: "faux", model: "faux-1", kind: "rlm" });
+		expect(tour.one).toMatchObject({ name: "one", provider: "faux", model: "faux-1" });
+		expect(tour.one).not.toHaveProperty("kind");
 		expect(tour.two).toMatchObject({ provider: "faux", model: "faux-2" });
 		expect(tour.first).toBe("Answer to Task:\nRLM one\n\n<context>\nContext text\n</context>");
 		expect(tour.sent).toMatchObject({ verb: "Prompted", child: { handle: one } });
@@ -115,13 +116,14 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		expect(requests.get("RLM tour")?.system).not.toContain("<rlm>");
 	});
 
-	it("marks the RLM children of a caller in list, in its text and its data, apart from its other children", async () => {
+	it("lists the kernel children of a caller as its other children, in the text and the data of list", async () => {
 		const sub = await spawnAs(AGENT_CALLER, "Task:\nRLM plain sibling", { notify: false });
 		await answerOf(sub.handle);
 		const status = await request({ type: "status", handle: one }, { start: false });
-		expect(status).toMatchObject({ handle: one, kind: "rlm" });
+		expect(status).toMatchObject({ handle: one });
+		expect(status).not.toHaveProperty("kind");
 
-		const lines = `first (${one})  idle      faux/faux-1  ${status?.thinking}  rlm\n${sub.handle}  idle      faux/faux-1  medium\n`;
+		const lines = `first (${one})  idle      faux/faux-1  ${status?.thinking}\n${sub.handle}  idle      faux/faux-1  medium\n`;
 		expect((await cli(["list"], { PI_SESSION_ID: AGENT_CALLER })).stdout).toBe(lines);
 
 		const scope = {
@@ -140,11 +142,9 @@ describe("rlm in the kernels of the host", { timeout: 30_000 }, () => {
 		const children = listed.data.action === "list" ? listed.data.value : [];
 		expect(children.map(({ handle }) => handle)).toEqual([one, sub.handle]);
 		expect(children[0]).toEqual(status);
-		expect(children[1]).not.toHaveProperty("kind");
 
 		const { output } = toolSchemas({ Type });
 		expect(Value.Check(output, listed.data)).toBe(true);
-		expect(Value.Check(output, { action: "list", value: [{ ...children[0], kind: "other" }] })).toBe(false);
 	});
 
 	it("runs the waits of asyncio.gather at the same time", async () => {
@@ -267,7 +267,7 @@ for call in (rlm.spawn("RLM text", context=3), rlm.wait("abc123", timeout=0), rl
 		lastSocket = secondSocket;
 	});
 
-	it("marks the records of the children of a kernel, and removes the sockets when the host closes", async () => {
+	it("keeps the records of the children of a kernel without a kind, and removes the sockets when the host closes", async () => {
 		await host?.close();
 		expect(existsSync(dirname(lastSocket))).toBe(false);
 
@@ -279,7 +279,7 @@ for call in (rlm.spawn("RLM text", context=3), rlm.wait("abc123", timeout=0), rl
 
 		try {
 			const state = await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
-			expect(state?.children[one]?.kind).toBe("rlm");
+			expect(state?.children[one]).not.toHaveProperty("kind");
 			expect(state?.children[one]?.requests.map(({ notify }) => notify)).toEqual([false, false]);
 			expect(state?.children[failing]?.caller).toBe("cli");
 			expect(state?.children[failing]).not.toHaveProperty("kind");

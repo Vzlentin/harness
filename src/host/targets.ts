@@ -205,12 +205,7 @@ export async function childInfo(
 
 	const fields = await agentFields(child.conversation);
 
-	let info: ChildInfo =
-		record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
-
-	if (record.kind !== undefined) info = { ...info, kind: record.kind };
-
-	return info;
+	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 }
 
 /**

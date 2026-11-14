@@ -693,7 +693,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
-	it("shows the children in the widget, an RLM child marked, and nothing without children or without a host", async () => {
+	it("shows the children in the widget, and nothing without children or without a host", async () => {
 		const registered = await load();
 		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
@@ -703,11 +703,11 @@ describe("the Pi extension", () => {
 		host = await startHost();
 		const { handle } = await spawnAs("session", "Task:\nWidget", { notify: false });
 		await untilIdle(handle);
-		const { handle: rlm } = await spawnAs("session", "Task:\nWidget RLM", { notify: false, kind: "rlm" });
-		await untilIdle(rlm);
+		const { handle: other } = await spawnAs("session", "Task:\nWidget other", { notify: false });
+		await untilIdle(other);
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
-		const lines = [" <dim>subagents", ` <success>${handle}:idle<dim> | <success>rlm:${rlm}:idle`];
+		const lines = [" <dim>subagents", ` <success>${handle}:idle<dim> | <success>${other}:idle`];
 		await vi.waitFor(() => expect(widgets.subagents.renders.at(-1)).toEqual(lines), { timeout: 10_000 });
 		expect(widgets.subagents).toMatchObject({ placement: "belowEditor", sets: 1 });
 
@@ -729,11 +729,9 @@ describe("the Pi extension", () => {
 
 		// SAFETY: outside an hc terminal, the handler of `/subagent` reads only these fields of the context.
 		await registered.commands.get("subagent")?.handler("", ctx as Parameters<Command["handler"]>[1]);
-		expect(options).toEqual([
-			[`${handle}  idle      faux/faux-1  medium`, `${rlm}  idle      faux/faux-1  medium  rlm`],
-		]);
+		expect(options).toEqual([[`${handle}  idle      faux/faux-1  medium`, `${other}  idle      faux/faux-1  medium`]]);
 		expect(registered.notifications).toEqual([
-			{ message: `Run in another terminal: harness attach ${rlm}`, type: "info" },
+			{ message: `Run in another terminal: harness attach ${other}`, type: "info" },
 		]);
 		await host?.close();
 		host = undefined;
@@ -767,12 +765,12 @@ describe("the Pi extension", () => {
 
 		const kernel = JSON.parse(stdout);
 
-		// The child takes the model and the working directory of the session, and the spawns of the kernel have
-		// `kind: "rlm"`.
+		// The child takes the model and the working directory of the session, and has no kind.
 		expect(kernel).toMatchObject({
-			child: { ...FAUX, cwd: root, kind: "rlm" },
+			child: { ...FAUX, cwd: root },
 			answer: "Answer to Task:\nFrom the Pi kernel",
 		});
+		expect(kernel.child).not.toHaveProperty("kind");
 
 		// The children of the kernel are those of the session's tool.
 		const listed = await callTool(registered, { action: "list" });

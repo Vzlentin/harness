@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -92,14 +92,6 @@ export function versionMismatch(client: number, host: number, pid: number): stri
 		: `The harness host (pid ${pid}) uses protocol ${host}, not ${client}. The host is older: stop it with kill ${pid} and run the command again`;
 }
 
-/**
- * The marker of a child that a kernel spawned through `rlm`. The host keeps it on the child's record, and gives it in the
- * child's info.
- */
-export const ChildKind = Type.Literal("rlm");
-
-export type ChildKind = Static<typeof ChildKind>;
-
 /** The states of a child, as the host reports them. */
 export const CHILD_STATES = ["busy", "idle", "error", "closed"] as const;
 
@@ -119,8 +111,6 @@ export type ChildInfo = {
 	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
-	/** The marker of a child by handle that a kernel spawned through `rlm`. The other targets have none. */
-	readonly kind?: ChildKind;
 };
 
 /** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */
@@ -196,7 +186,6 @@ export const RequestLine = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
 		prompt: Type.String(),
-		kind: Type.Optional(ChildKind),
 	}),
 	Type.Object({
 		type: Type.Literal("send"),

@@ -25,15 +25,10 @@ afterAll(async () => {
 	await tearDown();
 });
 
-describe("RLM children", { timeout: 30_000 }, () => {
-	it("spawns more than 16 live RLM children of a caller", async () => {
-		const rlmPrompts = Array.from({ length: 17 }, (_, index) => `Task:\nRLM live ${index}`);
-		const toolPrompts = Array.from({ length: 17 }, (_, index) => `Task:\nRLM live subagent ${index}`);
-
-		const spawns = await Promise.allSettled([
-			...rlmPrompts.map((prompt) => spawnAs("live", prompt, { notify: false, kind: "rlm" })),
-			...toolPrompts.map((prompt) => spawnAs("live", prompt, { notify: false })),
-		]);
+describe("the children of a caller", { timeout: 30_000 }, () => {
+	it("spawns more than 16 live children of a caller", async () => {
+		const prompts = Array.from({ length: 34 }, (_, index) => `Task:\nLive ${index}`);
+		const spawns = await Promise.allSettled(prompts.map((prompt) => spawnAs("live", prompt, { notify: false })));
 
 		const refused = spawns.flatMap((spawn) => (spawn.status === "rejected" ? [String(spawn.reason)] : []));
 		expect(refused).toEqual([]);
@@ -42,12 +37,12 @@ describe("RLM children", { timeout: 30_000 }, () => {
 		const [first] = spawns;
 
 		if (first?.status !== "fulfilled") throw new Error("no first spawn");
-		const repeated = await spawnAs("live", rlmPrompts[0] ?? "", { notify: false, kind: "rlm" });
+		const repeated = await spawnAs("live", prompts[0] ?? "", { notify: false });
 		expect(repeated.handle).toBe(first.value.handle);
 	});
 
-	it("takes an RLM spawn and an RLM send of more than 1 MiB", async () => {
-		const child = await spawnAs("large", LARGE, { notify: false, kind: "rlm" });
+	it("takes a spawn and a send of more than 1 MiB", async () => {
+		const child = await spawnAs("large", LARGE, { notify: false });
 
 		const send = {
 			type: "send",
@@ -72,7 +67,7 @@ describe("RLM children", { timeout: 30_000 }, () => {
 		);
 		expect(doc).toContain("at 256 KiB, and adds the line `[The answer was cut at 256 KiB]`");
 
-		for (const stale of ["17th", "1 MiB", "5 minutes", "model requests at the same time"]) {
+		for (const stale of ["17th", "1 MiB", "5 minutes", "model requests at the same time", "`kind`"]) {
 			expect(doc).not.toContain(stale);
 		}
 	});

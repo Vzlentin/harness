@@ -261,19 +261,15 @@ export class Attachment {
 		if (!this.#closed) this.#ctx.ui.notify(`harness: ${this.#harness.protocol.errorMessage(cause)}`, "error");
 	}
 
-	/** The first line: `harness`, the child's title, the marker of an RLM child, and the child's directory. */
+	/** The first line: `harness`, the child's title and the child's directory. */
 	#header(child: ChildInfo): string {
 		const theme = this.#theme;
 
-		const parts = [
+		return [
 			theme.bold(theme.fg("accent", "harness")),
 			theme.fg("text", this.#harness.protocol.childTitle(child)),
-		];
-
-		if (child.kind !== undefined) parts.push(child.kind);
-		parts.push(child.cwd);
-
-		return parts.join(" │ ");
+			child.cwd,
+		].join(" │ ");
 	}
 
 	/** One line in the theme color `name`, colored at each render so that it follows a change of theme. */

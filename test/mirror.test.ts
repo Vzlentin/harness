@@ -432,16 +432,18 @@ describe("mirror", { timeout: 30_000 }, () => {
 		]);
 	});
 
-	it("gets the marker of an RLM child in the watch reply, and in the event after a rename", async () => {
-		const { handle } = await spawnAs("cli", "Task:\nMirror RLM", { notify: false, kind: "rlm" });
+	it("gets no kind of a child in the watch reply, nor in the event after a rename", async () => {
+		const { handle } = await spawnAs("cli", "Task:\nMirror kind", { notify: false });
 		await answerOf(handle);
 		const mirror = await opened({ project: "main", target: { kind: "child", handle } });
 
 		try {
-			expect(mirror.child).toMatchObject({ handle, kind: "rlm" });
+			expect(mirror.child).toMatchObject({ handle });
+			expect(mirror.child).not.toHaveProperty("kind");
 			expect((await cli(["rename", handle, "marked"])).code).toBe(0);
 			await until(() => mirror.child?.name === "marked");
-			expect(mirror.child).toMatchObject({ handle, name: "marked", kind: "rlm" });
+			expect(mirror.child).toMatchObject({ handle, name: "marked" });
+			expect(mirror.child).not.toHaveProperty("kind");
 		} finally {
 			mirror.close();
 		}

@@ -9,7 +9,7 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { CUT_LINE, MAX_ANSWER } from "./protocol/answer-cut.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
-import { CHILD_STATES, ChildKind, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
+import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListTarget } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
@@ -85,7 +85,6 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		model: Type.String(),
 		thinking: Type.String(),
 		cwd: Type.String(),
-		kind: Type.Optional(Type.Literal(ChildKind.const)),
 	});
 
 	const result = <A extends string, V extends TSchema>(action: A, value: V) =>
@@ -134,8 +133,6 @@ export type ToolScope = {
 	readonly cwd: string | undefined;
 	readonly send: Send;
 	readonly signal: AbortSignal | undefined;
-	/** The marker of the children that the call spawns: `rlm` for a call of `rlm` in a kernel. */
-	readonly kind?: ChildKind;
 };
 
 /** The caller's own provider, model, thinking level and working directory, from its agent. */
@@ -260,8 +257,6 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 	if (args.thinking !== undefined) request = { ...request, thinking: args.thinking };
 
 	if (tools !== undefined) request = { ...request, tools };
-
-	if (scope.kind !== undefined) request = { ...request, kind: scope.kind };
 
 	return request;
 }
