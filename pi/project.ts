@@ -10,10 +10,13 @@ import type { Harness } from "./index.ts";
  * Registers the tools of the store of the project, whose caller is the session ID. Before each turn, the session gets
  * its digest from a host that runs, as a custom message `harness-digest`, when the digest changed since its last one.
  */
-export function registerProject(pi: ExtensionAPI, harness: Pick<Harness, "client" | "protocol" | "tool">): void {
-	const { client, protocol, tool } = harness;
+export function registerProject(
+	pi: ExtensionAPI,
+	harness: Pick<Harness, "client" | "projectTool" | "protocol" | "tool">,
+): void {
+	const { client, projectTool, protocol, tool } = harness;
 
-	tool.projectTools({ Type }, (project) =>
+	projectTool.projectTools({ Type }, (project) =>
 		pi.registerTool({
 			name: project.name,
 			label: project.label,

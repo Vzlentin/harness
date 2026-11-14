@@ -68,7 +68,7 @@ async function framed(slug: string): Promise<{ call: number; readBack: number }>
 		[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
 	);
 
-	const [call, readBack] = written.asks.map((ask) => ask.id);
+	const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
 
 	if (call === undefined || readBack === undefined) throw new Error("no asks");
 
@@ -96,40 +96,57 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			],
 		);
 
-		expect(first.parleys).toMatchObject([
-			{ id: 1, slug: "store-place", status: "open", evidence: ["The skill today"], by: "pi-1" },
-		]);
-		expect(first.asks).toMatchObject([
-			{ id: 1, state: "open", parley: { id: 1, n: 1 }, asker: "pi-1", options: OPTIONS, plan: "a" },
-			{ id: 2, state: "open", parley: { id: 1, n: 2 }, asker: "pi-1", view: "A `table` with **bold**" },
-		]);
+		expect(first).toMatchObject({
+			parleys: [
+				{
+					parley: { id: 1, slug: "store-place", status: "open", evidence: ["The skill today"], by: "pi-1" },
+					asks: [
+						{ id: 1, state: "open", parley: { id: 1, n: 1 }, asker: "pi-1", options: OPTIONS, plan: "a" },
+						{ id: 2, state: "open", parley: { id: 1, n: 2 }, asker: "pi-1", view: "A `table` with **bold**" },
+					],
+				},
+			],
+			asks: [],
+		});
 
 		const alone = await round("khan", undefined, [{ title: "Push now?" }]);
 		expect(alone).toMatchObject({ parleys: [], asks: [{ id: 3, state: "open", asker: "khan" }] });
 		expect(alone.asks[0]?.parley).toBeUndefined();
 
 		const second = await round("pi-2", { slug: "store-place", goal: "Pick the one place." }, [{ title: "Who asks" }]);
-		expect(second.parleys).toMatchObject([{ id: 1, title: "Where asks live", goal: "Pick the one place." }]);
-		expect(second.asks).toMatchObject([{ id: 4, parley: { id: 1, n: 3 }, asker: "pi-2" }]);
+		expect(second.parleys).toMatchObject([
+			{
+				parley: { id: 1, title: "Where asks live", goal: "Pick the one place." },
+				asks: [{ id: 1 }, { id: 2 }, { id: 4, parley: { id: 1, n: 3 }, asker: "pi-2" }],
+			},
+		]);
+		expect(second.asks).toEqual([]);
 
+		// An answer names its ask by ID, or by its number in its parley.
 		const answered = await answer([
-			{ id: 1, answer: "own", label: "In the store, with a view", words: ["keep `view` too"] },
+			{ slug: "store-place", n: 1, answer: "own", label: "In the store, with a view", words: ["keep `view` too"] },
 			{ id: 3, answer: "own", label: "Not yet" },
 		]);
 
 		expect(answered).toMatchObject({
-			parleys: [],
-			asks: [
-				{ id: 1, state: "answered", answer: "own", label: "In the store, with a view", by: "user" },
-				{ id: 3, state: "answered", answer: "own", label: "Not yet" },
+			parleys: [
+				{
+					parley: { slug: "store-place", status: "open" },
+					asks: [{ id: 1, state: "answered", answer: "own", label: "In the store, with a view", by: "user" }, {}, {}],
+				},
 			],
+			asks: [{ id: 3, state: "answered", answer: "own", label: "Not yet" }],
 		});
 
 		// A new answer replaces the answer, the label and the words as one unit.
-		const replaced = await answer([{ id: 1, answer: "b" }]);
-		expect(replaced.asks).toEqual([
-			{ ...first.asks[0], state: "answered", answer: "b", at: replaced.asks[0]?.at, by: "user" },
-		]);
+		const replaced = (await answer([{ id: 1, answer: "b" }])).parleys[0]?.asks[0];
+		expect(replaced).toEqual({
+			...first.parleys[0]?.asks[0],
+			state: "answered",
+			answer: "b",
+			at: replaced?.at,
+			by: "user",
+		});
 
 		const taken = Value.Parse(
 			ParleyAsks,
@@ -157,14 +174,30 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		await answer([{ id: call, answer: "a" }]);
 
 		const corrected = await answer([{ id: readBack, answer: "own", label: "Not yet", words: ["Add the gate."] }]);
-		expect(corrected.parleys).toEqual([]);
+		expect(corrected.parleys.map(({ parley }) => parley.status)).toEqual(["open"]);
 		expect((await readParley("read-back")).parley.status).toBe("open");
 
 		const agreed = await answer([{ id: readBack, answer: "ok" }]);
-		expect(agreed.parleys).toMatchObject([{ slug: "read-back", status: "contract", design_sense: "One writer." }]);
-		expect(agreed.asks).toMatchObject([{ id: readBack, state: "answered", answer: "ok" }]);
-		expect(agreed.asks[0]).not.toHaveProperty("words");
-		expect((await readParley("read-back")).parley).toEqual(agreed.parleys[0]);
+		expect(agreed.parleys).toMatchObject([
+			{
+				parley: { slug: "read-back", status: "contract", design_sense: "One writer." },
+				asks: [{ id: call }, { id: readBack, state: "answered", answer: "ok" }],
+			},
+		]);
+		expect(agreed.parleys[0]?.asks[1]).not.toHaveProperty("words");
+		expect(await readParley("read-back")).toEqual(agreed.parleys[0]);
+	});
+
+	it("reads one ask in any state, by its ID or by its number in its parley", async () => {
+		const lone = (await round("khan", undefined, [{ title: "Tag it?", view: "The tag `v1`" }])).asks[0]?.id ?? 0;
+		await answer([{ id: lone, answer: "own", label: "Yes" }]);
+		const { call } = await framed("read-one");
+		await answer([{ id: call, answer: "b" }]);
+
+		const byId = Value.Parse(Ask, await send({ type: "ask", action: "read", id: lone }));
+		expect(byId).toMatchObject({ id: lone, state: "answered", label: "Yes", view: "The tag `v1`" });
+		const byNumber = Value.Parse(Ask, await send({ type: "ask", action: "read", slug: "read-one", n: 1 }));
+		expect(byNumber).toMatchObject({ id: call, state: "answered", answer: "b" });
 	});
 
 	it("keeps only the known fields of an option and of an answer", async () => {
@@ -177,7 +210,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		};
 
 		const written = JSON.stringify(await send(JSON.parse(JSON.stringify(roundLine))));
-		const id = Value.Parse(AskWrite, JSON.parse(written)).asks[0]?.id;
+		const id = Value.Parse(AskWrite, JSON.parse(written)).parleys[0]?.asks[0]?.id;
 
 		const answerLine = {
 			type: "ask",
@@ -208,7 +241,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			{ id: call, answer: "b" },
 		]);
 
-		expect(written.parleys).toMatchObject([{ slug: "one-write", status: "contract" }]);
+		expect(written.parleys).toMatchObject([{ parley: { slug: "one-write", status: "contract" } }]);
 	});
 
 	it("ends a contract as done or dropped, and not an open parley", async () => {
@@ -234,10 +267,10 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		const { call, readBack } = await framed("checked");
 		const lone = (await round("khan", undefined, [{ title: "Merge?", options: OPTIONS }])).asks[0]?.id ?? 0;
 		const plain = (await round("khan", undefined, [{ title: "Why?" }])).asks[0]?.id ?? 0;
-		const dropped = Value.Parse(Ask, await send({ type: "ask", action: "drop", caller: "khan", id: plain }));
-		expect(dropped).toMatchObject({ id: plain, state: "dropped", by: "khan" });
+		const dropped = Value.Parse(AskWrite, await send({ type: "ask", action: "drop", caller: "khan", id: plain }));
+		expect(dropped).toMatchObject({ parleys: [], asks: [{ id: plain, state: "dropped", by: "khan" }] });
 		const sense = await round("pi-1", { slug: "no-sense-yet", title: "T", goal: "G." }, [{ title: "Terms" }]);
-		const senseless = sense.asks[0]?.id ?? 0;
+		const senseless = sense.parleys[0]?.asks[0]?.id ?? 0;
 		const contract = await framed("signed");
 		await answer([
 			{ id: contract.call, answer: "a" },
@@ -260,6 +293,26 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				"Parley signed is contract: its asks do not change",
 			],
 			[{ type: "ask", action: "answer", caller: "user", answers: [{ id: 999, answer: "a" }] }, "Unknown ask: 999"],
+			[
+				{ type: "ask", action: "answer", caller: "user", answers: [{ slug: "checked", n: 9, answer: "a" }] },
+				"Parley checked has no ask 9",
+			],
+			[
+				{ type: "ask", action: "answer", caller: "user", answers: [{ slug: "ghost", n: 1, answer: "a" }] },
+				"Unknown parley: ghost",
+			],
+			[
+				{
+					type: "ask",
+					action: "answer",
+					caller: "user",
+					answers: [
+						{ id: call, answer: "a" },
+						{ slug: "checked", n: 1, answer: "b" },
+					],
+				},
+				`Ask ${call} has two answers in one write`,
+			],
 			[
 				{ type: "ask", action: "answer", caller: "user", answers: [{ id: call, answer: "c" }] },
 				`Ask ${call} takes a, b or own`,
@@ -303,17 +356,15 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				"Parley signed is contract: its asks do not change",
 			],
 			[
-				{ type: "ask", action: "drop", caller: "pi-1", id: contract.call },
+				{ type: "ask", action: "drop", caller: "pi-1", slug: "signed", n: 1 },
 				"Parley signed is contract: its asks do not change",
 			],
 			[{ type: "ask", action: "drop", caller: "khan", id: plain }, `Ask ${plain} is dropped: only an open ask drops`],
 			[{ type: "ask", action: "drop", caller: "khan", id: 999 }, "Unknown ask: 999"],
-			[
-				{ type: "parley", action: "take", caller: "pi-2", slug: "signed" },
-				"Parley signed is contract: its asks do not change",
-			],
 			[{ type: "parley", action: "take", caller: "pi-2", slug: "ghost" }, "Unknown parley: ghost"],
 			[{ type: "parley", action: "read", slug: "ghost" }, "Unknown parley: ghost"],
+			[{ type: "ask", action: "read", id: 999 }, "Unknown ask: 999"],
+			[{ type: "ask", action: "read", slug: "checked", n: 9 }, "Parley checked has no ask 9"],
 			[
 				{ type: "parley", action: "end", caller: "pi-1", slug: "checked", status: "done" },
 				"Parley checked is open: only a contract ends",
@@ -348,6 +399,11 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				"Invalid ask request: parley is not valid",
 			],
 			[{ type: "ask", action: "round", asks: [{ title: "T" }] }, "Invalid ask request: caller is required"],
+			[
+				{ type: "ask", action: "drop", caller: "pi-1", id: call, slug: "checked", n: 1 },
+				"Invalid ask request: id is not allowed",
+			],
+			[{ type: "ask", action: "read", slug: "checked" }, "Invalid ask request: n is required"],
 			[
 				{ type: "ask", action: "answer", caller: "user", answers: [{ id: call, answer: "own" }] },
 				"Invalid ask request: label is required",

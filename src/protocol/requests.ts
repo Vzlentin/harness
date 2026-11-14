@@ -41,6 +41,7 @@ import {
 	ThreadAdd,
 	type ThreadList,
 	type ThreadMessages,
+	withAskRef,
 } from "./project.ts";
 import { ListRef, withListTarget, withTarget } from "./target.ts";
 import { type ClassifyReply, Todo, type TodoList, TodoState } from "./todo.ts";
@@ -387,8 +388,8 @@ export const RequestLine = Type.Union([
 	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
 	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
-	 * Writes a round of asks, with the caller as their asker, and replies with the parley and the asks. With `parley`, the
-	 * asks serve the parley of its slug, which the round makes when the slug is new, and changes when it is open.
+	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
+	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open.
 	 */
 	Type.Object({
 		type: Type.Literal("ask"),
@@ -397,8 +398,8 @@ export const RequestLine = Type.Union([
 		...AskRound.properties,
 	}),
 	/**
-	 * Writes the answers of asks in one write, and replies with the asks and the parleys that became a contract. The
-	 * answer `ok` to the read-back of a parley makes it a contract.
+	 * Writes the answers of asks in one write, and replies with the write. Each answer names its ask by `id`, or by `slug`
+	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract.
 	 */
 	Type.Object({
 		type: Type.Literal("ask"),
@@ -406,11 +407,16 @@ export const RequestLine = Type.Union([
 		caller: Type.String(),
 		answers: AnswerInputs,
 	}),
-	/** Drops the open ask `id`, and replies with it. */
-	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String(), id: LocalId }),
+	/** Drops the open ask of `id`, or of `slug` and `n`, and replies with the write. */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String() }),
+	/** Replies with the ask of `id`, or of `slug` and `n`, in any state. */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("read") }),
 	/** Replies with the open asks, in ID order. */
 	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("list") }),
-	/** Makes the caller the asker of the open asks of the open parley `slug`, and replies with the parley and its asks. */
+	/**
+	 * Makes the caller the asker of the open asks of the parley `slug`, open or a contract, and replies with the parley
+	 * and its asks.
+	 */
 	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("take"), caller: Type.String(), slug: Slug }),
 	/** Ends the contract `slug` as `done` or `dropped`, and replies with the parley. */
 	Type.Object({
@@ -513,7 +519,7 @@ export type Replies = {
 	readonly part: Part | PartList;
 	readonly gate: GateReply;
 	readonly held: HeldAction;
-	/** The parleys and the asks of `round` and `answer`, the ask of `drop`, or the open asks of `list`. */
+	/** The write of `round`, `answer` and `drop`, the ask of `read`, or the open asks of `list`. */
 	readonly ask: AskWrite | Ask | AskList;
 	/** The parley and its asks of `take` and `read`, the parley of `end`, or the parleys of `list`. */
 	readonly parley: ParleyAsks | Parley | ParleyList;

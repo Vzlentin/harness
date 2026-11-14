@@ -363,7 +363,10 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				),
 			);
 
-			expect(await next()).toEqual(event({ parleys: round.parleys, asks: round.asks }));
+			const [store] = round.parleys;
+
+			if (store === undefined) throw new Error("no parley");
+			expect(await next()).toEqual(event({ parleys: [store.parley], asks: store.asks }));
 
 			const second = Value.Parse(
 				AskWrite,
@@ -380,15 +383,18 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			);
 
 			// The parley changed and got an ask; the first ask did not change.
-			expect(second.parleys).toMatchObject([{ id: 1, design_sense: "One writer." }]);
-			expect(await next()).toEqual(event({ parleys: second.parleys, asks: second.asks }));
+			const [changed] = second.parleys;
+
+			if (changed === undefined) throw new Error("no parley");
+			expect(changed.parley).toMatchObject({ id: 1, design_sense: "One writer." });
+			expect(await next()).toEqual(event({ parleys: [changed.parley], asks: changed.asks.slice(1) }));
 
 			const answer = Value.Parse(
 				AskWrite,
 				await send({ type: "ask", action: "answer", caller: "user", answers: [{ id: 1, answer: "a" }] }, project),
 			);
 
-			expect(await next()).toEqual(event({ asks: answer.asks }));
+			expect(await next()).toEqual(event({ asks: answer.parleys.flatMap((each) => each.asks.slice(0, 1)) }));
 		} finally {
 			watch?.socket.destroy();
 			await host.close();

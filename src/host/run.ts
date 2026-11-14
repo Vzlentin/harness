@@ -25,6 +25,7 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import { ChildContext, PI_TRUST } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
+import { projectToolsExtension } from "../project-tool.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
 import {
@@ -37,7 +38,7 @@ import {
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
 import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
-import { type DurableScope, projectToolsExtension, type Send, subagentTool, todoTool } from "../tool.ts";
+import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { Deadlines } from "./deadlines.ts";

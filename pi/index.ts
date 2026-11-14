@@ -24,6 +24,7 @@ import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";
 import type * as mirror from "../dist/client/mirror.js";
 import type * as viewState from "../dist/client/view-state.js";
+import type * as projectTool from "../dist/project-tool.js";
 import type * as protocol from "../dist/protocol/index.js";
 import type * as projects from "../dist/protocol/projects.js";
 import type * as trust from "../dist/protocol/trust.js";
@@ -43,6 +44,7 @@ export type Harness = {
 	readonly client: typeof client;
 	readonly herdr: typeof herdr;
 	readonly mirror: typeof mirror;
+	readonly projectTool: typeof projectTool;
 	readonly projects: typeof projects;
 	readonly protocol: typeof protocol;
 	readonly rlm: typeof rlm;
@@ -266,13 +268,25 @@ function hasSpawned(ctx: ExtensionContext): boolean {
 
 /** Loads the modules of the harness package that this extension resolves. A module that does not load makes the extension fail. */
 async function loadHarness(require: NodeJS.Require): Promise<Harness> {
-	const names = ["answers", "client", "herdr", "mirror", "projects", "protocol", "rlm", "tool", "trust", "view-state"];
+	const names = [
+		"answers",
+		"client",
+		"herdr",
+		"mirror",
+		"project-tool",
+		"projects",
+		"protocol",
+		"rlm",
+		"tool",
+		"trust",
+		"view-state",
+	];
+
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, client, herdr, mirror, projects, protocol, rlm, tool, trust, viewState] = await Promise.all(
-		urls.map((url) => import(url)),
-	);
+	const [answers, client, herdr, mirror, projectTool, projects, protocol, rlm, tool, trust, viewState] =
+		await Promise.all(urls.map((url) => import(url)));
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { answers, client, herdr, mirror, projects, protocol, rlm, tool, trust, viewState } as Harness;
+	return { answers, client, herdr, mirror, projectTool, projects, protocol, rlm, tool, trust, viewState } as Harness;
 }

@@ -9,7 +9,7 @@ import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import { readUserAnswers } from "../src/host/user-answers.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
-import { AskList, ParleyAsks } from "../src/protocol/project.ts";
+import { Ask, AskList, AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import type { Delivery, Replies, Request } from "../src/protocol/requests.ts";
 import {
 	before,
@@ -27,6 +27,9 @@ import {
 
 let host: Host | undefined;
 
+/** The store of the host that runs. */
+let store: Harness | undefined;
+
 type RoundLine = Extract<Request, { type: "ask"; action: "round" }>;
 
 /** Sends `line` to the host through the socket. */
@@ -38,14 +41,15 @@ async function send<T extends Request["type"]>(line: Extract<Request, { type: T 
 	return reply;
 }
 
-/** Writes a round of `asks` as the caller `caller`, for the parley `parley` when it is given, and gives the ask IDs. */
+/**
+ * Writes a round of `asks` as the caller `caller`, for the parley `parley` when it is given, and gives the IDs of the
+ * asks of the parley, or of the new asks with no parley.
+ */
 async function round(caller: string, asks: RoundLine["asks"], parley?: RoundLine["parley"]): Promise<number[]> {
 	const line = parley === undefined ? { asks } : { parley, asks };
-	const written = await send({ type: "ask", action: "round", caller, ...line });
+	const written = Value.Parse(AskWrite, await send({ type: "ask", action: "round", caller, ...line }));
 
-	if (!("asks" in written)) throw new Error("no asks");
-
-	return written.asks.map((ask) => ask.id);
+	return [...written.parleys.flatMap((each) => each.asks), ...written.asks].map((ask) => ask.id);
 }
 
 /** Writes `answers` as the caller `caller`. */
@@ -81,27 +85,31 @@ async function untilCount(deliveries: readonly Delivery[], count: number): Promi
 	await vi.waitFor(() => expect(deliveries).toHaveLength(count), { timeout: 10_000 });
 }
 
-/** Restarts the host, and gives the store that it opened. */
-async function restartWithStore(): Promise<Harness> {
-	await host?.close();
+/** Starts the host, and keeps it in `host` and the store that it opened in `store`. */
+async function start(): Promise<void> {
 	const open = Harness.open.bind(Harness);
-	let store: Harness | undefined;
+	let opened: Harness | undefined;
 
-	const opened = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
-		store = await open(...args);
+	const spy = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
+		opened = await open(...args);
 
-		return store;
+		return opened;
 	});
 
 	try {
 		host = await startHost();
 	} finally {
-		opened.mockRestore();
+		spy.mockRestore();
 	}
 
-	if (store === undefined) throw new Error("no store");
+	if (opened === undefined) throw new Error("no store");
+	store = opened;
+}
 
-	return store;
+/** Stops the host, and starts it again. */
+async function restart(): Promise<void> {
+	await host?.close();
+	await start();
 }
 
 const OPTIONS = [
@@ -113,7 +121,7 @@ const FRAME = { title: "Ship plan", goal: "Pick the place.", design_sense: "One 
 
 beforeAll(async () => {
 	await setUp();
-	host = await startHost();
+	await start();
 });
 
 afterAll(async () => {
@@ -202,8 +210,7 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 			first.listener.close();
 		}
 
-		await host?.close();
-		host = await startHost();
+		await restart();
 		const again = listen("pi-once");
 
 		try {
@@ -220,8 +227,7 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 	it("waits for an asker with no listener, also over a restart of the host", async () => {
 		const [id] = await round("pi-later", [{ title: "Later" }]);
 		await answer([{ id: id ?? 0, answer: "own", label: "Fine" }]);
-		await host?.close();
-		host = await startHost();
+		await restart();
 		const answers = listen("pi-later");
 
 		try {
@@ -255,7 +261,43 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("goes to a hosted asker as input that starts a turn, and waits while the asker is closed", async () => {
+	it("gives the answers of a contract that waited to its taker, and nothing to the old asker", async () => {
+		const [call, readBack] = await round(
+			"pi-gone",
+			[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
+			{ slug: "signed-away", ...FRAME },
+		);
+
+		await answer([
+			{ id: call ?? 0, answer: "a" },
+			{ id: readBack ?? 0, answer: "ok" },
+		]);
+
+		const taken = Value.Parse(
+			ParleyAsks,
+			await send({ type: "parley", action: "take", caller: "pi-new", slug: "signed-away" }),
+		);
+
+		expect(taken.parley.status).toBe("contract");
+		expect(taken.asks).toMatchObject([
+			{ id: call, answer: "a", asker: "pi-gone" },
+			{ id: readBack, answer: "ok", asker: "pi-gone" },
+		]);
+
+		const answers = listen("pi-gone");
+
+		try {
+			const [marker] = await round("pi-gone", [{ title: "Marker" }]);
+			await answer([{ id: marker ?? 0, answer: "own", label: "Yes" }]);
+			await untilCount(answers.deliveries, 1);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(answers.deliveries).toMatchObject([{ source: "ask", ask: marker }]);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
+	it("goes to an idle hosted asker of a parley as input that starts a turn", async () => {
 		const prompt = "Task:\nAsk the user";
 		const ask = { action: "round", slug: "hosted", ...FRAME, asks: [{ title: "Hosted ask" }] };
 		scripts.set(prompt, [{ name: "parley", arguments: ask }]);
@@ -267,68 +309,126 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 		await answer([{ id: hosted.id, answer: "own", label: "Go" }]);
 		const head = "the user answered the parley hosted\n\n";
 		await until(() => calls.some((call) => call.prompt.startsWith(head)));
-		expect(calls.find((call) => call.prompt.startsWith(head))?.prompt).toContain("1 · Hosted ask · own · Go\n");
-
-		const closedPrompt = "Task:\nAsk then close";
-		const closedAsk = { action: "round", slug: "closed", ...FRAME, asks: [{ title: "Closed ask" }] };
-		scripts.set(closedPrompt, [{ name: "parley", arguments: closedAsk }]);
-		const closedChild = await spawnAs("hosted-spawner", closedPrompt, { notify: false });
-		await until(() => (cellResults.get(closedPrompt) ?? []).length === 1);
-		await send({ type: "stop", caller: "hosted-spawner", handle: closedChild.handle });
-		const [closedId] = (await readParley("closed")).asks.map(({ id }) => id);
-		await answer([{ id: closedId ?? 0, answer: "own", label: "Go" }]);
-		await new Promise((resolve) => setTimeout(resolve, 500));
-		expect(calls.some((call) => call.prompt.startsWith("the user answered the parley closed"))).toBe(false);
+		const turn = calls.find((call) => call.prompt.startsWith(head))?.prompt ?? "";
+		expect(turn).toContain("1 · Hosted ask · own · Go\n");
+		// A new turn of an idle asker: the message before the answer is the last answer of the model.
+		expect(before.get(turn)).toBe("assistant");
 	});
 
-	it("goes to a working hosted asker as follow-ups, and not again after a restart of the host", async () => {
-		const prompt = "Task:\nAsk while working";
-		const go = join(root, "working-go");
+	it("goes to an idle hosted asker of an ask with no parley as input that starts a turn", async () => {
+		const prompt = "Task:\nAsk alone";
+		scripts.set(prompt, [{ name: "parley", arguments: { action: "round", asks: [{ title: "Idle lone" }] } }]);
+		await spawnAs("lone-spawner", prompt, { notify: false });
+		await until(() => (cellResults.get(prompt) ?? []).length === 1);
+		const lone = await askTitled("Idle lone");
+		await answer([{ id: lone.id, answer: "own", label: "Fine" }]);
+		const turn = `the user answered ask ${lone.id}\n\n${lone.id} · Idle lone · own · Fine\n`;
+		await until(() => called(turn) === 1);
+		expect(before.get(turn)).toBe("assistant");
+	});
+
+	it("goes to a working hosted asker of a parley as a follow-up", async () => {
+		const prompt = "Task:\nAsk in a parley while working";
+		const go = join(root, "working-parley-go");
 
 		scripts.set(prompt, [
 			{ name: "parley", arguments: { action: "round", slug: "working", ...FRAME, asks: [{ title: "Working ask" }] } },
+			{ name: "bash", arguments: { command: `while [ ! -f ${go} ]; do sleep 0.05; done` } },
+		]);
+		await spawnAs("working-spawner", prompt, { notify: false });
+		await until(() => (cellResults.get(prompt) ?? []).length === 1);
+		const [asked] = (await readParley("working")).asks;
+
+		if (asked === undefined) throw new Error("no ask");
+		await answer([{ id: asked.id, answer: "own", label: "Go" }]);
+		const head = "the user answered the parley working";
+		await followsUp(asked.asker, go, () => calls.some((call) => call.prompt.startsWith(head)));
+		const turn = calls.find((call) => call.prompt.startsWith(head))?.prompt ?? "";
+		expect(turn).toContain("1 · Working ask · own · Go\n");
+		// A follow-up waits for the end of the turn: the message before the answer is an answer of the model.
+		expect(before.get(turn)).toBe("assistant");
+	});
+
+	it("goes to a working hosted asker of an ask with no parley as a follow-up", async () => {
+		const prompt = "Task:\nAsk alone while working";
+		const go = join(root, "working-lone-go");
+
+		scripts.set(prompt, [
 			{ name: "parley", arguments: { action: "round", asks: [{ title: "Working lone" }] } },
 			{ name: "bash", arguments: { command: `while [ ! -f ${go} ]; do sleep 0.05; done` } },
 		]);
-		const store = await restartWithStore();
-		await spawnAs("working-spawner", prompt, { notify: false });
-		// The model is in the bash call once it saw the results of both rounds.
-		await until(() => (cellResults.get(prompt) ?? []).length === 2);
-		const [parleyAsk] = (await readParley("working")).asks;
+		await spawnAs("working-lone-spawner", prompt, { notify: false });
+		await until(() => (cellResults.get(prompt) ?? []).length === 1);
+		const lone = await askTitled("Working lone");
+		await answer([{ id: lone.id, answer: "own", label: "Later" }]);
+		const turn = `the user answered ask ${lone.id}\n\n${lone.id} · Working lone · own · Later\n`;
+		await followsUp(lone.asker, go, () => called(turn) === 1);
+		expect(before.get(turn)).toBe("assistant");
+	});
 
-		const lone = Value.Parse(AskList, await send({ type: "ask", action: "list" })).asks.find(
-			(ask) => ask.title === "Working lone",
-		);
+	it("waits in the queue while the hosted asker is closed", async () => {
+		const prompt = "Task:\nAsk then close";
+		const ask = { action: "round", slug: "closed", ...FRAME, asks: [{ title: "Closed ask" }] };
+		scripts.set(prompt, [{ name: "parley", arguments: ask }]);
+		const child = await spawnAs("closed-spawner", prompt, { notify: false });
+		await until(() => (cellResults.get(prompt) ?? []).length === 1);
+		await send({ type: "stop", caller: "closed-spawner", handle: child.handle });
+		const [closed] = (await readParley("closed")).asks;
 
-		if (parleyAsk === undefined || lone === undefined) throw new Error("no asks");
-		await answer([
-			{ id: parleyAsk.id, answer: "own", label: "Go" },
-			{ id: lone.id, answer: "own", label: "Later" },
-		]);
-
-		// The host gives both to the asker while it works, and no turn starts before its bash call ends.
-		const waiting = async () =>
-			(await readUserAnswers(store, BACKGROUND_CONTEXT)).filter(({ asker }) => asker === parleyAsk.asker);
-
-		await vi.waitFor(async () => expect(await waiting()).toEqual([]), { timeout: 10_000 });
-
-		const parleyPrompt = calls.find((call) => call.prompt.startsWith("the user answered the parley working"));
-		expect(parleyPrompt).toBeUndefined();
-		await writeFile(go, "");
-		const lonePrompt = `the user answered ask ${lone.id}\n\n${lone.id} · Working lone · own · Later\n`;
-		await until(() => called(lonePrompt) === 1);
-		const working = calls.find((call) => call.prompt.startsWith("the user answered the parley working"))?.prompt;
-
-		if (working === undefined) throw new Error("no parley turn");
-		expect(working).toContain("1 · Working ask · own · Go\n");
-		// A follow-up waits for the end of the turn: the message before each answer is an answer of the model.
-		expect(before.get(working)).toBe("assistant");
-		expect(before.get(lonePrompt)).toBe("assistant");
-
-		await host?.close();
-		host = await startHost();
+		if (closed === undefined) throw new Error("no ask");
+		await answer([{ id: closed.id, answer: "own", label: "Go" }]);
 		await new Promise((resolve) => setTimeout(resolve, 500));
-		expect(called(working)).toBe(1);
-		expect(called(lonePrompt)).toBe(1);
+		expect(calls.some((call) => call.prompt.startsWith("the user answered the parley closed"))).toBe(false);
+		const waiting = await readUserAnswers(currentStore(), BACKGROUND_CONTEXT);
+		expect(waiting.filter(({ asker }) => asker === closed.asker)).toMatchObject([
+			{ asker: closed.asker, delivery: { source: "parley", parley: "closed" } },
+		]);
+	});
+
+	it("does not go again to a hosted asker after a restart of the host", async () => {
+		const prompt = "Task:\nAsk once";
+		scripts.set(prompt, [{ name: "parley", arguments: { action: "round", asks: [{ title: "Hosted once" }] } }]);
+		await spawnAs("once-spawner", prompt, { notify: false });
+		await until(() => (cellResults.get(prompt) ?? []).length === 1);
+		const once = await askTitled("Hosted once");
+		await answer([{ id: once.id, answer: "own", label: "Yes" }]);
+		const turn = `the user answered ask ${once.id}\n\n${once.id} · Hosted once · own · Yes\n`;
+		await until(() => called(turn) === 1);
+
+		await restart();
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(called(turn)).toBe(1);
 	});
 });
+
+/** The open ask with the title `title`. */
+async function askTitled(title: string): Promise<Ask> {
+	const ask = Value.Parse(AskList, await send({ type: "ask", action: "list" })).asks.find(
+		(each) => each.title === title,
+	);
+
+	if (ask === undefined) throw new Error(`no ask ${title}`);
+
+	return ask;
+}
+
+/**
+ * Waits until the host gave the answers of `asker` while it works in a bash call that waits for the file `go`, checks
+ * that no turn of the answers started, then ends the bash call and waits until `delivered()`.
+ */
+async function followsUp(asker: string, go: string, delivered: () => boolean): Promise<void> {
+	const waiting = async () =>
+		(await readUserAnswers(currentStore(), BACKGROUND_CONTEXT)).filter((each) => each.asker === asker);
+
+	await vi.waitFor(async () => expect(await waiting()).toEqual([]), { timeout: 10_000 });
+	expect(delivered()).toBe(false);
+	await writeFile(go, "");
+	await until(delivered);
+}
+
+/** The store of the host that runs. */
+function currentStore(): Harness {
+	if (store === undefined) throw new Error("no store");
+
+	return store;
+}

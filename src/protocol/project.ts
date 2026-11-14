@@ -1,4 +1,4 @@
-import { type Static, Type } from "typebox";
+import { type Static, type TProperties, Type } from "typebox";
 import { SLUG } from "./paths.ts";
 
 /** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
@@ -334,18 +334,39 @@ export function askTransition(state: AskState, event: AskEvent): AskState | unde
 	}
 }
 
-/** The input of an answer of the ask `id`. */
-export const AnswerInput = Type.Union([
-	Type.Object({ id: LocalId, ...OwnAnswer }),
-	Type.Object({ id: LocalId, ...KeyAnswer }),
-]);
+/**
+ * The two objects with `fields` and an ask on the wire: one with `id`, the ID of the ask, and one with `slug` and `n`,
+ * the number of the ask in the parley `slug`. Each refuses the keys of the other, because an object schema accepts extra
+ * keys.
+ */
+export function withAskRef<F extends TProperties>(fields: F) {
+	const absent = Type.Optional(Type.Never());
+	const id = Type.Object({ ...fields, id: LocalId, slug: absent, n: absent });
+	const numbered = Type.Object({ ...fields, slug: Slug, n: LocalId, id: absent });
+	const branches: [typeof id, typeof numbered] = [id, numbered];
+
+	return branches;
+}
+
+/** An ask on the wire: `{ id }`, or `{ slug, n }`, its number in the parley `slug`. */
+export const AskRef = Type.Union(withAskRef({}));
+
+export type AskRef = Static<typeof AskRef>;
+
+/** The text that names the ask `ref`: `ask <id>`, or `<slug> ask <n>`. Two refs with the same text name the same ask. */
+export function askRefText(ref: AskRef): string {
+	return ref.id === undefined ? `${ref.slug} ask ${ref.n}` : `ask ${ref.id}`;
+}
+
+/** The input of an answer of the ask that `id`, or `slug` and `n`, names. */
+export const AnswerInput = Type.Union([...withAskRef(OwnAnswer), ...withAskRef(KeyAnswer)]);
 
 export type AnswerInput = Static<typeof AnswerInput>;
 
 /** The answers of one write, one or more, each of another ask. */
 export const AnswerInputs = Type.Refine(
 	Type.Array(AnswerInput, { minItems: 1 }),
-	(answers) => new Set(answers.map((answer) => answer.id)).size === answers.length,
+	(answers) => new Set(answers.map(askRefText)).size === answers.length,
 	() => "must answer each ask once",
 );
 
@@ -568,8 +589,11 @@ export const ParleyAsks = Type.Object({ parley: Parley, asks: Type.Array(Ask) })
 
 export type ParleyAsks = Static<typeof ParleyAsks>;
 
-/** The reply of a write of asks: the parleys and the asks that it added or changed, in ID order. */
-export const AskWrite = Type.Object({ parleys: Type.Array(Parley), asks: Type.Array(Ask) });
+/**
+ * The reply of a write of asks, from the commit of the write: each parley that it changed or whose asks it changed,
+ * with all of its asks, in ID order, and the asks with no parley that it added or changed, in ID order.
+ */
+export const AskWrite = Type.Object({ parleys: Type.Array(ParleyAsks), asks: Type.Array(Ask) });
 
 export type AskWrite = Static<typeof AskWrite>;
 

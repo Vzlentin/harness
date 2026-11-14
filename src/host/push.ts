@@ -316,13 +316,11 @@ export class Push {
 
 		for (const caller of new Set([...done.keys(), ...asked.keys()])) {
 			const children = done.get(caller) ?? [];
-			let answers = asked.get(caller) ?? [];
+			const answers = asked.get(caller) ?? [];
 			let destination: Destination | undefined;
 
 			try {
 				destination = await this.#destination(caller, entries);
-
-				if (destination?.kind === "input" && answers.length > 0 && (await this.#closedAsker(caller))) answers = [];
 			} catch (cause) {
 				this.#fail([...children.map(([handle]) => handle), ...answers.map(({ id }) => userAnswerRequest(id))], cause);
 
@@ -377,17 +375,10 @@ export class Push {
 		return pending;
 	}
 
-	/** Whether `caller` is a closed conversation of the host: its user answers wait in the queue. */
-	async #closedAsker(caller: string): Promise<boolean> {
-		const conversation = await library.inspect(this.#host.place, caller, context);
-
-		return (await conversation?.state(context)) === "closed";
-	}
-
 	/**
 	 * Where the answers for `caller` go: its open `answers` request, else the input of a conversation of the host (a
 	 * child, the project agent, or another conversation of the children library, such as a child of a task). Nothing for
-	 * another caller, such as a Pi session without an open request: its answers stay unread.
+	 * a closed conversation, or for another caller, such as a Pi session without an open request: its deliveries wait.
 	 */
 	async #destination(caller: string, entries: readonly Entry[]): Promise<Destination | undefined> {
 		if (this.#listeners.has(caller)) return { kind: "reply" };
@@ -460,21 +451,23 @@ export class Push {
 	}
 
 	/**
-	 * The input of `caller` when it is a conversation of the host: a child, the project agent, or another conversation of
-	 * the children library. Nothing for another caller, such as a Pi session.
+	 * The input of `caller` when it is a conversation of the host that is not closed: a child, the project agent, or
+	 * another conversation of the children library. Nothing for another caller, such as a Pi session.
 	 */
 	async inputOf(caller: string): Promise<((input: Input) => Promise<void>) | undefined> {
 		return this.#input(caller, recordsByAge(await this.#host.harness.snapshot(ChildRecords, context)));
 	}
 
-	/** The input of `caller` when it is a conversation of the host. */
+	/** The input of `caller` when it is a conversation of the host that is not closed. */
 	async #input(caller: string, entries: readonly Entry[]): Promise<((input: Input) => Promise<void>) | undefined> {
+		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
+		const inspected = await library.inspect(this.#host.place, caller, context);
+
+		if ((await inspected?.state(context)) === "closed") return undefined;
 		const parent = conversationEntry(entries, caller);
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
-
-		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
-		const conversation = (await library.inspect(this.#host.place, caller, context))?.conversation;
+		const conversation = inspected?.conversation;
 
 		if (conversation === undefined) return undefined;
 

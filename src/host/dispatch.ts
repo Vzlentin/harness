@@ -45,6 +45,7 @@ import {
 	logMessage,
 	markMessage,
 	readHeld,
+	readAsk,
 	readOpenAsks,
 	readParley,
 	readParleys,
@@ -391,7 +392,9 @@ function ask(request: Extract<Request, { type: "ask" }>, handler: Handler): Prom
 		case "answer":
 			return handler.harness.commit((tx) => answerAsks(tx, request.answers, request.caller), context);
 		case "drop":
-			return handler.harness.commit((tx) => dropAsk(tx, request.id, request.caller), context);
+			return handler.harness.commit((tx) => dropAsk(tx, request, request.caller), context);
+		case "read":
+			return readAsk(handler.harness, request, context);
 		case "list":
 			return readOpenAsks(handler.harness, context);
 	}

@@ -7,9 +7,9 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
-import { Message, Person, Thread } from "../src/protocol/project.ts";
+import { projectToolsExtension } from "../src/project-tool.ts";
+import { AskWrite, Message, Person, Thread } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { projectToolsExtension } from "../src/tool.ts";
 import {
 	agentTurn,
 	answerContent,
@@ -254,6 +254,81 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(results[8]).toBe("where · contract · Where asks live\n3 · Push now? · open\n");
 		// The runner refuses the drop before it reads the unknown parley.
 		expect(results[9]).toContain("drop requires ask");
+	});
+
+	it("runs the flow of the parley skill from its first round to the contract", async () => {
+		const prompt = "Task:\nRun the parley flow";
+
+		const calls = [
+			{ title: "Where", kind: "your call", options: [{ key: "a", label: "In the store" }], plan: "a" },
+			{
+				title: "How",
+				kind: "my call",
+				options: [
+					{ key: "a", label: "Slow" },
+					{ key: "b", label: "Fast", gains: ["Half the time"] },
+				],
+				plan: "b",
+			},
+		];
+
+		scripts.set(prompt, [
+			// Step 2: the calls, in a round.
+			{ name: "parley", arguments: { action: "round", slug: "flow", title: "Flow", goal: "Pick.", asks: calls } },
+			// Step 3: the state in the chat.
+			{ name: "parley", arguments: { action: "read", slug: "flow" } },
+			// Step 4: the line `[flow] 1a ok`, where ok takes the plan of the my call 2.
+			{
+				name: "parley",
+				arguments: {
+					action: "answer",
+					slug: "flow",
+					answers: [
+						{ ask: 1, answer: "a" },
+						{ ask: 2, answer: "b" },
+					],
+				},
+			},
+			// Step 5: the read-back and the design sense, in one round.
+			{
+				name: "parley",
+				arguments: {
+					action: "round",
+					slug: "flow",
+					design_sense: "Reuse the store.",
+					asks: [{ title: "These are the terms" }],
+				},
+			},
+			// Step 6: the line `[flow] ok`.
+			{ name: "parley", arguments: { action: "answer", slug: "flow", answers: [{ ask: 3, answer: "ok" }] } },
+		]);
+
+		const handle = handleOf(await cli(["spawn", "--prompt", "Run the parley flow"]));
+		await cli(["wait", handle]);
+		const head = "flow · open · Flow\n1 · Where · your call · ";
+		const open = `${head}open · plan a · In the store\n2 · How · my call · open · plan b · Fast\n[flow] 1a ok\n`;
+		const answered = `${head}a · In the store\n2 · How · my call · b · Fast\n`;
+
+		expect(cellResults.get(prompt)).toEqual([
+			open,
+			open,
+			`${answered}[flow] ok\n`,
+			`${answered}3 · These are the terms · open\n[flow] ok\n`,
+			`${answered.replace("flow · open", "flow · contract")}3 · These are the terms · ok\nharness parley show flow\n`,
+		]);
+	});
+
+	it("reads an ask with no parley after its answer, with its view", async () => {
+		const ask = { title: "Tag it?", view: "The tag `v1`" };
+		const asked = Value.Parse(AskWrite, await send({ type: "ask", action: "round", caller: "khan", asks: [ask] }));
+		const id = asked.asks[0]?.id ?? 0;
+		await send({ type: "ask", action: "answer", caller: "user", answers: [{ id, answer: "own", label: "Yes" }] });
+		const prompt = "Task:\nRead the answered ask";
+		scripts.set(prompt, [{ name: "parley", arguments: { action: "read", ask: id } }]);
+		const handle = handleOf(await cli(["spawn", "--prompt", "Read the answered ask"]));
+		await cli(["wait", handle]);
+
+		expect(cellResults.get(prompt)).toEqual([`${id} · Tag it? · own · Yes\nThe tag \`v1\`\n`]);
 	});
 
 	it("gives the tools to the project agent and to a child at the depth limit", async () => {

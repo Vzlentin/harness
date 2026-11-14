@@ -11,8 +11,8 @@ function restrictImports(files: string[], ...patterns: ImportPattern[]): OxlintO
 
 // An override replaces the options of a rule, so `src/host/durable-entry.ts` repeats the pattern of `src/host/**`.
 const hostImports: ImportPattern = {
-	group: ["../**", "!../protocol/**", "!../children/**", "!../rlm/**", "!../tool.ts"],
-	message: "host/ imports only protocol/, children/, rlm/ and tool.ts.",
+	group: ["../**", "!../protocol/**", "!../children/**", "!../rlm/**", "!../tool.ts", "!../project-tool.ts"],
+	message: "host/ imports only protocol/, children/, rlm/, tool.ts and project-tool.ts.",
 };
 
 export default defineConfig({
@@ -78,8 +78,15 @@ export default defineConfig({
 						"pi/ is published without dist/: import its types only, and take the modules from the Harness object.",
 				},
 				{
-					group: ["../dist/**", "!../dist/protocol/**", "!../dist/client/**", "!../dist/rlm/**", "!../dist/tool.js"],
-					message: "pi/ loads only protocol/, client/, rlm/ and tool.ts.",
+					group: [
+						"../dist/**",
+						"!../dist/protocol/**",
+						"!../dist/client/**",
+						"!../dist/rlm/**",
+						"!../dist/tool.js",
+						"!../dist/project-tool.js",
+					],
+					message: "pi/ loads only protocol/, client/, rlm/, tool.ts and project-tool.ts.",
 				},
 			),
 			restrictImports(["src/protocol/**"], { group: ["../**"], message: "protocol/ imports nothing else from src/." }),
@@ -117,6 +124,10 @@ export default defineConfig({
 			restrictImports(["src/tool.ts"], {
 				group: ["./**", "../**", "!./protocol/**", "!./client/**"],
 				message: "tool.ts imports only protocol/ and client/.",
+			}),
+			restrictImports(["src/project-tool.ts"], {
+				group: ["./**", "../**", "!./protocol/**", "!./client/**", "!./tool.ts"],
+				message: "project-tool.ts imports only protocol/, client/ and tool.ts.",
 			}),
 		],
 		options: { typeAware: true, typeCheck: true },

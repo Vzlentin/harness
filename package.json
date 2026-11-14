@@ -72,6 +72,10 @@
 			"types": "./dist/rlm/index.d.ts",
 			"default": "./dist/rlm/index.js"
 		},
+		"./project-tool": {
+			"types": "./dist/project-tool.d.ts",
+			"default": "./dist/project-tool.js"
+		},
 		"./tasks": {
 			"types": "./dist/host/tasks.d.ts",
 			"default": "./dist/host/tasks.js"
