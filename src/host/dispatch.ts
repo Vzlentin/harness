@@ -36,12 +36,18 @@ import {
 	addPart,
 	addPerson,
 	addThread,
+	answerAsks,
 	approveHeld,
 	checkPart,
+	dropAsk,
 	dropHeld,
+	endParley,
 	logMessage,
 	markMessage,
 	readHeld,
+	readOpenAsks,
+	readParley,
+	readParleys,
 	readParts,
 	readPersons,
 	readRules,
@@ -50,6 +56,8 @@ import {
 	readThreads,
 	setRule,
 	setTerm,
+	takeParley,
+	writeRound,
 } from "./project.ts";
 import type { Connection, Push } from "./push.ts";
 import {
@@ -179,6 +187,10 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return gateCall(request, { ...handler, models: handler.place.models });
 		case "held":
 			return held(request, handler);
+		case "ask":
+			return ask(request, handler);
+		case "parley":
+			return parley(request, handler);
 		case "tree":
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
@@ -369,6 +381,32 @@ function part(request: Extract<Request, { type: "part" }>, handler: Handler): Pr
 			return handler.harness.commit((tx) => checkPart(tx, request.id, request.caller), context);
 		case "list":
 			return readParts(handler.harness, request, context);
+	}
+}
+
+function ask(request: Extract<Request, { type: "ask" }>, handler: Handler): Promise<Replies["ask"]> {
+	switch (request.action) {
+		case "round":
+			return handler.harness.commit((tx) => writeRound(tx, request, request.caller), context);
+		case "answer":
+			return handler.harness.commit((tx) => answerAsks(tx, request.answers, request.caller), context);
+		case "drop":
+			return handler.harness.commit((tx) => dropAsk(tx, request.id, request.caller), context);
+		case "list":
+			return readOpenAsks(handler.harness, context);
+	}
+}
+
+function parley(request: Extract<Request, { type: "parley" }>, handler: Handler): Promise<Replies["parley"]> {
+	switch (request.action) {
+		case "take":
+			return handler.harness.commit((tx) => takeParley(tx, request.slug, request.caller), context);
+		case "end":
+			return handler.harness.commit((tx) => endParley(tx, request.slug, request.status, request.caller), context);
+		case "read":
+			return readParley(handler.harness, request.slug, context);
+		case "list":
+			return readParleys(handler.harness, context);
 	}
 }
 

@@ -13,6 +13,7 @@ import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import {
+	AskWrite,
 	type HeldAction,
 	Message,
 	Part,
@@ -33,11 +34,31 @@ const WatchLine = Type.Union([
 	Type.Object({ event: ProjectEvent }),
 ]);
 
-const NONE: ProjectEvent["removed"] = { persons: [], rules: [], terms: [], threads: [], parts: [], held: [] };
+const NONE: ProjectEvent["removed"] = {
+	persons: [],
+	rules: [],
+	terms: [],
+	threads: [],
+	parts: [],
+	held: [],
+	parleys: [],
+	asks: [],
+};
 
 /** An event with the objects of `changes`, no other object, and no removed ID. */
 function event(changes: Partial<ProjectEvent>): ProjectEvent {
-	return { persons: [], rules: [], terms: [], threads: [], parts: [], held: [], removed: NONE, ...changes };
+	return {
+		persons: [],
+		rules: [],
+		terms: [],
+		threads: [],
+		parts: [],
+		held: [],
+		parleys: [],
+		asks: [],
+		removed: NONE,
+		...changes,
+	};
 }
 
 /** Runs the host of the new project `name` in this process. */
@@ -110,7 +131,16 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		try {
 			watch = await openProjectWatch(project);
 			const { events } = watch;
-			expect(watch.state).toEqual({ persons: [], rules: [], terms: [], threads: [], parts: [], held: [] });
+			expect(watch.state).toEqual({
+				persons: [],
+				rules: [],
+				terms: [],
+				threads: [],
+				parts: [],
+				held: [],
+				parleys: [],
+				asks: [],
+			});
 
 			/** Waits for the next event, and gives it. */
 			const next = async (): Promise<ProjectEvent | undefined> => {
@@ -293,7 +323,72 @@ describe("watch-project", { timeout: 60_000 }, () => {
 					{ ...glossary, stale: true },
 				],
 				held: [],
+				parleys: [],
+				asks: [],
 			});
+		} finally {
+			watch?.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("gives a new parley, a changed parley and their asks", async () => {
+		const project = "watched-parley";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+
+		try {
+			watch = await openProjectWatch(project);
+			const { events } = watch;
+
+			const next = async (): Promise<ProjectEvent | undefined> => {
+				const count = events.length;
+				await until(() => events.length > count);
+				expect(events.length).toBe(count + 1);
+
+				return events.at(-1);
+			};
+
+			const round = Value.Parse(
+				AskWrite,
+				await send(
+					{
+						type: "ask",
+						action: "round",
+						caller: "pi-1",
+						parley: { slug: "store", title: "The store", goal: "Keep the asks." },
+						asks: [{ title: "Where", options: [{ key: "a", label: "Here" }], plan: "a" }],
+					},
+					project,
+				),
+			);
+
+			expect(await next()).toEqual(event({ parleys: round.parleys, asks: round.asks }));
+
+			const second = Value.Parse(
+				AskWrite,
+				await send(
+					{
+						type: "ask",
+						action: "round",
+						caller: "pi-1",
+						parley: { slug: "store", design_sense: "One writer." },
+						asks: [{ title: "These are the terms" }],
+					},
+					project,
+				),
+			);
+
+			// The parley changed and got an ask; the first ask did not change.
+			expect(second.parleys).toMatchObject([{ id: 1, design_sense: "One writer." }]);
+			expect(await next()).toEqual(event({ parleys: second.parleys, asks: second.asks }));
+
+			const answer = Value.Parse(
+				AskWrite,
+				await send({ type: "ask", action: "answer", caller: "user", answers: [{ id: 1, answer: "a" }] }, project),
+			);
+
+			expect(await next()).toEqual(event({ asks: answer.asks }));
 		} finally {
 			watch?.socket.destroy();
 			await host.close();
@@ -441,6 +536,8 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			threads: [{ ...thread, waits: [draft] }],
 			parts: [],
 			held: [push, merge],
+			parleys: [],
+			asks: [],
 		};
 
 		const after: ProjectState = {
@@ -450,6 +547,8 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			threads: [{ ...thread, waits: [] }],
 			parts: [],
 			held: [approved],
+			parleys: [],
+			asks: [],
 		};
 
 		expect(projectEvent(before, after, false)).toEqual(

@@ -1,4 +1,5 @@
 import { type Static, Type } from "typebox";
+import { SLUG } from "./paths.ts";
 
 /** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
 export const LocalId = Type.Integer({ minimum: 1 });
@@ -218,6 +219,186 @@ export type HeldAction = Static<typeof HeldAction>;
 /** The input of a new held action. */
 export type HeldInput = Pick<HeldAction, "requestId" | "agent" | "tool" | "command" | "rule" | "reason">;
 
+/**
+ * A plain text: at least one character that is not white space, with no backtick and no `**`, as the parley skill
+ * checks it.
+ */
+const Plain = Type.String({ pattern: "^(?![\\s\\S]*(`|\\*\\*))[\\s\\S]*\\S" });
+
+/** A list of plain texts that is not empty. */
+const Plains = Type.Array(Plain, { minItems: 1 });
+
+/** The slug of a parley: lowercase words of letters and digits, joined by hyphens. */
+export const Slug = Type.String({ pattern: SLUG.source });
+
+/** The kinds of an ask: `your call` for a choice of the user, `my call` for a choice of the asker. */
+export const ASK_KINDS = ["your call", "my call"] as const;
+
+export const AskKind = Type.Enum(ASK_KINDS);
+
+/** The key of an option: one lowercase letter. */
+export const OptionKey = Type.String({ pattern: "^[a-z]$" });
+
+/** An option of an ask, with what it gains and what it costs. */
+export const AskOption = Type.Object({
+	key: OptionKey,
+	label: Plain,
+	gains: Type.Optional(Plains),
+	costs: Type.Optional(Plains),
+});
+
+export type AskOption = Static<typeof AskOption>;
+
+/**
+ * The question of an ask, as its asker writes it: its `title`, and when the asker has them its `kind`, `tension`,
+ * `options`, `plan`, the key of the option that the asker proposes, and `view`, a text that explains it, in Markdown.
+ */
+const AskQuestion = {
+	title: Plain,
+	kind: Type.Optional(AskKind),
+	tension: Type.Optional(Plain),
+	options: Type.Optional(Type.Array(AskOption, { minItems: 1 })),
+	plan: Type.Optional(OptionKey),
+	view: Type.Optional(Text),
+};
+
+/** The input of a new ask. Its option keys are unique, and its `plan` is the key of one of its options. */
+export const AskInput = Type.Refine(
+	Type.Object(AskQuestion),
+	(ask) => {
+		const keys = (ask.options ?? []).map((option) => option.key);
+
+		return new Set(keys).size === keys.length && (ask.plan === undefined || keys.includes(ask.plan));
+	},
+	() => "must have unique option keys and a plan that is one of them",
+);
+
+export type AskInput = Static<typeof AskInput>;
+
+/** The exact words of the user in an answer, which can quote code or Markdown. */
+const Words = Type.Array(Text, { minItems: 1 });
+
+/** The fields of an answer that the user gave in his own words: `own`, with the `label` that he gave it. */
+const OwnAnswer = { answer: Type.Literal("own"), label: Plain, words: Type.Optional(Words) };
+
+/** The fields of an answer that takes a key: the key of an option, or `ok` to the read-back of a parley. */
+const KeyAnswer = {
+	answer: Type.Union([OptionKey, Type.Literal("ok")]),
+	label: Type.Optional(Plain),
+	words: Type.Optional(Words),
+};
+
+/** The fields of each ask: its question, the parley that it serves with its number there, its asker, and its last change. */
+const AskFields = {
+	id: LocalId,
+	...AskQuestion,
+	parley: Type.Optional(Type.Object({ id: LocalId, n: LocalId })),
+	asker: Caller,
+	at: Time,
+	by: Caller,
+};
+
+/**
+ * A question that someone put to the user, in one of its states: `open`, then `answered` or `dropped`. `asker` is the
+ * caller that wrote it or took its parley last. `parley` is the parley that it serves, and `n` its number there, which
+ * never changes. `at` is the time of its last change, and `by` the caller of that change.
+ */
+export const Ask = Type.Union([
+	Type.Object({ ...AskFields, state: Type.Literal("open") }),
+	Type.Object({ ...AskFields, state: Type.Literal("answered"), ...OwnAnswer }),
+	Type.Object({ ...AskFields, state: Type.Literal("answered"), ...KeyAnswer }),
+	Type.Object({ ...AskFields, state: Type.Literal("dropped") }),
+]);
+
+export type Ask = Static<typeof Ask>;
+
+/** The states of an ask. */
+export type AskState = Ask["state"];
+
+/** An event of an ask: an answer, or a drop. */
+export type AskEvent = "answer" | "drop";
+
+/**
+ * The state of an ask in the state `state` after `event`, or `undefined` when the event cannot change it. An open ask
+ * takes an answer and a drop. An answered ask takes a new answer, which replaces the old one. A dropped ask takes
+ * nothing.
+ */
+export function askTransition(state: AskState, event: AskEvent): AskState | undefined {
+	switch (state) {
+		case "open":
+			return event === "answer" ? "answered" : "dropped";
+		case "answered":
+			return event === "answer" ? "answered" : undefined;
+		default:
+			return undefined;
+	}
+}
+
+/** The input of an answer of the ask `id`. */
+export const AnswerInput = Type.Union([
+	Type.Object({ id: LocalId, ...OwnAnswer }),
+	Type.Object({ id: LocalId, ...KeyAnswer }),
+]);
+
+export type AnswerInput = Static<typeof AnswerInput>;
+
+/** The answers of one write, one or more, each of another ask. */
+export const AnswerInputs = Type.Refine(
+	Type.Array(AnswerInput, { minItems: 1 }),
+	(answers) => new Set(answers.map((answer) => answer.id)).size === answers.length,
+	() => "must answer each ask once",
+);
+
+/** The statuses that end a contract. */
+export const ParleyEnd = Type.Union([Type.Literal("done"), Type.Literal("dropped")]);
+
+export type ParleyEnd = Static<typeof ParleyEnd>;
+
+/** The frame of a parley, as a round writes it: the slug and the fields that change. */
+export const ParleyFrame = Type.Object({
+	slug: Slug,
+	title: Type.Optional(Plain),
+	goal: Type.Optional(Plain),
+	evidence: Type.Optional(Plains),
+	design_sense: Type.Optional(Plain),
+});
+
+export type ParleyFrame = Static<typeof ParleyFrame>;
+
+const ParleyFields = {
+	id: LocalId,
+	slug: Slug,
+	title: Plain,
+	goal: Plain,
+	evidence: Type.Optional(Plains),
+	at: Time,
+	by: Caller,
+};
+
+/**
+ * A group of asks with a frame: its slug, unique in the project, its title, its goal, its evidence and its design
+ * sense, which a parley needs from its contract on. It names no asker and no asks: each ask names its parley. `at` is the
+ * time of its last change, and `by` the caller of that change.
+ */
+export const Parley = Type.Union([
+	Type.Object({ ...ParleyFields, status: Type.Literal("open"), design_sense: Type.Optional(Plain) }),
+	Type.Object({
+		...ParleyFields,
+		status: Type.Union([Type.Literal("contract"), ParleyEnd]),
+		design_sense: Plain,
+	}),
+]);
+
+export type Parley = Static<typeof Parley>;
+
+/** The input of a round: the frame of its parley, when it has one, and one or more asks. */
+export const AskRound = Type.Object({
+	parley: Type.Optional(ParleyFrame),
+	asks: Type.Array(AskInput, { minItems: 1 }),
+});
+
+export type AskRound = Static<typeof AskRound>;
+
 /** The input of a new person. */
 export const PersonAdd = Type.Object({ name: Text });
 
@@ -333,6 +514,8 @@ export const RULES_KIND = "harness.rules";
 export const TERMS_KIND = "harness.terms";
 export const PARTS_KIND = "harness.parts";
 export const HELD_KIND = "harness.held";
+export const PARLEYS_KIND = "harness.parleys";
+export const ASKS_KIND = "harness.asks";
 
 /** The kind of the document of the session with the state of each message out. */
 export const OUTBOX_KIND = "harness.outbox";
@@ -372,6 +555,24 @@ export const HeldList = Type.Object({ held: Type.Array(HeldAction) });
 
 export type HeldList = Static<typeof HeldList>;
 
+export const ParleyList = Type.Object({ parleys: Type.Array(Parley) });
+
+export type ParleyList = Static<typeof ParleyList>;
+
+export const AskList = Type.Object({ asks: Type.Array(Ask) });
+
+export type AskList = Static<typeof AskList>;
+
+/** A parley and its asks, in the order of their numbers. */
+export const ParleyAsks = Type.Object({ parley: Parley, asks: Type.Array(Ask) });
+
+export type ParleyAsks = Static<typeof ParleyAsks>;
+
+/** The reply of a write of asks: the parleys and the asks that it added or changed, in ID order. */
+export const AskWrite = Type.Object({ parleys: Type.Array(Parley), asks: Type.Array(Ask) });
+
+export type AskWrite = Static<typeof AskWrite>;
+
 /** A thread and its messages, oldest first. */
 export const ThreadMessages = Type.Object({ thread: Thread, messages: Type.Array(Message) });
 
@@ -383,7 +584,8 @@ export const ProjectThread = Type.Object({ ...Thread.properties, waits: Type.Arr
 export type ProjectThread = Static<typeof ProjectThread>;
 
 /**
- * The reply of `watch-project`: every person, rule, term, thread with its waits, part and held action, in ID order.
+ * The reply of `watch-project`: every person, rule, term, thread with its waits, part, held action, parley and ask, in
+ * ID order.
  */
 export const ProjectState = Type.Object({
 	persons: Type.Array(Person),
@@ -392,6 +594,8 @@ export const ProjectState = Type.Object({
 	threads: Type.Array(ProjectThread),
 	parts: Type.Array(Part),
 	held: Type.Array(HeldAction),
+	parleys: Type.Array(Parley),
+	asks: Type.Array(Ask),
 });
 
 export type ProjectState = Static<typeof ProjectState>;
@@ -409,6 +613,8 @@ export const ProjectEvent = Type.Object({
 		threads: Type.Array(StoreId),
 		parts: Type.Array(LocalId),
 		held: Type.Array(LocalId),
+		parleys: Type.Array(LocalId),
+		asks: Type.Array(LocalId),
 	}),
 });
 

@@ -4,12 +4,21 @@ import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil
 import { type Static, Type } from "typebox";
 import { type GateReply, ToolArguments } from "./gate.ts";
 import {
+	AnswerInputs,
+	type Ask,
+	type AskList,
+	AskRound,
+	type AskWrite,
 	type DigestReply,
 	type HeldAction,
 	LocalId,
 	type Message,
 	MessageLog,
 	MessageMarkInput,
+	type Parley,
+	type ParleyAsks,
+	ParleyEnd,
+	type ParleyList,
 	Part,
 	PartAdd,
 	PartFilter,
@@ -23,6 +32,7 @@ import {
 	RuleFilter,
 	type RuleList,
 	RuleNew,
+	Slug,
 	type Term,
 	TermEdit,
 	type TermList,
@@ -41,7 +51,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -376,6 +386,44 @@ export const RequestLine = Type.Union([
 	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
 	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
+	 * Writes a round of asks, with the caller as their asker, and replies with the parley and the asks. With `parley`, the
+	 * asks serve the parley of its slug, which the round makes when the slug is new, and changes when it is open.
+	 */
+	Type.Object({
+		type: Type.Literal("ask"),
+		action: Type.Literal("round"),
+		caller: Type.String(),
+		...AskRound.properties,
+	}),
+	/**
+	 * Writes the answers of asks in one write, and replies with the asks and the parleys that became a contract. The
+	 * answer `ok` to the read-back of a parley makes it a contract.
+	 */
+	Type.Object({
+		type: Type.Literal("ask"),
+		action: Type.Literal("answer"),
+		caller: Type.String(),
+		answers: AnswerInputs,
+	}),
+	/** Drops the open ask `id`, and replies with it. */
+	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String(), id: LocalId }),
+	/** Replies with the open asks, in ID order. */
+	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("list") }),
+	/** Makes the caller the asker of the open asks of the open parley `slug`, and replies with the parley and its asks. */
+	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("take"), caller: Type.String(), slug: Slug }),
+	/** Ends the contract `slug` as `done` or `dropped`, and replies with the parley. */
+	Type.Object({
+		type: Type.Literal("parley"),
+		action: Type.Literal("end"),
+		caller: Type.String(),
+		slug: Slug,
+		status: ParleyEnd,
+	}),
+	/** Replies with the parley `slug` and its asks, in the order of their numbers. */
+	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("read"), slug: Slug }),
+	/** Replies with the parleys, in ID order. */
+	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("list") }),
+	/**
 	 * Checks the call of the tool `tool` with `arguments` by the agent `caller` against the decided conduct rules of the
 	 * project, with `messages`, the last messages of the user in the conversation of the caller, oldest first. It replies
 	 * that the call runs, or holds it. A held or dropped call with the same caller and `requestId` is given again.
@@ -406,8 +454,8 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("watch-tree") }),
 	/**
-	 * Replies with the persons, rules, terms, threads with their waits, parts and held actions of the project, then sends
-	 * one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
+	 * Replies with the persons, rules, terms, threads with their waits, parts, held actions, parleys and asks of the
+	 * project, then sends one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("watch-project") }),
 	/**
@@ -464,6 +512,10 @@ export type Replies = {
 	readonly part: Part | PartList;
 	readonly gate: GateReply;
 	readonly held: HeldAction;
+	/** The parleys and the asks of `round` and `answer`, the ask of `drop`, or the open asks of `list`. */
+	readonly ask: AskWrite | Ask | AskList;
+	/** The parley and its asks of `take` and `read`, the parley of `end`, or the parleys of `list`. */
+	readonly parley: ParleyAsks | Parley | ParleyList;
 };
 
 /**

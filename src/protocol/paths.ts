@@ -10,8 +10,8 @@ export function cliPath(): string {
 	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js", import.meta.url));
 }
 
-/** The slug of a page: lowercase words of letters and digits, joined by hyphens, as the parley skill gives it. */
-const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** The slug of a page or of a parley: lowercase words of letters and digits, joined by hyphens, as the parley skill gives it. */
+export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** The state folder of harness: `$XDG_STATE_HOME/harness`, default `~/.local/state/harness`. */
 function stateRoot(): string {

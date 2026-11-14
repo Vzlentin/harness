@@ -73,7 +73,16 @@ const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
 ]);
 
 /** The request types whose `list` and `read` actions are passive. */
-const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set(["todo", "person", "thread", "rule", "term", "part"]);
+const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set([
+	"todo",
+	"person",
+	"thread",
+	"rule",
+	"term",
+	"part",
+	"ask",
+	"parley",
+]);
 
 /**
  * Whether `request` does not count as activity for the idle exit. A `list` or a `read` of a todo list or of the store of
@@ -417,11 +426,14 @@ function parseRequest(line: string): Request {
 
 	if (!Value.Check(Typed, request)) throw new Error("Invalid request");
 
-	// The branch of the request's type with the fewest errors names the field; on a tie, the first one wins.
-	const [best] = RequestLine.anyOf
+	// The branch of the request's type, and of its action when a branch has it, with the fewest errors names the field;
+	// on a tie, the first one wins.
+	const ofType = RequestLine.anyOf
 		.map((schema) => [...Value.Errors(schema, request)])
-		.filter((errors) => errors.every((error) => error.instancePath !== "/type"))
-		.sort((a, b) => a.length - b.length);
+		.filter((errors) => errors.every((error) => error.instancePath !== "/type"));
+
+	const ofAction = ofType.filter((errors) => errors.every((error) => error.instancePath !== "/action"));
+	const [best] = (ofAction.length > 0 ? ofAction : ofType).sort((a, b) => a.length - b.length);
 
 	if (best === undefined) throw new Error(`Unknown request: ${request.type}`);
 
