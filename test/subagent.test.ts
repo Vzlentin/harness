@@ -313,6 +313,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"rule",
 			"term",
 			"part",
+			"parley",
 			"codemode",
 		]);
 
@@ -633,6 +634,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"rule",
 			"term",
 			"part",
+			"parley",
 			"codemode",
 		]);
 		expect(called("Task:\nNest tool")).toBe(2);

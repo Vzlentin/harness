@@ -1,6 +1,6 @@
 /**
- * The `thread`, `rule`, `term` and `part` tools of a Pi session, on the store of the project of the session's host, and
- * the digest of the session before each turn.
+ * The `thread`, `rule`, `term`, `part` and `parley` tools of a Pi session, on the store of the project of the session's
+ * host, and the digest of the session before each turn.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";

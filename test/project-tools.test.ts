@@ -190,10 +190,76 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(await send({ type: "term", action: "list" })).toMatchObject({ terms: [{ by: factsBy }] });
 	});
 
+	it("writes and reads the asks of a parley and the asks with no parley, with their text form", async () => {
+		const prompt = "Task:\nKeep the parley";
+
+		const options = [
+			{ key: "a", label: "In the store", gains: ["One writer"] },
+			{ key: "b", label: "In files" },
+		];
+
+		scripts.set(prompt, [
+			{
+				name: "parley",
+				arguments: {
+					action: "round",
+					slug: "where",
+					title: "Where asks live",
+					goal: "Pick the place.",
+					design_sense: "One writer.",
+					asks: [
+						{ title: "Where", kind: "your call", options, plan: "a", view: "A `table` of the places" },
+						{ title: "These are the terms" },
+					],
+				},
+			},
+			{ name: "parley", arguments: { action: "read", slug: "where", ask: 1 } },
+			{ name: "parley", arguments: { action: "answer", slug: "where", answers: [{ ask: 1, answer: "z" }] } },
+			{
+				name: "parley",
+				arguments: {
+					action: "answer",
+					slug: "where",
+					answers: [
+						{ ask: 1, answer: "b" },
+						{ ask: 2, answer: "ok" },
+					],
+				},
+			},
+			{ name: "parley", arguments: { action: "round", goal: "No parley", asks: [{ title: "Push now?" }] } },
+			{ name: "parley", arguments: { action: "round", asks: [{ title: "Push now?" }] } },
+			{ name: "parley", arguments: { action: "read", ask: 3 } },
+			{ name: "parley", arguments: { action: "read", slug: "where", ask: 9 } },
+			{ name: "parley", arguments: { action: "list" } },
+			{ name: "parley", arguments: { action: "drop", slug: "nope" } },
+		]);
+
+		const handle = handleOf(await cli(["spawn", "--prompt", "Keep the parley"]));
+		await cli(["wait", handle]);
+		const results = cellResults.get(prompt) ?? [];
+
+		expect(results.slice(0, 2)).toEqual([
+			"where · open · Where asks live\n1 · Where · your call · open · plan a · In the store\n2 · These are the terms · open\n[where] 1a ok\n",
+			"1 · Where · your call · open · plan a · In the store\nA `table` of the places\n",
+		]);
+		// The host refuses the answer, and its error reaches the call.
+		expect(results[2]).toContain("Ask 1 takes a, b or own");
+
+		expect(results[3]).toBe(
+			"where · contract · Where asks live\n1 · Where · your call · b · In files\n2 · These are the terms · ok\nharness parley show where\n",
+		);
+		expect(results[4]).toContain("round requires slug");
+		expect(results.slice(5, 7)).toEqual(["3 · Push now? · open\n", "3 · Push now? · open\n"]);
+		expect(results[7]).toContain("Parley where has no ask 9");
+		expect(results[8]).toBe("where · contract · Where asks live\n3 · Push now? · open\n");
+		// The runner refuses the drop before it reads the unknown parley.
+		expect(results[9]).toContain("drop requires ask");
+	});
+
 	it("gives the tools to the project agent and to a child at the depth limit", async () => {
 		await agentTurn("Agent project tools");
 		expect(requests.get("Agent project tools")?.tools).toEqual(
-			expect.arrayContaining(["thread", "rule", "term", "part"]),
+			expect.arrayContaining(["thread", "rule", "term", "part", "parley"]),
 		);
 		await setSettings({ agentDepthLimit: 1 });
 
@@ -203,7 +269,7 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 
 			expect((await cli(["wait", handle])).stdout).toMatch(/Scope with Sam \(\d+\)/);
 			expect(requests.get("Task:\nLeaf threads")?.tools).toEqual(
-				expect.arrayContaining(["thread", "rule", "term", "part"]),
+				expect.arrayContaining(["thread", "rule", "term", "part", "parley"]),
 			);
 		} finally {
 			await setSettings();

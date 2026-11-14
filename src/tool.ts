@@ -10,6 +10,11 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import {
+	Ask,
+	ASK_KINDS,
+	AskList,
+	askLine,
+	AskWrite,
 	type Author,
 	MESSAGE_MARKS,
 	MESSAGE_STATES,
@@ -19,6 +24,12 @@ import {
 	PART_KINDS,
 	PartList,
 	partLine,
+	Parley,
+	ParleyAsks,
+	ParleyFrame,
+	ParleyList,
+	parleyLine,
+	parleyText,
 	PersonList,
 	type PersonNames,
 	personNames,
@@ -526,6 +537,17 @@ export const PART_TOOL_DESCRIPTION = `Keep the parts of the vault: the files tha
 - list: the parts, only those that explain the rule \`rule\` when you give it.
 Each part prints as \`<id> <kind> <path> [rules <ids>; terms <ids>; checked <time>]\`, with \`stale\` at the end when it is stale.`;
 
+export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone or in a parley: a group of asks with a slug, a title, a goal, evidence and a design sense.
+- round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley.
+- answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract.
+- drop: drop the open ask \`ask\`.
+- take: become the asker of the open asks of the open parley \`slug\`.
+- end: end the contract \`slug\` with \`status\`: done or dropped.
+- read: the parley \`slug\` and its asks, or the ask \`ask\` and its view.
+- list: the parleys, then the open asks with no parley.
+With \`slug\`, \`ask\` is the number of the ask in the parley. Without \`slug\`, it is the ID of an ask with no parley.
+A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`.`;
+
 /**
  * The parameters and the output schemas of the tools of the store of the project, built with the caller's TypeBox
  * `Type`, as in `toolSchemas`. The outputs hold the protocol schemas of the objects, which are plain JSON schemas.
@@ -625,7 +647,79 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		]),
 	};
 
-	return { thread, rule, term, part };
+	const parley = {
+		parameters: Type.Object({
+			action: Type.Union(
+				[
+					Type.Literal("round"),
+					Type.Literal("answer"),
+					Type.Literal("drop"),
+					Type.Literal("take"),
+					Type.Literal("end"),
+					Type.Literal("read"),
+					Type.Literal("list"),
+				],
+				{ description: "What to do" },
+			),
+			slug: text("round, answer, drop, read: the parley of the asks; take, end: the parley"),
+			title: text("round: the title of the parley"),
+			goal: text("round: the goal of the parley"),
+			evidence: Type.Optional(
+				Type.Array(Type.String({ pattern: "\\S" }), { description: "round: the evidence of the parley" }),
+			),
+			design_sense: text("round: the design sense of the parley, which its contract needs"),
+			asks: Type.Optional(
+				Type.Array(
+					Type.Object({
+						title: Type.String({ pattern: "\\S" }),
+						kind: Type.Optional(Type.Enum(ASK_KINDS)),
+						tension: Type.Optional(Type.String()),
+						options: Type.Optional(
+							Type.Array(
+								Type.Object({
+									key: Type.String({ description: "One lowercase letter" }),
+									label: Type.String(),
+									gains: Type.Optional(Type.Array(Type.String())),
+									costs: Type.Optional(Type.Array(Type.String())),
+								}),
+							),
+						),
+						plan: Type.Optional(Type.String({ description: "The key of the option that you propose" })),
+						view: Type.Optional(Type.String({ description: "A text that explains the ask, in Markdown" })),
+					}),
+					{ description: "round: the asks; an ask with no options in a parley is its read-back" },
+				),
+			),
+			answers: Type.Optional(
+				Type.Array(
+					Type.Object({
+						ask: Type.Integer({ minimum: 1 }),
+						answer: Type.String({ description: "The key of an option, ok, or own" }),
+						label: Type.Optional(Type.String({ description: "The label of the answer, which own needs" })),
+						words: Type.Optional(Type.Array(Type.String(), { description: "The exact words of the user" })),
+					}),
+					{ description: "answer: the answers, each of another ask" },
+				),
+			),
+			ask: id("drop, read: the ask, its number with slug, else its ID"),
+			status: Type.Optional(
+				Type.Union([Type.Literal("done"), Type.Literal("dropped")], { description: "end: done or dropped" }),
+			),
+		}),
+		output: Type.Union([
+			Type.Object({ action: Type.Union([Type.Literal("round"), Type.Literal("answer")]), value: AskWrite }),
+			Type.Object({ action: Type.Literal("drop"), value: Ask }),
+			Type.Object({ action: Type.Literal("take"), value: ParleyAsks }),
+			Type.Object({ action: Type.Literal("end"), value: Parley }),
+			Type.Object({ action: Type.Literal("read"), value: Type.Union([ParleyAsks, Ask]) }),
+			Type.Object({
+				action: Type.Literal("list"),
+				value: Type.Object({ ...ParleyList.properties, ...AskList.properties }),
+			}),
+		]),
+	};
+
+	return { thread, rule, term, part, parley };
 }
 
 type ProjectSchemas = ReturnType<typeof projectToolSchemas>;
@@ -646,15 +740,16 @@ export type ProjectTool<P extends TSchema, O extends TSchema> = {
 /** Registers one tool of the store of the project, whatever its schemas, and gives what the adapter keeps of it. */
 export type ProjectToolAdapter<R> = <P extends TSchema, O extends TSchema>(tool: ProjectTool<P, O>) => R;
 
-/** The tools of the store of the project, `thread`, `rule`, `term` and `part`, each given to `adapt`. */
+/** The tools of the store of the project, `thread`, `rule`, `term`, `part` and `parley`, each given to `adapt`. */
 export function projectTools<R>(typebox: Pick<typeof TypeBox, "Type">, adapt: ProjectToolAdapter<R>): R[] {
-	const { thread, rule, term, part } = projectToolSchemas(typebox);
+	const { thread, rule, term, part, parley } = projectToolSchemas(typebox);
 
 	return [
 		adapt({ name: "thread", label: "Thread", description: THREAD_TOOL_DESCRIPTION, ...thread, run: runThreadTool }),
 		adapt({ name: "rule", label: "Rule", description: RULE_TOOL_DESCRIPTION, ...rule, run: runRuleTool }),
 		adapt({ name: "term", label: "Term", description: TERM_TOOL_DESCRIPTION, ...term, run: runTermTool }),
 		adapt({ name: "part", label: "Part", description: PART_TOOL_DESCRIPTION, ...part, run: runPartTool }),
+		adapt({ name: "parley", label: "Parley", description: PARLEY_TOOL_DESCRIPTION, ...parley, run: runParleyTool }),
 	];
 }
 
@@ -874,6 +969,179 @@ async function runPartTool(args: Static<ProjectSchemas["part"]["parameters"]>, s
 		default:
 			throw new Error(`Unknown action: ${String(action)}`);
 	}
+}
+
+type ParleyArgs = Static<ProjectSchemas["parley"]["parameters"]>;
+
+/** The parley `slug` and its asks, from a `parley read` request. */
+async function readParley(slug: string, scope: ProjectScope, signal: AbortSignal): Promise<ParleyAsks> {
+	return replyOf(ParleyAsks, await scope.send({ type: "parley", action: "read", slug }, signal), "parley");
+}
+
+/** The ask number `n` of the parley `reply`. */
+function askNumbered(reply: ParleyAsks, n: number): Ask {
+	const ask = reply.asks.find((each) => each.parley?.n === n);
+
+	if (ask === undefined) throw new Error(`Parley ${reply.parley.slug} has no ask ${n}`);
+
+	return ask;
+}
+
+/**
+ * The ID of each `ask` of a call: with `slug`, the ID of the ask with this number in the parley `slug`, which it reads
+ * from the host; without `slug`, the ask itself.
+ */
+async function askIds(
+	slug: string | undefined,
+	scope: ProjectScope,
+	signal: AbortSignal,
+): Promise<(ask: number) => number> {
+	if (slug === undefined) return (ask) => ask;
+	const reply = await readParley(slug, scope, signal);
+
+	return (ask) => askNumbered(reply, ask).id;
+}
+
+/** The text after a write of `asks`: the whole parley `slug` when the call names it, else the line of each ask. */
+async function writtenText(
+	slug: string | undefined,
+	asks: readonly Ask[],
+	scope: ProjectScope,
+	signal: AbortSignal,
+): Promise<string> {
+	if (slug === undefined) return listText(asks, askLine, "No asks");
+
+	return parleyText(await readParley(slug, scope, signal));
+}
+
+/** The frame of the parley of a round: its slug and the fields that the call gives. */
+function roundFrame(args: ParleyArgs): ParleyFrame | undefined {
+	const { slug, title, goal, evidence, design_sense } = args;
+
+	if (slug === undefined) {
+		if ([title, goal, evidence, design_sense].some((field) => field !== undefined))
+			throw new Error("round requires slug");
+
+		return undefined;
+	}
+
+	let frame: ParleyFrame = { slug };
+
+	if (title !== undefined) frame = { ...frame, title };
+
+	if (goal !== undefined) frame = { ...frame, goal };
+
+	if (evidence !== undefined) frame = { ...frame, evidence };
+
+	if (design_sense !== undefined) frame = { ...frame, design_sense };
+
+	return frame;
+}
+
+/** The answers of an `ask answer` request, built field by field, with each ask mapped to its ID by `idOf`. */
+function answerInputs(answers: NonNullable<ParleyArgs["answers"]>, idOf: (ask: number) => number) {
+	return answers.map((answer) => {
+		const base = { id: idOf(answer.ask), answer: answer.answer };
+		const labeled = answer.label === undefined ? base : { ...base, label: answer.label };
+
+		return answer.words === undefined ? labeled : { ...labeled, words: answer.words };
+	});
+}
+
+async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
+	const { action, slug } = args;
+	const signal = scope.signal ?? NO_ABORT;
+	const caller = scope.caller;
+
+	switch (action) {
+		case "round": {
+			if (args.asks === undefined) throw new Error(`${action} requires asks`);
+			const frame = roundFrame(args);
+			const round = { type: "ask", action, caller, asks: args.asks } as const;
+			const request = frame === undefined ? round : { ...round, parley: frame };
+			const reply = replyOf(AskWrite, await scope.send(request, signal), "asks");
+
+			return { text: await writtenText(slug, reply.asks, scope, signal), data: { action, value: reply } };
+		}
+
+		case "answer": {
+			if (args.answers === undefined) throw new Error(`${action} requires answers`);
+			const answers = answerInputs(args.answers, await askIds(slug, scope, signal));
+			const reply = replyOf(AskWrite, await scope.send({ type: "ask", action, caller, answers }, signal), "asks");
+
+			return { text: await writtenText(slug, reply.asks, scope, signal), data: { action, value: reply } };
+		}
+
+		case "drop": {
+			const n = required(args.ask, "ask", action);
+			const id = (await askIds(slug, scope, signal))(n);
+			const ask = replyOf(Ask, await scope.send({ type: "ask", action, caller, id }, signal), "ask");
+
+			return { text: await writtenText(slug, [ask], scope, signal), data: { action, value: ask } };
+		}
+
+		case "take": {
+			const request = { type: "parley", action, caller, slug: required(slug, "slug", action) } as const;
+			const reply = replyOf(ParleyAsks, await scope.send(request, signal), "parley");
+
+			return { text: parleyText(reply), data: { action, value: reply } };
+		}
+
+		case "end": {
+			const request = {
+				type: "parley",
+				action,
+				caller,
+				slug: required(slug, "slug", action),
+				status: required(args.status, "status", action),
+			} as const;
+
+			const parley = replyOf(Parley, await scope.send(request, signal), "parley");
+
+			return { text: `${parleyLine(parley)}\n`, data: { action, value: parley } };
+		}
+
+		case "read": {
+			if (slug !== undefined && args.ask === undefined) {
+				const reply = await readParley(slug, scope, signal);
+
+				return { text: parleyText(reply), data: { action, value: reply } };
+			}
+
+			const n = required(args.ask, "ask", action);
+
+			const ask =
+				slug === undefined ? await openAsk(n, scope, signal) : askNumbered(await readParley(slug, scope, signal), n);
+
+			const view = ask.view === undefined ? "" : `${ask.view}\n`;
+
+			return { text: `${askLine(ask)}\n${view}`, data: { action, value: ask } };
+		}
+
+		case "list": {
+			const parleys = replyOf(ParleyList, await scope.send({ type: "parley", action }, signal), "list of parleys");
+			const open = replyOf(AskList, await scope.send({ type: "ask", action }, signal), "list of asks");
+			const asks = open.asks.filter((ask) => ask.parley === undefined);
+
+			const text =
+				listText(parleys.parleys, parleyLine, "No parleys") + asks.map((ask) => `${askLine(ask)}\n`).join("");
+
+			return { text, data: { action, value: { parleys: parleys.parleys, asks } } };
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+/** The open ask `id`, from an `ask list` request. */
+async function openAsk(id: number, scope: ProjectScope, signal: AbortSignal): Promise<Ask> {
+	const reply = replyOf(AskList, await scope.send({ type: "ask", action: "list" }, signal), "list of asks");
+	const ask = reply.asks.find((each) => each.id === id);
+
+	if (ask === undefined) throw new Error(`No open ask ${id}`);
+
+	return ask;
 }
 
 /**

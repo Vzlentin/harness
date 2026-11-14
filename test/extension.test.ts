@@ -77,7 +77,7 @@ type Tool = {
 };
 
 /** The arguments of a tool call in the tests. */
-type Args = Readonly<Record<string, string | number | readonly string[] | readonly number[]>>;
+type Args = Readonly<Record<string, string | number | readonly string[] | readonly number[] | readonly object[]>>;
 
 /** A message that the extension sent to Pi, with its options. */
 type Sent = { readonly text: string; readonly details: unknown; readonly options: unknown };
@@ -795,7 +795,7 @@ describe("the Pi extension", () => {
 		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
 	});
 
-	it("gives the thread, rule, term and part tools of the host, on the store of the project", async () => {
+	it("gives the thread, rule, term, part and parley tools of the host, on the store of the project", async () => {
 		host = await startHost();
 		const registered = await load();
 
@@ -831,6 +831,20 @@ describe("the Pi extension", () => {
 		);
 		await expect(tools.get("rule")?.call({ action: "set", id: 1, status: "retired", saidBy: 1 })).rejects.toThrow(
 			"set requires source",
+		);
+
+		const asks = [
+			{ title: "Where", kind: "your call", options: [{ key: "a", label: "Here" }], plan: "a", view: "Here" },
+		];
+
+		expect(await tools.get("parley")?.call({ action: "round", slug: "pi", title: "Pi asks", goal: "Ask.", asks })).toBe(
+			"pi · open · Pi asks\n1 · Where · your call · open · plan a · Here\n[pi] 1a\n",
+		);
+		expect(await tools.get("parley")?.call({ action: "read", slug: "pi", ask: 1 })).toBe(
+			"1 · Where · your call · open · plan a · Here\nHere\n",
+		);
+		await expect(tools.get("parley")?.call({ action: "end", slug: "pi", status: "done" })).rejects.toThrow(
+			"Parley pi is open",
 		);
 		expect(await tools.get("thread")?.call({ action: "read", thread: thread.id })).toBe(
 			`${thread.id} Pi with Sam (1): last message 2026-11-12T00:00:00.000Z\n${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`,

@@ -679,3 +679,71 @@ export function partLine(part: Part): string {
 
 	return `${part.id} ${part.kind} ${part.path} [rules ${idsText(part.rules)}; terms ${idsText(part.terms)}; checked ${time(part.checked)}]${stale}`;
 }
+
+/** The fields of a line of a parley or an ask, joined with ` · `. */
+function fieldsText(fields: readonly (string | number | undefined)[]): string {
+	return fields.filter((field) => field !== undefined).join(" · ");
+}
+
+export function parleyLine(parley: Parley): string {
+	return fieldsText([parley.slug, parley.status, parley.title]);
+}
+
+/** The label of the option `key` of `ask`, when it has one. */
+function optionLabel(ask: Ask, key: string | undefined): string | undefined {
+	return ask.options?.find((option) => option.key === key)?.label;
+}
+
+/** The number of `ask` in its parley, or its ID when it has no parley. */
+function askNumber(ask: Ask): number {
+	return ask.parley?.n ?? ask.id;
+}
+
+/**
+ * The line of `ask`, with its number in its parley, or its ID when it has no parley: its title, its kind, then `open`
+ * with its plan and the label of the plan, its answer and the label of the answer, or `dropped`.
+ */
+export function askLine(ask: Ask): string {
+	const head = [askNumber(ask), ask.title, ask.kind];
+
+	switch (ask.state) {
+		case "open": {
+			const plan = ask.plan === undefined ? [] : [`plan ${ask.plan}`, optionLabel(ask, ask.plan)];
+
+			return fieldsText([...head, "open", ...plan]);
+		}
+
+		case "answered":
+			return fieldsText([
+				...head,
+				ask.answer,
+				ask.answer === "own" ? ask.label : (optionLabel(ask, ask.answer) ?? ask.label),
+			]);
+
+		default:
+			return fieldsText([...head, ask.state]);
+	}
+}
+
+/**
+ * The last line of the parley `parley` with its asks `asks`. For an open parley, the answer line: the plan of each open
+ * your call with a plan, then `ok` when no ask is open or when another ask is open. For any other status, the command
+ * that shows the parley.
+ */
+function parleyAnswerLine(parley: Parley, asks: readonly Ask[]): string {
+	if (parley.status !== "open") return `harness parley show ${parley.slug}`;
+	const open = asks.filter((ask) => ask.state === "open");
+	const calls = open.filter((ask) => ask.kind === "your call" && ask.plan !== undefined);
+	const parts = calls.map((ask) => `${askNumber(ask)}${ask.plan}`);
+
+	if (open.length === 0 || calls.length < open.length) parts.push("ok");
+
+	return `[${parley.slug}] ${parts.join(" ")}`;
+}
+
+/** The text of a parley: its line, the line of each of its asks, and its answer line. */
+export function parleyText(reply: ParleyAsks): string {
+	return [parleyLine(reply.parley), ...reply.asks.map(askLine), parleyAnswerLine(reply.parley, reply.asks)]
+		.map((line) => `${line}\n`)
+		.join("");
+}
