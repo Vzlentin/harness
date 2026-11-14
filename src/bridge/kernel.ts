@@ -3,20 +3,31 @@
  * the startup code that binds `tools`.
  */
 import { fileURLToPath } from "node:url";
-import type { ConversationId } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+
+/** An event of pi-ipython: its channel, and the warning of a payload of another shape. */
+export type BridgeEvent = { readonly channel: string; readonly invalid: string };
 
 /**
  * The event that pi-ipython emits before each kernel start, restarts included: on the shared bus of the host's entries,
  * or on `pi.events` in Pi.
  */
-export const KERNEL_STARTING = "ipython:kernel-starting";
+export const KERNEL_STARTING: BridgeEvent = {
+	channel: "ipython:kernel-starting",
+	invalid: "The ipython:kernel-starting event has an invalid payload; its kernel gets no tools",
+};
 
 /** The event that pi-ipython emits when a cell starts, with the means to run the tools of its conversation. */
-export const CELL_START = "ipython:cell-start";
+export const CELL_START: BridgeEvent = {
+	channel: "ipython:cell-start",
+	invalid: "The ipython:cell-start event has an invalid payload; its cell gets no tools",
+};
 
 /** The event that pi-ipython emits when a cell ends, also when it fails. */
-export const CELL_END = "ipython:cell-end";
+export const CELL_END: BridgeEvent = {
+	channel: "ipython:cell-end",
+	invalid: "The ipython:cell-end event has an invalid payload; its cell keeps its tools",
+};
 
 /**
  * The payload of `KERNEL_STARTING`. pi-ipython reads `env` and `startupCode` once the promises given to `waitFor`
@@ -29,23 +40,6 @@ export const KernelStarting = Type.Object({
 });
 
 export type KernelStarting = Static<typeof KernelStarting>;
-
-/** The payload of `KERNEL_STARTING` in the host, which also gives the conversation of the kernel. */
-export const ConversationKernelStarting = Type.Object({
-	...KernelStarting.properties,
-	conversationId: Type.Unsafe<ConversationId>(Type.Integer()),
-});
-
-export type ConversationKernelStarting = Static<typeof ConversationKernelStarting>;
-
-/** The warning of a `KERNEL_STARTING` event whose payload has another shape. */
-export const INVALID_KERNEL_STARTING = `The ${KERNEL_STARTING} event has an invalid payload; its kernel gets no tools`;
-
-/** The warning of a `CELL_START` event whose payload has another shape. */
-export const INVALID_CELL_START = `The ${CELL_START} event has an invalid payload; its cell gets no tools`;
-
-/** The warning of a `CELL_END` event whose payload has another shape. */
-export const INVALID_CELL_END = `The ${CELL_END} event has an invalid payload; its cell keeps its tools`;
 
 /** The path of the socket of the kernel's server. */
 export const HARNESS_TOOLS_SOCKET = "HARNESS_TOOLS_SOCKET";

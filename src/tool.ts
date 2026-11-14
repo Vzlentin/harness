@@ -136,7 +136,7 @@ export type ToolScope = {
 };
 
 /** The caller's own provider, model, thinking level and working directory, from its agent. */
-export function callerDefaults(
+function callerDefaults(
 	agent: Pick<Agent, "model" | "thinkingLevel" | "cwd">,
 ): Pick<ToolScope, "provider" | "model" | "thinking" | "cwd"> {
 	return {

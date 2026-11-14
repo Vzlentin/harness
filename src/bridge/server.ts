@@ -54,13 +54,20 @@ export type BridgeTool = {
 	readonly deferred?: boolean | undefined;
 };
 
+/**
+ * The raw result of a call of a tool: whether it failed, its text, and its structured output, if any. The text of a
+ * failed call without text is its error diagnostics, when the side has them.
+ */
+export type CallResult = { readonly isError: boolean; readonly text: string; readonly output?: JsonValue | undefined };
+
 /** What a running cell gives the bridge: the tools of its conversation. */
 export type Cell = {
 	/**
-	 * Runs `tool`, one of `tools()`, with `args`, and gives its structured output when `tool.structured`, else its text.
-	 * A failed call throws, with the error text of the tool. `signal` aborts the call.
+	 * Runs `tool`, one of `tools()`, with `args`, and gives its raw result. `signal` aborts when the request stops: Pi
+	 * then aborts the call, but the host cannot abort a nested call before its cell ends, so there the call runs on and
+	 * only the request stops.
 	 */
-	call(tool: BridgeTool, args: JsonObject, signal: AbortSignal): Promise<JsonValue>;
+	call(tool: BridgeTool, args: JsonObject, signal: AbortSignal): Promise<CallResult>;
 	/** The tools of the conversation of the cell, hidden ones too (see `refusal`). */
 	tools(): Promise<readonly BridgeTool[]>;
 };
@@ -74,12 +81,24 @@ type OpenCell = { readonly id: string; readonly cell: Cell; readonly abort: Abor
 /** A request line, as far as the token check reads it. */
 const Tokened = Type.Object({ token: Type.String() });
 
-/** A request line after its token: a call of the tool `name` with `args`, or without `name`, the list of the tools. */
-const ToolsLine = Type.Object({
-	name: Type.Optional(Type.String()),
-	// The line is parsed JSON, so its values are JSON values.
-	args: Type.Optional(Type.Unsafe<JsonObject>(Type.Record(Type.String(), Type.Unknown()))),
-});
+/** The request line of the list of the tools that a cell can call. */
+const ListLine = Type.Object({ token: Type.String(), list: Type.Literal(true) }, { additionalProperties: false });
+
+/** The request line of a call of the tool `name` with `args`. */
+const CallLine = Type.Object(
+	{
+		token: Type.String(),
+		name: Type.String(),
+		// The line is parsed JSON, so its values are JSON values.
+		args: Type.Unsafe<JsonObject>(Type.Record(Type.String(), Type.Unknown())),
+	},
+	{ additionalProperties: false },
+);
+
+type CallLine = Static<typeof CallLine>;
+
+/** A request line: the list of the tools, or the call of a tool. */
+const ToolsLine = Type.Union([ListLine, CallLine]);
 
 type ToolsLine = Static<typeof ToolsLine>;
 
@@ -151,6 +170,14 @@ export class KernelServers {
 		starting.startupCode.push(...STARTUP_CODE);
 	}
 
+	/**
+	 * Serves the kernel start `starting` of `key`, as `serve` does, inside the wait of `starting`. pi-ipython reads the
+	 * payload once the promises of `waitFor` settle, so the change happens in one. Its rejection fails the kernel start.
+	 */
+	serveStart(starting: KernelStarting, key: string): void {
+		starting.waitFor(this.serve(starting, key));
+	}
+
 	/** Opens the cell `id` of the kernel of `key`, which `cell` serves until `end`. After `close()`, it does nothing. */
 	open(key: string, id: string, cell: Cell): void {
 		if (this.#closed) return;
@@ -191,30 +218,42 @@ export class KernelServers {
 			if (open === undefined) throw new Error(NO_CELL);
 			const stop = AbortSignal.any([signal, open.abort.signal]);
 
-			return { ok: true, value: await untilAborted(run(open.cell, line, stop), stop) };
+			const work = "list" in line ? list(open.cell) : call(open.cell, line, stop);
+
+			return { ok: true, value: await untilAborted<JsonValue | readonly ListedTool[]>(work, stop) };
 		} catch (error) {
 			return { ok: false, error: errorMessage(error) };
 		}
 	}
 }
 
-/** Runs the request `line` with `cell`: the call of a tool, or the list of the tools that a cell can call. */
-async function run(cell: Cell, line: ToolsLine, signal: AbortSignal): Promise<JsonValue | readonly ListedTool[]> {
-	const tools = await cell.tools();
+/** The tools that `cell` can call, with only what Python reads to make its tool. */
+async function list(cell: Cell): Promise<readonly ListedTool[]> {
+	return (await cell.tools())
+		.filter((tool) => refusal(tool) === undefined)
+		.map(({ name, description, parameters }) => ({ name, description, parameters }));
+}
 
-	if (line.name === undefined)
-		return tools
-			.filter((tool) => refusal(tool) === undefined)
-			.map(({ name, description, parameters }) => ({ name, description, parameters }));
-	const { name } = line;
-	const tool = tools.find((candidate) => candidate.name === name);
+/**
+ * Runs the call `line` with `cell`, when the cell has its tool and can call it. A failed call throws with its text, else
+ * `Tool <name> failed`. Else a tool with a schema for its output gives that output, and any other tool its text.
+ */
+async function call(cell: Cell, { name, args }: CallLine, signal: AbortSignal): Promise<JsonValue> {
+	const tool = (await cell.tools()).find((candidate) => candidate.name === name);
 
 	if (tool === undefined) throw new Error(`Tool ${name} is not available`);
 	const refused = refusal(tool);
 
 	if (refused !== undefined) throw new Error(refused);
+	const { isError, text, output } = await cell.call(tool, args, signal);
 
-	return cell.call(tool, line.args ?? {}, signal);
+	if (isError) throw new Error(text || `Tool ${name} failed`);
+
+	if (!tool.structured) return text;
+
+	if (output === undefined) throw new Error(`Tool ${name} gave no structured output`);
+
+	return output;
 }
 
 /**
@@ -243,8 +282,8 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 
 /**
  * Serves the one request of `socket`, a connection to `running`, with `answer`. A close of the socket aborts it. A line
- * of more than `MAX_LINE_BYTES`, 16 MiB, gets an error and runs nothing. The data after the line, or after such a refusal, is
- * read and ignored.
+ * of more than `MAX_LINE_BYTES`, 16 MiB, gets an error and runs nothing. The data after the line, or after such a
+ * refusal, is read and ignored.
  */
 function serveConnection(
 	running: KernelServer,
@@ -307,9 +346,12 @@ function checkedLine(text: string, token: string): ToolsLine {
 
 	if (!Value.Check(Tokened, line) || !sameToken(line.token, token)) throw new Error(INVALID_TOKEN);
 
-	if (!Value.Check(ToolsLine, line)) throw invalidRequest(Value.Errors(ToolsLine, line));
+	if (Value.Check(ToolsLine, line)) return line;
 
-	return line;
+	// The errors of the union list both shapes, so the request gets the errors of the shape that it names.
+	const named = "list" in line ? ListLine : CallLine;
+
+	throw invalidRequest(Value.Errors(named, line));
 }
 
 /** The error of a request whose first error in `errors` gives the field and the rule that it breaks. */

@@ -79,7 +79,7 @@ def _tools():
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.connect(path)
-            connection.sendall(_line({}, token))
+            connection.sendall(_line({"list": True}, token))
             chunks = []
 
             while chunk := connection.recv(65536):

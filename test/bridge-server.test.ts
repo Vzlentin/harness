@@ -7,7 +7,6 @@ import {
 	CELL_START,
 	HARNESS_TOOLS_SOCKET,
 	HARNESS_TOOLS_TOKEN,
-	INVALID_CELL_START,
 	KERNEL_STARTING,
 	type KernelStarting,
 	STARTUP_CODE,
@@ -17,7 +16,12 @@ import { serveBridge } from "../src/host/bridge.ts";
 import { rawReply, until } from "./helpers.ts";
 
 /** A request line of the tests, which may break the shape of a request. */
-type Line = { readonly token?: string; readonly name?: string | number; readonly args?: JsonObject };
+type Line = {
+	readonly token?: string;
+	readonly list?: boolean;
+	readonly name?: string | number;
+	readonly args?: JsonObject;
+};
 
 /** A kernel start without a conversation, as in Pi. */
 const kernelStart = (): Pick<KernelStarting, "env" | "startupCode"> => ({ env: {}, startupCode: [] });
@@ -72,8 +76,15 @@ describe("kernel servers", () => {
 				ok: false,
 				error: "Invalid tools token",
 			});
-			expect(await reply({ name: 3 })).toEqual({ ok: false, error: "Invalid tools request: /name must be string" });
-			expect(await reply({})).toEqual({
+			expect(await reply({ name: 3, args: {} })).toEqual({
+				ok: false,
+				error: "Invalid tools request: /name must be string",
+			});
+			expect(await reply({ list: true, args: {} })).toEqual({
+				ok: false,
+				error: "Invalid tools request: /args schema is false",
+			});
+			expect(await reply({ list: true })).toEqual({
 				ok: true,
 				value: [{ name: "todo", description: "Keeps todos", parameters: { type: "object" } }],
 			});
@@ -96,17 +107,38 @@ describe("kernel servers", () => {
 		}
 	});
 
+	it("fails a call of a tool with an output schema that gives no structured output", async () => {
+		const servers = new KernelServers();
+		const { reply } = await served(servers);
+
+		servers.open("kernel", "cell-1", {
+			call: async () => ({ isError: false, text: "" }),
+			tools: async () => [
+				{ name: "todo", description: "Keeps todos", parameters: { type: "object" }, structured: true },
+			],
+		});
+
+		try {
+			expect(await reply({ name: "todo", args: {} })).toEqual({
+				ok: false,
+				error: "Tool todo gave no structured output",
+			});
+		} finally {
+			await servers.close();
+		}
+	});
+
 	it("refuses a line longer than 16 MiB, and serves a line of that size", async () => {
 		const servers = new KernelServers();
 		const { reply } = await served(servers);
 		const limit = 16 * 1024 * 1024;
 
 		try {
-			expect(await reply({}, limit + 1)).toEqual({
+			expect(await reply({ list: true }, limit + 1)).toEqual({
 				ok: false,
 				error: "Invalid tools request: the line is longer than 16 MiB",
 			});
-			expect(await reply({}, limit)).toEqual({
+			expect(await reply({ list: true }, limit)).toEqual({
 				ok: false,
 				error: "No cell of this kernel runs: tools runs a tool only while a cell runs",
 			});
@@ -136,15 +168,15 @@ describe("kernel servers", () => {
 		const warnings: unknown[] = [];
 		const bridge = serveBridge(events, (cause) => warnings.push(cause));
 
-		events.emit(CELL_START, { conversationId: 7 });
-		expect(warnings).toEqual([new Error(INVALID_CELL_START)]);
+		events.emit(CELL_START.channel, { conversationId: 7 });
+		expect(warnings).toEqual([new Error(CELL_START.invalid)]);
 		await bridge.close();
 
 		const waits: Promise<void>[] = [];
 		const env = {};
 		const startupCode: string[] = [];
 		const waitFor = (promise: Promise<void>) => void waits.push(promise);
-		events.emit(KERNEL_STARTING, { conversationId: 7, env, startupCode, waitFor });
+		events.emit(KERNEL_STARTING.channel, { conversationId: 7, env, startupCode, waitFor });
 
 		expect(waits).toHaveLength(1);
 		await expect(waits[0]).rejects.toThrow("The host is closing");

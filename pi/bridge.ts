@@ -34,17 +34,16 @@ export function registerBridge(pi: ExtensionAPI, harness: Pick<Harness, "bridge"
 		session = { ctx, servers: new bridge.KernelServers() };
 	});
 
-	bridge.listenBridge(pi.events, {
-		kernelStarting: bridge.KernelStarting,
-		cellStart: CellStart,
-		cellEnd: CellEnd,
-		servers: () => session?.servers,
-		kernel: (starting) => ({ key: KERNEL, starting }),
-		cell: (start) => ({ key: KERNEL, id: start.toolCallId, cell: piCell(start) }),
-		ended: (end) => ({ key: KERNEL, id: end.toolCallId }),
-		// A write to stderr would break the TUI, so an invalid payload gives a notification.
-		warn: (message) => session?.ctx.ui.notify(message, "warning"),
-	});
+	// A write to stderr would break the TUI, so an invalid payload gives a notification.
+	const warn = (message: string) => session?.ctx.ui.notify(message, "warning");
+
+	bridge.onValid(pi.events, bridge.KERNEL_STARTING, bridge.KernelStarting, warn, (starting) =>
+		session?.servers.serveStart(starting, KERNEL),
+	);
+	bridge.onValid(pi.events, bridge.CELL_START, CellStart, warn, (start) =>
+		session?.servers.open(KERNEL, start.toolCallId, piCell(start)),
+	);
+	bridge.onValid(pi.events, bridge.CELL_END, CellEnd, warn, (end) => session?.servers.end(KERNEL, end.toolCallId));
 
 	pi.on("session_shutdown", async () => {
 		const closing = session;
@@ -55,17 +54,15 @@ export function registerBridge(pi: ExtensionAPI, harness: Pick<Harness, "bridge"
 
 /**
  * The cell of `start`. Its calls are nested calls of the cell's call, so Pi checks their arguments and runs the hooks of
- * the session on them.
+ * the session on them, and aborts them when the request stops.
  */
 function piCell({ ctx }: Static<typeof CellStart>): Cell {
 	return {
-		async call({ name, structured }, args, signal) {
+		async call({ name }, args, signal) {
 			const { result, isError } = await ctx.executeTool(name, args, { signal });
 			const text = result.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n");
 
-			if (isError) throw new Error(text || `Tool ${name} failed`);
-
-			return structured && result.structuredContent !== undefined ? result.structuredContent : text;
+			return { isError, text, output: result.structuredContent };
 		},
 		tools: async () =>
 			ctx.tools.map(({ name, description, parameters, outputSchema }) => ({

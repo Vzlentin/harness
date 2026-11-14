@@ -3,7 +3,6 @@
  * tools of each running cell, as nested calls of its `ipython` call.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/pi-ai";
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import type {
 	ConversationId,
@@ -13,9 +12,15 @@ import type {
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { ConversationKernelStarting } from "../bridge/kernel.ts";
-import { listenBridge } from "../bridge/listen.ts";
-import { type Cell, KernelServers } from "../bridge/server.ts";
+import { CELL_END, CELL_START, KERNEL_STARTING, KernelStarting } from "../bridge/kernel.ts";
+import { onValid } from "../bridge/listen.ts";
+import { type CallResult, type Cell, KernelServers } from "../bridge/server.ts";
+
+/** The payload of `KERNEL_STARTING` in the host, which also gives the conversation of the kernel. */
+const ConversationKernelStarting = Type.Object({
+	...KernelStarting.properties,
+	conversationId: Type.Unsafe<ConversationId>(Type.Integer()),
+});
 
 /** A function, as far as a payload check reads it. */
 const Callable = Type.Function([Type.Unknown()], Type.Unknown());
@@ -49,18 +54,16 @@ export type Bridge = {
  */
 export function serveBridge(events: EventBus, warn: (cause: unknown) => void): Bridge {
 	const servers = new KernelServers();
+	const warning = (message: string) => warn(new Error(message));
 
-	listenBridge(events, {
-		kernelStarting: ConversationKernelStarting,
-		cellStart: CellStart,
-		cellEnd: CellEnd,
-		servers: () => servers,
-		kernel: (starting) => ({ key: String(starting.conversationId), starting }),
-		cell: (start) => ({ key: String(start.conversationId), id: start.api.callId, cell: hostCell(start) }),
-		// The event has no call ID, and a kernel runs one cell at a time, so the oldest open cell is the one that ended.
-		ended: (end) => ({ key: String(end.conversationId) }),
-		warn: (message) => warn(new Error(message)),
-	});
+	onValid(events, KERNEL_STARTING, ConversationKernelStarting, warning, (starting) =>
+		servers.serveStart(starting, String(starting.conversationId)),
+	);
+	onValid(events, CELL_START, CellStart, warning, (start) =>
+		servers.open(String(start.conversationId), start.api.callId, hostCell(start)),
+	);
+	// The event has no call ID, and a kernel runs one cell at a time, so the oldest open cell is the one that ended.
+	onValid(events, CELL_END, CellEnd, warning, (end) => servers.end(String(end.conversationId)));
 
 	return { close: () => servers.close() };
 }
@@ -75,7 +78,7 @@ function hostCell({ api, context }: Static<typeof CellStart>): Cell {
 			// SAFETY: the same JSON object; pi-durable's type has mutable arrays, and the nested call does not change them.
 			const result = await api.executeTool(name, args as JsonObject, context);
 
-			return valueOf(name, structured, result);
+			return resultOf(structured, result);
 		},
 		tools: async () =>
 			(await api.agent(context)).callable.map(
@@ -91,21 +94,22 @@ function hostCell({ api, context }: Static<typeof CellStart>): Cell {
 }
 
 /**
- * What a cell gets for the nested call of the tool `name`: its structured output when the tool has a schema for it,
- * else its text. A failed call throws with the tool's text, else its error diagnostics.
+ * The raw result of a nested call. A tool without a schema gives its text as its structured output. A tool with a schema
+ * keeps no text, so a failed call without text gives its error diagnostics as its text.
  */
-function valueOf(name: string, structured: boolean, result: NestedToolExecutionResult): JsonValue {
+function resultOf(structured: boolean, result: NestedToolExecutionResult): CallResult {
 	const text = structured ? "" : textOf(result.structuredOutput);
-
-	// A tool with a schema whose call gave no structured output gives null, as its output is not kept.
-	if (!result.isError) return structured ? (result.structuredOutput ?? null) : text;
 
 	const diagnostics = result.diagnostics
 		.filter((diagnostic) => diagnostic.severity === "error")
 		.map((diagnostic) => diagnostic.message)
 		.join("\n");
 
-	throw new Error(text || diagnostics || `Tool ${name} failed`);
+	return {
+		isError: result.isError,
+		text: text || (result.isError ? diagnostics : ""),
+		output: structured ? result.structuredOutput : undefined,
+	};
 }
 
 /** The text of the output of a tool without a schema: a string, or a list of text and image items. */
