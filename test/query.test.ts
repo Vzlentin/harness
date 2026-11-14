@@ -107,10 +107,13 @@ describe("query", { timeout: 30_000 }, () => {
 	});
 
 	it("reads the last part of a conversation over the bound, and says so in the first line", async () => {
-		// The prompt and its answer pass the bound together. The wide model does not compact them.
-		const big = `Big start ${"x".repeat(MAX_QUERY.bytes / 2 + 10_000)}`;
+		// Two prompts and their answers pass the bound together. The wide model does not compact them. Linux refuses an
+		// argument of 128 KiB or more, so each prompt stays under it.
+		const big = `Big start ${"x".repeat(MAX_QUERY.bytes / 4 + 10_000)}`;
 		const env = { PI_SESSION_ID: "a" };
 		const handle = handleOf(await cli(["spawn", "--model", "faux-wide", "--prompt", big], env));
+		await answerOf(handle);
+		await cli(["send", handle, big], env);
 		await answerOf(handle);
 		await cli(["send", handle, "Last words"], env);
 		await answerOf(handle);
