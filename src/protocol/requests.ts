@@ -51,7 +51,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -213,7 +213,8 @@ export const RequestLine = Type.Union([
 	/** The handle of `caller` when it is a child of this host by handle, or `agent` when it is the project agent. */
 	Type.Object({ type: Type.Literal("whoami"), caller: Type.String() }),
 	/**
-	 * Waits until the host has answers of the children of `caller` to push, marks them read and replies with them. A
+	 * Waits until the host has answers of the children of `caller`, or answers of the user to its asks, to push, and
+	 * replies with them. The answers of the children then become read, and the answers of the user leave the queue. A
 	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("answers"), caller: Type.String() }),
@@ -527,15 +528,26 @@ export type WatchLine =
 	| { readonly stopped: true };
 
 /**
- * The answers of one child that the host pushes to its caller: the answers that `wait` gives, or its error when
- * `failed`.
+ * The answers of the user that the host pushes to the asker. For the ask `ask` with no parley: the line and the words
+ * of the ask. For the asks `asks` of the parley `parley`: the text of the parley.
  */
-export type Delivery = {
-	readonly handle: string;
-	readonly name?: string;
-	readonly text: string;
-	readonly failed: boolean;
-};
+export type UserDelivery =
+	| { readonly source: "ask"; readonly ask: number; readonly text: string }
+	| { readonly source: "parley"; readonly parley: string; readonly asks: number[]; readonly text: string };
+
+/**
+ * What the host pushes to a caller: the answers of a child, as `wait` gives them, or its error when `failed`, or the
+ * answers of the user to the asks of the caller.
+ */
+export type Delivery =
+	| {
+			readonly source: "child";
+			readonly handle: string;
+			readonly name?: string;
+			readonly text: string;
+			readonly failed: boolean;
+	  }
+	| UserDelivery;
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };

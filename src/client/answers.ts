@@ -1,6 +1,7 @@
 /**
- * The answers that the host pushes to a caller that is not a conversation of the host, such as a Pi session. This
- * module has no runtime import of Pi, chord or pi-durable, so the Pi extension can load it.
+ * The answers of children, and the answers of the user to asks, that the host pushes to a caller that is not a
+ * conversation of the host, such as a Pi session. This module has no runtime import of Pi, chord or pi-durable, so the
+ * Pi extension can load it.
  */
 
 import { type Delivery, errorMessage } from "../protocol/requests.ts";

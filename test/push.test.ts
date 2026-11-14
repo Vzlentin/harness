@@ -53,8 +53,7 @@ describe("push", { timeout: 30_000 }, () => {
 			gates.get("Task:\nTree leaf")?.resolve();
 			await until(() => answers.deliveries.length === 1);
 			const [delivery] = answers.deliveries;
-			expect(delivery?.handle).toBe(tree);
-			expect(delivery?.failed).toBe(false);
+			expect(delivery).toMatchObject({ source: "child", handle: tree, failed: false });
 			expect(delivery?.text).toContain(`Answer to subagent nested (${branch}) finished`);
 			// The answer of the leaf went to the branch, and the branch's to the tree, each once. Pushes of earlier tests can
 			// still come, so only the pushes of this tree count.
@@ -82,7 +81,7 @@ describe("push", { timeout: 30_000 }, () => {
 			// The parent's own answer comes while its quiet child still works.
 			await until(() => answers.deliveries.length === 1);
 			expect(called("Task:\nQuiet child")).toBe(1);
-			expect(answers.deliveries[0]?.handle).toBe(parent);
+			expect(handleOf(answers.deliveries[0])).toBe(parent);
 			expect((await request({ type: "status", handle: parent }, { start: false }))?.state).toBe("idle");
 			const child = spawnedBy.get("Task:\nQuiet parent") ?? "";
 			gates.get("Task:\nQuiet child")?.resolve();
@@ -108,7 +107,12 @@ describe("push", { timeout: 30_000 }, () => {
 		try {
 			const failed = (await spawnAs(caller, "Task:\nFail", { notify: true })).handle;
 			await until(() => answers.deliveries.length === 1);
-			expect(answers.deliveries[0]).toEqual({ handle: failed, text: `${failed} failed: overloaded`, failed: true });
+			expect(answers.deliveries[0]).toEqual({
+				source: "child",
+				handle: failed,
+				text: `${failed} failed: overloaded`,
+				failed: true,
+			});
 			expect(answers.deliveries.map(deliveryText)).toEqual([
 				`subagent ${failed} failed\n\n${failed} failed: overloaded`,
 			]);
@@ -116,7 +120,12 @@ describe("push", { timeout: 30_000 }, () => {
 			await until(() => called("Task:\nAbort me") === 1);
 			await request({ type: "abort", handle: aborted }, { start: false });
 			await until(() => answers.deliveries.length === 2);
-			expect(answers.deliveries[1]).toEqual({ handle: aborted, text: `${aborted} was aborted`, failed: true });
+			expect(answers.deliveries[1]).toEqual({
+				source: "child",
+				handle: aborted,
+				text: `${aborted} was aborted`,
+				failed: true,
+			});
 		} finally {
 			answers.listener.close();
 		}
@@ -176,7 +185,7 @@ describe("push", { timeout: 30_000 }, () => {
 			await until(() => answers.deliveries.length === 1);
 			const second = await spawnAs(caller, "Task:\nShown", { notify: true });
 			await until(() => answers.deliveries.length === 2);
-			expect(answers.deliveries.map((delivery) => delivery.handle)).toEqual([first.handle, second.handle]);
+			expect(answers.deliveries.map(handleOf)).toEqual([first.handle, second.handle]);
 			expect(answers.errors).toEqual([new Error("The message did not show")]);
 		} finally {
 			answers.listener.close();
@@ -193,7 +202,7 @@ describe("push", { timeout: 30_000 }, () => {
 			host = await startHost();
 			const { handle } = await spawnAs(caller, "Task:\nAfter restart", { notify: true });
 			await until(() => answers.deliveries.length === 1);
-			expect(answers.deliveries[0]?.handle).toBe(handle);
+			expect(handleOf(answers.deliveries[0])).toBe(handle);
 		} finally {
 			answers.listener.close();
 		}
@@ -209,7 +218,7 @@ describe("push", { timeout: 30_000 }, () => {
 			host = await startHost();
 			const { handle } = await spawnAs(caller, "Task:\nLate host", { notify: true });
 			await until(() => answers.deliveries.length === 1);
-			expect(answers.deliveries[0]?.handle).toBe(handle);
+			expect(handleOf(answers.deliveries[0])).toBe(handle);
 		} finally {
 			answers.listener.close();
 		}
@@ -277,6 +286,11 @@ async function untilState(handle: string, state: string): Promise<void> {
 		async () => expect((await request({ type: "status", handle }, { start: false }))?.state).toBe(state),
 		{ timeout: 10_000 },
 	);
+}
+
+/** The handle of the child of `delivery`, or nothing for another delivery. */
+function handleOf(delivery: Delivery | undefined): string | undefined {
+	return delivery?.source === "child" ? delivery.handle : undefined;
 }
 
 /** An `answers` listener, every delivery that it gave, and every error of a delivery. */

@@ -21,6 +21,7 @@ import { Value } from "typebox/value";
 import {
 	type AnswerInput,
 	type Ask,
+	askAnswerText,
 	type AskList,
 	type AskOption,
 	type AskRound,
@@ -45,6 +46,7 @@ import {
 	type ParleyFrame,
 	type ParleyList,
 	PARLEYS_KIND,
+	parleyText,
 	type Part,
 	type PartAdd,
 	type PartFilter,
@@ -69,6 +71,7 @@ import {
 	type ThreadMessages,
 	THREADS_KIND,
 } from "../protocol/project.ts";
+import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
 
 /** The number of entries that one page of a thread read gives. */
 const PAGE = 200;
@@ -563,7 +566,9 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * Writes the answers `answers` for the caller `by`, and gives the asks and the parleys that became a contract. Each
  * answer replaces the answer of its ask, with its label and its words, as one unit. The answer `ok` to the read-back of
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
- * ask of the parley must be answered or dropped, and its `design_sense` set.
+ * ask of the parley must be answered or dropped, and its `design_sense` set. The same commit queues the answers for
+ * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
+ * no parley. An ask whose asker is `by` gets no delivery.
  */
 export async function answerAsks(tx: Tx, answers: readonly AnswerInput[], by: string): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
@@ -595,7 +600,44 @@ export async function answerAsks(tx: Tx, answers: readonly AnswerInput[], by: st
 		if (parley !== undefined && input.answer === "ok") readBacks.add(parley.id);
 	}
 
-	return { parleys: [...readBacks].map((id) => makeContract(parleys, asks, id, at, by)), asks: written };
+	const contracts = [...readBacks].map((id) => makeContract(parleys, asks, id, at, by));
+	await queueAnswers(tx, deliveries(parleys, asks, written, by));
+
+	return { parleys: contracts, asks: written };
+}
+
+/**
+ * The deliveries of the answered asks `written` to their askers other than `by`, in the order of `written`: one for
+ * each asker and parley, with the text of the parley in `parleys` and `asks`, and one for each ask with no parley.
+ */
+function deliveries(parleys: readonly Parley[], asks: readonly Ask[], written: readonly Ask[], by: string) {
+	const queued: UserAnswerInput[] = [];
+	const byParley = new Map<string, number[]>();
+
+	for (const ask of written) {
+		if (ask.asker === by) continue;
+
+		if (ask.parley === undefined) {
+			queued.push({ asker: ask.asker, delivery: { source: "ask", ask: ask.id, text: askAnswerText(ask) } });
+			continue;
+		}
+
+		const key = `${ask.asker}\n${ask.parley.id}`;
+		const found = byParley.get(key);
+
+		if (found !== undefined) {
+			found.push(ask.id);
+			continue;
+		}
+
+		const parley = known(parleys, ask.parley.id, "parley");
+		const text = parleyText({ parley, asks: parleyAsks(asks, parley.id) });
+		const ids = [ask.id];
+		byParley.set(key, ids);
+		queued.push({ asker: ask.asker, delivery: { source: "parley", parley: parley.slug, asks: ids, text } });
+	}
+
+	return queued;
 }
 
 /** Drops the open ask `id` for the caller `by`, and gives it. The ask of a parley that is not open does not change. */
@@ -614,7 +656,10 @@ export async function dropAsk(tx: Tx, id: number, by: string): Promise<Ask> {
 	return Value.Clone(dropped);
 }
 
-/** Makes the caller `by` the asker of the open asks of the open parley `slug`, and gives the parley and its asks. */
+/**
+ * Makes the caller `by` the asker of the open asks of the open parley `slug`, and gives the parley and its asks. The
+ * answers of the parley that wait in the queue go: the reply has them, and no asker gets them after the take.
+ */
 export async function takeParley(tx: Tx, slug: string, by: string): Promise<ParleyAsks> {
 	const parley = openParley(knownParley((await tx.doc(Parleys)).parleys, slug));
 	const asks = (await tx.doc(Asks)).asks;
@@ -623,6 +668,8 @@ export async function takeParley(tx: Tx, slug: string, by: string): Promise<Parl
 	for (const ask of asks) {
 		if (ask.parley?.id === parley.id && ask.state === "open") Object.assign(ask, { asker: by, at, by });
 	}
+
+	await dropParleyAnswers(tx, parley.slug);
 
 	return { parley: Value.Clone(parley), asks: parleyAsks(asks, parley.id) };
 }

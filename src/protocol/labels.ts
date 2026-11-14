@@ -3,7 +3,14 @@ import { AGENT_HANDLE } from "./target.ts";
 
 /** The text of the message that brings `delivery` to its caller. */
 export function deliveryText(delivery: Delivery): string {
-	return `subagent ${runDisplayName(delivery)} ${delivery.failed ? "failed" : "finished"}\n\n${delivery.text}`;
+	switch (delivery.source) {
+		case "child":
+			return `subagent ${runDisplayName(delivery)} ${delivery.failed ? "failed" : "finished"}\n\n${delivery.text}`;
+		case "ask":
+			return `the user answered ask ${delivery.ask}\n\n${delivery.text}`;
+		case "parley":
+			return `the user answered the parley ${delivery.parley}\n\n${delivery.text}`;
+	}
 }
 
 export function isValidRunName(value: string): boolean {

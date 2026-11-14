@@ -57,6 +57,9 @@ export const calls: Call[] = [];
 /** The texts of the user messages of the last request for each prompt, in order. */
 export const contexts = new Map<string, string[]>();
 
+/** The role of the message before the last user message of the last request for each prompt. */
+export const before = new Map<string, Message["role"] | undefined>();
+
 /** The system prompt and the tools of the last request for each prompt: their names, and their full declarations. */
 export const requests = new Map<
 	string,
@@ -205,6 +208,7 @@ async function respond(
 		prompt,
 		messages.flatMap((message) => (message.role === "user" ? [textOf(message)] : [])),
 	);
+	before.set(prompt, lastUser === undefined ? undefined : messages[messages.indexOf(lastUser) - 1]?.role);
 	const [system] = context.messages;
 
 	if (system?.role === "system") {
@@ -555,6 +559,7 @@ export async function setUp(): Promise<void> {
 	root = await mkdtemp("/tmp/harness-");
 	requests.clear();
 	contexts.clear();
+	before.clear();
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));

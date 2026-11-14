@@ -80,7 +80,12 @@ type Tool = {
 type Args = Readonly<Record<string, string | number | readonly string[] | readonly number[] | readonly object[]>>;
 
 /** A message that the extension sent to Pi, with its options. */
-type Sent = { readonly text: string; readonly details: unknown; readonly options: unknown };
+type Sent = {
+	readonly customType: string;
+	readonly text: string;
+	readonly details: unknown;
+	readonly options: unknown;
+};
 
 /** A notification that the extension showed in the session. */
 type Notification = { readonly message: string; readonly type: string | undefined };
@@ -241,7 +246,7 @@ async function load(): Promise<Registered> {
 				? message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
 				: message.content;
 
-			registered.messages.push({ text, details: message.details, options });
+			registered.messages.push({ customType: message.customType, text, details: message.details, options });
 		},
 	};
 
@@ -600,8 +605,9 @@ describe("the Pi extension", () => {
 
 		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
 		expect(registered.messages[0]).toEqual({
+			customType: "subagent-answer",
 			text: `subagent ${first} finished\n\nAnswer to Task:\nOne`,
-			details: { handle: first, text: "Answer to Task:\nOne", failed: false },
+			details: { source: "child", handle: first, text: "Answer to Task:\nOne", failed: false },
 			options: { triggerTurn: true, deliverAs: "followUp" },
 		});
 
@@ -662,6 +668,34 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_start", reason: "startup" });
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(registered.messages).toHaveLength(1);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("sends each answer of the user to an ask of the session as a message that starts a turn", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+
+		const written = await request(
+			{ type: "ask", action: "round", caller: "session", asks: [{ title: "Push now?" }] },
+			{ start: false },
+		);
+
+		if (written === undefined || !("asks" in written)) throw new Error("no host");
+		const id = written.asks[0]?.id ?? 0;
+		await request(
+			{ type: "ask", action: "answer", caller: "user", answers: [{ id, answer: "own", label: "Not yet" }] },
+			{ start: false },
+		);
+		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
+		const text = `${id} · Push now? · own · Not yet\n`;
+
+		expect(registered.messages[0]).toEqual({
+			customType: "user-answer",
+			text: `the user answered ask ${id}\n\n${text}`,
+			details: { source: "ask", ask: id, text },
+			options: { triggerTurn: true, deliverAs: "followUp" },
+		});
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 

@@ -1,10 +1,10 @@
 /**
- * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children, the `todo`
- * tool and the todo widget, the `thread`, `rule`, `term`, `part` and `parley` tools of the store of the project, the
- * gate on the tool calls of the session, the mirror sessions of `/harness`, `rlm` in the IPython kernels of the
- * session, and `/vc`, the visual copy of the transcript, which marks a copied draft sent. They use the client of
- * `@vzlentin/harness`, the dependency of this package, from its built `dist/`, and start the host of that install. The
- * `.bin` folder that holds its `harness` command goes last on `PATH`.
+ * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the answers
+ * of the user to the asks of the session, the `todo` tool and the todo widget, the `thread`, `rule`, `term`, `part`
+ * and `parley` tools of the store of the project, the gate on the tool calls of the session, the mirror sessions of
+ * `/harness`, `rlm` in the IPython kernels of the session, and `/vc`, the visual copy of the transcript, which marks a
+ * copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
+ * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -90,13 +90,14 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	registerProject(pi, harness);
 	registerGate(pi, harness);
 	registerVisualCopy(pi, harness);
-	// One open `answers` request for each session brings the answers of its children as messages that start a turn.
+	// One open `answers` request for each session brings the answers of its children, and the answers of the user to its
+	// asks, as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 
 	const deliver = (delivery: protocol.Delivery): void => {
 		pi.sendMessage(
 			{
-				customType: "subagent-answer",
+				customType: delivery.source === "child" ? "subagent-answer" : "user-answer",
 				content: [{ type: "text", text: protocol.deliveryText(delivery) }],
 				display: true,
 				details: delivery,
@@ -188,13 +189,13 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	);
 
 	pi.on("session_start", (_event, ctx) => {
-		// A session that spawned children starts the host, so it gets the answers that came while Pi was closed.
+		// A session that spawned children or asked the user starts the host, so it gets the answers that came while Pi was
+		// closed.
 		listener?.close();
 		// A write to stderr would break the TUI, so a delivery that fails is a notification.
 		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
 			start: hasSpawned(ctx),
-			onError: (error) =>
-				ctx.ui.notify(`Could not show the answer of a subagent: ${protocol.errorMessage(error)}`, "error"),
+			onError: (error) => ctx.ui.notify(`Could not show an answer: ${protocol.errorMessage(error)}`, "error"),
 		});
 
 		subagents.start(ctx);
@@ -251,13 +252,15 @@ function sessionScope(pi: ExtensionAPI, ctx: ExtensionContext): rlm.KernelScope 
 	};
 }
 
-/** Whether the session of `ctx` has a result of the `subagent` tool. */
+/** Whether the session of `ctx` has a result of the `subagent` tool or of the `parley` tool. */
 function hasSpawned(ctx: ExtensionContext): boolean {
 	return ctx.sessionManager
 		.getEntries()
 		.some(
 			(entry) =>
-				entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent",
+				entry.type === "message" &&
+				entry.message.role === "toolResult" &&
+				(entry.message.toolName === "subagent" || entry.message.toolName === "parley"),
 		);
 }
 

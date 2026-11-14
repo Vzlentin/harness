@@ -725,6 +725,13 @@ export function askLine(ask: Ask): string {
 	}
 }
 
+/** The text of the answered ask `ask` with no parley: its line, then each of the words of the user on its own line. */
+export function askAnswerText(ask: Ask): string {
+	const words = ask.state === "answered" ? (ask.words ?? []) : [];
+
+	return [askLine(ask), ...words].map((line) => `${line}\n`).join("");
+}
+
 /**
  * The last line of the parley `parley` with its asks `asks`. For an open parley, the answer line: the plan of each open
  * your call with a plan, then `ok` when no ask is open or when another ask is open. For any other status, the command

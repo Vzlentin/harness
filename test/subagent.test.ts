@@ -1090,6 +1090,80 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("holds the answers of the user to a caller while the push of its child waits after a failure", async () => {
+		const store = await restartWithStore();
+		const parent = handleOf(await cli(["spawn", "--prompt", "Held parent"]));
+		await cli(["wait", parent]);
+		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[parent]?.conversationId;
+		const conversation = store.conversation.bind(store);
+		const pushed: string[] = [];
+		let refused = false;
+
+		const lookups = vi.spyOn(store, "conversation").mockImplementation(async (...args) => {
+			const found = await conversation(...args);
+
+			// oxlint-disable-next-line typescript/unbound-method -- the condition only reads whether `submit` is a spy.
+			if (found !== undefined && args[0] === id && !vi.isMockFunction(found.submit)) {
+				const submitter: ContextSubmit = found;
+				const submit = submitter.submit.bind(submitter);
+				vi.spyOn(submitter, "submit").mockImplementation(async (...submitted) => {
+					const [draft] = submitted;
+					const content = draft.type === "input" ? JSON.stringify(draft.content) : "";
+
+					if (!refused && content.includes("Held child")) {
+						refused = true;
+						throw new Error("Input refused once");
+					}
+
+					if (content.includes("Held child")) pushed.push("child");
+
+					if (content.includes("the user answered ask")) pushed.push("user");
+
+					return submit(...submitted);
+				});
+			}
+
+			return found;
+		});
+
+		const client = await connect({ start: false });
+
+		try {
+			if (client === undefined) throw new Error("no host");
+
+			await client.request({
+				type: "spawn",
+				requestId: "held-child",
+				caller: String(id),
+				notify: true,
+				provider: "faux",
+				model: "faux-1",
+				callerThinking: "medium",
+				cwd: root,
+				prompt: "Held child",
+			});
+
+			// The answer comes while the push of the child waits 1 s after its failure.
+			await until(() => refused);
+
+			const written = await client.request({
+				type: "ask",
+				action: "round",
+				caller: String(id),
+				asks: [{ title: "Held ask" }],
+			});
+
+			if (!("asks" in written)) throw new Error("no asks");
+			const answers = written.asks.map((ask) => ({ id: ask.id, answer: "own", label: "Yes" }));
+			await client.request({ type: "ask", action: "answer", caller: "user", answers });
+			await until(() => pushed.length === 2);
+			expect(pushed).toEqual(["child", "user"]);
+		} finally {
+			client?.close();
+			lookups.mockRestore();
+		}
+	});
+
 	it("keeps the order of the answers to a caller when the take of the older child fails", async () => {
 		const store = await restartWithStore();
 		const parent = handleOf(await cli(["spawn", "--prompt", "Taken parent"]));
