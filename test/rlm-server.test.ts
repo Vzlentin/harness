@@ -102,7 +102,7 @@ describe("kernel servers", () => {
 		}
 	});
 
-	it("refuses a line longer than 1 MiB plus 64 KiB, and serves a line of that size", async () => {
+	it("refuses a line longer than 16 MiB, and serves a line of that size", async () => {
 		const sent: string[] = [];
 
 		const send: Send = async (request) => {
@@ -112,7 +112,7 @@ describe("kernel servers", () => {
 
 		const servers = new KernelServers(send);
 		const env = await served(servers);
-		const limit = 1024 * 1024 + 64 * 1024;
+		const limit = 16 * 1024 * 1024;
 		const line = JSON.stringify({ token: env[HARNESS_RLM_TOKEN], action: "list", args: {} });
 
 		// A valid request, with spaces after it up to `bytes` bytes.
@@ -122,7 +122,7 @@ describe("kernel servers", () => {
 		try {
 			expect(await reply(limit + 1)).toEqual({
 				ok: false,
-				error: "Invalid rlm request: the line is longer than 1 MiB plus 64 KiB",
+				error: "Invalid rlm request: the line is longer than 16 MiB",
 			});
 			expect(sent).toEqual([]);
 			expect(await reply(limit)).toEqual({ ok: false, error: "sent" });

@@ -37,11 +37,9 @@ import {
 	STORE_LOCK_WAIT_MS,
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
-import { TURN_DEADLINE_MS } from "../rlm/limits.ts";
 import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
-import { Deadlines } from "./deadlines.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
@@ -116,8 +114,6 @@ export async function runHost(options: {
 	readonly models: Models;
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
 	readonly idleExitMs?: number;
-	/** For tests: the time of a turn of an RLM child, after which the host aborts it. Default 5 minutes. */
-	readonly rlmDeadlineMs?: number;
 	/** For tests: the time after which a bash call that sets no timeout stops. Default 300 seconds. */
 	readonly bashTimeoutSeconds?: number;
 	/** For tests: the system of the hold that keeps the Mac awake. Default the system of this process. */
@@ -128,7 +124,6 @@ export async function runHost(options: {
 		cwd: projectCwd,
 		models,
 		idleExitMs = IDLE_EXIT_MS,
-		rlmDeadlineMs = TURN_DEADLINE_MS,
 		bashTimeoutSeconds = BASH_TIMEOUT_SECONDS,
 		keepAwake: awakeSystem = NODE_AWAKE_SYSTEM,
 	} = options;
@@ -201,7 +196,6 @@ export async function runHost(options: {
 		bashTimeoutExtension(bashTimeoutSeconds),
 		createCodemodeExtension({ sandbox }),
 		...entries.extensions,
-		rlm.extension,
 	];
 
 	try {
@@ -247,7 +241,6 @@ export async function runHost(options: {
 
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
-	const deadlines = new Deadlines({ harness, warn, deadlineMs: rlmDeadlineMs });
 
 	base = {
 		harness,
@@ -344,7 +337,6 @@ export async function runHost(options: {
 		});
 	}).catch(async (cause: unknown) => {
 		push.close();
-		deadlines.close();
 		awake.close();
 		await rlm.close();
 		await entries.close();
@@ -362,7 +354,6 @@ export async function runHost(options: {
 		closing ??= (async () => {
 			clearInterval(timer);
 			push.close();
-			deadlines.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);

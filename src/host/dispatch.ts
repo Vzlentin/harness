@@ -4,7 +4,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type * as durable from "@earendil-works/pi-durable";
-import type { Harness, Tx } from "@earendil-works/pi-durable";
+import type { Harness } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
@@ -19,7 +19,6 @@ import {
 	versionMismatch,
 } from "../protocol/requests.ts";
 import { type ListRef, parseTarget, type Target } from "../protocol/target.ts";
-import { MAX_LIVE_CHILDREN, overInput, SEND_TOO_LARGE, SPAWN_TOO_LARGE, TOO_MANY_LIVE } from "../rlm/limits.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
@@ -213,8 +212,6 @@ function hello(request: Extract<Request, { type: "hello" }>): Replies["hello"] {
 async function send(request: Extract<Request, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
 	const { handle, requestId, notify } = request;
 	const record = await ownRecord(handler.harness, handle, request.caller);
-
-	if (record.kind === "rlm" && overInput(request.message)) throw new Error(SEND_TOO_LARGE);
 
 	return handler.push.whileActive(handle, async () => {
 		const found = await childTarget(handler, handle, record);
@@ -496,8 +493,6 @@ async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
-
-	if (request.kind === "rlm" && overInput(request.prompt)) throw new Error(SPAWN_TOO_LARGE);
 	let handle = await spawnedHandle(harness, request.requestId);
 
 	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
@@ -534,11 +529,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		for (let attempt = 0; handle === undefined; attempt += 1) {
 			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			// The record is written in the commit that creates the child. Commits run one at a time, so the count of the live
-			// RLM children there holds for spawns at the same time.
+			// The record is written in the commit that creates the child.
 			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
-				if (request.kind === "rlm") await refuseLiveOverflow(tx, request.caller);
-
 				await addRecord(tx, request.requestId, {
 					caller: request.caller,
 					conversationId: id,
@@ -568,20 +560,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	);
 
 	return childInfo(handler, handle, record);
-}
-
-/**
- * Refuses a new RLM child of `caller` in `tx`, the commit that creates it, when the caller has `MAX_LIVE_CHILDREN` RLM
- * children that are not closed. A closed child can keep its record, such as after a close of its parent.
- */
-async function refuseLiveOverflow(tx: Tx, caller: string): Promise<void> {
-	const own = Object.values((await tx.doc(ChildRecords)).children).filter(
-		(record) => record.caller === caller && record.kind === "rlm",
-	);
-
-	const closed = await Promise.all(own.map((record) => library.closed(tx, record.conversationId)));
-
-	if (closed.filter((isClosed) => !isClosed).length >= MAX_LIVE_CHILDREN) throw new Error(TOO_MANY_LIVE);
 }
 
 /**

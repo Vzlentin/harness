@@ -12,10 +12,17 @@ import { Value } from "typebox/value";
 import { errorMessage, HOST_CLOSING, type Reply } from "../protocol/requests.ts";
 import { runTool, type Send, type ToolArgs, type ToolScope, toolSchemas } from "../tool.ts";
 import { HARNESS_RLM_SOCKET, HARNESS_RLM_TOKEN, type KernelStarting, STARTUP_CODE } from "./kernel.ts";
-import { LINE_TOO_LONG, MAX_LINE_BYTES } from "./limits.ts";
 
 /** The error of a request without the token of its server. */
 const INVALID_TOKEN = "Invalid rlm token";
+
+/**
+ * The UTF-8 bytes of a request line, before its newline. It bounds the transport only: it stops a line that has no end,
+ * and is above any input that a model can give.
+ */
+const MAX_LINE_BYTES = 16 * 1024 * 1024;
+
+const LINE_TOO_LONG = "Invalid rlm request: the line is longer than 16 MiB";
 
 /**
  * The caller of the requests of a kernel and its spawn defaults: in the host, the conversation of the kernel and its
@@ -139,7 +146,7 @@ export class KernelServers {
 
 /**
  * Serves the one request of `socket`, a connection to `running`, with `answer`. A close of the socket aborts it. A line
- * of more than `MAX_LINE_BYTES` gets an error and runs nothing. The data after the line, or after such a refusal, is
+ * of more than `MAX_LINE_BYTES`, 16 MiB, gets an error and runs nothing. The data after the line, or after such a refusal, is
  * read and ignored.
  */
 function serveConnection(

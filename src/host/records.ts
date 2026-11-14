@@ -138,13 +138,6 @@ export async function addRecord(
 	current.requests[requestId] = fresh;
 }
 
-/** Whether the conversation `conversationId` is an RLM child: a child that `rlm` spawned. */
-export function isRlmChild(state: Readonly<ChildrenState> | null | undefined, conversationId: ConversationId): boolean {
-	return Object.values(state?.children ?? {}).some(
-		(record) => record.kind === "rlm" && record.conversationId === conversationId,
-	);
-}
-
 export async function renameRecord(harness: Harness, handle: string, name: string): Promise<void> {
 	await harness.commit(async (tx) => {
 		const record = (await tx.doc(ChildRecords)).children[handle];

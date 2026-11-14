@@ -431,8 +431,7 @@ async function agentStartMessage(
 
 /**
  * A kernel of the Pi session: it runs the startup code in its argument, then, as cells would, spawns a child without a
- * model and waits for it, spawns a quiet child, and spawns with a context of 1 MiB + 1 byte. It prints the results as
- * JSON.
+ * model and waits for it, and spawns a quiet child. It prints the results as JSON.
  */
 const KERNEL_SCRIPT = [
 	"import asyncio, json, sys",
@@ -440,17 +439,11 @@ const KERNEL_SCRIPT = [
 	"for line in json.loads(sys.argv[1]):",
 	"    exec(line, namespace)",
 	"rlm = namespace['rlm']",
-	"from harness_rlm import RlmError",
 	"async def main():",
 	"    child = await rlm.spawn('From the Pi kernel')",
 	"    answer = await rlm.wait(child)",
 	"    quiet = await rlm.spawn('Quiet from the Pi kernel')",
-	"    try:",
-	"        await rlm.spawn('Too large', context='x' * (1024 * 1024 + 1))",
-	"        error = None",
-	"    except RlmError as refused:",
-	"        error = str(refused)",
-	"    print(json.dumps({'child': child, 'answer': answer, 'quiet': quiet['handle'], 'error': error}))",
+	"    print(json.dumps({'child': child, 'answer': answer, 'quiet': quiet['handle']}))",
 	"asyncio.run(main())",
 ].join("\n");
 
@@ -774,12 +767,11 @@ describe("the Pi extension", () => {
 
 		const kernel = JSON.parse(stdout);
 
-		// The child takes the model and the working directory of the session, and the host refuses the size of an RLM
-		// spawn, so the spawns have `kind: "rlm"`.
+		// The child takes the model and the working directory of the session, and the spawns of the kernel have
+		// `kind: "rlm"`.
 		expect(kernel).toMatchObject({
-			child: { ...FAUX, cwd: root },
+			child: { ...FAUX, cwd: root, kind: "rlm" },
 			answer: "Answer to Task:\nFrom the Pi kernel",
-			error: "The prompt of an RLM spawn, with its files and context, is more than 1 MiB",
 		});
 
 		// The children of the kernel are those of the session's tool.

@@ -39,7 +39,7 @@ async def _call(action, args):
         raise RlmError(f"Could not reach the harness host: {error}") from error
 
     try:
-        # UTF-8, not ASCII escapes, as the limits of the host count bytes. A lone surrogate goes as its JSON escape.
+        # UTF-8, not ASCII escapes, as the line bound of the server counts bytes. A lone surrogate goes as its JSON escape.
         writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8", "backslashreplace") + b"\n")
         await writer.drain()
         # The host sends one line and ends the connection, so the reply is everything up to the end.
