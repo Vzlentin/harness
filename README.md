@@ -52,6 +52,7 @@ harness spawn --name review --prompt "Review the current diff"
 harness list
 harness wait <handle>
 harness send <handle> "Focus on error handling"
+harness query <handle> "Which files did it change?"  # ask a model about its transcript
 harness attach <handle>     # open it in Pi
 harness inspect <handle>    # open it in a browser, at the URL that it prints
 harness page <folder> --slug <slug>  # put a page on harness inspect; its Send posts to you

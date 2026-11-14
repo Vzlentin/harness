@@ -6,9 +6,12 @@
 /** The conversation of the shell: the caller of a CLI command that runs in it. */
 export const PI_SESSION_ID = "PI_SESSION_ID";
 
-/** The caller of a command with the environment `env`: `PI_SESSION_ID`, or `cli` when it is not set. */
+/** The caller of a command from a terminal that is not an agent: `PI_SESSION_ID` is not set. */
+export const CLI_CALLER = "cli";
+
+/** The caller of a command with the environment `env`: `PI_SESSION_ID`, or `CLI_CALLER` when it is not set. */
 export function cliCaller(env: NodeJS.ProcessEnv): string {
-	return env[PI_SESSION_ID] || "cli";
+	return env[PI_SESSION_ID] || CLI_CALLER;
 }
 
 /** The provider of the conversation's model: the default provider of a spawn. */

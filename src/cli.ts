@@ -34,7 +34,7 @@ import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
-import { runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
+import { runQuery, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -378,16 +378,38 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 	process.exit(0);
 }
 
+/**
+ * The target of `args`, `<handle>` or `--conversation <id>`, and the words after it. A first word that starts with
+ * `--` is not a handle.
+ */
+function commandTarget(args: string[]) {
+	const [first, id, ...rest] = args;
+
+	if (first === "--conversation" && id) return { target: parseTarget({ conversation: id }), rest };
+
+	if (first === undefined || first.startsWith("--")) usage();
+
+	return { target: parseTarget({ handle: first }), rest: args.slice(1) };
+}
+
 /** Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. */
 async function attachCommand(args: string[], project: string | undefined): Promise<void> {
-	const [first, id] = args;
-	let ref: Target;
+	const { target, rest } = commandTarget(args);
 
-	if (args.length === 1 && first !== undefined && first !== "--conversation") ref = parseTarget({ handle: first });
-	else if (args.length === 2 && first === "--conversation" && id) ref = parseTarget({ conversation: id });
-	else usage();
+	if (rest.length > 0) usage();
 
-	await openInPi({ project: projectOf(project, process.env, process.cwd()), target: ref });
+	await openInPi({ project: projectOf(project, process.env, process.cwd()), target });
+}
+
+/** Prints the answer of the query model to a question about a child, or a conversation with `--conversation <id>`. */
+async function queryCommand(args: string[], project: string | undefined): Promise<void> {
+	const { target, rest } = commandTarget(args);
+	const question = rest.join(" ").trim();
+
+	if (question === "") usage();
+	const { text } = await runQuery(targetRef(target), question, cliScope(project));
+
+	process.stdout.write(text);
 }
 
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
@@ -599,6 +621,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		wait: toolCommand(["  harness wait <handle> [--timeout <seconds>]"], waitArgs),
 		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
 		list: toolCommand(["  harness list"], listArgs),
+		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
 		parley: { usage: ["  harness parley show <slug>"], run: parleyCommand },
 		todo: {

@@ -17,6 +17,7 @@ const COMMANDS = [
 	"wait",
 	"stop",
 	"list",
+	"query",
 	"tree",
 	"parley",
 	"todo",

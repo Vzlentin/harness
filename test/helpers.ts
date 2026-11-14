@@ -19,6 +19,8 @@ import {
 	type FauxProviderState,
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxText,
+	fauxThinking,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -122,6 +124,14 @@ const pushSpawns = new Map<string, { readonly prompts: readonly string[]; readon
 /** The handle of the child that each prompt of `pushSpawns` spawned. */
 export const spawnedBy = new Map<string, string>();
 
+/**
+ * The prompt of a child for a query: its model thinks `Secret thinking`, writes `I list the files`, calls `bash` with
+ * `QUERIED_CALL`, whose output is `421234`, then answers `Listed the files`.
+ */
+export const QUERIED = "Queried";
+
+export const QUERIED_CALL = { command: "echo $((6*7))1234" };
+
 /** The answer that the prompts `Schema` and `Schema text` give through the `respond` tool. */
 export const SCHEMA_ANSWER = { verdict: "yes", score: 3 };
 
@@ -193,6 +203,13 @@ async function respond(
 		if (next !== undefined) {
 			return fauxAssistantMessage(fauxToolCall(next.name, next.arguments), { stopReason: "toolUse" });
 		}
+	}
+
+	if (prompt === QUERIED) {
+		if (last?.role === "toolResult") return fauxAssistantMessage("Listed the files");
+		const content = [fauxThinking("Secret thinking"), fauxText("I list the files"), fauxToolCall("bash", QUERIED_CALL)];
+
+		return fauxAssistantMessage(content, { stopReason: "toolUse" });
 	}
 
 	if (last?.role === "toolResult") {
@@ -402,6 +419,7 @@ export type TestSettings = {
 	readonly agentDepthLimit?: number;
 	readonly subagentModel?: string;
 	readonly subagentThinkingLevel?: string;
+	readonly queryModel?: string;
 	readonly packages?: readonly string[];
 };
 
@@ -591,6 +609,8 @@ export async function setUp(): Promise<void> {
 		models: [
 			{ id: "faux-1", reasoning: true },
 			{ id: "faux-2", reasoning: true },
+			// A context window that holds a transcript over the bound of a query with no compaction.
+			{ id: "faux-wide", reasoning: true, contextWindow: 4_000_000 },
 		],
 	});
 

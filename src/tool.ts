@@ -9,8 +9,9 @@ import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
 import { CUT_LINE, MAX_ANSWER } from "./protocol/answer-cut.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
+import { MAX_QUERY, QUERY_CUT_LINE } from "./protocol/query.ts";
 import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
-import { AGENT_HANDLE, type ListTarget } from "./protocol/target.ts";
+import { AGENT_HANDLE, type ListTarget, type TargetRef } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
 /** The signal of a call that its adapter cannot abort. */
@@ -27,6 +28,7 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer, after the earlier answers of the spawn and the sends that no \`wait\` gave. \`stop\` also stops the children the child spawned. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.
 - list: your children.
+- query: ask \`question\` about the child \`handle\`, to learn what it did without its transcript in your context. A model reads its user messages, its text and its tool calls with their arguments, not its thinking and not the tool output, and answers. It reads the last ${MAX_QUERY.text} of a longer conversation, and then the answer starts with the line \`${QUERY_CUT_LINE}\`.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.
 With the \`ipython\` tool, a cell has \`tools\`, which runs the tools of this conversation, this one too: \`await tools.<name>(**args)\`. \`print(tools.__doc__)\` lists them, and \`print(tools.<name>.__doc__)\` gives the arguments of one.`;
@@ -50,6 +52,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				Type.Literal("rename"),
 				Type.Literal("list"),
 				Type.Literal("stop"),
+				Type.Literal("query"),
 			],
 			{ description: "What to do" },
 		),
@@ -67,8 +70,9 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),
-		handle: text("send, wait, status, rename, stop: the hex ID that spawn prints in parentheses, not the name"),
+		handle: text("send, wait, status, rename, stop, query: the hex ID that spawn prints in parentheses, not the name"),
 		message: text("send: the message"),
+		question: text("query: the question about the child"),
 		followUp: Type.Optional(Type.Boolean({ description: "send: queue after the current answer, not a steer" })),
 		notify: Type.Optional(
 			Type.Boolean({ description: "spawn, send: false turns off the message with the answer; default true" }),
@@ -98,6 +102,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		result("rename", child),
 		result("list", Type.Array(child)),
 		result("stop", Type.Object({ handle: Type.String(), name: Type.Optional(Type.String()) })),
+		result("query", Type.Object({ answer: Type.String() })),
 	]);
 
 	return { parameters, output };
@@ -205,9 +210,23 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 			return { text: `Stopped ${runDisplayName(stopped)}\n`, data: { action, value: stopped } };
 		}
 
+		case "query":
+			return runQuery({ handle: handle() }, required(args.question?.trim(), "question", action), scope);
+
 		default:
 			throw new Error(`Unknown action: ${String(action)}`);
 	}
+}
+
+/** Asks `question` about the conversation of `ref`, for the action `query` and `harness query`, and gives the answer. */
+export async function runQuery(
+	ref: TargetRef,
+	question: string,
+	scope: Pick<ToolScope, "caller" | "send" | "signal">,
+): Promise<ToolResult> {
+	const reply = await scope.send({ type: "query", caller: scope.caller, question, ...ref }, scope.signal ?? NO_ABORT);
+
+	return { text: `${reply.answer}\n`, data: { action: "query", value: reply } };
 }
 
 /** The spawn request of `args`, with the caller's own provider, model, thinking level and working directory from `scope`. */

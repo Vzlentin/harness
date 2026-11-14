@@ -8,7 +8,7 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
-import { resolveModel } from "../children/model.ts";
+import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
 import { approvedText } from "../protocol/gate.ts";
 import {
 	type ChildInfo,
@@ -53,6 +53,7 @@ import {
 	writeRound,
 } from "./project.ts";
 import type { Connection, Push } from "./push.ts";
+import { queryConversation } from "./query.ts";
 import {
 	addRecord,
 	addRequest,
@@ -94,7 +95,6 @@ const context = BACKGROUND_CONTEXT;
 const DEPTH_LIMIT = 4;
 const DepthSetting = Type.Object({ agentDepthLimit: Type.Integer({ minimum: 1 }) });
 
-const ModelSetting = Type.Object({ subagentModel: Type.String() });
 const ThinkingSetting = Type.Object({ subagentThinkingLevel: ThinkingLevel });
 
 /** The answer of a `wait` for a turn whose answer a push already gave. */
@@ -106,7 +106,7 @@ export type Base = Omit<TaskHost, "signal"> &
 	CatchUpHost & {
 		/**
 		 * Pi's settings, for the depth limit of the subagent tree, the default model and thinking level of a spawn, and the
-		 * classifiers of the todos and of the gate.
+		 * classifiers of the todos and of the gate, and the model of a query.
 		 */
 		readonly settings: SettingsManager;
 		readonly push: Push;
@@ -146,6 +146,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return childInfo(handler, request.handle);
 		case "abort":
 			return abortChild(parseTarget(request), handler);
+		case "query":
+			return queryConversation(request, parseTarget(request), handler);
 		case "configure":
 			return configureChild(request, parseTarget(request), handler);
 		case "watch":
@@ -650,9 +652,6 @@ type SpawnSettings = {
 	readonly thinking: Static<typeof ThinkingLevel> | undefined;
 };
 
-/** The provider and the model of a child, which count as one unit. */
-type ModelChoice = { readonly provider: string; readonly model: string };
-
 /**
  * The provider and the model of a spawn: those of the request when it gives either one, else `setting`. A missing part
  * comes from the caller.
@@ -672,18 +671,6 @@ function spawnModel(request: Extract<Request, { type: "spawn" }>, setting: Spawn
 }
 
 /**
- * A `provider/model` text, split at the first `/`: a model ID can contain a `/`. Undefined without a provider or a
- * model.
- */
-function parseModelSetting(text: string): ModelChoice | undefined {
-	const slash = text.indexOf("/");
-
-	if (slash <= 0 || slash === text.length - 1) return undefined;
-
-	return { provider: text.slice(0, slash), model: text.slice(slash + 1) };
-}
-
-/**
  * What a spawn takes from Pi's global settings, read again at each spawn: the depth limit of a new subagent tree
  * (`agentDepthLimit`), and the default model (`subagentModel`, `provider/model`) and thinking level
  * (`subagentThinkingLevel`). A child of a child keeps the limit of its tree. Each key is checked alone: an invalid key
@@ -695,7 +682,7 @@ async function spawnSettings(settings: SettingsManager): Promise<SpawnSettings> 
 
 	return {
 		limit: Value.Check(DepthSetting, global) ? global.agentDepthLimit : DEPTH_LIMIT,
-		model: Value.Check(ModelSetting, global) ? parseModelSetting(global.subagentModel) : undefined,
+		model: subagentModel(settings),
 		thinking: Value.Check(ThinkingSetting, global) ? global.subagentThinkingLevel : undefined,
 	};
 }

@@ -51,6 +51,14 @@ Use `list` at any time to find the subagents of this session again, with their h
 
 `wait` waits until the subagent answers its last message, up to `timeout` seconds (default 1800), and gives its answer. If an earlier answer of the spawn or a `send` was never given by a `wait`, it gives those answers first, oldest first, each under a `--- Answer <i> of <n> ---` line. It fails when the last turn failed, and the error still includes the earlier answers. When a message already gave the answer, `wait` gives `No new answers: the last answer came as a message.` `subagent` tool calls in one message run in message order, so a `wait` after a `send` in the same message waits for the answer to that message.
 
+## Query
+
+```json
+{ "action": "query", "handle": "<handle>", "question": "Which files did it change, and why?" }
+```
+
+`query` asks a model one question about what a child did, without its transcript in your context. The model reads the messages of the user, the text of the child and its tool calls with their arguments, not its thinking and not the tool output. It reads the last 256 KiB of a longer conversation, and the answer then starts with a line that says so. It writes nothing in the child and starts no turn, so it works while the child is busy or idle. You can query only your own children, until you stop them: after `stop`, a query of the child fails with `Unknown subagent: <handle>`.
+
 ## Communicate
 
 ```json

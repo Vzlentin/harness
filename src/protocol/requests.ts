@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 25;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -218,6 +218,12 @@ export const RequestLine = Type.Union([
 	...withTarget({ type: Type.Literal("watch") }),
 	/** Stops the child's current turn. A mirror session sends it. */
 	...withTarget({ type: Type.Literal("abort") }),
+	/**
+	 * Asks a model of Pi's settings `question` about the conversation of the target, and replies with its answer. The model
+	 * reads the messages of the user, the text of the assistant and the tool calls, at most `MAX_QUERY` of the last part.
+	 * It writes nothing and starts no turn. The caller `cli` can query any target; another caller only its own children.
+	 */
+	...withTarget({ type: Type.Literal("query"), caller: Type.String(), question: Type.String({ minLength: 1 }) }),
 	/**
 	 * A mirror session's change of the child's model or thinking level. It has no caller, and it takes a handle, not a
 	 * conversation. A new model keeps the thinking level when the model has it, and takes the nearest level that it has
@@ -481,6 +487,7 @@ export type Replies = {
 	readonly stop: { readonly handle: string; readonly name?: string };
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
+	readonly query: { readonly answer: string };
 	readonly input: Replies["send"];
 	readonly note: { readonly child: ChildInfo };
 	readonly configure: ChildInfo;
