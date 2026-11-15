@@ -239,20 +239,36 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect(await request(note, { start: false })).toMatchObject({ child: { conversation: ids.child, state: "ended" } });
 	});
 
-	it("refuses to stop a task's child, which is not a subagent, and the project agent", async () => {
-		const ids = await startWithIds("unstopped", "Fixture unstopped");
-		expect(await taskRequest("wait-task", "unstopped")).toMatchObject({ outcome: { status: "completed" } });
+	it("aborts a busy task's child by stop, and the project agent, which both stay, and refuses other targets", async () => {
+		gates.set("Fixture stopped", Promise.withResolvers());
+		const ids = await startWithIds("stopped", "Fixture stopped");
 		const stop = { type: "stop", caller: "cli" } as const;
 
-		await expect(request({ ...stop, conversation: ids.child }, { start: false })).rejects.toThrow(
-			`The conversation ${ids.child} is not a subagent`,
-		);
+		expect(await request({ ...stop, conversation: ids.child }, { start: false })).toEqual({ handle: ids.child });
+		expect(aborted.has("Fixture stopped")).toBe(true);
+		expect(await taskRequest("wait-task", "stopped")).toMatchObject({ outcome: { status: "failed" } });
+		gates.delete("Fixture stopped");
+
 		await expect(request({ ...stop, conversation: ids.root }, { start: false })).rejects.toThrow(
 			`Unknown conversation: ${ids.root}`,
 		);
-		await expect(request({ ...stop, handle: AGENT_HANDLE }, { start: false })).rejects.toThrow(
+		await expect(request({ type: "stop", caller: "pi-1", conversation: ids.child }, { start: false })).rejects.toThrow(
+			`The conversation ${ids.child} is not a child of this caller`,
+		);
+		await expect(request({ type: "stop", caller: "pi-1", handle: AGENT_HANDLE }, { start: false })).rejects.toThrow(
 			`Unknown subagent: ${AGENT_HANDLE}`,
 		);
+
+		gates.set("Agent stopped", Promise.withResolvers());
+		const input = { type: "input", handle: AGENT_HANDLE, followUp: false } as const;
+		await request({ ...input, requestId: "agent-stopped", message: "Agent stopped" }, { start: false });
+		await until(() => called("Agent stopped") === 1);
+
+		expect(await request({ ...stop, handle: AGENT_HANDLE }, { start: false })).toEqual({ handle: AGENT_HANDLE });
+		expect(aborted.has("Agent stopped")).toBe(true);
+		gates.delete("Agent stopped");
+		await request({ ...input, requestId: "agent-after-stop", message: "Agent after stop" }, { start: false });
+		await until(() => called("Agent after stop") === 1);
 	});
 
 	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {

@@ -18,7 +18,7 @@ import {
 	ThinkingLevel,
 	versionMismatch,
 } from "../protocol/requests.ts";
-import { type ListRef, parseTarget, type Target } from "../protocol/target.ts";
+import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protocol/target.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
@@ -72,7 +72,6 @@ import { servesOf } from "./serving.ts";
 import type { Sessions } from "./sessions.ts";
 import {
 	callerConversation,
-	callerEntry,
 	childInfo,
 	childOf,
 	childTarget,
@@ -81,6 +80,7 @@ import {
 	library,
 	refuseEnded,
 	type SendOptions,
+	stoppedEntry,
 	type TargetHost,
 	target,
 	targetConversation,
@@ -475,9 +475,17 @@ async function rename(request: Extract<Request, { type: "rename" }>, handler: Ha
 	return childInfo(handler, request.handle);
 }
 
+/**
+ * Stops the child of `request` with the children it spawned. For `cli`, a target with no record, the project agent or a
+ * conversation such as a session of a task, has its turn aborted and stays.
+ */
 async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
-	const [handle, record] = await callerEntry(handler, parseTarget(request), request.caller);
+	const ref = parseTarget(request);
+	const entry = await stoppedEntry(handler, ref, request.caller);
 
+	if (entry === undefined) return { handle: (await abortTarget(ref, handler)).handle };
+
+	const [handle, record] = entry;
 	await endChildren(handler, [record], { keepAnswers: false });
 
 	return record.name === undefined ? { handle } : { handle, name: record.name };
@@ -666,11 +674,20 @@ async function spawnSettings(settings: SettingsManager): Promise<SpawnSettings> 
 }
 
 async function abortChild(ref: Target, handler: Handler): Promise<ChildInfo> {
+	return (await abortTarget(ref, handler)).found.info();
+}
+
+/**
+ * Aborts the turn of `ref`, and gives its target and its handle: `agent` for the project agent, else the ID of its
+ * conversation. The handle does not come from the info, which fails for a conversation without a model or a working
+ * directory.
+ */
+async function abortTarget(ref: Target, handler: Handler): Promise<{ readonly found: Found; readonly handle: string }> {
 	const found = await target(handler, ref);
 	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
 	await found.conversation.abort(context);
 
-	return found.info();
+	return { found, handle: ref.kind === "agent" ? AGENT_HANDLE : String(found.conversation.id) };
 }
 
 async function configureChild(

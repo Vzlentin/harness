@@ -169,9 +169,8 @@ async function libraryConversation(place: Place, id: string) {
 }
 
 /**
- * The handle and the record of the child of `target`, when `caller` may reach it: `cli`, a terminal that is not an
- * agent, any child; another caller only a child that it spawned. The project agent, and a conversation with no record,
- * such as a session of a task, are not children of this host.
+ * The handle and the record of the child of `target`, when `caller`, which is not `cli`, spawned it. The project agent,
+ * and a conversation with no record, such as a session of a task, are not children of this host.
  */
 export async function callerEntry(
 	host: Pick<TargetHost, "harness" | "place">,
@@ -180,35 +179,50 @@ export async function callerEntry(
 ): Promise<readonly [string, ChildRecord]> {
 	switch (target.kind) {
 		case "child":
-			return [
-				target.handle,
-				caller === CLI_CALLER
-					? await childRecord(host.harness, target.handle)
-					: await ownRecord(host.harness, target.handle, caller),
-			];
+			return [target.handle, await ownRecord(host.harness, target.handle, caller)];
 		case "agent":
 			throw new Error(`Unknown subagent: ${AGENT_HANDLE}`);
-		case "conversation":
-			return conversationEntryOf(host, target.id, caller);
+		case "conversation": {
+			const entry = await recordOfConversation(host, target.id);
+
+			if (entry?.[1].caller !== caller) throw new Error(`The conversation ${target.id} is not a child of this caller`);
+
+			return entry;
+		}
 	}
 }
 
-async function conversationEntryOf(
+/**
+ * The handle and the record of the child of `target` that `caller` stops. `cli`, a terminal that is not an agent, stops
+ * any child, and gets nothing when the target has no record: the project agent, or a conversation such as a session of
+ * a task. Another caller gets what `callerEntry` gives.
+ */
+export async function stoppedEntry(
+	host: Pick<TargetHost, "harness" | "place">,
+	target: Target,
+	caller: string,
+): Promise<readonly [string, ChildRecord] | undefined> {
+	if (caller !== CLI_CALLER) return callerEntry(host, target, caller);
+
+	switch (target.kind) {
+		case "child":
+			return [target.handle, await childRecord(host.harness, target.handle)];
+		case "agent":
+			return undefined;
+		case "conversation":
+			return recordOfConversation(host, target.id);
+	}
+}
+
+/** The handle and the record of the library conversation `id`, when it is a child of this host. */
+async function recordOfConversation(
 	host: Pick<TargetHost, "harness" | "place">,
 	id: string,
-	caller: string,
-): Promise<readonly [string, ChildRecord]> {
+): Promise<readonly [string, ChildRecord] | undefined> {
 	const conversation = (await libraryConversation(host.place, id)).conversation.id;
 	const state = await host.harness.snapshot(ChildRecords, context);
-	const entry = conversationEntry(Object.entries(state?.children ?? {}), String(conversation));
 
-	if (caller !== CLI_CALLER && entry?.[1].caller !== caller) {
-		throw new Error(`The conversation ${id} is not a child of this caller`);
-	}
-
-	if (entry === undefined) throw new Error(`The conversation ${id} is not a subagent`);
-
-	return entry;
+	return conversationEntry(Object.entries(state?.children ?? {}), String(conversation));
 }
 
 /**
@@ -298,8 +312,8 @@ export async function childEnded(handler: Pick<TargetHost, "place" | "owner">, r
 }
 
 /**
- * Whether the deliveries to the child of `record` wait: the end of what it serves ended it, and no message resumed it
- * since. As input, they would resume it.
+ * Whether the answers of the children of the child of `record` wait: the end of what it serves ended it, and no message
+ * resumed it since. As input, they would resume it.
  */
 export async function heldByServing(
 	handler: Pick<TargetHost, "place" | "owner">,

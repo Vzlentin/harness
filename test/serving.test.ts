@@ -155,6 +155,20 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		await until(() => called(`subagent ${child} finished\n\nAnswer to Task:\nHeld child`) === 1);
 	});
 
+	it("lets the answer of the user resume an agent that the rule ended", async () => {
+		const parley = await framed("serve-asked");
+		const agent = await spawnWithId("asked-session", { serves: { parley: "serve-asked" } });
+		const [ask] = (await round(agent.id, undefined, [{ title: "Served ask" }])).asks;
+
+		if (ask === undefined) throw new Error("no ask");
+		await sign(parley);
+		await untilState(agent.handle, "ended");
+
+		await answer([{ id: ask.id, answer: "own", label: "Go" }]);
+		await until(() => called(`the user answered ask ${ask.id}\n\n${ask.id} · Served ask · own · Go\n`) === 1);
+		await untilState(agent.handle, "idle");
+	});
+
 	it("lets the answer of the user resume a child that a stop ended with its spawner", async () => {
 		const agent = await spawnWithId("stopped-session");
 		const child = await spawnWithId(agent.id);

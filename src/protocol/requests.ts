@@ -238,8 +238,8 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	/**
 	 * Ends the child of the target and the children it spawned. The records stay, so a `send` resumes a child. The caller
-	 * `cli` can stop any child; another caller only its own children. The project agent and a conversation with no record
-	 * cannot be stopped.
+	 * `cli` can stop any child; another caller only its own children. For `cli`, a stop of the project agent or of a
+	 * conversation with no record aborts its turn, and the conversation stays.
 	 */
 	...withTarget({ type: Type.Literal("stop"), caller: Type.String() }),
 	/**
