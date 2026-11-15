@@ -25,6 +25,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
+import { answerMemory, type HostMemory } from "./memory.ts";
 import { changeRule, readRules, setRule } from "./project-rules.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
@@ -111,6 +112,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly settings: SettingsManager;
 		/** Writes a warning to the host's log. */
 		readonly warn: (cause: unknown) => void;
+		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
+		readonly memory: HostMemory;
 		readonly push: Push;
 		readonly sessions: Sessions;
 		/**
@@ -182,6 +185,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return digest(request.caller, handler);
 		case "rule":
 			return rule(request, handler);
+		case "memory":
+			return answerMemory(request, handler.memory, handler.signal);
 		case "gate":
 			return gateCall(request, { ...handler, models: handler.place.models });
 		case "held":

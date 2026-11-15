@@ -35,7 +35,7 @@ export function registerProject(
 		}),
 	);
 
-	// A turn does not start a host: a session with no host gets its digest once a host runs.
+	// The digest does not start a host: a session with no host gets its digest once a host runs.
 	pi.on("before_agent_start", async (_event, ctx) => {
 		try {
 			const caller = ctx.sessionManager.getSessionId();

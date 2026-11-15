@@ -81,7 +81,8 @@ When the directory of a project has a `.optmem` folder, the agents of the projec
 
 The project agent gets its memory in its system prompt, and keeps it with its `memory` tool. The host does the
 compressions of OptMem in the background, with the model of `memoryModel` in Pi's settings, else `subagentModel`, else
-Pi's default model. Subagents get no memory tool and no memory section.
+Pi's default model. A Pi session gets the same tool and section through the host of its project. Subagents get no
+memory tool and no memory section.
 
 When a project has decided conduct rules, a gate holds each tool call of its agents that breaks one, until you
 approve it. The gate also holds each bash call of an agent that decides, retires, edits, creates or deletes a rule,

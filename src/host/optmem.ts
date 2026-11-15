@@ -7,8 +7,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { MemoryToolArgs } from "../memory-tool.ts";
-import { NO_ABORT, required } from "../tool.ts";
+import type { MemoryCall } from "../memory-tool.ts";
+import { NO_ABORT } from "../tool.ts";
 
 /** The heading of the memory section of the system prompt. */
 const MEMORY_HEADING = "# Memory, oldest first";
@@ -18,16 +18,14 @@ const MEMORY_HEADING = "# Memory, oldest first";
  * `~/.optmem/memory`. A note whose output has a compression prompt calls `compress`, and does not wait for it.
  */
 export async function runMemoryTool(
-	args: MemoryToolArgs,
+	call: MemoryCall,
 	dir: string | undefined,
 	compress: () => Promise<void>,
 	signal?: AbortSignal,
 ): Promise<string> {
-	const { action } = args;
-
-	switch (action) {
+	switch (call.action) {
 		case "note": {
-			const output = await runMemo(["note", required(args.text, "text", action).trim()], dir, signal);
+			const output = await runMemo(["note", call.text.trim()], dir, signal);
 
 			if (napPrompt(output) !== undefined) void compress();
 			const saved = /^Saved as #\d+\.$/m.exec(output)?.[0];
@@ -38,13 +36,10 @@ export async function runMemoryTool(
 		}
 
 		case "recall":
-			return runMemo(["recall", required(args.pattern, "pattern", action)], dir, signal);
+			return runMemo(["recall", call.pattern], dir, signal);
 
 		case "zoom":
-			return runMemo(["zoom", required(args.block, "block", action)], dir, signal);
-
-		default:
-			throw new Error(`Unknown action: ${String(action)}`);
+			return runMemo(["zoom", call.block], dir, signal);
 	}
 }
 

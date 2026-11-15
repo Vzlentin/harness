@@ -10,7 +10,8 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { memoryTool } from "../memory-tool.ts";
 import { MEMORY_EXTENSION, MEMORY_SECTION } from "../protocol/project.ts";
-import { errorMessage } from "../protocol/requests.ts";
+import { errorMessage, type Replies, type Request } from "../protocol/requests.ts";
+import type { DurableScope } from "../tool.ts";
 import { settingModel } from "./model-choice.ts";
 import { memorySnapshot, type NapPrompt, napPrompt, runMemo, runMemoryTool } from "./optmem.ts";
 
@@ -152,23 +153,48 @@ function cutLine(line: string, limit: number): string {
 	return space > 0 ? cut.slice(0, space).trimEnd() : cut;
 }
 
+/** The memory of the project agent: the compressor of the host, and its memory folder, read at each use. */
+export type HostMemory = {
+	readonly compressor: Compressor;
+	/** The memory folder, for `MEMORY_DIR`. Undefined: OptMem's own default, `~/.optmem/memory`. */
+	readonly dir: () => string | undefined;
+};
+
 /**
- * The extension of the memory of the project agent: the `memory` tool and the memory section. The memory folder is
- * `dir()`, read at each use. The section is a snapshot that is taken at the first request of each conversation and kept
- * for the life of the host. An empty memory gives no section; so does a failed snapshot, with one warning.
+ * Answers a `memory` request, from the `memory` tool of the project agent or of a Pi session, on the memory of the
+ * project agent. A `snapshot` of an empty memory gives an empty text.
  */
-export function memoryExtension(compressor: Compressor, dir: () => string | undefined): Extension {
-	const tool = memoryTool({ Type }, (memory) =>
+export async function answerMemory(
+	request: Extract<Request, { type: "memory" }>,
+	memory: HostMemory,
+	signal: AbortSignal,
+): Promise<Replies["memory"]> {
+	const dir = memory.dir();
+	const compress = () => memory.compressor.compress(dir);
+
+	if (request.action === "snapshot") return { text: (await memorySnapshot(dir, compress, signal)) ?? "" };
+
+	return { text: await runMemoryTool(request, dir, compress, signal) };
+}
+
+/**
+ * The extension of the memory of the project agent: the `memory` tool, whose calls go to the host with `send`, and the
+ * memory section. The section is a snapshot that is taken at the first request of each conversation and kept for the
+ * life of the host. An empty memory gives no section; so does a failed snapshot, with one warning.
+ */
+export function memoryExtension(memory: HostMemory, scope: Pick<DurableScope, "send">): Extension {
+	const { compressor } = memory;
+
+	const tool = memoryTool({ Type }, (definition) =>
 		defineTool({
-			name: memory.name,
-			description: memory.description,
-			parameters: memory.parameters,
+			name: definition.name,
+			description: definition.description,
+			parameters: definition.parameters,
 			replay: "unsafe",
 			async execute(args, _api, context) {
 				// pi-durable has validated the arguments, but its types do not narrow TypeBox schemas.
-				if (!Value.Check(memory.parameters, args)) throw new Error("Invalid memory arguments");
-				const folder = dir();
-				const text = await runMemoryTool(args, folder, () => compressor.compress(folder), context.abortSignal);
+				if (!Value.Check(definition.parameters, args)) throw new Error("Invalid memory arguments");
+				const text = await definition.run(args, { send: scope.send, signal: context.abortSignal });
 
 				return { output: [{ type: "text", text }] };
 			},
@@ -181,11 +207,9 @@ export function memoryExtension(compressor: Compressor, dir: () => string | unde
 		const known = snapshots.get(conversationId);
 
 		if (known !== undefined) return known;
+		const dir = memory.dir();
 
-		const folder = dir();
-		const compress = () => compressor.compress(folder);
-
-		const snapshot = memorySnapshot(folder, compress, compressor.signal).catch((cause: unknown) => {
+		const snapshot = memorySnapshot(dir, () => compressor.compress(dir), compressor.signal).catch((cause: unknown) => {
 			compressor.warn(`The memory section failed: ${errorMessage(cause)}`);
 
 			return undefined;

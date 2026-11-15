@@ -48,7 +48,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 32;
+export const PROTOCOL_VERSION = 33;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -365,6 +365,17 @@ export const RequestLine = Type.Union([
 	 * last digest of the caller, and records it as given. A Pi session sends it before each turn.
 	 */
 	Type.Object({ type: Type.Literal("digest"), caller: Type.String() }),
+	/** Saves `text` as a memory of the project agent, and replies with the `Saved as #<N>.` line of OptMem. */
+	Type.Object({ type: Type.Literal("memory"), action: Type.Literal("note"), text: Type.String() }),
+	/** Replies with the memories of the project agent that match the regex `pattern`. */
+	Type.Object({ type: Type.Literal("memory"), action: Type.Literal("recall"), pattern: Type.String() }),
+	/** Replies with the two halves of the node `block` of the memory of the project agent. */
+	Type.Object({ type: Type.Literal("memory"), action: Type.Literal("zoom"), block: Type.String() }),
+	/**
+	 * Replies with the memory of the project agent as the text of the memory section, or with an empty text for an
+	 * empty memory. A Pi session sends it at its first turn.
+	 */
+	Type.Object({ type: Type.Literal("memory"), action: Type.Literal("snapshot") }),
 	/** Adds an open rule, which can name the rule `replaces`, and replies with it. */
 	Type.Object({
 		type: Type.Literal("rule"),
@@ -525,6 +536,8 @@ export type Replies = {
 	readonly thread: Thread | ThreadList | ThreadMessages;
 	readonly message: Message;
 	readonly digest: DigestReply;
+	/** The output of OptMem, or the memory section of `snapshot`, with an empty text for an empty memory. */
+	readonly memory: { readonly text: string };
 	/** The rule of `set`, `decide`, `retire`, `delete`, `edit` and `create`, or the rules of `list`. */
 	readonly rule: Rule | RuleList;
 	readonly gate: GateReply;

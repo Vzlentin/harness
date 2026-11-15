@@ -1,8 +1,11 @@
 /**
- * The `memory` tool: its description and its schema, which the host and the Pi extension register.
+ * The `memory` tool: its description, its schema and its runner, which the host and the Pi extension register. The
+ * runner sends the `memory` request to the host, which runs `~/.optmem/memo`.
  */
 import type * as TypeBox from "typebox";
 import type { Static, TSchema } from "typebox";
+import type { Request } from "./protocol/requests.ts";
+import { NO_ABORT, required, type ToolScope } from "./tool.ts";
 
 /** The most bytes of one memory, which is also the hard top of OptMem. */
 export const NOTE_LIMIT = 280;
@@ -36,6 +39,7 @@ export type MemoryTool<P extends TSchema> = {
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: P;
+	readonly run: (args: Static<P>, scope: Pick<ToolScope, "send" | "signal">) => Promise<string>;
 };
 
 /** The `memory` tool, given to `adapt`. */
@@ -45,5 +49,37 @@ export function memoryTool<R>(
 ): R {
 	const { parameters } = memoryToolSchemas(typebox);
 
-	return adapt({ name: "memory", label: "Memory", description: MEMORY_TOOL_DESCRIPTION, parameters });
+	return adapt({
+		name: "memory",
+		label: "Memory",
+		description: MEMORY_TOOL_DESCRIPTION,
+		parameters,
+		run: sendMemoryCall,
+	});
+}
+
+/** Runs one call of the `memory` tool: it sends the `memory` request to the host, and gives the text of its reply. */
+async function sendMemoryCall(args: MemoryToolArgs, scope: Pick<ToolScope, "send" | "signal">): Promise<string> {
+	const reply = await scope.send(memoryRequest(args), scope.signal ?? NO_ABORT);
+
+	return reply.text;
+}
+
+/** One call of the `memory` tool, as `memoryRequest` parses it. */
+export type MemoryCall = Exclude<Extract<Request, { type: "memory" }>, { action: "snapshot" }>;
+
+/** The request of the host for one call of the `memory` tool, and the one check of its arguments. */
+export function memoryRequest(args: MemoryToolArgs): MemoryCall {
+	const { action } = args;
+
+	switch (action) {
+		case "note":
+			return { type: "memory", action, text: required(args.text, "text", action) };
+		case "recall":
+			return { type: "memory", action, pattern: required(args.pattern, "pattern", action) };
+		case "zoom":
+			return { type: "memory", action, block: required(args.block, "block", action) };
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
 }

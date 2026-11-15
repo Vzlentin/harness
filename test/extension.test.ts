@@ -44,6 +44,7 @@ import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
+import { memoryTool } from "../src/memory-tool.ts";
 import { projectTools } from "../src/project-tool.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -52,16 +53,20 @@ import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { PROTOCOL_VERSION, versionMismatch } from "../src/protocol/requests.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
+import { installMemo, memoCalls, readState, seed } from "./fake-memo.ts";
 import {
+	calls,
 	drawWidget,
 	gates,
 	models,
 	rawReply,
 	root,
+	setSettings,
 	setUp,
 	spawnAs,
 	startHost,
 	tearDown,
+	until,
 	untilState,
 } from "./helpers.ts";
 
@@ -1271,7 +1276,57 @@ describe("the Pi extension", () => {
 		expect(await agentStartSections(registered, ["read"])).toEqual({});
 	});
 
+	it("gives the session the memory tool and one memory snapshot of the host for the session", async () => {
+		const tea = "The user drinks tea.";
+		const paris = "The user lives in Paris.";
+		await setSettings({ memoryModel: "faux/faux-2" });
+		await installMemo();
+		await seed({ notes: [tea, paris], pending: ["0-1"] });
+		host = await startHost();
+		const registered = await load();
+		const tool = registered.tools.get("memory");
+
+		expect(tool).toMatchObject(memoryTool({ Type }, ({ description, parameters }) => ({ description, parameters })));
+		const section = { memory: `# Memory, oldest first\n#0 2026-11-15 ${tea}\n#1 2026-11-15 ${paris}` };
+		expect(await agentStartSections(registered, ["read"])).toEqual(section);
+
+		const before = calls.length;
+		expect(await tool?.call({ action: "note", text: "The user has a cat." })).toBe("Saved as #2.");
+		await until(() => readState().pending.length === 0);
+		expect(
+			calls
+				.slice(before)
+				.filter((call) => call.prompt.startsWith("Compress memories"))
+				.map(({ provider, model, thinking }) => ({ provider, model, thinking })),
+		).toEqual([{ provider: "faux", model: "faux-2", thinking: "low" }]);
+		expect(await tool?.call({ action: "recall", pattern: "tea" })).toBe(`#0 2026-11-15 ${tea}\n1 matches.\n`);
+
+		// The session keeps its first snapshot.
+		expect(await agentStartSections(registered, ["read"])).toEqual(section);
+		expect(memoCalls().filter((call) => call.args[0] === "wake")).toHaveLength(1);
+	});
+
+	it("fails the memory tool with the error of the host, and gives no memory section, when no host answers", async () => {
+		await startFake(PROTOCOL_VERSION + 1);
+		const old = await load();
+		const mismatch = new Error(versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7));
+
+		await expect(old.tools.get("memory")?.call({ action: "recall", pattern: "tea" })).rejects.toThrow(mismatch);
+		expect(await agentStartSections(old, ["read"])).toEqual({});
+
+		await closeFake();
+		await startFake(PROTOCOL_VERSION);
+		const registered = await load();
+		const tool = registered.tools.get("memory");
+
+		await expect(tool?.call({ action: "note", text: "A note." })).rejects.toThrow(new Error("Invalid request"));
+		await expect(tool?.call({ action: "note" })).rejects.toThrow(new Error("note requires text"));
+		expect(await agentStartSections(registered, ["read"])).toEqual({});
+	});
+
 	it("gives no section about the tools of a cell to a session, also with the ipython tool", async () => {
+		// A host that refuses every request, so the memory snapshot of the first turn starts no host.
+		await startFake(PROTOCOL_VERSION);
 		const registered = await load();
 
 		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({});

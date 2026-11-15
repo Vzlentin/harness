@@ -1,10 +1,11 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the answers
  * of the user to the asks of the session, the `todo` tool, `/todo` and the todo widget, the `thread`, `rule` and `parley` tools
- * of the store of the project, `/rules`, the gate on the tool calls of the session, the mirror sessions of `/harness`,
- * the tools bridge in the IPython kernels of the session, and `/vc`, the visual copy of the transcript, which marks a
- * copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
- * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
+ * of the store of the project, `/rules`, the `memory` tool and the memory section, the gate on the tool calls of the
+ * session, the mirror sessions of `/harness`, the tools bridge in the IPython kernels of the session, and `/vc`, the
+ * visual copy of the transcript, which marks a copied draft sent. They use the client of `@vzlentin/harness`, the
+ * dependency of this package, from its built `dist/`, and start the host of that install. The `.bin` folder that holds
+ * its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -25,6 +26,7 @@ import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";
 import type * as mirror from "../dist/client/mirror.js";
 import type * as viewState from "../dist/client/view-state.js";
+import type * as memoryTool from "../dist/memory-tool.js";
 import type * as projectTool from "../dist/project-tool.js";
 import type * as protocol from "../dist/protocol/index.js";
 import type * as projects from "../dist/protocol/projects.js";
@@ -32,6 +34,7 @@ import type * as trust from "../dist/protocol/trust.js";
 import type * as tool from "../dist/tool.js";
 import { registerBridge } from "./bridge.ts";
 import { registerGate } from "./gate.ts";
+import { registerMemory } from "./memory.ts";
 import { registerMirror } from "./mirror.ts";
 import { PolledWidget } from "./polled-widget.ts";
 import { registerProject } from "./project.ts";
@@ -45,6 +48,7 @@ export type Harness = {
 	readonly bridge: typeof bridge;
 	readonly client: typeof client;
 	readonly herdr: typeof herdr;
+	readonly memoryTool: typeof memoryTool;
 	readonly mirror: typeof mirror;
 	readonly projectTool: typeof projectTool;
 	readonly projects: typeof projects;
@@ -91,6 +95,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	registerMirror(pi, harness, registerTodo(pi, harness));
 	registerBridge(pi, harness);
 	registerProject(pi, harness);
+	registerMemory(pi, harness);
 	registerRules(pi, harness);
 	registerGate(pi, harness);
 	registerVisualCopy(pi, harness);
@@ -277,6 +282,7 @@ async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 		"bridge",
 		"client",
 		"herdr",
+		"memory-tool",
 		"mirror",
 		"project-tool",
 		"projects",
@@ -288,9 +294,22 @@ async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, bridge, client, herdr, mirror, projectTool, projects, protocol, tool, trust, viewState] =
+	const [answers, bridge, client, herdr, memoryTool, mirror, projectTool, projects, protocol, tool, trust, viewState] =
 		await Promise.all(urls.map((url) => import(url)));
 
 	// SAFETY: these are the built modules of the harness package, whose declarations the `Harness` type comes from.
-	return { answers, bridge, client, herdr, mirror, projectTool, projects, protocol, tool, trust, viewState } as Harness;
+	return {
+		answers,
+		bridge,
+		client,
+		herdr,
+		memoryTool,
+		mirror,
+		projectTool,
+		projects,
+		protocol,
+		tool,
+		trust,
+		viewState,
+	} as Harness;
 }

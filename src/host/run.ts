@@ -49,7 +49,7 @@ import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { takeLock } from "./lock.ts";
-import { Compressor, memoryExtension } from "./memory.ts";
+import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
@@ -202,11 +202,12 @@ export async function runHost(options: {
 
 	// The compressions of the memory of the project agent, which run in the background.
 	const compressor = new Compressor({ settings, models, warn });
+	const memory: HostMemory = { compressor, dir: () => memoryDir(project, projectCwd) };
 
 	const selected = [
 		childContext(resources),
 		RulesSection,
-		memoryExtension(compressor, () => memoryDir(project, projectCwd)),
+		memoryExtension(memory, scope),
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
 		projectToolsExtension(durable, { Type }, scope),
@@ -279,6 +280,7 @@ export async function runHost(options: {
 		catchUps: entries.catchUps,
 		warn,
 		degraded,
+		memory,
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
