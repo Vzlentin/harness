@@ -72,6 +72,7 @@ When the directory of a project has a `.optmem` folder, the agents of the projec
 
 When a project has decided conduct rules, a gate holds each tool call of its agents that breaks one, until you
 approve it. The classifier of the gate is `gateClassifier` in Pi's settings (default `openrouter/typesafe/jev-1.14`).
+When the host does not answer, Pi asks you one time whether to run with no gate until it answers.
 
 Before your input, the agent of a project gets a short catch-up: the workflows runs that ended and the new commits on
 the default branch since its last input.

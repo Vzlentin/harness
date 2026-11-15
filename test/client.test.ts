@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { Client, connect } from "../src/client/client.ts";
+import { Client, connect, HostUnreachableError } from "../src/client/client.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { PROTOCOL_VERSION, versionMismatch } from "../src/protocol/requests.ts";
@@ -59,9 +59,9 @@ describe("client", () => {
 			const error = `Error: The harness host sent an invalid reply: ${line}`;
 			expect(await Promise.all(replies)).toEqual([{ error }, { error }]);
 			expect(client.ended).toBe(true);
-			await expect(client.request({ type: "list", caller: "c" })).rejects.toThrow(
-				"The harness host closed the connection",
-			);
+			const closed = client.request({ type: "list", caller: "c" });
+			await expect(closed).rejects.toThrow("The harness host closed the connection");
+			await expect(closed).rejects.toBeInstanceOf(HostUnreachableError);
 		});
 	}
 
@@ -83,9 +83,9 @@ describe("client", () => {
 			});
 			await new Promise<void>((resolve) => server?.listen(socket, resolve));
 
-			await expect(connect({ start: false, project: "main" })).rejects.toThrow(
-				versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7),
-			);
+			const connecting = connect({ start: false, project: "main" });
+			await expect(connecting).rejects.toThrow(versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7));
+			await expect(connecting).rejects.toBeInstanceOf(HostUnreachableError);
 			expect(hellos).toEqual([{ type: "hello", version: PROTOCOL_VERSION }]);
 		} finally {
 			if (state === undefined) delete process.env.XDG_STATE_HOME;

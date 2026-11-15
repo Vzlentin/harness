@@ -24,6 +24,12 @@ import { type Target, targetRef } from "../protocol/target.ts";
 export const HOST_CLOSED = "The harness host closed the connection";
 
 /**
+ * The error of a request that no host answered: no host could start, the connection closed or the host was closing, or
+ * the host speaks another protocol version.
+ */
+export class HostUnreachableError extends Error {}
+
+/**
  * Whether `error` failed a request because its host stopped: the host was closing, or the connection closed.
  */
 export function hostStopped(error: unknown): error is Error {
@@ -126,6 +132,7 @@ export class Client {
 			if (waiter === undefined) return;
 
 			if (parsed.ok) waiter.resolve(parsed.value);
+			else if (parsed.error === HOST_CLOSING) waiter.reject(new HostUnreachableError(parsed.error));
 			else waiter.reject(new Error(parsed.error));
 		});
 		socket.on("error", () => this.#end());
@@ -138,7 +145,7 @@ export class Client {
 	}
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
-		if (this.#ended) return Promise.reject(new Error(HOST_CLOSED));
+		if (this.#ended) return Promise.reject(new HostUnreachableError(HOST_CLOSED));
 
 		const reply = Promise.withResolvers<unknown>();
 		this.#pending.push(reply);
@@ -172,7 +179,7 @@ export class Client {
 		this.#socket.destroy();
 	}
 
-	#end(cause: unknown = new Error(HOST_CLOSED)): void {
+	#end(cause: unknown = new HostUnreachableError(HOST_CLOSED)): void {
 		if (!this.#ended) this.#lines?.push(null);
 		this.#ended = true;
 
@@ -183,11 +190,21 @@ export class Client {
 /**
  * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `projectOf`),
  * after its `hello`. When no host listens and `start` is true, it starts one (see `startAndConnect`). When no host
- * listens and `start` is false, it is undefined.
+ * listens and `start` is false, it is undefined. It fails with `HostUnreachableError` when no host answers its `hello`, or
+ * when the host has another protocol version, unless `signal` aborted.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
 	const project = projectOf(options.project, process.env, process.cwd());
 
+	try {
+		return await connectTo(project, options);
+	} catch (error) {
+		throw options.signal?.aborted ? error : new HostUnreachableError(errorMessage(error), { cause: error });
+	}
+}
+
+/** `connect` to the host of `project`, with the errors of each step. */
+async function connectTo(project: string, options: ConnectOptions): Promise<Client | undefined> {
 	const paths = statePaths(project);
 	let socket = await tryConnect(paths.socket);
 

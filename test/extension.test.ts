@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,9 +44,11 @@ import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
 import { projectTools } from "../src/project-tool.ts";
 import { GateReply } from "../src/protocol/gate.ts";
+import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
+import { PROTOCOL_VERSION, versionMismatch } from "../src/protocol/requests.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
 import {
 	drawWidget,
@@ -149,6 +152,9 @@ let modules: string;
 let subagentExtension: typeof extension;
 let host: Host | undefined;
 
+/** A fake host of `main`, which a test closes or `afterEach` closes. */
+let fake: Server | undefined;
+
 beforeAll(async () => {
 	modules = join(realpathSync(await mkdtemp(join(tmpdir(), "harness-extension-"))), "node_modules");
 	const harness = join(modules, "@vzlentin", "harness");
@@ -185,10 +191,37 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	await closeFake();
 	await host?.close();
 	host = undefined;
 	await tearDown();
 });
+
+/**
+ * Starts a fake host of `main` that answers `hello` with the protocol version `version` and the PID 7, and each other
+ * request with the error `Invalid request`.
+ */
+async function startFake(version: number): Promise<void> {
+	const { socket } = statePaths(MAIN_PROJECT);
+	await mkdir(dirname(socket), { recursive: true });
+	fake = createServer((connection: Socket) => {
+		onLines(connection, (line) => {
+			const reply = line.includes('"type":"hello"')
+				? { ok: true, value: { version, pid: 7 } }
+				: { ok: false, error: "Invalid request" };
+
+			connection.write(`${JSON.stringify(reply)}\n`);
+		});
+	});
+	await new Promise<void>((resolve) => fake?.listen(socket, resolve));
+}
+
+async function closeFake(): Promise<void> {
+	const server = fake;
+	fake = undefined;
+
+	if (server !== undefined) await new Promise((resolve) => server.close(resolve));
+}
 
 /** The context of a tool call: the fields that the tool reads for `list`. */
 function toolContext(): ToolContext {
@@ -591,13 +624,15 @@ function gateClassifier(): ClassifierModel<ClassifierApi> {
 /**
  * Calls the `tool_call` handlers of the extension for the call `call`, in the session `session`, whose branch has the
  * user messages `one` to `four` and a custom entry. With `answer`, the session has a UI whose confirm
- * prompts go to `prompts` and get `answer`. It gives the refusal, or nothing when the call runs.
+ * prompts go to `prompts` and get `answer`, and whose notifications go to `notes`. It gives the refusal, or nothing
+ * when the call runs.
  */
 async function toolCall(
 	registered: Registered,
 	call: { readonly toolName: string; readonly input: Record<string, string>; readonly id: string },
 	answer?: boolean,
 	prompts: string[] = [],
+	notes: string[] = [],
 ): Promise<Static<typeof Refused> | undefined> {
 	type Branch = ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
 
@@ -619,7 +654,7 @@ async function toolCall(
 
 	const ctx: Pick<ExtensionContext, "hasUI" | "signal"> & {
 		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getBranch">;
-		readonly ui: Pick<ExtensionContext["ui"], "confirm">;
+		readonly ui: Pick<ExtensionContext["ui"], "confirm" | "notify">;
 	} = {
 		hasUI: answer !== undefined,
 		signal: undefined,
@@ -629,6 +664,9 @@ async function toolCall(
 				prompts.push(`${title}\n${message}`);
 
 				return answer === true;
+			},
+			notify: (message: string) => {
+				notes.push(message);
 			},
 		},
 	};
@@ -1157,5 +1195,65 @@ describe("the Pi extension", () => {
 		});
 		expect(prompts).toHaveLength(2);
 		expect(await again("call-4")).toMatchObject({ runs: false, held: { id: 4, state: "held" } });
+	});
+
+	it("asks one time with a UI when the host does not answer, then runs the calls with no gate", async () => {
+		await startFake(PROTOCOL_VERSION + 1);
+		const mismatch = versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7);
+		const push = { toolName: "bash", input: { command: "git push" } };
+
+		// No refuses the call, and the next call asks again.
+		const refused = await load();
+		const prompts: string[] = [];
+		expect(await toolCall(refused, { ...push, id: "no-1" }, false, prompts)).toEqual({ block: true, reason: mismatch });
+		expect(await toolCall(refused, { ...push, id: "no-2" }, false, prompts)).toEqual({ block: true, reason: mismatch });
+		expect(prompts).toHaveLength(2);
+
+		// Yes runs the calls at the same time and the later calls, after one prompt.
+		const registered = await load();
+		const asked: string[] = [];
+		const calls = ["yes-1", "yes-2", "yes-3"].map((id) => toolCall(registered, { ...push, id }, true, asked));
+		expect(await Promise.all(calls)).toEqual([undefined, undefined, undefined]);
+		expect(await toolCall(registered, { ...push, id: "yes-4" }, true, asked)).toBeUndefined();
+		expect(asked).toEqual([
+			`The harness host does not answer\n${mismatch}\n\nRun the tool calls of this session with no gate until the host answers?`,
+		]);
+	});
+
+	it("refuses a call without a UI when the host does not answer", async () => {
+		await startFake(PROTOCOL_VERSION + 1);
+		const registered = await load();
+
+		expect(await toolCall(registered, { toolName: "bash", input: { command: "ls" }, id: "call-1" })).toEqual({
+			block: true,
+			reason: `The harness host does not answer, and this session has no UI to let it run with no gate: ${versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7)}`,
+		});
+	});
+
+	it("gates the calls again, with one note, when the host answers again", async () => {
+		await startFake(PROTOCOL_VERSION + 1);
+		const registered = await load();
+		const push = { toolName: "bash", input: { command: "git push" } };
+		const notes: string[] = [];
+
+		expect(await toolCall(registered, { ...push, id: "call-1" }, true, [], notes)).toBeUndefined();
+		await closeFake();
+		host = await startHost();
+
+		expect(await toolCall(registered, { ...push, id: "call-2" }, true, [], notes)).toBeUndefined();
+		expect(notes).toEqual(["harness: the host answers again; the gate is back"]);
+		expect(await toolCall(registered, { ...push, id: "call-3" }, true, [], notes)).toBeUndefined();
+		expect(notes).toHaveLength(1);
+	});
+
+	it("refuses a call with the error that the host replies, with no prompt", async () => {
+		await startFake(PROTOCOL_VERSION);
+		const registered = await load();
+		const prompts: string[] = [];
+
+		expect(
+			await toolCall(registered, { toolName: "bash", input: { command: "ls" }, id: "call-1" }, true, prompts),
+		).toEqual({ block: true, reason: "Invalid request" });
+		expect(prompts).toEqual([]);
 	});
 });
