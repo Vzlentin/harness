@@ -1,6 +1,6 @@
 /**
- * The watch of the store of a project: the persons, rules, terms, threads with their waits, parts, held actions, parleys
- * and asks, then an event with the objects that changed and the IDs of those that went, after the commits that change them.
+ * The watch of the store of a project: the persons, rules, threads with their waits, held actions, parleys and asks,
+ * then an event with the objects that changed and the IDs of those that went, after the commits that change them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness } from "@earendil-works/pi-durable";
@@ -11,13 +11,11 @@ import {
 	MESSAGE_KIND,
 	OUTBOX_KIND,
 	PARLEYS_KIND,
-	PARTS_KIND,
 	PERSONS_KIND,
 	type ProjectEvent,
 	type ProjectState,
 	type ProjectThread,
 	RULES_KIND,
-	TERMS_KIND,
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
@@ -28,10 +26,8 @@ import {
 	readHeld,
 	readOutbox,
 	readParleys,
-	readParts,
 	readPersons,
 	readRules,
-	readTerms,
 	readStored,
 	readThreads,
 	type StoredMessage,
@@ -46,8 +42,6 @@ const PROJECT_DOCS: ReadonlySet<string> = new Set([
 	PERSONS_KIND,
 	THREADS_KIND,
 	RULES_KIND,
-	TERMS_KIND,
-	PARTS_KIND,
 	HELD_KIND,
 	PARLEYS_KIND,
 	ASKS_KIND,
@@ -58,8 +52,8 @@ export type ProjectHost = { readonly harness: Harness };
 
 /**
  * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
- * the reply is written, and after it each commit that changes a person, a rule, a term, a thread, a message, a part,
- * a held action, a parley or an ask starts a pass: the host reads the objects again and sends one
+ * the reply is written, and after it each commit that changes a person, a rule, a thread, a message, a held action,
+ * a parley or an ask starts a pass: the host reads the objects again and sends one
  * `{ event: ProjectEvent }` with the objects that are new or changed and the IDs of those that went, only when one of
  * its lists is not empty. The passes run one at a time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the next event has
  * every object. A pass that fails, and the close of the store, end the connection. The watch stops when the socket
@@ -81,18 +75,14 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 	const event: ProjectEvent = {
 		persons: changed(before.persons, after.persons, all),
 		rules: changed(before.rules, after.rules, all),
-		terms: changed(before.terms, after.terms, all),
 		threads: changed(before.threads, after.threads, all),
-		parts: changed(before.parts, after.parts, all),
 		held: changed(before.held, after.held, all),
 		parleys: changed(before.parleys, after.parleys, all),
 		asks: changed(before.asks, after.asks, all),
 		removed: {
 			persons: removed(before.persons, after.persons),
 			rules: removed(before.rules, after.rules),
-			terms: removed(before.terms, after.terms),
 			threads: removed(before.threads, after.threads),
-			parts: removed(before.parts, after.parts),
 			held: removed(before.held, after.held),
 			parleys: removed(before.parleys, after.parleys),
 			asks: removed(before.asks, after.asks),
@@ -102,9 +92,7 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 	const lists = [
 		event.persons,
 		event.rules,
-		event.terms,
 		event.threads,
-		event.parts,
 		event.held,
 		event.parleys,
 		event.asks,
@@ -134,12 +122,10 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		const fresh = this.#fresh;
 		this.#fresh = new Set();
 
-		const [persons, rules, terms, threads, parts, held, parleys, asks] = await Promise.all([
+		const [persons, rules, threads, held, parleys, asks] = await Promise.all([
 			readPersons(this.#harness, context),
 			readRules(this.#harness, {}, context),
-			readTerms(this.#harness, context),
 			readThreads(this.#harness, context),
-			readParts(this.#harness, {}, context),
 			readHeld(this.#harness, context),
 			readParleys(this.#harness, context),
 			readAsks(this.#harness, context),
@@ -169,7 +155,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			}),
 		}));
 
-		return { ...persons, ...rules, ...terms, threads: withWaits, ...parts, ...held, ...parleys, ...asks };
+		return { ...persons, ...rules, threads: withWaits, ...held, ...parleys, ...asks };
 	}
 
 	events(before: ProjectState, after: ProjectState, all: boolean): ProjectEvent[] {

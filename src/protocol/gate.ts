@@ -27,7 +27,7 @@ export const GATE_MESSAGES = 3;
 const READ_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 
 /** The tools of the store of the project, whose `list` and `read` actions only read. */
-const PROJECT_TOOLS: ReadonlySet<string> = new Set(["thread", "rule", "term", "part", "parley"]);
+const PROJECT_TOOLS: ReadonlySet<string> = new Set(["thread", "rule", "parley"]);
 
 const ReadAction = Type.Object({ action: Type.Union([Type.Literal("list"), Type.Literal("read")]) });
 

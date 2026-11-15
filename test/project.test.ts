@@ -12,10 +12,8 @@ import {
 	Message,
 	type MessageEvent,
 	messageTransition,
-	Part,
 	Person,
 	Rule,
-	Term,
 	Thread,
 	ThreadMessages,
 } from "../src/protocol/project.ts";
@@ -89,7 +87,7 @@ afterAll(async () => {
 });
 
 describe("the store of the project", { timeout: 30_000 }, () => {
-	it("keeps persons, threads, messages, rules, terms and parts, also after a host restart", async () => {
+	it("keeps persons, threads, messages and rules, also after a host restart", async () => {
 		const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }));
 		const rufin = Value.Parse(Person, await send({ type: "person", action: "add", name: "Rufin" }));
 		expect([sam.id, rufin.id]).toEqual([1, 2]);
@@ -174,52 +172,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			}),
 		);
 
-		const term = Value.Parse(
-			Term,
-			await send({
-				type: "term",
-				action: "set",
-				caller: "cli",
-				name: "mandat",
-				meaning: "A signed order of sale.",
-				avoid: ["contract"],
-				saidBy: "user",
-				source: answer.id,
-			}),
-		);
-
-		expect(term).toMatchObject({ id: 1, avoid: ["contract"] });
-
-		const diagram = Value.Parse(
-			Part,
-			await send({
-				type: "part",
-				action: "add",
-				caller: "cli",
-				kind: "diagram",
-				path: "parts/scope.md",
-				rules: [scope.id],
-				terms: [],
-			}),
-		);
-
-		const table = Value.Parse(
-			Part,
-			await send({
-				type: "part",
-				action: "add",
-				caller: "cli",
-				kind: "table",
-				path: "parts/terms.md",
-				rules: [ask.id],
-				terms: [term.id],
-			}),
-		);
-
-		expect(diagram).toMatchObject({ id: 1, stale: false });
-		expect(diagram.checked).toBeGreaterThanOrEqual(before);
-
-		// A new rule that replaces the scope retires it, and makes stale only the part that explains it.
+		// A new rule that replaces the scope retires it.
 		const wider = Value.Parse(
 			Rule,
 			await send({
@@ -240,39 +193,12 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		expect(await send({ type: "rule", action: "list", status: "retired" })).toMatchObject({
 			rules: [{ id: scope.id, status: "retired", saidBy: "user", source: answer.id }],
 		});
-		expect(await send({ type: "part", action: "list" })).toMatchObject({
-			parts: [
-				{ id: diagram.id, stale: true },
-				{ id: table.id, stale: false },
-			],
-		});
-
-		// A change of a term makes its part stale, and a check clears it.
-		await send({
-			type: "term",
-			action: "set",
-			caller: "cli",
-			id: term.id,
-			meaning: "A signed mandate.",
-			saidBy: sam.id,
-			source: asked.id,
-		});
-		expect(await send({ type: "part", action: "list", term: term.id })).toMatchObject({
-			parts: [{ id: table.id, stale: true }],
-		});
-		expect(await send({ type: "part", action: "check", caller: "cli", id: table.id })).toMatchObject({
-			id: table.id,
-			stale: false,
-		});
-		expect(await send({ type: "part", action: "list", rule: scope.id })).toMatchObject({ parts: [{ id: diagram.id }] });
 
 		const stored = {
 			persons: await send({ type: "person", action: "list" }),
 			threads: await send({ type: "thread", action: "list" }),
 			read: await send({ type: "thread", action: "read", id: thread.id }),
 			rules: await send({ type: "rule", action: "list" }),
-			terms: await send({ type: "term", action: "list" }),
-			parts: await send({ type: "part", action: "list" }),
 		};
 
 		expect(stored.read).toEqual({ thread: { ...thread, last: answer.at }, messages: [asked, answer] });
@@ -283,7 +209,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				{ id: wider.id, status: "open" },
 			],
 		});
-		expect(stored.terms).toMatchObject({ terms: [{ meaning: "A signed mandate.", saidBy: sam.id }] });
 
 		await host?.close();
 		host = await startHost();
@@ -293,8 +218,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			threads: await send({ type: "thread", action: "list" }),
 			read: await send({ type: "thread", action: "read", id: thread.id }),
 			rules: await send({ type: "rule", action: "list" }),
-			terms: await send({ type: "term", action: "list" }),
-			parts: await send({ type: "part", action: "list" }),
 		}).toEqual(stored);
 	});
 
@@ -335,8 +258,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			threads: await send({ type: "thread", action: "list" }),
 			thread: await send({ type: "thread", action: "read", id: thread.id }),
 			rules: await send({ type: "rule", action: "list" }),
-			terms: await send({ type: "term", action: "list" }),
-			parts: await send({ type: "part", action: "list" }),
 		});
 
 		const before = await read();
@@ -365,9 +286,15 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				{ type: "rule", action: "set", caller: "cli", id: rule.id, status: "retired", saidBy: "user" },
 				"Invalid rule request: source is required",
 			],
+			[{ type: "term", action: "list" }, "Unknown request: term"],
 			[
 				{ type: "term", action: "set", caller: "cli", name: "x", meaning: "y", saidBy: "user" },
-				"Invalid term request: source is required",
+				"Unknown request: term",
+			],
+			[{ type: "part", action: "list" }, "Unknown request: part"],
+			[
+				{ type: "part", action: "add", caller: "cli", kind: "table", path: "x.md", rules: [], terms: [] },
+				"Unknown request: part",
 			],
 			[{ ...newRule, status: "final" }, "Invalid rule request: status is not valid"],
 			[{ type: "thread", action: "add", topic: "No one", persons: [] }, "Invalid thread request: persons is not valid"],
@@ -414,25 +341,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				source: message.id,
 			}),
 		).rejects.toThrow("Unknown rule: 99");
-		await expect(
-			send({ type: "term", action: "set", caller: "cli", id: 99, meaning: "z", saidBy: "user", source: message.id }),
-		).rejects.toThrow("Unknown term: 99");
-
-		const part = {
-			type: "part",
-			action: "add",
-			caller: "cli",
-			kind: "example",
-			path: "parts/x.md",
-			rules: [],
-			terms: [],
-		} as const;
-
-		const none: number[] = [];
-		await expect(send({ ...part, rules: [rule.id, 99], terms: none })).rejects.toThrow("Unknown rule: 99");
-		await expect(send({ ...part, rules: none, terms: [99] })).rejects.toThrow("Unknown term: 99");
-		await expect(send({ type: "part", action: "check", caller: "cli", id: 99 })).rejects.toThrow("Unknown part: 99");
-
 		expect(await read()).toEqual(before);
 	});
 

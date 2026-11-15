@@ -969,7 +969,7 @@ describe("the Pi extension", () => {
 		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
 	});
 
-	it("gives the thread, rule, term, part and parley tools of the host, on the store of the project", async () => {
+	it("gives the thread, rule and parley tools of the host, on the store of the project", async () => {
 		host = await startHost();
 		const registered = await load();
 
@@ -982,6 +982,9 @@ describe("the Pi extension", () => {
 		}));
 
 		for (const { name, ...tool } of expected) expect(registered.tools.get(name)).toMatchObject(tool);
+		expect(expected.map((tool) => tool.name)).toEqual(["thread", "rule", "parley"]);
+		expect(registered.tools.has("term")).toBe(false);
+		expect(registered.tools.has("part")).toBe(false);
 
 		const person = await request({ type: "person", action: "add", name: "Sam" }, { start: false });
 		const thread = await request({ type: "thread", action: "add", topic: "Pi", persons: [1] }, { start: false });
@@ -996,12 +999,6 @@ describe("the Pi extension", () => {
 
 		expect(await tools.get("rule")?.call(rule)).toBe(
 			`1 hello (conduct, open): Say hello. [said by Sam (1) in message ${source}]\n`,
-		);
-		expect(await tools.get("term")?.call({ action: "set", name: "hi", meaning: "hello", saidBy: "user", source })).toBe(
-			`1 hi: hello [said by user in message ${source}]\n`,
-		);
-		expect(await tools.get("part")?.call({ action: "add", kind: "example", path: "parts/hi.md", rules: [1] })).toMatch(
-			/^1 example parts\/hi\.md \[rules 1; terms none; checked .+\]\n$/,
 		);
 		await expect(tools.get("rule")?.call({ action: "set", id: 1, status: "retired", saidBy: 1 })).rejects.toThrow(
 			"set requires source",
@@ -1026,12 +1023,6 @@ describe("the Pi extension", () => {
 		// The host keeps the session ID as the caller of each write.
 		expect(await request({ type: "rule", action: "list" }, { start: false })).toMatchObject({
 			rules: [{ id: 1, name: "hello", saidBy: 1, source, by: "session" }],
-		});
-		expect(await request({ type: "term", action: "list" }, { start: false })).toMatchObject({
-			terms: [{ id: 1, by: "session" }],
-		});
-		expect(await request({ type: "part", action: "list" }, { start: false })).toMatchObject({
-			parts: [{ id: 1, by: "session" }],
 		});
 		expect(await request({ type: "thread", action: "read", id: thread.id }, { start: false })).toMatchObject({
 			thread: { last: at },

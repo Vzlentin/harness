@@ -25,12 +25,10 @@ import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
-	addPart,
 	addPerson,
 	addThread,
 	answerAsks,
 	approveHeld,
-	checkPart,
 	dropAsk,
 	dropHeld,
 	endParley,
@@ -41,14 +39,11 @@ import {
 	readOpenAsks,
 	readParley,
 	readParleys,
-	readParts,
 	readPersons,
 	readRules,
-	readTerms,
 	readThread,
 	readThreads,
 	setRule,
-	setTerm,
 	takeParley,
 	writeRound,
 } from "./project.ts";
@@ -178,10 +173,6 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return digest(request.caller, handler);
 		case "rule":
 			return rule(request, handler);
-		case "term":
-			return term(request, handler);
-		case "part":
-			return part(request, handler);
 		case "gate":
 			return gateCall(request, { ...handler, models: handler.place.models });
 		case "held":
@@ -359,26 +350,6 @@ function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Pr
 			return handler.harness.commit((tx) => setRule(tx, request, request.caller), context);
 		case "list":
 			return readRules(handler.harness, request, context);
-	}
-}
-
-function term(request: Extract<Request, { type: "term" }>, handler: Handler): Promise<Replies["term"]> {
-	switch (request.action) {
-		case "set":
-			return handler.harness.commit((tx) => setTerm(tx, request, request.caller), context);
-		case "list":
-			return readTerms(handler.harness, context);
-	}
-}
-
-function part(request: Extract<Request, { type: "part" }>, handler: Handler): Promise<Replies["part"]> {
-	switch (request.action) {
-		case "add":
-			return handler.harness.commit((tx) => addPart(tx, request, request.caller), context);
-		case "check":
-			return handler.harness.commit((tx) => checkPart(tx, request.id, request.caller), context);
-		case "list":
-			return readParts(handler.harness, request, context);
 	}
 }
 

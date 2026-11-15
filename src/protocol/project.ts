@@ -3,13 +3,13 @@ import { SLUG } from "./paths.ts";
 import { isFinished } from "./todo.ts";
 
 /**
- * The name of the durable extension with the tools of the store of the project: `thread`, `rule`, `term`, `part` and
- * `parley`. A client of `children.open` leaves these tools out when its `setup` adds this name to the `remove` of the
- * extensions of the child's `AgentDoc`.
+ * The name of the durable extension with the tools of the store of the project: `thread`, `rule` and `parley`. A
+ * client of `children.open` leaves these tools out when its `setup` adds this name to the `remove` of the extensions
+ * of the child's `AgentDoc`.
  */
 export const PROJECT_EXTENSION = "harness-project";
 
-/** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
+/** The ID of a person, a rule or a held action: its place in its list, 1, 2, 3 and so on. */
 export const LocalId = Type.Integer({ minimum: 1 });
 
 /** The ID of a thread, which is the ID of its conversation, or of a message, which is the ID of its entry. */
@@ -148,47 +148,6 @@ export const Rule = Type.Object({
 });
 
 export type Rule = Static<typeof Rule>;
-
-/**
- * A term of the project, its meaning and the words not to use for it, with who said it and its source message. `at` is
- * the time of its last change, and `by` is the caller of that change.
- */
-export const Term = Type.Object({
-	id: LocalId,
-	name: Text,
-	meaning: Text,
-	avoid: Type.Array(Text),
-	saidBy: Author,
-	source: StoreId,
-	at: Time,
-	by: Caller,
-});
-
-export type Term = Static<typeof Term>;
-
-/** The kinds of a part. */
-export const PART_KINDS = ["diagram", "table", "example", "widget"] as const;
-
-export const PartKind = Type.Enum(PART_KINDS);
-
-export type PartKind = Static<typeof PartKind>;
-
-/**
- * A part of the vault that explains rules and terms. `checked` is the time of its last check, in epoch milliseconds,
- * and `stale` is true once one of its rules or terms changed after it. `by` is the caller that added or checked it last.
- */
-export const Part = Type.Object({
-	id: LocalId,
-	kind: PartKind,
-	path: Text,
-	rules: Type.Array(LocalId),
-	terms: Type.Array(LocalId),
-	checked: Time,
-	stale: Type.Boolean(),
-	by: Caller,
-});
-
-export type Part = Static<typeof Part>;
 
 /**
  * The fields of each held action: the request ID of the call that the gate held, the caller that made it, its tool, its
@@ -492,56 +451,10 @@ export const RuleFilter = Type.Object({ kind: Type.Optional(RuleKind), status: T
 
 export type RuleFilter = Static<typeof RuleFilter>;
 
-/** The input of a new term. `avoid` defaults to no words. */
-export const TermNew = Type.Object({
-	id: Type.Optional(Type.Never()),
-	name: Text,
-	meaning: Text,
-	avoid: Type.Optional(Type.Array(Text)),
-	saidBy: Author,
-	source: StoreId,
-});
-
-export type TermNew = Static<typeof TermNew>;
-
-/** The input of a change of the term `id`. */
-export const TermEdit = Type.Object({
-	id: LocalId,
-	name: Type.Optional(Text),
-	meaning: Type.Optional(Text),
-	avoid: Type.Optional(Type.Array(Text)),
-	saidBy: Author,
-	source: StoreId,
-});
-
-export type TermEdit = Static<typeof TermEdit>;
-
-/** The input of a term set: a new term without `id`, a change of a term with `id`. */
-export const TermSet = Type.Union([TermNew, TermEdit]);
-
-export type TermSet = Static<typeof TermSet>;
-
-/** The input of a new part that explains `rules` and `terms`. */
-export const PartAdd = Type.Object({
-	kind: PartKind,
-	path: Text,
-	rules: Type.Array(LocalId),
-	terms: Type.Array(LocalId),
-});
-
-export type PartAdd = Static<typeof PartAdd>;
-
-/** The filter of a read of the parts: only the parts that explain the rule `rule` and the term `term` when they are given. */
-export const PartFilter = Type.Object({ rule: Type.Optional(LocalId), term: Type.Optional(LocalId) });
-
-export type PartFilter = Static<typeof PartFilter>;
-
 /** The kinds of the documents of the project in the store, one for each list. */
 export const PERSONS_KIND = "harness.persons";
 export const THREADS_KIND = "harness.threads";
 export const RULES_KIND = "harness.rules";
-export const TERMS_KIND = "harness.terms";
-export const PARTS_KIND = "harness.parts";
 export const HELD_KIND = "harness.held";
 export const PARLEYS_KIND = "harness.parleys";
 export const ASKS_KIND = "harness.asks";
@@ -571,14 +484,6 @@ export type ThreadList = Static<typeof ThreadList>;
 export const RuleList = Type.Object({ rules: Type.Array(Rule) });
 
 export type RuleList = Static<typeof RuleList>;
-
-export const TermList = Type.Object({ terms: Type.Array(Term) });
-
-export type TermList = Static<typeof TermList>;
-
-export const PartList = Type.Object({ parts: Type.Array(Part) });
-
-export type PartList = Static<typeof PartList>;
 
 export const HeldList = Type.Object({ held: Type.Array(HeldAction) });
 
@@ -616,15 +521,12 @@ export const ProjectThread = Type.Object({ ...Thread.properties, waits: Type.Arr
 export type ProjectThread = Static<typeof ProjectThread>;
 
 /**
- * The reply of `watch-project`: every person, rule, term, thread with its waits, part, held action, parley and ask, in
- * ID order.
+ * The reply of `watch-project`: every person, rule, thread with its waits, held action, parley and ask, in ID order.
  */
 export const ProjectState = Type.Object({
 	persons: Type.Array(Person),
 	rules: Type.Array(Rule),
-	terms: Type.Array(Term),
 	threads: Type.Array(ProjectThread),
-	parts: Type.Array(Part),
 	held: Type.Array(HeldAction),
 	parleys: Type.Array(Parley),
 	asks: Type.Array(Ask),
@@ -641,9 +543,7 @@ export const ProjectEvent = Type.Object({
 	removed: Type.Object({
 		persons: Type.Array(LocalId),
 		rules: Type.Array(LocalId),
-		terms: Type.Array(LocalId),
 		threads: Type.Array(StoreId),
-		parts: Type.Array(LocalId),
 		held: Type.Array(LocalId),
 		parleys: Type.Array(LocalId),
 		asks: Type.Array(LocalId),
@@ -694,22 +594,6 @@ export function ruleLine(rule: Rule, names: PersonNames): string {
 	const replaces = rule.replaces === undefined ? "" : `; replaces ${rule.replaces}`;
 
 	return `${rule.id} ${rule.name} (${rule.kind}, ${rule.status}): ${rule.value} [${saidLine(rule, names)}${replaces}]`;
-}
-
-export function termLine(term: Term, names: PersonNames): string {
-	const avoid = term.avoid.length === 0 ? "" : `avoid ${term.avoid.join(", ")}; `;
-
-	return `${term.id} ${term.name}: ${term.meaning} [${avoid}${saidLine(term, names)}]`;
-}
-
-function idsText(ids: readonly number[]): string {
-	return ids.length === 0 ? "none" : ids.join(", ");
-}
-
-export function partLine(part: Part): string {
-	const stale = part.stale ? " stale" : "";
-
-	return `${part.id} ${part.kind} ${part.path} [rules ${idsText(part.rules)}; terms ${idsText(part.terms)}; checked ${time(part.checked)}]${stale}`;
 }
 
 /** The fields of a line of a parley or an ask, joined with ` · `. */

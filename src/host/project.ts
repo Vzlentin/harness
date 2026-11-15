@@ -1,7 +1,6 @@
 /**
- * The store of the project: the persons that the user talks with, the threads of messages with them, the rules and the
- * terms of the project, the parts of the vault that explain them, the tool calls that the gate held, and the parleys and
- * their asks. Each list is one document of the session, and
+ * The store of the project: the persons that the user talks with, the threads of messages with them, the rules of the
+ * project, the tool calls that the gate held, and the parleys and their asks. Each list is one document of the session, and
  * each thread is an ownerless conversation whose entries are its messages. The states of the messages out are in the
  * outbox, a document of the session, because an entry cannot change. The requests of the host change them with
  * these functions, each in its own commit.
@@ -48,11 +47,6 @@ import {
 	type ParleyList,
 	PARLEYS_KIND,
 	parleyText,
-	type Part,
-	type PartAdd,
-	type PartFilter,
-	type PartList,
-	PARTS_KIND,
 	type Person,
 	type PersonAdd,
 	type PersonList,
@@ -62,10 +56,6 @@ import {
 	type RuleList,
 	type RuleSet,
 	RULES_KIND,
-	type Term,
-	type TermList,
-	type TermSet,
-	TERMS_KIND,
 	type Thread,
 	type ThreadAdd,
 	type ThreadList,
@@ -80,8 +70,6 @@ const PAGE = 200;
 const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Rules = sessionDoc<RuleList>(RULES_KIND, () => ({ rules: [] }));
-const Terms = sessionDoc<TermList>(TERMS_KIND, () => ({ terms: [] }));
-const Parts = sessionDoc<PartList>(PARTS_KIND, () => ({ parts: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
 const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
 const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
@@ -201,7 +189,7 @@ export async function readOutbox(reader: Pick<DocumentReader, "snapshot">, conte
 
 /**
  * Adds or changes a rule for the caller `by`, and gives it. A new rule has the status `open` by default, and retires the rule that it
- * replaces; the retired rule keeps its own author and source. A change of a rule makes each part that explains it, or the rule that it replaces, stale.
+ * replaces; the retired rule keeps its own author and source.
  */
 export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule> {
 	if (change.id !== undefined && change.replaces !== undefined) {
@@ -212,7 +200,6 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 	await knownAuthor(tx, change.saidBy);
 	const list = await tx.doc(Rules);
 	const at = Date.now();
-	const changed: number[] = [];
 	let rule: Rule;
 
 	if (change.id === undefined) {
@@ -232,7 +219,6 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 		if (replaced !== undefined) {
 			rule.replaces = replaced.id;
 			Object.assign(replaced, { status: "retired", at, by });
-			changed.push(replaced.id);
 		}
 
 		list.rules.push(rule);
@@ -247,82 +233,10 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 		if (change.value !== undefined) rule.value = change.value;
 
 		if (change.status !== undefined) rule.status = change.status;
-		changed.push(rule.id);
 	}
-
-	await markStale(tx, "rules", changed);
 
 	// A draft cannot be used after its commit, so the rule is a copy.
 	return { ...rule };
-}
-
-/** Adds or changes a term for the caller `by`, and gives it. A change of a term makes each part that explains it stale. */
-export async function setTerm(tx: Tx, change: TermSet, by: string): Promise<Term> {
-	await knownSource(tx, change.source);
-	await knownAuthor(tx, change.saidBy);
-	const list = await tx.doc(Terms);
-	const at = Date.now();
-	let term: Term;
-
-	if (change.id === undefined) {
-		term = {
-			id: nextId(list.terms),
-			name: change.name,
-			meaning: change.meaning,
-			avoid: [...(change.avoid ?? [])],
-			saidBy: change.saidBy,
-			source: change.source,
-			at,
-			by,
-		};
-		list.terms.push(term);
-	} else {
-		term = known(list.terms, change.id, "term");
-		Object.assign(term, { saidBy: change.saidBy, source: change.source, at, by });
-
-		if (change.name !== undefined) term.name = change.name;
-
-		if (change.meaning !== undefined) term.meaning = change.meaning;
-
-		if (change.avoid !== undefined) term.avoid = [...change.avoid];
-		await markStale(tx, "terms", [term.id]);
-	}
-
-	return { ...term, avoid: [...term.avoid] };
-}
-
-/** Adds a part that explains `rules` and `terms`, checked now by the caller `by`, and gives it. */
-export async function addPart(tx: Tx, input: PartAdd, by: string): Promise<Part> {
-	const rules = (await tx.doc(Rules)).rules;
-	const terms = (await tx.doc(Terms)).terms;
-
-	for (const id of input.rules) known(rules, id, "rule");
-
-	for (const id of input.terms) known(terms, id, "term");
-	const list = await tx.doc(Parts);
-
-	const part: Part = {
-		id: nextId(list.parts),
-		kind: input.kind,
-		path: input.path,
-		rules: [...input.rules],
-		terms: [...input.terms],
-		checked: Date.now(),
-		stale: false,
-		by,
-	};
-
-	list.parts.push(copyPart(part));
-
-	return part;
-}
-
-/** Marks the part `id` checked now by the caller `by` and not stale, and gives it. */
-export async function checkPart(tx: Tx, id: number, by: string): Promise<Part> {
-	const part = known((await tx.doc(Parts)).parts, id, "part");
-	Object.assign(part, { checked: Date.now(), stale: false, by });
-
-	return copyPart(part);
 }
 
 /**
@@ -490,30 +404,6 @@ export async function readRules(
 	);
 
 	return { rules: rules.map((rule) => ({ ...rule })) };
-}
-
-/** The terms, in ID order. */
-export async function readTerms(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<TermList> {
-	const list = await reader.snapshot(Terms, context);
-
-	return { terms: (list?.terms ?? []).map((term) => ({ ...term, avoid: [...term.avoid] })) };
-}
-
-/** The parts, in ID order: with `filter`, only those that explain its rule or its term. */
-export async function readParts(
-	reader: Pick<DocumentReader, "snapshot">,
-	filter: PartFilter,
-	context: Context,
-): Promise<PartList> {
-	const list = await reader.snapshot(Parts, context);
-
-	const parts = (list?.parts ?? []).filter(
-		(part) =>
-			(filter.rule === undefined || part.rules.includes(filter.rule)) &&
-			(filter.term === undefined || part.terms.includes(filter.term)),
-	);
-
-	return { parts: parts.map(copyPart) };
 }
 
 /** A parley in the status `open`. */
@@ -865,15 +755,6 @@ export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T)
 	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: () => false, initial });
 }
 
-/** Makes each part that explains one of `ids` of `field` stale. */
-async function markStale(tx: Tx, field: "rules" | "terms", ids: readonly number[]): Promise<void> {
-	if (ids.length === 0) return;
-
-	for (const part of (await tx.doc(Parts)).parts) {
-		if (part[field].some((id) => ids.includes(id))) part.stale = true;
-	}
-}
-
 function nextId(items: readonly { readonly id: number }[]): number {
 	return (items.at(-1)?.id ?? 0) + 1;
 }
@@ -916,10 +797,6 @@ function copyThread(thread: Thread): Thread {
 
 function copyHeld(held: HeldAction): HeldAction {
 	return held.state === "approved" && held.ran !== undefined ? { ...held, ran: { ...held.ran } } : { ...held };
-}
-
-function copyPart(part: Part): Part {
-	return { ...part, rules: [...part.rules], terms: [...part.terms] };
 }
 
 function conversationId(id: number): ConversationId {

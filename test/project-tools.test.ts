@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import { projectToolsExtension } from "../src/project-tool.ts";
-import { AskWrite, Message, Person, Thread } from "../src/protocol/project.ts";
+import { AskWrite, Message, Person, RuleList, Thread } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import {
 	agentTurn,
@@ -78,7 +78,7 @@ afterAll(async () => {
 });
 
 describe("the tools of the store of the project", { timeout: 30_000 }, () => {
-	it("log and read messages, and set and list rules, terms and parts, for a child", async () => {
+	it("log and read messages, and set and list rules, for a child", async () => {
 		const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }));
 
 		const thread = Value.Parse(
@@ -145,49 +145,23 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 					source: draft.id,
 				},
 			},
-			{
-				name: "term",
-				arguments: {
-					action: "set",
-					name: "mandat",
-					meaning: "A signed order of sale.",
-					avoid: ["contract"],
-					saidBy: sam.id,
-					source: asked.id,
-				},
-			},
-			{ name: "part", arguments: { action: "add", kind: "table", path: "parts/scope.md", rules: [1], terms: [1] } },
 			{ name: "rule", arguments: { action: "set", id: 1, status: "decided", saidBy: "user", source: draft.id } },
-			{ name: "part", arguments: { action: "list", rule: 1 } },
 			{ name: "rule", arguments: { action: "list", status: "open" } },
-			{ name: "term", arguments: { action: "list" } },
 		]);
 
 		const second = handleOf(await cli(["spawn", "--prompt", "Keep the facts"]));
 		await cli(["wait", second]);
-		const parts = await send({ type: "part", action: "list" });
-
-		if (!("parts" in parts)) throw new Error("no parts");
-		const checked = new Date(parts.parts[0]?.checked ?? 0).toISOString();
-		const term = `1 mandat: A signed order of sale. [avoid contract; said by Sam (${sam.id}) in message ${asked.id}]\n`;
-
 		expect(cellResults.get(facts)).toEqual([
 			`1 scope (domain, open): 45 and 54. [said by user in message ${draft.id}]\n`,
-			term,
-			`1 table parts/scope.md [rules 1; terms 1; checked ${checked}]\n`,
 			`1 scope (domain, decided): 45 and 54. [said by user in message ${draft.id}]\n`,
-			`1 table parts/scope.md [rules 1; terms 1; checked ${checked}] stale\n`,
 			"No rules\n",
-			term,
 		]);
 		const rules = await send({ type: "rule", action: "list" });
 		expect(rules).toMatchObject({ rules: [{ id: 1, status: "decided", saidBy: "user", source: draft.id }] });
 		// The second child wrote the facts, so its conversation is their caller, not the one that logged the messages.
-		const factsBy = parts.parts[0]?.by;
+		const factsBy = Value.Parse(RuleList, rules).rules[0]?.by;
 		expect(factsBy).toMatch(/^\d+$/);
 		expect(factsBy).not.toBe(asked.by);
-		expect(rules).toMatchObject({ rules: [{ by: factsBy }] });
-		expect(await send({ type: "term", action: "list" })).toMatchObject({ terms: [{ by: factsBy }] });
 	});
 
 	it("writes and reads the asks of a parley and the asks with no parley, with their text form", async () => {
@@ -333,9 +307,9 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 
 	it("gives the tools to the project agent and to a child at the depth limit", async () => {
 		await agentTurn("Agent project tools");
-		expect(requests.get("Agent project tools")?.tools).toEqual(
-			expect.arrayContaining(["thread", "rule", "term", "part", "parley"]),
-		);
+		expect(requests.get("Agent project tools")?.tools).toEqual(expect.arrayContaining(["thread", "rule", "parley"]));
+		expect(requests.get("Agent project tools")?.tools).not.toEqual(expect.arrayContaining(["term"]));
+		expect(requests.get("Agent project tools")?.tools).not.toEqual(expect.arrayContaining(["part"]));
 		await setSettings({ agentDepthLimit: 1 });
 
 		try {
@@ -343,9 +317,9 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 			const handle = handleOf(await cli(["spawn", "--prompt", "Leaf threads"]));
 
 			expect((await cli(["wait", handle])).stdout).toMatch(/Scope with Sam \(\d+\)/);
-			expect(requests.get("Task:\nLeaf threads")?.tools).toEqual(
-				expect.arrayContaining(["thread", "rule", "term", "part", "parley"]),
-			);
+			expect(requests.get("Task:\nLeaf threads")?.tools).toEqual(expect.arrayContaining(["thread", "rule", "parley"]));
+			expect(requests.get("Task:\nLeaf threads")?.tools).not.toEqual(expect.arrayContaining(["term"]));
+			expect(requests.get("Task:\nLeaf threads")?.tools).not.toEqual(expect.arrayContaining(["part"]));
 		} finally {
 			await setSettings();
 		}

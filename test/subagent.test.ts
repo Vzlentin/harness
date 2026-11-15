@@ -324,8 +324,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"todo",
 			"thread",
 			"rule",
-			"term",
-			"part",
 			"parley",
 			"codemode",
 		]);
@@ -688,8 +686,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"todo",
 			"thread",
 			"rule",
-			"term",
-			"part",
 			"parley",
 			"codemode",
 		]);

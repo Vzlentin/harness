@@ -154,7 +154,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 	});
 
 	it("leaves the store tools out of a library child whose setup removes the project extension", async () => {
-		const store = ["thread", "rule", "term", "part", "parley"];
+		const store = ["thread", "rule", "parley"];
 
 		const run = async (key: string, noStore: boolean) => {
 			const prompt = `Fixture codemode tools ${key}`;

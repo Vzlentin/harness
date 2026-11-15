@@ -2,12 +2,15 @@ import { once } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { createConnection, createServer, Socket } from "node:net";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { CommitObserver } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { projectEvent } from "../src/host/project-watch.ts";
+import { sessionDoc } from "../src/host/project.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -16,17 +19,19 @@ import {
 	AskWrite,
 	type HeldAction,
 	Message,
-	Part,
 	Person,
 	ProjectEvent,
 	ProjectState,
 	Rule,
-	Term,
 	Thread,
 } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import { cli, models, root, setUp, tearDown, until } from "./helpers.ts";
+import { cli, models, openDurableHost, root, setUp, tearDown, until } from "./helpers.ts";
+
+/** The documents of the terms and of the parts of the vault, as an older version kept them in the store. */
+const OLD_TERMS = sessionDoc<{ terms: JsonValue[] }>("harness.terms", () => ({ terms: [] }));
+const OLD_PARTS = sessionDoc<{ parts: JsonValue[] }>("harness.parts", () => ({ parts: [] }));
 
 /** One line of a project watch: the reply, or an event. */
 const WatchLine = Type.Union([
@@ -37,9 +42,7 @@ const WatchLine = Type.Union([
 const NONE: ProjectEvent["removed"] = {
 	persons: [],
 	rules: [],
-	terms: [],
 	threads: [],
-	parts: [],
 	held: [],
 	parleys: [],
 	asks: [],
@@ -50,9 +53,7 @@ function event(changes: Partial<ProjectEvent>): ProjectEvent {
 	return {
 		persons: [],
 		rules: [],
-		terms: [],
 		threads: [],
-		parts: [],
 		held: [],
 		parleys: [],
 		asks: [],
@@ -134,9 +135,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			expect(watch.state).toEqual({
 				persons: [],
 				rules: [],
-				terms: [],
 				threads: [],
-				parts: [],
 				held: [],
 				parleys: [],
 				asks: [],
@@ -226,16 +225,6 @@ describe("watch-project", { timeout: 60_000 }, () => {
 
 			expect(await next()).toEqual(event({ rules: [rule] }));
 
-			const part = Value.Parse(
-				Part,
-				await send(
-					{ type: "part", action: "add", caller: "cli", kind: "table", path: "Scope.md", rules: [rule.id], terms: [] },
-					project,
-				),
-			);
-
-			expect(await next()).toEqual(event({ parts: [part] }));
-
 			const decided = Value.Parse(
 				Rule,
 				await send(
@@ -252,55 +241,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				),
 			);
 
-			// One commit changes the rule and makes its part stale: one event has both.
-			expect(await next()).toEqual(event({ rules: [decided], parts: [{ ...part, stale: true }] }));
-
-			const term = Value.Parse(
-				Term,
-				await send(
-					{
-						type: "term",
-						action: "set",
-						caller: "cli",
-						name: "sale type",
-						meaning: "The code of a sale.",
-						saidBy: sam.id,
-						source: asked.id,
-					},
-					project,
-				),
-			);
-
-			expect(await next()).toEqual(event({ terms: [term] }));
-
-			const glossary = Value.Parse(
-				Part,
-				await send(
-					{ type: "part", action: "add", caller: "cli", kind: "table", path: "Terms.md", rules: [], terms: [term.id] },
-					project,
-				),
-			);
-
-			expect(await next()).toEqual(event({ parts: [glossary] }));
-
-			const changed = Value.Parse(
-				Term,
-				await send(
-					{
-						type: "term",
-						action: "set",
-						caller: "cli",
-						id: term.id,
-						meaning: "The code of a sale, such as 45.",
-						saidBy: "user",
-						source: draft.id,
-					},
-					project,
-				),
-			);
-
-			// One commit changes the term and makes its part stale: one event has both.
-			expect(await next()).toEqual(event({ terms: [changed], parts: [{ ...glossary, stale: true }] }));
+			expect(await next()).toEqual(event({ rules: [decided] }));
 
 			// A commit that changes no object of the project sends no event.
 			await send(
@@ -308,7 +249,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				project,
 			);
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			expect(events).toHaveLength(11);
+			expect(events).toHaveLength(7);
 
 			const again = await openProjectWatch(project);
 			again.socket.destroy();
@@ -316,12 +257,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			expect(again.state).toEqual({
 				persons: [sam],
 				rules: [decided],
-				terms: [changed],
 				threads: [{ ...thread, last: draft.at, waits: [sent] }],
-				parts: [
-					{ ...part, stale: true },
-					{ ...glossary, stale: true },
-				],
 				held: [],
 				parleys: [],
 				asks: [],
@@ -329,6 +265,94 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		} finally {
 			watch?.socket.destroy();
 			await host.close();
+		}
+	});
+
+	it("opens a store with the terms and parts documents of an older version, and gives no terms and no parts", async () => {
+		const project = "older";
+		const dir = await mkdtemp(join(root, `${project}-`));
+		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
+		let host = await runHost({ project, cwd: dir, models });
+		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const asked = Value.Parse(
+				Message,
+				await send(
+					{
+						type: "message",
+						action: "log",
+						caller: "cli",
+						thread: thread.id,
+						from: sam.id,
+						direction: "in",
+						at: 1_000,
+						text: "Which types?",
+					},
+					project,
+				),
+			);
+
+			const rule = Value.Parse(
+				Rule,
+				await send(
+					{
+						type: "rule",
+						action: "set",
+						caller: "cli",
+						name: "scope",
+						kind: "domain",
+						value: "45 and 54.",
+						saidBy: sam.id,
+						source: asked.id,
+					},
+					project,
+				),
+			);
+
+			await host?.close();
+			// An older version kept the terms and the parts of the vault in these documents of the store.
+			const older = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
+			const term = { id: 1, name: "mandat", meaning: "A signed order.", avoid: [], saidBy: "user", source: asked.id };
+
+			const part = {
+				id: 1,
+				kind: "table",
+				path: "Scope.md",
+				rules: [rule.id],
+				terms: [1],
+				checked: 1_000,
+				stale: true,
+			};
+
+			await older.commit(async (tx) => {
+				(await tx.doc(OLD_TERMS)).terms.push({ ...term, at: 1_000, by: "cli" });
+				(await tx.doc(OLD_PARTS)).parts.push({ ...part, by: "cli" });
+			}, BACKGROUND_CONTEXT);
+			await older.close(BACKGROUND_CONTEXT);
+
+			host = await runHost({ project, cwd: dir, models });
+			watch = await openProjectWatch(project);
+
+			expect(watch.state).toEqual({
+				persons: [sam],
+				rules: [rule],
+				threads: [{ ...thread, last: asked.at, waits: [] }],
+				held: [],
+				parleys: [],
+				asks: [],
+			});
+			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules: [rule] });
+		} finally {
+			watch?.socket.destroy();
+			await host?.close();
 		}
 	});
 
@@ -538,9 +562,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		const before: ProjectState = {
 			persons: [sam, rufin],
 			rules: [],
-			terms: [],
 			threads: [{ ...thread, waits: [draft] }],
-			parts: [],
 			held: [push, merge],
 			parleys: [],
 			asks: [],
@@ -549,9 +571,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		const after: ProjectState = {
 			persons: [sam],
 			rules: [],
-			terms: [],
 			threads: [{ ...thread, waits: [] }],
-			parts: [],
 			held: [approved],
 			parleys: [],
 			asks: [],

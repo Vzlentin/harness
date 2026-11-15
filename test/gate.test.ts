@@ -402,8 +402,6 @@ describe("gate", { timeout: 60_000 }, () => {
 				{ tool: "thread", arguments: { action: "list" } },
 				{ tool: "thread", arguments: { action: "read", thread: 1 } },
 				{ tool: "rule", arguments: { action: "list" } },
-				{ tool: "term", arguments: { action: "list" } },
-				{ tool: "part", arguments: { action: "list" } },
 				{ tool: "parley", arguments: { action: "list" } },
 				{ tool: "parley", arguments: { action: "read", slug: "where", ask: 1 } },
 				{ tool: "subagent", arguments: { action: "query", handle: "a1b2c3", question: "What did it do?" } },

@@ -74,16 +74,7 @@ const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
 ]);
 
 /** The request types whose `list` and `read` actions are passive. */
-const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set([
-	"todo",
-	"person",
-	"thread",
-	"rule",
-	"term",
-	"part",
-	"ask",
-	"parley",
-]);
+const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set(["todo", "person", "thread", "rule", "ask", "parley"]);
 
 /**
  * Whether `request` does not count as activity for the idle exit. A `list` or a `read` of a todo list or of the store of

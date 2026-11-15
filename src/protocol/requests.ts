@@ -19,10 +19,6 @@ import {
 	type ParleyAsks,
 	ParleyEnd,
 	type ParleyList,
-	Part,
-	PartAdd,
-	PartFilter,
-	type PartList,
 	type Person,
 	PersonAdd,
 	type PersonList,
@@ -33,10 +29,6 @@ import {
 	type RuleList,
 	RuleNew,
 	Slug,
-	type Term,
-	TermEdit,
-	type TermList,
-	TermNew,
 	Thread,
 	ThreadAdd,
 	type ThreadList,
@@ -52,7 +44,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 29;
+export const PROTOCOL_VERSION = 30;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -387,38 +379,6 @@ export const RequestLine = Type.Union([
 	}),
 	/** Replies with the rules, in ID order: with `kind` or `status`, only those that have it. */
 	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("list"), ...RuleFilter.properties }),
-	/** Adds a term, and replies with it. */
-	Type.Object({
-		type: Type.Literal("term"),
-		action: Type.Literal("set"),
-		caller: Type.String(),
-		...TermNew.properties,
-	}),
-	/** Changes the term `id`, and replies with it. */
-	Type.Object({
-		type: Type.Literal("term"),
-		action: Type.Literal("set"),
-		caller: Type.String(),
-		...TermEdit.properties,
-	}),
-	/** Replies with the terms, in ID order. */
-	Type.Object({ type: Type.Literal("term"), action: Type.Literal("list") }),
-	/** Adds a part that explains rules and terms, and replies with it. */
-	Type.Object({
-		type: Type.Literal("part"),
-		action: Type.Literal("add"),
-		caller: Type.String(),
-		...PartAdd.properties,
-	}),
-	/** Marks the part `id` checked now and not stale, and replies with it. */
-	Type.Object({
-		type: Type.Literal("part"),
-		action: Type.Literal("check"),
-		caller: Type.String(),
-		id: Part.properties.id,
-	}),
-	/** Replies with the parts, in ID order: with `rule` or `term`, only those that explain it. */
-	Type.Object({ type: Type.Literal("part"), action: Type.Literal("list"), ...PartFilter.properties }),
 	/**
 	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
 	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open.
@@ -493,8 +453,8 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("watch-tree") }),
 	/**
-	 * Replies with the persons, rules, terms, threads with their waits, parts, held actions, parleys and asks of the
-	 * project, then sends one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
+	 * Replies with the persons, rules, threads with their waits, held actions, parleys and asks of the project, then
+	 * sends one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("watch-project") }),
 	/**
@@ -546,10 +506,6 @@ export type Replies = {
 	readonly digest: DigestReply;
 	/** The rule of `set`, or the rules of `list`. */
 	readonly rule: Rule | RuleList;
-	/** The term of `set`, or the terms of `list`. */
-	readonly term: Term | TermList;
-	/** The part of `add` and `check`, or the parts of `list`. */
-	readonly part: Part | PartList;
 	readonly gate: GateReply;
 	readonly held: HeldAction;
 	/** The write of `round`, `answer` and `drop`, the ask of `read`, or the open asks of `list`. */
