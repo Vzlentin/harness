@@ -644,11 +644,11 @@ export async function round(
 	return Value.Parse(AskWrite, await send({ type: "ask", action: "round", caller, ...line }));
 }
 
-/** Writes `answers` as the caller `user`, and gives the reply. */
+/** Writes `answers` of the user as the caller `user`, and gives the reply. */
 export async function answer(
 	answers: Extract<Request, { type: "ask"; action: "answer" }>["answers"],
 ): Promise<AskWrite> {
-	return Value.Parse(AskWrite, await send({ type: "ask", action: "answer", caller: "user", answers }));
+	return Value.Parse(AskWrite, await send({ type: "ask", action: "answer", caller: "user", answers, user: true }));
 }
 
 /** The options of the call of `framed`. */

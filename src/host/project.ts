@@ -19,6 +19,7 @@ import type {
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
+	type AnswerAuthor,
 	type AnswerInput,
 	type Ask,
 	askAnswerText,
@@ -582,15 +583,20 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
 }
 
 /**
- * Writes the answers `answers` for the caller `by`, and gives the write: each parley of the answered asks, with all of
- * its asks, and the answered asks with no parley. Each answer names its ask by ID, or by its number in a parley, and
+ * Writes the answers `answers` of `author` for the caller `by`, and gives the write: each parley of the answered asks,
+ * with all of its asks, and the answered asks with no parley. Each answer names its ask by ID, or by its number in a parley, and
  * two answers of one ask fail. Each answer replaces the answer of its ask, with its label and its words, as one unit. The answer `ok` to the read-back of
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
  * ask of the parley must be answered or dropped, and its `design_sense` set. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery.
  */
-export async function answerAsks(tx: Tx, answers: readonly AnswerInput[], by: string): Promise<AskWrite> {
+export async function answerAsks(
+	tx: Tx,
+	answers: readonly AnswerInput[],
+	by: string,
+	author: AnswerAuthor,
+): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
 	const at = Date.now();
@@ -611,7 +617,7 @@ export async function answerAsks(tx: Tx, answers: readonly AnswerInput[], by: st
 			throw new Error(`Ask ${ask.id} takes ${keys.length === 0 ? "own" : `${keys.join(", ")} or own`}`);
 		}
 
-		const answered: AnsweredAsk = { ...askBase(ask), state: "answered", answer: input.answer, at, by };
+		const answered: AnsweredAsk = { ...askBase(ask), state: "answered", answer: input.answer, at, by, author };
 
 		if (input.label !== undefined) answered.label = input.label;
 
@@ -859,7 +865,7 @@ function parleyAsks(asks: readonly Ask[], id: number): Ask[] {
 	return asks.flatMap((ask) => (ask.parley?.id === id ? [Value.Clone(ask)] : []));
 }
 
-/** The fields of `ask` without its state and its answer. */
+/** The fields of `ask` without its state, its answer and the author of its answer. */
 function askBase(ask: Ask): AskBase {
 	if (ask.state !== "answered") {
 		const { state: _state, ...base } = ask;
@@ -867,7 +873,7 @@ function askBase(ask: Ask): AskBase {
 		return base;
 	}
 
-	const { state: _state, answer: _answer, label: _label, words: _words, ...base } = ask;
+	const { state: _state, author: _author, answer: _answer, label: _label, words: _words, ...base } = ask;
 
 	return base;
 }

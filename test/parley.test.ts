@@ -86,10 +86,21 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			parleys: [
 				{
 					parley: { slug: "store-place", status: "open" },
-					asks: [{ id: 1, state: "answered", answer: "own", label: "In the store, with a view", by: "user" }, {}, {}],
+					asks: [
+						{
+							id: 1,
+							state: "answered",
+							answer: "own",
+							label: "In the store, with a view",
+							by: "user",
+							author: { kind: "user" },
+						},
+						{},
+						{},
+					],
 				},
 			],
-			asks: [{ id: 3, state: "answered", answer: "own", label: "Not yet" }],
+			asks: [{ id: 3, state: "answered", answer: "own", label: "Not yet", author: { kind: "user" } }],
 		});
 
 		// A new answer replaces the answer, the label and the words as one unit.
@@ -100,6 +111,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			answer: "b",
 			at: replaced?.at,
 			by: "user",
+			author: { kind: "user" },
 		});
 
 		const taken = Value.Parse(
@@ -152,6 +164,30 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		expect(byId).toMatchObject({ id: lone, state: "answered", label: "Yes", view: "The tag `v1`" });
 		const byNumber = Value.Parse(Ask, await send({ type: "ask", action: "read", slug: "read-one", n: 1 }));
 		expect(byNumber).toMatchObject({ id: call, state: "answered", answer: "b" });
+	});
+
+	it("records the author of each answer: the user with the mark, else the agent of the caller", async () => {
+		const lone = (await round("khan", undefined, [{ title: "Who answers?" }])).asks[0]?.id ?? 0;
+		const byUser = (await answer([{ id: lone, answer: "own", label: "Me" }])).asks[0];
+		expect(byUser).toMatchObject({ by: "user", author: { kind: "user" } });
+
+		// A note keeps the author of the answer, and changes only `by`.
+		const noted = await send({ type: "ask", action: "note", caller: "pi-2", id: lone, note: "who" });
+		expect(noted).toMatchObject({ by: "pi-2", author: { kind: "user" } });
+
+		// A new answer with no mark writes its own author.
+		const byAgent = Value.Parse(
+			AskWrite,
+			await send({
+				type: "ask",
+				action: "answer",
+				caller: "pi-1",
+				answers: [{ id: lone, answer: "own", label: "It" }],
+			}),
+		).asks[0];
+
+		expect(byAgent).toMatchObject({ by: "pi-1", author: { kind: "agent", caller: "pi-1" }, note: "who" });
+		expect(await send({ type: "ask", action: "read", id: lone })).toEqual(byAgent);
 	});
 
 	it("records the vault note of an ask in any state, by its ID or by its number in its parley", async () => {

@@ -462,13 +462,14 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			);
 
 			expect(await next()).toEqual(event({ asks: answer.parleys.flatMap((each) => each.asks.slice(0, 1)) }));
+			expect(answer.parleys[0]?.asks[0]).toMatchObject({ author: { kind: "agent", caller: "user" } });
 
 			const noted = Value.Parse(
 				Ask,
 				await send({ type: "ask", action: "note", caller: "pi-1", slug: "store", n: 1, note: "store-1" }, project),
 			);
 
-			expect(noted).toMatchObject({ id: 1, note: "store-1" });
+			expect(noted).toMatchObject({ id: 1, note: "store-1", by: "pi-1", author: { kind: "agent", caller: "user" } });
 			expect(await next()).toEqual(event({ asks: [noted] }));
 		} finally {
 			watch?.socket.destroy();

@@ -273,15 +273,27 @@ const AskFields = {
 };
 
 /**
+ * The author of the last answer of an ask: the user, the agent of a conversation of the host, or another agent, which
+ * the host knows only by its caller, such as the session ID of a Pi session.
+ */
+export const AnswerAuthor = Type.Union([
+	Type.Object({ kind: Type.Literal("user") }),
+	Type.Object({ kind: Type.Literal("hosted"), conversation: StoreId }),
+	Type.Object({ kind: Type.Literal("agent"), caller: Type.String() }),
+]);
+
+export type AnswerAuthor = Static<typeof AnswerAuthor>;
+
+/**
  * A question that someone put to the user, in one of its states: `open`, then `answered` or `dropped`. `asker` is the
  * caller that wrote it or took its parley last. `parley` is the parley that it serves, and `n` its number there, which
  * never changes. `note` is the ID of the note of the ask in the vault. `at` is the time of its last change, and `by`
- * the caller of that change.
+ * the caller of that change. An answered ask has `author`, the author of its last answer.
  */
 export const Ask = Type.Union([
 	Type.Object({ ...AskFields, state: Type.Literal("open") }),
-	Type.Object({ ...AskFields, state: Type.Literal("answered"), ...OwnAnswer }),
-	Type.Object({ ...AskFields, state: Type.Literal("answered"), ...KeyAnswer }),
+	Type.Object({ ...AskFields, state: Type.Literal("answered"), author: AnswerAuthor, ...OwnAnswer }),
+	Type.Object({ ...AskFields, state: Type.Literal("answered"), author: AnswerAuthor, ...KeyAnswer }),
 	Type.Object({ ...AskFields, state: Type.Literal("dropped") }),
 ]);
 

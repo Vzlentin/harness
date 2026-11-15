@@ -405,13 +405,15 @@ export const RequestLine = Type.Union([
 	}),
 	/**
 	 * Writes the answers of asks in one write, and replies with the write. Each answer names its ask by `id`, or by `slug`
-	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract.
+	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract. `user` marks answers that the user gave;
+	 * without it, the answers are those of the agent of the caller.
 	 */
 	Type.Object({
 		type: Type.Literal("ask"),
 		action: Type.Literal("answer"),
 		caller: Type.String(),
 		answers: AnswerInputs,
+		user: Type.Optional(Type.Literal(true)),
 	}),
 	/** Drops the open ask of `id`, or of `slug` and `n`, and replies with the write. */
 	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String() }),

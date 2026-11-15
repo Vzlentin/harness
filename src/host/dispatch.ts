@@ -10,6 +10,7 @@ import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
 import { approvedText, TYPED_KIND } from "../protocol/gate.ts";
+import type { AnswerAuthor } from "../protocol/project.ts";
 import {
 	type ChildInfo,
 	PROTOCOL_VERSION,
@@ -300,6 +301,20 @@ async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: H
 	return own === undefined ? { kind: "caller", caller: request.caller } : { kind: "conversation", id: own };
 }
 
+/**
+ * The author of the answers of `request`: the user when the request has the mark `user`, else the agent of the
+ * hosted conversation of the caller, else the agent of the caller.
+ */
+async function answerAuthor(
+	request: Extract<Request, { type: "ask"; action: "answer" }>,
+	handler: Handler,
+): Promise<AnswerAuthor> {
+	if (request.user === true) return { kind: "user" };
+	const own = await callerConversation(handler, request.caller);
+
+	return own === undefined ? { kind: "agent", caller: request.caller } : { kind: "hosted", conversation: own };
+}
+
 /** The owner of the list `ref`: the task of a `start` key, or the conversation of a handle or a conversation ID. */
 async function listOwner(ref: ListRef, handler: Handler): Promise<TodoOwner> {
 	if (ref.key !== undefined) return { kind: "task", id: await taskId(handler.harness, ref.key) };
@@ -364,12 +379,16 @@ function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Pr
 	}
 }
 
-function ask(request: Extract<Request, { type: "ask" }>, handler: Handler): Promise<Replies["ask"]> {
+async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler): Promise<Replies["ask"]> {
 	switch (request.action) {
 		case "round":
 			return handler.harness.commit((tx) => writeRound(tx, request, request.caller), context);
-		case "answer":
-			return handler.harness.commit((tx) => answerAsks(tx, request.answers, request.caller), context);
+		case "answer": {
+			const author = await answerAuthor(request, handler);
+
+			return handler.harness.commit((tx) => answerAsks(tx, request.answers, request.caller, author), context);
+		}
+
 		case "drop":
 			return handler.harness.commit((tx) => dropAsk(tx, request, request.caller), context);
 		case "note":

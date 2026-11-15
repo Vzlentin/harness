@@ -1031,6 +1031,13 @@ describe("the Pi extension", () => {
 		await expect(tools.get("parley")?.call({ action: "end", slug: "pi", status: "done" })).rejects.toThrow(
 			"Parley pi is open",
 		);
+		// The answers of the parley tool are the answers of the agent of the session.
+		await tools.get("parley")?.call({ action: "answer", slug: "pi", answers: [{ ask: 1, answer: "a" }] });
+		expect(await request({ type: "ask", action: "read", slug: "pi", n: 1 }, { start: false })).toMatchObject({
+			state: "answered",
+			by: "session",
+			author: { kind: "agent", caller: "session" },
+		});
 		expect(await tools.get("thread")?.call({ action: "read", thread: thread.id })).toBe(
 			`${thread.id} Pi with Sam (1): last message 2026-11-12T00:00:00.000Z\n${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`,
 		);

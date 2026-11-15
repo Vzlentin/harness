@@ -224,6 +224,11 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(results.slice(5, 7)).toEqual(["3 · Push now? · open\n", "3 · Push now? · open\n"]);
 		expect(results[7]).toContain("Parley where has no ask 9");
 		expect(results[8]).toBe("where · contract · Where asks live\n3 · Push now? · open\n");
+		// The answers of a hosted agent have the conversation of the agent as their author.
+		const answered = await request({ type: "ask", action: "read", slug: "where", n: 1 }, { start: false });
+		const by = Value.Parse(Type.Object({ by: Type.String() }), answered).by;
+		expect(by).toMatch(/^\d+$/);
+		expect(answered).toMatchObject({ state: "answered", author: { kind: "hosted", conversation: Number(by) } });
 		// The runner refuses the drop before it reads the unknown parley.
 		expect(results[9]).toContain("drop requires ask");
 	});

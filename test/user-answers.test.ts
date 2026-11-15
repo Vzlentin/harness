@@ -52,12 +52,14 @@ async function round(caller: string, asks: RoundLine["asks"], parley?: RoundLine
 	return [...written.parleys.flatMap((each) => each.asks), ...written.asks].map((ask) => ask.id);
 }
 
-/** Writes `answers` as the caller `caller`. */
+/** Writes `answers` as the caller `caller`. The caller `user` marks them as answers of the user. */
 async function answer(
 	answers: Extract<Request, { type: "ask"; action: "answer" }>["answers"],
 	caller = "user",
 ): Promise<void> {
-	await send({ type: "ask", action: "answer", caller, answers });
+	const line = { type: "ask", action: "answer", caller, answers } as const;
+
+	await send(caller === "user" ? { ...line, user: true } : line);
 }
 
 async function readParley(slug: string): Promise<ParleyAsks> {
