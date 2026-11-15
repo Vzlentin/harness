@@ -1,7 +1,7 @@
 /**
  * What a child sees of its working directory, as a Pi session there sees it: the coding tools, and the system prompt
- * sections with the project instructions, the skills and the working directory. `overlay-view.ts` applies a child's
- * overlay.
+ * sections with the tool-use rules, the project instructions, the skills and the working directory.
+ * `overlay-view.ts` applies a child's overlay.
  */
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -76,6 +76,14 @@ export const PI_TRUST: TrustApi = {
 	ProjectTrustStore,
 	SettingsManager,
 };
+
+/** Pi's rules for the use of the coding tools and codemode, the first section of every conversation. */
+const CHILD_RULES = [
+	"- Use read to examine files instead of cat or sed.",
+	"- Use edit for targeted changes; batch changes to one file in a single call.",
+	"- Use write only for new files or complete rewrites.",
+	"- Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+].join("\n");
 
 const resources = new Map<string, Promise<Resources>>();
 
@@ -181,6 +189,7 @@ export function childContext(report: ResourcesReport): Extension {
 			createBashTool(),
 		],
 		sections: [
+			section("rules", () => CHILD_RULES),
 			section("project_context", async (input, context) => {
 				const files = (await inputResources(input, context, report))?.context ?? [];
 

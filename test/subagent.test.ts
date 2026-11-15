@@ -341,6 +341,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(requests.get("Task:\nBash only")?.tools).toEqual(["bash"]);
 	});
 
+	it("puts Pi's tool-use rules first in a child's system prompt, before the project instructions", async () => {
+		const project = join(root, "rules-project");
+		await mkdir(project);
+		await writeFile(join(project, "AGENTS.md"), "Use spaces.");
+
+		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Rules"]))]);
+		const system = requests.get("Task:\nRules")?.system ?? "";
+		expect(system).toContain(
+			[
+				"<rules>",
+				"- Use read to examine files instead of cat or sed.",
+				"- Use edit for targeted changes; batch changes to one file in a single call.",
+				"- Use write only for new files or complete rewrites.",
+				"- Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+				"</rules>",
+			].join("\n"),
+		);
+		expect(system.indexOf("<rules>")).not.toBe(-1);
+		expect(system.indexOf("<rules>")).toBeLessThan(system.indexOf("<project_context>"));
+	});
+
 	it("gives a child codemode, whose scripts call its other tools", async () => {
 		const { stdout } = await cli(["wait", handleOf(await cli(["spawn", "--prompt", "Codemode"]))]);
 		expect(stdout).toContain("Tool said: ");
