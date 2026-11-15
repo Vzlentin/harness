@@ -1163,6 +1163,37 @@ describe("the Pi extension", () => {
 		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
 	});
 
+	it("gives the session the decided rules of the project as a section, and none with no decided rule or a failed list", async () => {
+		host = await startHost();
+		const registered = await load();
+		const create = { type: "rule", action: "create", caller: "cli", kind: "domain" } as const;
+		await request({ ...create, name: "gone", value: "Gone." }, { start: false });
+		await request({ type: "rule", action: "retire", caller: "cli", id: 1 }, { start: false });
+		await request({ type: "person", action: "add", name: "Sam" }, { start: false });
+		const thread = await request({ type: "thread", action: "add", topic: "Rules", persons: [1] }, { start: false });
+		const log = { type: "message", action: "log", caller: "cli", from: 1, direction: "in", text: "Hi" } as const;
+
+		if (thread === undefined || !("id" in thread)) throw new Error("no host");
+		const said = await request({ ...log, thread: thread.id }, { start: false });
+		const set = { type: "rule", action: "set", caller: "cli", saidBy: 1, source: said?.id ?? 0 } as const;
+		await request({ ...set, name: "open", kind: "domain", value: "Not yet." }, { start: false });
+
+		expect(await agentStartSections(registered, ["read"])).toEqual({});
+
+		await request({ ...create, name: "done", value: "Done." }, { start: false });
+
+		expect(await agentStartSections(registered, ["read"])).toEqual({
+			project_rules:
+				"A rule is what a person of the project said that each agent follows (conduct) or knows as true (domain); only the user puts a rule in effect. Propose a rule with the `rule` tool, and never write a rule into `AGENTS.md`.\n3 done (domain): Done.",
+		});
+
+		await host?.close();
+		host = undefined;
+		await startFake(PROTOCOL_VERSION);
+
+		expect(await agentStartSections(registered, ["read"])).toEqual({});
+	});
+
 	it("gives no section about the tools of a cell to a session, also with the ipython tool", async () => {
 		const registered = await load();
 

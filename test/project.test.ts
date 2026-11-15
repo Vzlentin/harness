@@ -14,11 +14,28 @@ import {
 	messageTransition,
 	Person,
 	Rule,
+	rulesSection,
 	Thread,
 	ThreadMessages,
 } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { answerOf, cli, contexts, models, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
+import {
+	answerOf,
+	cli,
+	contexts,
+	models,
+	requests,
+	root,
+	setUp,
+	spawnAs,
+	startHost,
+	tearDown,
+	until,
+} from "./helpers.ts";
+
+/** The first line of the section of the decided rules. */
+const RULES_HEAD =
+	"A rule is what a person of the project said that each agent follows (conduct) or knows as true (domain); only the user puts a rule in effect. Propose a rule with the `rule` tool, and never write a rule into `AGENTS.md`.";
 
 const RuleList = Type.Object({ rules: Type.Array(Rule) });
 
@@ -769,5 +786,71 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		} finally {
 			await digests.close();
 		}
+	});
+
+	it("gives a running child the decided rules as a section of its system prompt at its next request", async () => {
+		const project = "rules-child";
+		const rules = await projectHost(project);
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Rules", persons: [sam.id] }, project),
+			);
+
+			const said = await logAt(project, thread.id, sam.id, 1_000, "Use tabs.");
+			const child = await spawnAs("rules-test", "Rules one", { notify: false, project });
+			await answerOf(child.handle, project);
+			expect(requests.get("Rules one")?.sections).not.toHaveProperty("project_rules");
+
+			const line = {
+				type: "send",
+				caller: "rules-test",
+				handle: child.handle,
+				followUp: false,
+				notify: false,
+			} as const;
+
+			const set = { type: "rule", action: "set", caller: "cli", saidBy: sam.id, source: said.id } as const;
+			await send({ ...set, name: "tabs", kind: "domain", value: "The code uses tabs." }, project);
+			await send({ ...line, requestId: "two", message: "Rules two" }, project);
+			await answerOf(child.handle, project);
+			expect(requests.get("Rules two")?.sections).not.toHaveProperty("project_rules");
+
+			await send({ type: "rule", action: "decide", caller: "cli", id: 1 }, project);
+			await send({ ...line, requestId: "three", message: "Rules three" }, project);
+			await answerOf(child.handle, project);
+			expect(requests.get("Rules three")?.sections.project_rules).toBe(
+				`<project_rules>\n${RULES_HEAD}\n1 tabs (domain): The code uses tabs.\n</project_rules>`,
+			);
+
+			await send({ type: "rule", action: "retire", caller: "cli", id: 1 }, project);
+			await send({ ...line, requestId: "four", message: "Rules four" }, project);
+			await answerOf(child.handle, project);
+			expect(requests.get("Rules four")?.sections).not.toHaveProperty("project_rules");
+		} finally {
+			await rules.close();
+		}
+	});
+
+	it("makes the section of the rules from the decided rules only, conduct first, and none with no decided rule", () => {
+		const base = { saidBy: "user", at: 1, by: "cli" } as const;
+		const decided = { ...base, status: "decided" } as const;
+
+		const list: Rule[] = [
+			{ ...decided, id: 1, name: "fact", kind: "domain", value: "A fact." },
+			{ ...base, id: 2, name: "draft", kind: "conduct", value: "Not yet.", status: "open" },
+			{ ...decided, id: 4, name: "late", kind: "conduct", value: "Ask later." },
+			{ ...decided, id: 3, name: "ask", kind: "conduct", value: "Ask first." },
+			{ ...base, id: 5, name: "old", kind: "domain", value: "Gone.", status: "retired" },
+		];
+
+		expect(rulesSection(list)).toBe(
+			`${RULES_HEAD}\n3 ask (conduct): Ask first.\n4 late (conduct): Ask later.\n1 fact (domain): A fact.`,
+		);
+		expect(rulesSection(list.filter((rule) => rule.status !== "decided"))).toBeUndefined();
+		expect(rulesSection([])).toBeUndefined();
 	});
 });

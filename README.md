@@ -68,6 +68,7 @@ type to it. Without a project, it asks for one. `pi --harness <project>` starts 
 
 In Pi, `/rules` lists the rules of the project, the open ones first, and lets you decide, retire, edit, create or
 delete one. An agent only proposes a rule: it adds it as open with its `rule` tool, and only you put it in effect.
+Each agent, a Pi session or a child, gets the decided rules in its system prompt at its next request.
 
 In Pi, `/vc` (or `ctrl+shift+y`) selects a block of the agent messages, such as a code block, and copies it. A copy
 that holds a draft of a thread marks that draft sent.

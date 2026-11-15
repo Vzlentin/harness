@@ -631,6 +631,31 @@ export function ruleLine(rule: Rule, names: PersonNames): string {
 	return `${rule.id} ${rule.name} (${rule.kind}, ${rule.status}): ${rule.value} [${saidLine(rule, names)}${replaces}]`;
 }
 
+/** The key of the system prompt section with the decided rules of the project. */
+export const RULES_SECTION = "project_rules";
+
+/**
+ * The text of the system prompt section of the decided rules in `rules`: the conduct rules, then the domain rules, each
+ * group in ID order. It is undefined when no rule is decided.
+ */
+export function rulesSection(rules: readonly Rule[]): string | undefined {
+	const decided = rules.filter((rule) => rule.status === "decided");
+
+	if (decided.length === 0) return undefined;
+
+	const lines = RULE_KINDS.flatMap((kind) =>
+		decided
+			.filter((rule) => rule.kind === kind)
+			.sort((a, b) => a.id - b.id)
+			.map((rule) => `${rule.id} ${rule.name} (${rule.kind}): ${rule.value}`),
+	);
+
+	return [
+		"A rule is what a person of the project said that each agent follows (conduct) or knows as true (domain); only the user puts a rule in effect. Propose a rule with the `rule` tool, and never write a rule into `AGENTS.md`.",
+		...lines,
+	].join("\n");
+}
+
 /** The fields of a line of a parley or an ask, joined with ` · `. */
 function fieldsText(fields: readonly (string | number | undefined)[]): string {
 	return fields.filter((field) => field !== undefined).join(" · ");

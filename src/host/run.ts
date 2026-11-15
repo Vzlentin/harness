@@ -48,6 +48,7 @@ import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
+import { RulesSection } from "./rules-section.ts";
 import { Serving } from "./serving.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
@@ -185,6 +186,7 @@ export async function runHost(options: {
 
 	const selected = [
 		ChildContext,
+		RulesSection,
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
 		projectToolsExtension(durable, { Type }, scope),

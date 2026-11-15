@@ -1,6 +1,6 @@
 /**
- * The `thread`, `rule` and `parley` tools of a Pi session, on the store of the project of the session's host, and the
- * digest of the session before each turn.
+ * The `thread`, `rule` and `parley` tools of a Pi session, on the store of the project of the session's host, the
+ * digest of the session before each turn, and the section of the decided rules in the system prompt of each turn.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -8,7 +8,8 @@ import type { Harness } from "./index.ts";
 
 /**
  * Registers the tools of the store of the project, whose caller is the session ID. Before each turn, the session gets
- * its digest from a host that runs, as a custom message `harness-digest`, when the digest changed since its last one.
+ * its digest from a host that runs, as a custom message `harness-digest`, when the digest changed since its last one,
+ * and the decided rules of the project as the system prompt section `RULES_SECTION`.
  */
 export function registerProject(
 	pi: ExtensionAPI,
@@ -48,5 +49,19 @@ export function registerProject(
 
 			return undefined;
 		}
+	});
+
+	// Pi copies the sections at each turn, so a turn with no host or no decided rule has no section of the rules.
+	pi.on("before_agent_start", async (event, ctx) => {
+		try {
+			const reply = await client.request({ type: "rule", action: "list", status: "decided" }, { start: false });
+			const text = reply !== undefined && "rules" in reply ? protocol.rulesSection(reply.rules) : undefined;
+
+			if (text !== undefined) event.systemPromptOptions.sections[protocol.RULES_SECTION] = text;
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`harness: no rules: ${protocol.errorMessage(error)}`, "warning");
+		}
+
+		return undefined;
 	});
 }

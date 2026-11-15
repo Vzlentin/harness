@@ -65,10 +65,18 @@ export const contexts = new Map<string, string[]>();
 /** The role of the message before the last user message of the last request for each prompt. */
 export const before = new Map<string, Message["role"] | undefined>();
 
-/** The system prompt and the tools of the last request for each prompt: their names, and their full declarations. */
+/**
+ * The system prompt and the tools of the last request for each prompt: their names, their full declarations, and the
+ * sections that the model has, from all the system messages of the request in order.
+ */
 export const requests = new Map<
 	string,
-	{ readonly system: string; readonly tools: readonly string[]; readonly declarations: readonly Tool[] }
+	{
+		readonly system: string;
+		readonly tools: readonly string[];
+		readonly declarations: readonly Tool[];
+		readonly sections: Readonly<Record<string, string>>;
+	}
 >();
 
 /** Requests that wait for a test to release them, by prompt. */
@@ -87,6 +95,22 @@ export function textOf(message: Message): string {
 	if (!Array.isArray(content)) return content;
 
 	return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+}
+
+/** The sections that the model has after `messages`: each system message sets a section, or removes it with `null`. */
+function replayedSections(messages: readonly Message[]) {
+	const sections: Record<string, string> = {};
+
+	for (const message of messages) {
+		if (message.role !== "system") continue;
+
+		for (const [name, text] of Object.entries(message.sections ?? {})) {
+			if (text === null) delete sections[name];
+			else sections[name] = text;
+		}
+	}
+
+	return sections;
 }
 
 /** The bash command a child runs for `Task:\nNest`: spawn a child with the same task, then wait for it. */
@@ -236,6 +260,7 @@ async function respond(
 			system: getSystemMessageText(system),
 			tools: (system.toolsAdded ?? []).map(({ name }) => name),
 			declarations: system.toolsAdded ?? [],
+			sections: replayedSections(context.messages),
 		});
 	}
 

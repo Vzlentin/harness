@@ -153,8 +153,12 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		await expect(taskRequest("wait-task", "nope")).rejects.toThrow("Unknown task: nope");
 	});
 
-	it("leaves the store tools out of a library child whose setup removes the project extension", async () => {
+	it("leaves the store tools out of a library child whose setup removes the project extension, but not the rules", async () => {
 		const store = ["thread", "rule", "parley"];
+		const rule = { type: "rule", action: "create", caller: "cli", name: "fixture", kind: "domain" } as const;
+		const created = await request({ ...rule, value: "The fixture asks." }, { start: false });
+
+		if (created === undefined || "rules" in created) throw new Error("no rule");
 
 		const run = async (key: string, noStore: boolean) => {
 			const prompt = `Fixture codemode tools ${key}`;
@@ -167,18 +171,24 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			// The script prints the names of the tools that codemode scripts can call, on the last line.
 			const scripts = result.trim().split("\n").at(-1)?.split(" ") ?? [];
 
-			return { tools: requests.get(prompt)?.tools ?? [], scripts };
+			return { tools: requests.get(prompt)?.tools ?? [], system: requests.get(prompt)?.system ?? "", scripts };
 		};
 
-		const without = await run("no-store", true);
-		expect(without.tools).toEqual(expect.arrayContaining(["subagent", "todo", "codemode"]));
-		expect(without.tools.filter((tool) => store.includes(tool))).toEqual([]);
-		expect(without.scripts).toEqual(expect.arrayContaining(["subagent", "todo"]));
-		expect(without.scripts.filter((tool) => store.includes(tool))).toEqual([]);
+		try {
+			const without = await run("no-store", true);
+			expect(without.system).toContain(`<project_rules>`);
+			expect(without.system).toContain(`${created.id} fixture (domain): The fixture asks.`);
+			expect(without.tools).toEqual(expect.arrayContaining(["subagent", "todo", "codemode"]));
+			expect(without.tools.filter((tool) => store.includes(tool))).toEqual([]);
+			expect(without.scripts).toEqual(expect.arrayContaining(["subagent", "todo"]));
+			expect(without.scripts.filter((tool) => store.includes(tool))).toEqual([]);
 
-		const withStore = await run("with-store", false);
-		expect(withStore.tools).toEqual(expect.arrayContaining(store));
-		expect(withStore.scripts).toEqual(expect.arrayContaining(store));
+			const withStore = await run("with-store", false);
+			expect(withStore.tools).toEqual(expect.arrayContaining(store));
+			expect(withStore.scripts).toEqual(expect.arrayContaining(store));
+		} finally {
+			await request({ type: "rule", action: "retire", caller: "cli", id: created.id }, { start: false });
+		}
 	});
 
 	it("opens a library child with its own model and the caller's level, whatever the subagent settings give", async () => {
