@@ -8,16 +8,15 @@ import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { type FileMessage, STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
 import { CommitPasses } from "./passes.ts";
+import { readLastRuleId, readRules } from "./project-rules.ts";
 import {
 	type OutState,
 	projectChange,
 	readAsks,
 	readHeld,
-	readLastRuleId,
 	readOutbox,
 	readParleys,
 	readPersons,
-	readRules,
 	readStored,
 	readThreads,
 	type StoredMessage,

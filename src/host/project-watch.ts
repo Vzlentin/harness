@@ -8,6 +8,7 @@ import { Value } from "typebox/value";
 import { isWaiting, type ProjectEvent, type ProjectState, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
 import type { Degraded } from "./degraded.ts";
+import { readRules } from "./project-rules.ts";
 import {
 	joinMessage,
 	outStates,
@@ -17,7 +18,6 @@ import {
 	readOutbox,
 	readParleys,
 	readPersons,
-	readRules,
 	readStored,
 	readThreads,
 	type StoredMessage,

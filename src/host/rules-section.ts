@@ -4,7 +4,7 @@
  */
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import { RULES_SECTION, rulesSection } from "../protocol/project.ts";
-import { readRules } from "./project.ts";
+import { readRules } from "./project-rules.ts";
 
 export const RulesSection = defineExtension({
 	name: "harness-rules",

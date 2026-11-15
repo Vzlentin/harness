@@ -15,7 +15,8 @@ import {
 	type Thread,
 } from "../protocol/project.ts";
 import type { Degraded } from "./degraded.ts";
-import { type OutState, readHeld, readOutbox, readPersons, readThreads, sessionDoc } from "./project.ts";
+import { sessionDoc } from "./project-docs.ts";
+import { type OutState, readHeld, readOutbox, readPersons, readThreads } from "./project.ts";
 import type { Found } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;

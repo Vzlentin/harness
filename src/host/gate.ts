@@ -29,7 +29,8 @@ import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
 import { answerOf, askClassifier, classifierFailed, classifierModel } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
-import { heldFor, holdAction, markSent, readHeld, readRules, runApproved, runsFor } from "./project.ts";
+import { readRules } from "./project-rules.ts";
+import { heldFor, holdAction, markSent, readHeld, runApproved, runsFor } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 

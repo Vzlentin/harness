@@ -25,13 +25,13 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
+import { changeRule, readRules, setRule } from "./project-rules.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
 	addPerson,
 	addThread,
 	answerAsks,
 	approveHeld,
-	changeRule,
 	dropAsk,
 	dropHeld,
 	endParley,
@@ -44,10 +44,8 @@ import {
 	readParley,
 	readParleys,
 	readPersons,
-	readRules,
 	readThread,
 	readThreads,
-	setRule,
 	takeParley,
 	writeRound,
 } from "./project.ts";

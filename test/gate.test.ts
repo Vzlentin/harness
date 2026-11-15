@@ -18,7 +18,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-
 import { request } from "../src/client/client.ts";
 import { Degraded } from "../src/host/degraded.ts";
 import { type GateHost, gateCall } from "../src/host/gate.ts";
-import { approveHeld, changeRule, holdAction } from "../src/host/project.ts";
+import { changeRule } from "../src/host/project-rules.ts";
+import { approveHeld, holdAction } from "../src/host/project.ts";
 import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
