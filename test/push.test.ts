@@ -1,8 +1,7 @@
 import { realpathSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect, hostStopped, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
@@ -12,14 +11,17 @@ import {
 	calls,
 	cli,
 	gates,
+	listenAnswers,
 	models,
 	root,
 	setUp,
 	spawnAs,
 	spawnedBy,
 	startHost,
+	stateOf,
 	tearDown,
 	until,
+	untilState,
 } from "./helpers.ts";
 
 let host: Host | undefined;
@@ -46,8 +48,8 @@ describe("push", { timeout: 30_000 }, () => {
 			const branch = spawnedBy.get("Task:\nTree") ?? "";
 			await until(() => spawnedBy.has("Task:\nTree branch"));
 			// Both have ended their own turn, and the busy leaf holds them.
-			expect((await request({ type: "status", handle: tree }, { start: false }))?.state).toBe("busy");
-			expect((await request({ type: "status", handle: branch }, { start: false }))?.state).toBe("busy");
+			expect(await stateOf(tree)).toBe("busy");
+			expect(await stateOf(branch)).toBe("busy");
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			expect(answers.deliveries).toEqual([]);
 			gates.get("Task:\nTree leaf")?.resolve();
@@ -82,12 +84,12 @@ describe("push", { timeout: 30_000 }, () => {
 			await until(() => answers.deliveries.length === 1);
 			expect(called("Task:\nQuiet child")).toBe(1);
 			expect(handleOf(answers.deliveries[0])).toBe(parent);
-			expect((await request({ type: "status", handle: parent }, { start: false }))?.state).toBe("idle");
+			expect(await stateOf(parent)).toBe("idle");
 			const child = spawnedBy.get("Task:\nQuiet parent") ?? "";
 			gates.get("Task:\nQuiet child")?.resolve();
 			await until(() => calls.some((call) => call.prompt === "Task:\nQuiet child"));
 
-			while ((await request({ type: "status", handle: child }, { start: false }))?.state !== "idle") {
+			while ((await stateOf(child)) !== "idle") {
 				await new Promise((resolve) => setTimeout(resolve, 20));
 			}
 
@@ -156,7 +158,7 @@ describe("push", { timeout: 30_000 }, () => {
 		await until(() => spawnedBy.has("Task:\nTree") && spawnedBy.has("Task:\nTree branch"));
 		// The tree ended its own turn, and the busy leaf holds it.
 		await new Promise((resolve) => setTimeout(resolve, 300));
-		expect((await request({ type: "status", handle: tree }, { start: false }))?.state).toBe("busy");
+		expect(await stateOf(tree)).toBe("busy");
 
 		const send = {
 			type: "send",
@@ -280,42 +282,7 @@ describe("push", { timeout: 30_000 }, () => {
 	});
 });
 
-/** Waits until the child `handle` of the main host has the state `state`. */
-async function untilState(handle: string, state: string): Promise<void> {
-	await vi.waitFor(
-		async () => expect((await request({ type: "status", handle }, { start: false }))?.state).toBe(state),
-		{ timeout: 10_000 },
-	);
-}
-
 /** The handle of the child of `delivery`, or nothing for another delivery. */
 function handleOf(delivery: Delivery | undefined): string | undefined {
 	return delivery?.source === "child" ? delivery.handle : undefined;
-}
-
-/** An `answers` listener, every delivery that it gave, and every error of a delivery. */
-type Answers = { readonly deliveries: Delivery[]; readonly errors: Error[]; readonly listener: AnswerListener };
-
-/**
- * The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. `onDelivery` runs
- * after each delivery is kept.
- */
-function listenAnswers(
-	caller: string,
-	options: Omit<AnswersOptions, "onError"> = { start: false },
-	onDelivery: (delivery: Delivery) => void = () => {},
-): Answers {
-	const deliveries: Delivery[] = [];
-	const errors: Error[] = [];
-
-	const listener = new AnswerListener(
-		caller,
-		(delivery) => {
-			deliveries.push(delivery);
-			onDelivery(delivery);
-		},
-		{ ...options, onError: (error) => errors.push(error) },
-	);
-
-	return { deliveries, errors, listener };
 }

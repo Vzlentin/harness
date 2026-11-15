@@ -25,6 +25,7 @@ import {
 	childRecord,
 	conversationEntry,
 	isHeld,
+	markAllRead,
 	ownRecord,
 } from "./records.ts";
 
@@ -247,6 +248,29 @@ export async function refuseEnded(child: Child): Promise<void> {
 	if ((await child.state(context)) === "ended") {
 		throw new Error(`The child ${child.id} ended: send a message to resume it`);
 	}
+}
+
+/**
+ * Ends the children of `records` and the children they spawned, and marks the requests of the records of the ended
+ * children read, so that they hold no caller. With `keepAnswers`, the records of `records` stay unread, so their
+ * callers still get their answers. The records stay, so a `send` resumes a child. A repeat finishes an end.
+ */
+export async function endChildren(
+	host: Pick<TargetHost, "harness" | "place" | "owner">,
+	records: readonly ChildRecord[],
+	options: { readonly keepAnswers: boolean },
+): Promise<void> {
+	const ended = new Set<string>();
+
+	for (const record of records) {
+		for (const id of await (await childOf(host, record)).close(context)) ended.add(String(id));
+	}
+
+	if (options.keepAnswers) {
+		for (const record of records) ended.delete(String(record.conversationId));
+	}
+
+	await markAllRead(host.harness, ended);
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {

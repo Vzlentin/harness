@@ -47,7 +47,18 @@ import { statePaths } from "../src/protocol/paths.ts";
 import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
-import { drawWidget, gates, models, rawReply, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
+import {
+	drawWidget,
+	gates,
+	models,
+	rawReply,
+	root,
+	setUp,
+	spawnAs,
+	startHost,
+	tearDown,
+	untilState,
+} from "./helpers.ts";
 
 const run = promisify(execFile);
 const LoggedMessage = Type.Object({ action: Type.Literal("log"), value: Message });
@@ -533,14 +544,6 @@ const LATE_SCRIPT = [
 	"    print(error)",
 ].join("\n");
 
-/** Waits until the child `handle` of the main host is idle. */
-async function untilIdle(handle: string): Promise<void> {
-	await vi.waitFor(
-		async () => expect((await request({ type: "status", handle }, { start: false }))?.state).toBe("idle"),
-		{ timeout: 10_000 },
-	);
-}
-
 /** The result of a `tool_call` handler that refuses the call. */
 const Refused = Type.Object({ block: Type.Literal(true), reason: Type.String() });
 
@@ -734,7 +737,7 @@ describe("the Pi extension", () => {
 			{ start: false },
 		);
 
-		await untilIdle(spawned?.handle ?? "");
+		await untilState(spawned?.handle ?? "", "idle");
 		expect(registered.messages).toEqual([]);
 		await sessionEvent(registered, { type: "session_start", reason: "startup" });
 		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
@@ -743,7 +746,7 @@ describe("the Pi extension", () => {
 		const handle = spawned?.handle ?? "";
 		const input = { type: "input", requestId: "mirror", handle, message: "From mirror", followUp: false } as const;
 		await request(input, { start: false });
-		await untilIdle(handle);
+		await untilState(handle, "idle");
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 		await sessionEvent(registered, { type: "session_start", reason: "startup" });
 		await new Promise((resolve) => setTimeout(resolve, 300));
@@ -788,9 +791,9 @@ describe("the Pi extension", () => {
 
 		host = await startHost();
 		const { handle } = await spawnAs("session", "Task:\nWidget", { notify: false });
-		await untilIdle(handle);
+		await untilState(handle, "idle");
 		const { handle: other } = await spawnAs("session", "Task:\nWidget other", { notify: false });
-		await untilIdle(other);
+		await untilState(other, "idle");
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
 		const lines = [" <dim>subagents", ` <success>${handle}:idle<dim> | <success>${other}:idle`];

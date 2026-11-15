@@ -34,11 +34,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Component, ProgramStatus, Terminal, TUI } from "@earendil-works/pi-tui";
-import { vi } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
+import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
+import type { ChildInfo, Delivery, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 
@@ -367,8 +368,11 @@ export function handleOf(result: Result): string {
  * Runs the host of `project` in this process. It throws when another host has the lock, such as one that a CLI started
  * while the test host was down, because the tests would then run against a host without the faux provider.
  */
-export async function startHost(project = MAIN_PROJECT): Promise<Host | undefined> {
-	const host = await runHost({ project, cwd: projectDir(project), models });
+export async function startHost(
+	project = MAIN_PROJECT,
+	options: { readonly sessionEndMs?: number } = {},
+): Promise<Host | undefined> {
+	const host = await runHost({ project, cwd: projectDir(project), models, ...options });
 
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
@@ -544,6 +548,43 @@ export async function spawnWithId(caller: string): Promise<{ handle: string; id:
 	if (id === undefined) throw new Error("no conversation ID");
 
 	return { handle: child.handle, id };
+}
+
+/** The state of the child `handle` of the main host, or nothing when no host runs. */
+export async function stateOf(handle: string): Promise<string | undefined> {
+	return (await request({ type: "status", handle }, { start: false }))?.state;
+}
+
+/** Waits until the child `handle` of the main host has the state `state`. */
+export async function untilState(handle: string, state: string): Promise<void> {
+	await vi.waitFor(async () => expect(await stateOf(handle)).toBe(state), { timeout: 10_000 });
+}
+
+/** An `answers` listener, every delivery that it gave, and every error of a delivery. */
+export type Answers = { readonly deliveries: Delivery[]; readonly errors: Error[]; readonly listener: AnswerListener };
+
+/**
+ * The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. `onDelivery` runs
+ * after each delivery is kept.
+ */
+export function listenAnswers(
+	caller: string,
+	options: Omit<AnswersOptions, "onError"> = { start: false },
+	onDelivery: (delivery: Delivery) => void = () => {},
+): Answers {
+	const deliveries: Delivery[] = [];
+	const errors: Error[] = [];
+
+	const listener = new AnswerListener(
+		caller,
+		(delivery) => {
+			deliveries.push(delivery);
+			onDelivery(delivery);
+		},
+		{ ...options, onError: (error) => errors.push(error) },
+	);
+
+	return { deliveries, errors, listener };
 }
 
 /** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */

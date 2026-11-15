@@ -58,10 +58,8 @@ import {
 	addRecord,
 	addRequest,
 	callerHandle,
-	type ChildRecord,
 	ChildRecords,
 	childRecord,
-	markAllRead,
 	markRead,
 	ownRecord,
 	recordsByAge,
@@ -70,12 +68,14 @@ import {
 	type UnreadAnswers,
 	unreadAnswers,
 } from "./records.ts";
+import type { Sessions } from "./sessions.ts";
 import {
 	callerConversation,
 	callerEntry,
 	childInfo,
 	childOf,
 	childTarget,
+	endChildren,
 	type Found,
 	library,
 	refuseEnded,
@@ -112,6 +112,7 @@ export type Base = Omit<TaskHost, "signal"> &
 		 */
 		readonly settings: SettingsManager;
 		readonly push: Push;
+		readonly sessions: Sessions;
 	};
 
 export type Handler = Base &
@@ -243,8 +244,9 @@ async function input(
 	return sendTo(ref.kind === "conversation" ? { ...request, followUp: false } : request, found, handler.harness);
 }
 
-function answers(request: Extract<Request, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
+async function answers(request: Extract<Request, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
 	if (handler.connection === undefined) throw new Error("answers needs a connection");
+	await handler.sessions.listen(request.caller, handler.connection.socket);
 
 	return handler.push.listen(request.caller, handler.connection, handler.signal);
 }
@@ -475,18 +477,9 @@ async function rename(request: Extract<Request, { type: "rename" }>, handler: Ha
 async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
 	const [handle, record] = await callerEntry(handler, parseTarget(request), request.caller);
 
-	await stopChild(handler, record);
+	await endChildren(handler, [record], { keepAnswers: false });
 
 	return record.name === undefined ? { handle } : { handle, name: record.name };
-}
-
-/**
- * Ends the child of `record` and the children it spawned, and marks the requests of their records read, so that they
- * hold no caller. The records stay, so a `send` resumes a child. A repeat finishes a stop.
- */
-async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
-	const ended = new Set((await (await childOf(handler, record)).close(context)).map(String));
-	await markAllRead(handler.harness, ended);
 }
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {

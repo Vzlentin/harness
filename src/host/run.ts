@@ -48,6 +48,7 @@ import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
+import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
@@ -118,6 +119,8 @@ export async function runHost(options: {
 	readonly bashTimeoutSeconds?: number;
 	/** For tests: the system of the hold that keeps the Mac awake. Default the system of this process. */
 	readonly keepAwake?: AwakeSystem;
+	/** For tests: how long a Pi session may have no open `answers` request before it ends. Default 30 seconds. */
+	readonly sessionEndMs?: number;
 }): Promise<Host | undefined> {
 	const {
 		project,
@@ -126,6 +129,7 @@ export async function runHost(options: {
 		idleExitMs = IDLE_EXIT_MS,
 		bashTimeoutSeconds = BASH_TIMEOUT_SECONDS,
 		keepAwake: awakeSystem = NODE_AWAKE_SYSTEM,
+		sessionEndMs = SESSION_END_MS,
 	} = options;
 
 	const { dir: stateDir, socket: socketPath } = statePaths(project);
@@ -241,6 +245,7 @@ export async function runHost(options: {
 
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
+	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
 
 	base = {
 		harness,
@@ -252,6 +257,7 @@ export async function runHost(options: {
 		startable,
 		settings,
 		push,
+		sessions,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		warn,
@@ -337,6 +343,7 @@ export async function runHost(options: {
 		});
 	}).catch(async (cause: unknown) => {
 		push.close();
+		await sessions.close();
 		awake.close();
 		await bridge.close();
 		await entries.close();
@@ -354,6 +361,8 @@ export async function runHost(options: {
 		closing ??= (async () => {
 			clearInterval(timer);
 			push.close();
+			// The socket closes that follow are not session ends.
+			const sessionsClosed = sessions.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
@@ -374,6 +383,7 @@ export async function runHost(options: {
 				// script that runs gets no outcome and continues after a restart.
 				await entries.close();
 				await sandbox.close();
+				await sessionsClosed;
 				await harness.close(context);
 
 				await envs.cleanup(context);

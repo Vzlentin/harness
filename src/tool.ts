@@ -30,7 +30,7 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 - list: your children.
 - query: ask \`question\` about the child \`handle\`, to learn what it did without its transcript in your context. A model reads its user messages, its text and its tool calls with their arguments, not its thinking and not the tool output, and answers. It reads the last ${MAX_QUERY.text} of a longer conversation, and then the answer starts with the line \`${QUERY_CUT_LINE}\`.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
-Children persist after a turn. Stop each child when you no longer need it.
+Children persist after a turn and over \`/reload\`. The end of a Pi session ends its children; a \`send\` resumes one. Stop each child when you no longer need it.
 With the \`ipython\` tool, a cell has \`tools\`, which runs the tools of this conversation, this one too: \`await tools.<name>(**args)\`. \`print(tools.__doc__)\` lists them, and \`print(tools.<name>.__doc__)\` gives the arguments of one.`;
 
 /**

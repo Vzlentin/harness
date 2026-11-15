@@ -328,7 +328,7 @@ export class Push {
 			}
 
 			if (destination === undefined) continue;
-			const pending = await this.#pending(children, answers);
+			const pending = await this.#pending(children, answers, destination.kind === "reply");
 
 			if (pending.length > 0) await this.#deliver(caller, destination, pending);
 		}
@@ -346,16 +346,17 @@ export class Push {
 
 	/**
 	 * The deliveries of `children`, oldest child first, then of the user answers `answers`. It stops at the first child
-	 * whose answers cannot be taken, so the later deliveries of the caller keep their order.
+	 * whose answers cannot be taken, so the later deliveries of the caller keep their order. Only a `reply` takes the
+	 * answers of an ended child.
 	 */
-	async #pending(children: readonly Entry[], answers: readonly UserAnswer[]): Promise<Pending[]> {
+	async #pending(children: readonly Entry[], answers: readonly UserAnswer[], reply: boolean): Promise<Pending[]> {
 		const pending: Pending[] = [];
 
 		for (const [handle, record] of children) {
 			let one: Pending | undefined;
 
 			try {
-				one = await this.#take(handle, record);
+				one = await this.#take(handle, record, reply);
 			} catch (cause) {
 				this.#fail([handle], cause);
 
@@ -498,13 +499,15 @@ export class Push {
 
 	/**
 	 * The unread answers of `handle` once its turn ended, as `wait` gives them; nothing when no answer is new. Input from
-	 * a mirror session sends nothing up: its turn is not the main request, the caller's last request is.
+	 * a mirror session sends nothing up: its turn is not the main request, the caller's last request is. The answers of
+	 * an ended child go only in a `reply`, to a Pi session whose end ended it: as input, they would resume an ended
+	 * parent.
 	 */
-	async #take(handle: string, record: ChildRecord): Promise<Pending | undefined> {
+	async #take(handle: string, record: ChildRecord, reply: boolean): Promise<Pending | undefined> {
 		const child = await childOf(this.#host, record);
 		const state = await child.state(context);
 
-		if (state === "busy" || state === "ended") return undefined;
+		if (state === "busy" || (state === "ended" && !reply)) return undefined;
 		const last = await child.lastRequest(context);
 		const ids = record.requests.map((request) => request.id);
 

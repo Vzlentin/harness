@@ -35,7 +35,7 @@ When the project has decided conduct rules, the host gates each tool call that i
 - `["read", "grep", "find", "ls", "bash"]`: investigation that may run tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
-Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload` and the end of the spawning Pi session. They run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
+Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
 
 ## Answers and wait
 
@@ -75,7 +75,7 @@ Use `list` at any time to find the subagents of this session again, with their h
 { "action": "stop", "handle": "<handle>" }
 ```
 
-Stop every subagent when you no longer need it; do not leave completed subagents idle. This stops its work and the work of its own children. The subagent keeps its conversation: `list` and `status` show it as `ended`, `wait` on it fails, and a `send` resumes it with its history. Keep an idle subagent only when you expect concrete follow-up work, then stop it afterward.
+Stop every subagent when you no longer need it; do not leave completed subagents idle. This stops its work and the work of its own children. The subagent keeps its conversation: `list` and `status` show it as `ended`, `wait` on it fails, and a `send` resumes it with its history. The end of your Pi session ends your subagents the same way, and a resumed session gets their waiting answers. Keep an idle subagent only when you expect concrete follow-up work, then stop it afterward.
 
 For humans, not for you: the interactive `/subagent` command opens a child in Pi in a new herdr-app tab, through hc. Outside an hc terminal, it shows the `harness attach <handle>` command, which opens a mirror session of the child, where the user can read and send messages.
 
