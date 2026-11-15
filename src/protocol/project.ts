@@ -2,6 +2,13 @@ import { type Static, type TProperties, Type } from "typebox";
 import { SLUG } from "./paths.ts";
 import { isFinished } from "./todo.ts";
 
+/**
+ * The name of the durable extension with the tools of the store of the project: `thread`, `rule`, `term`, `part` and
+ * `parley`. A client of `children.open` leaves these tools out when its `setup` adds this name to the `remove` of the
+ * extensions of the child's `AgentDoc`.
+ */
+export const PROJECT_EXTENSION = "harness-project";
+
 /** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
 export const LocalId = Type.Integer({ minimum: 1 });
 

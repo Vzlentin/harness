@@ -31,6 +31,7 @@ import {
 	parleyText,
 	PersonList,
 	type PersonNames,
+	PROJECT_EXTENSION,
 	personNames,
 	Rule,
 	RULE_KINDS,
@@ -664,5 +665,5 @@ export function projectToolsExtension(
 		}),
 	);
 
-	return durable.defineExtension({ name: "harness-project", tools });
+	return durable.defineExtension({ name: PROJECT_EXTENSION, tools });
 }

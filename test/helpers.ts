@@ -294,6 +294,15 @@ async function respond(
 		return fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" });
 	}
 
+	if (prompt.startsWith("Fixture codemode tools")) {
+		return fauxAssistantMessage(
+			fauxToolCall("codemode", { code: 'return ALL_TOOLS.map((tool) => tool.name).join(" ");' }),
+			{
+				stopReason: "toolUse",
+			},
+		);
+	}
+
 	if (prompt === "Task:\nNest") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
