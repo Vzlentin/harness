@@ -82,13 +82,13 @@ export class ChatView {
 	private readonly cwd: string;
 	/** Colors the lines that the transcript adds itself, such as `[compaction]`, in Pi's current theme. */
 	private readonly color: (name: ThemeColor, text: string) => string;
-	private readonly views: Pick<typeof viewState, "liveOf" | "userText">;
+	private readonly views: Pick<typeof viewState, "liveOf" | "userMessageOf" | "userText">;
 
 	constructor(
 		ui: TUI,
 		cwd: string,
 		color: (name: ThemeColor, text: string) => string,
-		views: Pick<typeof viewState, "liveOf" | "userText">,
+		views: Pick<typeof viewState, "liveOf" | "userMessageOf" | "userText">,
 	) {
 		this.ui = ui;
 		this.cwd = cwd;
@@ -223,10 +223,11 @@ export class ChatView {
 
 	private addEntry(entry: EntryRecord): void {
 		const message = entry.model?.[0];
+		const user = this.views.userMessageOf(entry);
 
-		if (entry.kind === "pi.user" && message?.role === "user") {
+		if (user !== undefined) {
 			this.transcript.addChild(new Spacer(1));
-			this.transcript.addChild(new UserMessageComponent(this.views.userText(message.content), getMarkdownTheme()));
+			this.transcript.addChild(new UserMessageComponent(this.views.userText(user.content), getMarkdownTheme()));
 		} else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
 			const component =
 				this.streaming?.component ?? new AssistantMessageComponent(undefined, this.hideThinking, getMarkdownTheme());

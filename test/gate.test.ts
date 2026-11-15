@@ -21,10 +21,12 @@ import { request } from "../src/client/client.ts";
 import { type GateHost, gateCall } from "../src/host/gate.ts";
 import { approveHeld, changeRule, holdAction } from "../src/host/project.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import {
+	AskList,
 	DigestReply,
 	type HeldAction,
 	Message,
@@ -39,6 +41,7 @@ import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import {
 	agentTurn,
+	answerOf,
 	cellResults,
 	cli,
 	models,
@@ -46,6 +49,7 @@ import {
 	root,
 	scripts,
 	setUp,
+	spawnAs,
 	startHost,
 	tearDown,
 	until,
@@ -233,6 +237,21 @@ async function addRule(project: string, source: number, fields: RuleFields): Pro
 	const change = { type: "rule", action, caller: "cli", id: rule.id } as const;
 
 	return Value.Parse(Rule, await send(change, project));
+}
+
+/** The words of a go of the user, which the gate reads only from an input that the user typed. */
+const GO = "the user said go";
+
+/**
+ * Decides a conduct rule in `project` that `command` breaks, as the classifier answers: a call of `command` is held,
+ * but where step 2 has a choice in `chosen`.
+ */
+async function decideEcho(project: string, command: string): Promise<void> {
+	const source = await sourceMessage(project);
+	const fields = { name: "echo", kind: "conduct", value: "Ask before you echo.", status: "decided" } as const;
+	const rule = await addRule(project, source, fields);
+	conduct = [String(rule.id)];
+	recorded.set(command, { writes: 0.98, rule: String(rule.id) });
 }
 
 /** The reply of `gate` for a `bash` call of `command` by `caller`, with the ID `requestId`. */
@@ -690,9 +709,121 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect(ran).toContain("gated");
 			expect(ran).not.toContain("Held");
 			expect(again).toContain(`Held as action 2: ${reason}`);
-			expect(asked.at(-1)?.context.state).toMatchObject({ last_user_messages: ["Gate me", approval] });
+			// The approval is a message of the host, not an input that the user typed.
+			expect(asked.at(-1)?.context.state).toMatchObject({ last_user_messages: ["Gate me"] });
 		} finally {
 			await host?.close();
+		}
+	});
+
+	it("reads only the inputs that the user typed: a spawn prompt and a send of a parent give no go, and the same words as an input do", async () => {
+		const project = "gate-typed";
+		const host = await projectHost(project);
+		const command = "echo typed";
+		const prompt = "Spawn and echo";
+		const words = "The user said go";
+
+		try {
+			const source = await sourceMessage(project);
+
+			const rule = await addRule(project, source, {
+				name: "echo-typed",
+				kind: "conduct",
+				value: "Ask before you echo.",
+				status: "decided",
+			});
+
+			conduct = [String(rule.id)];
+			recorded.set(command, { writes: 0.98, rule: String(rule.id) });
+			chosen.set(JSON.stringify([command, [words]]), "none");
+			const bash = { name: "bash", arguments: { command } };
+			scripts.set(prompt, [bash]);
+			scripts.set(words, [bash]);
+
+			const child = await spawnAs("typed-parent", prompt, { notify: false, project });
+			await answerOf(child.handle, project);
+			expect(cellResults.get(prompt)?.[0]).toMatch(/Held as action \d+: It breaks rule /);
+			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: [] });
+
+			const sent = {
+				type: "send",
+				requestId: "typed-parent:send",
+				caller: "typed-parent",
+				handle: child.handle,
+				message: words,
+				followUp: false,
+				notify: false,
+			} as const;
+
+			await send(sent, project);
+			await answerOf(child.handle, project);
+			expect(cellResults.get(words)?.[0]).toMatch(/Held as action \d+: It breaks rule /);
+			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: [] });
+
+			cellResults.delete(words);
+			await send(
+				{ type: "input", requestId: "typed-input", handle: child.handle, message: words, followUp: false },
+				project,
+			);
+			await until(() => cellResults.get(words)?.length === 1);
+			expect(cellResults.get(words)?.[0]).toContain("typed");
+			expect(cellResults.get(words)?.[0]).not.toContain("Held");
+			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: [words] });
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("reads no answer that the host pushes: a user answer to an ask goes to its hosted asker with no go", async () => {
+		const project = "gate-pushed";
+		const host = await projectHost(project);
+		const command = "echo pushed";
+		const prompt = "Task:\nAsk before the push";
+		const round = { action: "round", asks: [{ title: "Pushed ask" }] };
+
+		try {
+			await decideEcho(project, command);
+			recorded.set(`parley ${JSON.stringify(round)}`, { writes: 0.1, rule: "none" });
+			scripts.set(prompt, [{ name: "parley", arguments: round }]);
+			await spawnAs("pushed-spawner", prompt, { notify: false, project });
+			await until(() => cellResults.get(prompt)?.length === 1);
+			const asks = Value.Parse(AskList, await send({ type: "ask", action: "list" }, project)).asks;
+			const id = asks.find((ask) => ask.title === "Pushed ask")?.id;
+
+			if (id === undefined) throw new Error("no ask");
+			const turn = `the user answered ask ${id}\n\n${id} · Pushed ask · own · ${GO}\n`;
+			chosen.set(JSON.stringify([command, [turn]]), "none");
+			scripts.set(turn, [{ name: "bash", arguments: { command } }]);
+			const answers = [{ id, answer: "own", label: GO }];
+			const line = { type: "ask", action: "answer", caller: "user", user: true, answers } as const;
+			await send(line, project);
+			await until(() => cellResults.get(turn)?.length === 1);
+
+			expect(cellResults.get(turn)?.[0]).toMatch(/Held as action \d+: It breaks rule /);
+			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: [] });
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("reads no prompt of the children library: the prompt of a conversation of a task gives no go", async () => {
+		const project = "gate-library";
+		setEntry("ask-fixture", join(dirname(FIXTURE), "tasks", "ask.ts"));
+		const host = await projectHost(project);
+		const command = "echo library";
+		const key = "gate-library-task";
+
+		try {
+			await decideEcho(project, command);
+			chosen.set(JSON.stringify([command, [GO]]), "none");
+			scripts.set(GO, [{ name: "bash", arguments: { command } }]);
+			await send({ type: "start", kind: "fixture.ask", key, input: { cwd: root, prompt: GO } }, project);
+			expect(await send({ type: "wait-task", key }, project)).toMatchObject({ status: "terminal" });
+
+			expect(cellResults.get(GO)?.[0]).toMatch(/Held as action \d+: It breaks rule /);
+			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: [] });
+		} finally {
+			await host.close();
 		}
 	});
 

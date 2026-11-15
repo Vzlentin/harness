@@ -25,6 +25,7 @@ import { Push } from "../src/host/push.ts";
 import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { library } from "../src/host/targets.ts";
+import { TYPED_KIND } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { projectDir } from "../src/protocol/projects.ts";
@@ -914,6 +915,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		const conversationNote = { type: "note", requestId: "pi-kind", conversation: "c1", text: "Bad", kind: "pi.x" };
 		expect(await rawError(JSON.stringify(conversationNote))).toBe("Invalid note request: kind is not valid");
+
+		const typedNote = { type: "note", requestId: "typed-kind", handle: "abc123", text: "Go", kind: TYPED_KIND };
+		expect(await rawError(JSON.stringify(typedNote))).toBe("Invalid note request: kind is not valid");
 		expect(await rawError(JSON.stringify({ type: "watch" }))).toBe("Invalid watch request: handle is required");
 	});
 

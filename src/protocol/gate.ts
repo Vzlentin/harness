@@ -20,6 +20,12 @@ export const GateReply = Type.Union([
 
 export type GateReply = Static<typeof GateReply>;
 
+/**
+ * The entry kind of an input that the user typed: the host gives it to each `input` request, and to nothing else. The
+ * gate reads only these entries as the words of the user.
+ */
+export const TYPED_KIND = "harness.typed";
+
 /** The number of the last messages of the user that the gate gives the classifier. */
 export const GATE_MESSAGES = 3;
 

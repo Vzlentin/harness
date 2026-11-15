@@ -623,7 +623,8 @@ function gateClassifier(): ClassifierModel<ClassifierApi> {
 
 /**
  * Calls the `tool_call` handlers of the extension for the call `call`, in the session `session`, whose branch has the
- * user messages `one` to `four` and a custom entry. With `answer`, the session has a UI whose confirm
+ * user messages `one` to `four`, a custom entry, and three custom messages that the user did not type: the delivered
+ * answers of a child and of the user, and a digest. With `answer`, the session has a UI whose confirm
  * prompts go to `prompts` and get `answer`, and whose notifications go to `notes`. It gives the refusal, or nothing
  * when the call runs.
  */
@@ -644,12 +645,25 @@ async function toolCall(
 		message: { role: "user", content, timestamp: 0 },
 	});
 
+	const custom = (id: string, customType: string, content: string): Branch[number] => ({
+		type: "custom_message",
+		id,
+		parentId: null,
+		timestamp: "",
+		customType,
+		content,
+		display: true,
+	});
+
 	const branch: Branch = [
 		user("one", "one"),
 		user("two", "two"),
 		MIRROR,
 		user("three", "three"),
+		custom("answer", "subagent-answer", "An answer of a child"),
 		user("four", [{ type: "text", text: "four" }]),
+		custom("user-answer", "user-answer", "An answer of the user to an ask"),
+		custom("digest", "harness-digest", "A digest of the store"),
 	];
 
 	const ctx: Pick<ExtensionContext, "hasUI" | "signal"> & {

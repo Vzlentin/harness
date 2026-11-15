@@ -383,6 +383,11 @@ describe("mirror", { timeout: 30_000 }, () => {
 			await writeFile(join(cwd, "go"), "");
 			await until(() => drawn().includes("Tool said:"));
 			expect(drawn().indexOf("$ while")).toBeLessThan(drawn().indexOf("Tool said:"));
+
+			// An input that the user typed is drawn as a message of the user, before its answer.
+			await mirror.send("Typed by the user", false);
+			await until(() => drawn().includes("Answer to Typed by the user"));
+			expect(drawn().indexOf("Typed by the user")).toBeLessThan(drawn().indexOf("Answer to Typed by the user"));
 		} finally {
 			chat.stopTimers();
 			mirror.close();

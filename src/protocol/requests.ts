@@ -2,7 +2,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
-import { type GateReply, ToolArguments } from "./gate.ts";
+import { type GateReply, ToolArguments, TYPED_KIND } from "./gate.ts";
 import {
 	AnswerInputs,
 	type Ask,
@@ -48,7 +48,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 30;
+export const PROTOCOL_VERSION = 31;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -282,13 +282,14 @@ export const RequestLine = Type.Union([
 	 * A passive message for the conversation's transcript: a user message of the entry kind `kind` (default
 	 * `harness.note`), with `data`. It starts no turn. An idle conversation places it at once, and a busy one at its next
 	 * boundary, so the model reads it on its next request. The request ID is in the scope `note:`, and a repeated one adds
-	 * nothing. A kind that starts with `pi.` is refused, because pi-durable does not check the kind of a write.
+	 * nothing. A kind that starts with `pi.` is refused, because pi-durable does not check the kind of a write. The kind
+	 * `harness.typed` is refused too: only an `input` gives it.
 	 */
 	...withTarget({
 		type: Type.Literal("note"),
 		requestId: Type.String(),
 		text: Type.String(),
-		kind: Type.Optional(Type.String({ minLength: 1, pattern: "^(?!pi\\.)" })),
+		kind: Type.Optional(Type.String({ minLength: 1, pattern: `^(?!pi\\.|${TYPED_KIND.replaceAll(".", "\\.")}$)` })),
 		data: Type.Optional(Json),
 	}),
 	/**

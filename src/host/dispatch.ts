@@ -9,7 +9,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
-import { approvedText } from "../protocol/gate.ts";
+import { approvedText, TYPED_KIND } from "../protocol/gate.ts";
 import {
 	type ChildInfo,
 	PROTOCOL_VERSION,
@@ -539,7 +539,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 /**
  * Sends the input of `request` to `found`. The verb comes from the conversation's own turn, so a child that only its
- * children hold is prompted.
+ * children hold is prompted. The entry of an `input` has the kind `TYPED_KIND`, which the gate reads as the words of
+ * the user; the entry of a `send` stays `pi.user`.
  */
 async function sendTo(
 	request: Extract<Request, { type: "send" | "input" }>,
@@ -550,15 +551,15 @@ async function sendTo(
 	options?: SendOptions,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const busy = await turnRunning(harness, found.conversation.id);
-	await found.send(
-		{
-			type: "input",
-			content: request.message,
-			whenBusy: request.followUp ? "followUp" : "steer",
-			requestId: request.requestId,
-		},
-		options,
-	);
+
+	const input: Input = {
+		type: "input",
+		content: request.message,
+		whenBusy: request.followUp ? "followUp" : "steer",
+		requestId: request.requestId,
+	};
+
+	await found.send(request.type === "input" ? { ...input, entry: { kind: TYPED_KIND } } : input, options);
 
 	return { verb: sendVerb(busy, request.followUp), child: await found.info() };
 }

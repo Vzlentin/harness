@@ -4,7 +4,15 @@
  */
 import type { JsonRepresentation } from "@earendil-works/chord/json";
 import type { Usage, UserMessage } from "@earendil-works/pi-ai";
-import type { ConversationView, InboxState, JsonObject, LiveState, UsageState } from "@earendil-works/pi-durable";
+import type {
+	ConversationView,
+	EntryRecord,
+	InboxState,
+	JsonObject,
+	LiveState,
+	UsageState,
+} from "@earendil-works/pi-durable";
+import { TYPED_KIND } from "../protocol/gate.ts";
 import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
 
 /** The document of the kind `kind` in `view`, if the conversation has it: a built-in one, or the list of todos. */
@@ -69,6 +77,18 @@ export function lastAnswerUsage(view: ConversationView): Usage | undefined {
 	}
 
 	return undefined;
+}
+
+/**
+ * The user message of `entry` when the transcript draws it as a message of the user: a `pi.user` entry or an input that
+ * the user typed.
+ */
+export function userMessageOf(entry: EntryRecord): UserMessage | undefined {
+	const message = entry.model?.[0];
+
+	if (entry.kind !== "pi.user" && entry.kind !== TYPED_KIND) return undefined;
+
+	return message?.role === "user" ? message : undefined;
 }
 
 export function userText(content: JsonRepresentation<UserMessage["content"]>): string {

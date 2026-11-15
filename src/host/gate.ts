@@ -14,9 +14,16 @@ import {
 	type HookApi,
 	hook,
 	ToolTask,
-	UserEntry,
 } from "@earendil-works/pi-durable";
-import { asksNoQuestion, GATE_MESSAGES, type GateReply, gateCommand, heldText, userText } from "../protocol/gate.ts";
+import {
+	asksNoQuestion,
+	GATE_MESSAGES,
+	type GateReply,
+	gateCommand,
+	heldText,
+	TYPED_KIND,
+	userText,
+} from "../protocol/gate.ts";
 import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
@@ -174,9 +181,9 @@ function ruleQuestion(rules: readonly Rule[]): ClassifierQuestion {
 }
 
 /**
- * The pi-durable extension of the gate: before each tool call of a hosted agent, it sends `gate` with the last messages
- * of the user in the conversation, and refuses a held call with its reason. A call of a read tool asks nothing. A
- * request that fails refuses the call with its error. The request ID is the ID of the tool task, so a hook that runs
+ * The pi-durable extension of the gate: before each tool call of a hosted agent, it sends `gate` with the last inputs
+ * that the user typed in the conversation, and refuses a held call with its reason. A call of a read tool asks nothing.
+ * A request that fails refuses the call with its error. The request ID is the ID of the tool task, so a hook that runs
  * again after a restart gets the same reply.
  */
 export function gateExtension(send: Send): Extension {
@@ -207,7 +214,10 @@ export function gateExtension(send: Send): Extension {
 	return defineExtension({ name: "harness-gate", hooks: [gate] });
 }
 
-/** The texts of the last user messages of the conversation of `api`, at most `GATE_MESSAGES`, oldest first. */
+/**
+ * The texts of the last inputs that the user typed in the conversation of `api` (entries of the kind `TYPED_KIND`), at
+ * most `GATE_MESSAGES`, oldest first. A prompt, a `send` of a parent agent and a note are not typed by the user.
+ */
 async function userMessages(api: HookApi, hookContext: Context): Promise<string[]> {
 	const texts: string[] = [];
 	let cursor: Cursor | undefined;
@@ -216,7 +226,7 @@ async function userMessages(api: HookApi, hookContext: Context): Promise<string[
 		const page = await api.entries({}, PAGE, cursor, hookContext);
 
 		for (const entry of page.items) {
-			const message = UserEntry.is(entry) ? entry.model?.[0] : undefined;
+			const message = entry.kind === TYPED_KIND ? entry.model?.[0] : undefined;
 
 			if (message?.role === "user") texts.push(userText(message.content));
 
