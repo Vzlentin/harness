@@ -79,6 +79,10 @@ that holds a draft of a thread marks that draft sent.
 
 When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
 
+The project agent gets its memory in its system prompt, and keeps it with its `memory` tool. The host does the
+compressions of OptMem in the background, with the model of `memoryModel` in Pi's settings, else `subagentModel`, else
+Pi's default model. Subagents get no memory tool and no memory section.
+
 When a project has decided conduct rules, a gate holds each tool call of its agents that breaks one, until you
 approve it. The gate also holds each bash call of an agent that decides, retires, edits, creates or deletes a rule,
 such as `harness rule decide 3`, with no model call. The classifier of the gate is `gateClassifier` in Pi's settings (default `openrouter/typesafe/jev-1.14`).

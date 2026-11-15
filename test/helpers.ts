@@ -525,6 +525,9 @@ export type TestSettings = {
 	readonly subagentModel?: string;
 	readonly subagentThinkingLevel?: string;
 	readonly queryModel?: string;
+	readonly memoryModel?: string;
+	readonly defaultProvider?: string;
+	readonly defaultModel?: string;
 	readonly packages?: readonly string[];
 };
 

@@ -42,12 +42,13 @@ const QueryAction = Type.Object({ action: Type.Literal("query") });
 const BashArguments = Type.Object({ command: Type.String() });
 
 /**
- * Whether the gate lets the call of `tool` with `args` run with no question: a read tool, a read of the store, or a
- * query of a child.
+ * Whether the gate lets the call of `tool` with `args` run with no question: a read tool, a read of the store, a query
+ * of a child, or a call of the `memory` tool.
  */
 export function asksNoQuestion(tool: string, args: ToolArguments): boolean {
 	return (
 		READ_TOOLS.has(tool) ||
+		tool === "memory" ||
 		(PROJECT_TOOLS.has(tool) && Value.Check(ReadAction, args)) ||
 		(tool === "subagent" && Value.Check(QueryAction, args))
 	);

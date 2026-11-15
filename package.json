@@ -52,6 +52,10 @@
 			"types": "./dist/inspect/index.d.ts",
 			"default": "./dist/inspect/index.js"
 		},
+		"./memory-tool": {
+			"types": "./dist/memory-tool.d.ts",
+			"default": "./dist/memory-tool.js"
+		},
 		"./mirror": {
 			"types": "./dist/client/mirror.d.ts",
 			"default": "./dist/client/mirror.js"

@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren, type Owner, type Place, type Spec } from "../src/children/library.ts";
 import { REMINDER } from "../src/children/respond.ts";
+import { MEMORY_EXTENSION } from "../src/protocol/project.ts";
 import { called, contexts, gates, models, requests, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
@@ -58,6 +59,7 @@ async function openHarness(name: string): Promise<{ harness: Harness; place: Pla
 	registry.install(durable.defineExtension({ name: "test-holder", tasks: [Holder] }));
 	const tools = [...DELEGATION, "lookup"].map(placeholder);
 	registry.install(durable.defineExtension({ name: "test-tools", tools }));
+	registry.install(durable.defineExtension({ name: MEMORY_EXTENSION, tools: [placeholder("memory")] }));
 	const opened = await Harness.open(await openNodeSqliteStorage(join(root, name)), { models, registry }, context);
 	opened.resume();
 
@@ -552,7 +554,7 @@ describe("children library", { timeout: 30_000 }, () => {
 			await child.send({ type: "input", content: "Plain", requestId: "r2" }, context);
 			await child.settled(context, "r2");
 			const agent = await harness.snapshot(durable.AgentDoc, child.id, context);
-			expect(agent?.extensions).toEqual({ add: ["test-holder", "harness-answer"] });
+			expect(agent?.extensions).toEqual({ add: ["test-holder", "harness-answer"], remove: [MEMORY_EXTENSION] });
 			expect(agent?.modelTools).toEqual({ add: ["other"] });
 		} finally {
 			await rootConversation.configure({ extensions: null, modelTools: null }, context);
@@ -773,5 +775,21 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await offered("t:leaf-named", named, "Leaf named")).toEqual(["lookup"]);
 		const rootLeaf = { root: "test", ...faux, cwd: root, depthRoot: true, limit: 0 } as const;
 		expect(await offered("t:leaf-root", rootLeaf, "Leaf root")).toEqual(["lookup"]);
+	});
+
+	it("gives no child the memory extension, at any depth and with a depth root", async () => {
+		const offered = async (key: string, spec: Spec, prompt: string) => {
+			const child = await library.open(place, owner, key, spec, context);
+			await child.ask({ type: "input", content: prompt, requestId: "r1" }, context);
+
+			return requests.get(prompt)?.tools.filter((name) => ["memory", "lookup"].includes(name));
+		};
+
+		const top = { root: "test", ...faux, cwd: root };
+		expect(await offered("t:memory-top", top, "Memory top")).toEqual(["lookup"]);
+		const session = { root: "test", ...faux, cwd: root, depthRoot: true } as const;
+		expect(await offered("t:memory-session", session, "Memory session")).toEqual(["lookup"]);
+		const named = { ...top, tools: ["lookup", "memory"] };
+		expect(await offered("t:memory-named", named, "Memory named")).toEqual(["lookup"]);
 	});
 });

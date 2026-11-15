@@ -28,6 +28,7 @@ import type { Place } from "../children/library.ts";
 import { projectToolsExtension } from "../project-tool.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
+import { memoryDir } from "../protocol/projects.ts";
 import {
 	errorMessage,
 	HOST_CLOSING,
@@ -48,6 +49,7 @@ import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { takeLock } from "./lock.ts";
+import { Compressor, memoryExtension } from "./memory.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
@@ -56,7 +58,7 @@ import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { storeFilePasses } from "./store-file.ts";
 import { library } from "./targets.ts";
 
-/** The host exits after this long with no connection, no live task and no request. */
+/** The host exits after this long with no connection, no live task, no compression of the memory and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
 
@@ -198,9 +200,13 @@ export async function runHost(options: {
 		failed: (cwd, line) => degraded.start("resources-failed", cwd, line),
 	};
 
+	// The compressions of the memory of the project agent, which run in the background.
+	const compressor = new Compressor({ settings, models, warn });
+
 	const selected = [
 		childContext(resources),
 		RulesSection,
+		memoryExtension(compressor, () => memoryDir(project, projectCwd)),
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
 		projectToolsExtension(durable, { Type }, scope),
@@ -356,6 +362,7 @@ export async function runHost(options: {
 			resolveListen();
 		});
 	}).catch(async (cause: unknown) => {
+		await compressor.close();
 		await push.close();
 		await sessions.close();
 		await serving.close();
@@ -376,6 +383,7 @@ export async function runHost(options: {
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
+			const compressorClosed = compressor.close();
 			const pushClosed = push.close();
 			// The socket closes that follow are not session ends.
 			const sessionsClosed = sessions.close();
@@ -405,6 +413,7 @@ export async function runHost(options: {
 				await sessionsClosed;
 				await servingClosed;
 				await storeFileClosed;
+				await compressorClosed;
 				await harness.close(context);
 
 				await envs.cleanup(context);
@@ -419,8 +428,9 @@ export async function runHost(options: {
 
 	const timer = setInterval(
 		() => {
-			// A connection with an open `answers` request alone does not keep the host running.
-			const busy = () => [...connections].some((socket) => !push.listens(socket));
+			// A connection with an open `answers` request alone does not keep the host running; a compression of the
+			// memory does.
+			const busy = () => [...connections].some((socket) => !push.listens(socket)) || compressor.running > 0;
 
 			if (busy() || Date.now() - lastActivity < idleExitMs) return;
 			harness

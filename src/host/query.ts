@@ -3,26 +3,21 @@
  * messages and tool calls. It writes nothing and starts no turn.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Conversation, ConversationId, Cursor, EntryRecord } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
-import { parseModelSetting, subagentModel } from "../children/model.ts";
 import { CLI_CALLER } from "../protocol/env.ts";
 import { userText } from "../protocol/gate.ts";
 import { MAX_QUERY, QUERY_CUT_LINE } from "../protocol/query.ts";
 import type { Replies, Request } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";
+import { settingModel } from "./model-choice.ts";
 import { callerEntry, type TargetHost, targetConversation } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** The number of entries that one page of the read of a conversation gives. */
 const PAGE = 50;
-
-const QuerySetting = Type.Object({ queryModel: Type.String() });
 
 const SYSTEM_PROMPT = `You answer one question about the conversation of an agent, from its transcript.
 The transcript has the messages of the user, the text of the assistant, and each tool call with its arguments. It has no thinking and no tool output.
@@ -43,7 +38,7 @@ export async function queryConversation(
 	host: QueryHost,
 ): Promise<Replies["query"]> {
 	const id = await queriedConversation(host, ref, request.caller);
-	const model = await queryModel(host.settings, host.place.models);
+	const model = await settingModel(host.settings, host.place.models, "queryModel", "a query");
 	const { text, cut } = await transcript(host, id);
 	const prompt = `<transcript>\n${text}\n</transcript>\n\nQuestion: ${request.question}`;
 	const message: Message = { role: "user", content: prompt, timestamp: Date.now() };
@@ -73,37 +68,6 @@ async function queriedConversation(host: QueryHost, ref: Target, caller: string)
 	if (ref.kind === "agent") throw new Error("Only a terminal that is not an agent can query the project agent");
 
 	return (await callerEntry(host, ref, caller))[1].conversationId;
-}
-
-/**
- * The query model: `queryModel` of Pi's effective settings, read again at each query, else `subagentModel`, else Pi's
- * default model. An unknown model, and a provider with no credential, fail.
- */
-async function queryModel(settings: SettingsManager, models: Models): Promise<Model<Api>> {
-	await settings.reload();
-	const effective = settings.getSettings();
-	const set = Value.Check(QuerySetting, effective) ? parseModelSetting(effective.queryModel) : undefined;
-	const provider = settings.getDefaultProvider();
-	const modelId = settings.getDefaultModel();
-
-	const chosen =
-		set ??
-		subagentModel(settings) ??
-		(provider === undefined || modelId === undefined ? undefined : { provider, model: modelId });
-
-	if (chosen === undefined) {
-		throw new Error("No model for a query: set queryModel, subagentModel or a default model in Pi");
-	}
-
-	const model = models.getModel(chosen.provider, chosen.model);
-
-	if (model === undefined) throw new Error(`Unknown model: ${chosen.provider}/${chosen.model}`);
-
-	if (!(await models.getAvailable(chosen.provider)).some((found) => found.id === model.id)) {
-		throw new Error(`No credential for ${chosen.provider}: log in to ${chosen.provider} or set queryModel`);
-	}
-
-	return model;
 }
 
 /**

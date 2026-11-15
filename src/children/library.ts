@@ -25,6 +25,7 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
+import { MEMORY_EXTENSION } from "../protocol/project.ts";
 import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 import { complete, createAnswers } from "./respond.ts";
@@ -846,14 +847,20 @@ export function createChildren(durable: typeof Durable): Children {
 				if (spec.instructions !== undefined) change = { ...change, instructions: spec.instructions };
 				await durable.configure(tx, child.id, change);
 				// The child keeps the extensions of the owner's agent and selects the answer extension too.
+				// No child, at any depth, gets the memory of the project agent: neither its tool nor its section.
 				const agent = await tx.doc(durable.AgentDoc, child.id);
 				const answerName = answers.extension.name;
 				const selection = agent.extensions;
 
 				if (Array.isArray(selection)) {
-					if (!selection.includes(answerName)) selection.push(answerName);
-				} else if (!selection?.add?.includes(answerName)) {
-					agent.extensions = { ...selection, add: [...(selection?.add ?? []), answerName] };
+					const kept = selection.filter((name) => name !== MEMORY_EXTENSION);
+					agent.extensions = kept.includes(answerName) ? kept : [...kept, answerName];
+				} else {
+					agent.extensions = {
+						...selection,
+						add: [...new Set([...(selection?.add ?? []), answerName])],
+						remove: [...new Set([...(selection?.remove ?? []), MEMORY_EXTENSION])],
+					};
 				}
 
 				// A leaf: the filter of the enabled tools covers both the model and codemode.

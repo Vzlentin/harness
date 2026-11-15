@@ -11,8 +11,16 @@ function restrictImports(files: string[], ...patterns: ImportPattern[]): OxlintO
 
 // An override replaces the options of a rule, so `src/host/durable-entry.ts` repeats the pattern of `src/host/**`.
 const hostImports: ImportPattern = {
-	group: ["../**", "!../protocol/**", "!../children/**", "!../bridge/**", "!../tool.ts", "!../project-tool.ts"],
-	message: "host/ imports only protocol/, children/, bridge/, tool.ts and project-tool.ts.",
+	group: [
+		"../**",
+		"!../protocol/**",
+		"!../children/**",
+		"!../bridge/**",
+		"!../tool.ts",
+		"!../project-tool.ts",
+		"!../memory-tool.ts",
+	],
+	message: "host/ imports only protocol/, children/, bridge/, tool.ts, project-tool.ts and memory-tool.ts.",
 };
 
 export default defineConfig({
@@ -129,6 +137,18 @@ export default defineConfig({
 				group: ["./**", "../**", "!./protocol/**", "!./client/**", "!./tool.ts"],
 				message: "project-tool.ts imports only protocol/, client/ and tool.ts.",
 			}),
+			restrictImports(
+				["src/memory-tool.ts"],
+				{
+					group: ["./**", "../**", "!./protocol/**", "!./tool.ts"],
+					message: "memory-tool.ts imports only protocol/ and tool.ts.",
+				},
+				{
+					group: ["@earendil-works/**"],
+					allowTypeImports: true,
+					message: "The Pi extension loads memory-tool.ts from dist/: import the types of Pi packages only.",
+				},
+			),
 		],
 		options: { typeAware: true, typeCheck: true },
 	},

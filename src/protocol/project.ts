@@ -9,6 +9,15 @@ import { isFinished } from "./todo.ts";
  */
 export const PROJECT_EXTENSION = "harness-project";
 
+/**
+ * The name of the durable extension with the `memory` tool and the memory section of the system prompt. Only the
+ * project agent gets it: `children.open` removes it from each child.
+ */
+export const MEMORY_EXTENSION = "harness-memory";
+
+/** The key of the system prompt section with the memory of the project agent. */
+export const MEMORY_SECTION = "memory";
+
 /** The ID of a person, a rule or a held action: its place in its list, 1, 2, 3 and so on. */
 export const LocalId = Type.Integer({ minimum: 1 });
 

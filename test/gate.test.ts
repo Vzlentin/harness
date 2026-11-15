@@ -413,6 +413,8 @@ describe("gate", { timeout: 60_000 }, () => {
 				{ tool: "parley", arguments: { action: "list" } },
 				{ tool: "parley", arguments: { action: "read", slug: "where", ask: 1 } },
 				{ tool: "subagent", arguments: { action: "query", handle: "a1b2c3", question: "What did it do?" } },
+				{ tool: "memory", arguments: { action: "note", text: "The user prefers short replies." } },
+				{ tool: "memory", arguments: { action: "recall", pattern: "replies" } },
 			];
 
 			for (const [index, call] of reads.entries()) {
