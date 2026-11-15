@@ -218,13 +218,15 @@ function widgetLines(
 	theme: ExtensionContext["ui"]["theme"],
 	children: readonly protocol.ChildInfo[] | undefined,
 ): string[] | undefined {
-	if (children === undefined || children.length === 0) return undefined;
+	const live = children?.filter(({ state }) => state !== "ended");
 
-	const visible = children
+	if (live === undefined || live.length === 0) return undefined;
+
+	const visible = live
 		.slice(0, 5)
 		.map(({ name, handle, state }) => theme.fg(STATE_COLORS[state], `${name ?? handle}:${state}`));
 
-	if (children.length > visible.length) visible.push(theme.fg("muted", `+${children.length - visible.length}`));
+	if (live.length > visible.length) visible.push(theme.fg("muted", `+${live.length - visible.length}`));
 
 	return [theme.fg("dim", "subagents"), visible.join(theme.fg("dim", " | "))];
 }
@@ -234,7 +236,7 @@ const STATE_COLORS: Record<protocol.ChildState, "warning" | "success" | "error" 
 	busy: "warning",
 	idle: "success",
 	error: "error",
-	closed: "muted",
+	ended: "muted",
 };
 
 /**

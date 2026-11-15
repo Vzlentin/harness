@@ -130,14 +130,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		void collect(first.lines, lines);
 
 		// The view of the first watch after the changes of all the lines so far.
-		const rebuilt = () =>
-			lines.reduce((view, line) => (line.stopped ? view : applyChange(view, line.change)), first.view);
+		const rebuilt = () => lines.reduce((view, line) => applyChange(view, line.change), first.view);
 
 		try {
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
 			gates.get("Task:\nWatched")?.resolve();
-			await until(() => lines.some((line) => !line.stopped && line.child.state === "idle"));
+			await until(() => lines.some((line) => line.child.state === "idle"));
 			expect(textsOf(rebuilt())).toEqual(["Task:\nWatched", "Answer to Task:\nWatched"]);
 
 			const second = await connect({ start: false });
@@ -167,7 +166,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		try {
 			expect(watched.child.state).toBe("idle");
 			expect((await cli(["rename", handle, "renamed"])).code).toBe(0);
-			await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed"));
+			await until(() => lines.some((line) => line.child.name === "renamed"));
 		} finally {
 			client.close();
 		}
@@ -185,14 +184,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		try {
 			expect(watched.child.state).toBe("busy");
 			expect((await cli(["rename", handle, "busy name"])).code).toBe(0);
-			await until(() => lines.some((line) => !line.stopped && line.child.name === "busy name"));
-			expect(lines.find((line) => !line.stopped && line.child.name === "busy name")).toMatchObject({
+			await until(() => lines.some((line) => line.child.name === "busy name"));
+			expect(lines.find((line) => line.child.name === "busy name")).toMatchObject({
 				child: { state: "busy" },
 			});
 			gates.get("Task:\nFail")?.resolve();
-			await until(() =>
-				lines.some((line) => !line.stopped && line.child.state === "error" && line.child.name === "busy name"),
-			);
+			await until(() => lines.some((line) => line.child.state === "error" && line.child.name === "busy name"));
 			expect((await client.request({ type: "status", handle })).state).toBe("error");
 		} finally {
 			client.close();
@@ -215,7 +212,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 			try {
 				expect((await cli(["rename", handle, "renamed after close"])).code).toBe(0);
-				await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed after close"));
+				await until(() => lines.some((line) => line.child.name === "renamed after close"));
 			} finally {
 				client.close();
 			}
@@ -246,9 +243,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			});
 
 			expect(sent.verb).toBe("Prompted");
-			const busy = () => lines.findIndex((line) => !line.stopped && line.child.state === "busy");
+			const busy = () => lines.findIndex((line) => line.child.state === "busy");
 			await until(() => busy() !== -1);
-			await until(() => lines.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"));
+			await until(() => lines.slice(busy() + 1).some((line) => line.child.state === "idle"));
 			expect((await client.request({ type: "status", handle })).state).toBe("idle");
 		} finally {
 			client.close();

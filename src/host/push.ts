@@ -377,8 +377,8 @@ export class Push {
 
 	/**
 	 * Where the answers for `caller` go: its open `answers` request, else the input of a conversation of the host (a
-	 * child, the project agent, or another conversation of the children library, such as a child of a task). Nothing for
-	 * a closed conversation, or for another caller, such as a Pi session without an open request: its deliveries wait.
+	 * child, the project agent, or another conversation of the children library, such as a child of a task), which resumes
+	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait.
 	 */
 	async #destination(caller: string, entries: readonly Entry[]): Promise<Destination | undefined> {
 		if (this.#listeners.has(caller)) return { kind: "reply" };
@@ -451,29 +451,24 @@ export class Push {
 	}
 
 	/**
-	 * The input of `caller` when it is a conversation of the host that is not closed: a child, the project agent, or
-	 * another conversation of the children library. Nothing for another caller, such as a Pi session.
+	 * The input of `caller` when it is a conversation of the host: a child, the project agent, or another conversation of
+	 * the children library. An input resumes an ended conversation. Nothing for another caller, such as a Pi session.
 	 */
 	async inputOf(caller: string): Promise<((input: Input) => Promise<void>) | undefined> {
 		return this.#input(caller, recordsByAge(await this.#host.harness.snapshot(ChildRecords, context)));
 	}
 
-	/** The input of `caller` when it is a conversation of the host that is not closed. */
+	/** The input of `caller` when it is a conversation of the host. It resumes an ended conversation. */
 	async #input(caller: string, entries: readonly Entry[]): Promise<((input: Input) => Promise<void>) | undefined> {
 		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
-		const inspected = await library.inspect(this.#host.place, caller, context);
-
-		if ((await inspected?.state(context)) === "ended") return undefined;
 		const parent = conversationEntry(entries, caller);
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
-		const conversation = inspected?.conversation;
+		const inspected = await library.inspect(this.#host.place, caller, context);
 
-		if (conversation === undefined) return undefined;
+		if (inspected === undefined) return undefined;
 
-		return async (input) => {
-			await conversation.submit(input, context);
-		};
+		return (input) => inspected.input(input, context);
 	}
 
 	/** Replies to the open `answers` request of `caller` with `pending`, which settles once the reply is written. */

@@ -115,7 +115,7 @@ export type SendOptions = Parameters<Child["send"]>[2];
 
 /**
  * The target of the library conversation `id`, of any owner, such as a child of a task. It has no record, and it takes
- * input only while it works, and a note while it is open.
+ * input only while it works, and a note in any state.
  */
 async function conversationTarget(handler: TargetHost, id: string) {
 	const child = await libraryConversation(handler.place, id);
@@ -125,7 +125,7 @@ async function conversationTarget(handler: TargetHost, id: string) {
 		handle: id,
 		conversation: id,
 		name: lineage.key,
-		state: wireState(await child.state(context)),
+		state: await child.state(context),
 		...(await agentFields(conversation)),
 	});
 
@@ -139,7 +139,6 @@ async function conversationTarget(handler: TargetHost, id: string) {
 			await conversation.submit({ ...input, whenBusy: "steer" }, context);
 		},
 		write: async (write: Write) => {
-			if ((await child.state(context)) === "ended") throw new Error(`The conversation ${id} is closed`);
 			await conversation.submit(write, context);
 		},
 		record: undefined,
@@ -171,7 +170,10 @@ export async function callerConversation(
 	return (await library.inspect(host.place, caller, context))?.conversation.id;
 }
 
-/** The target of the child `handle`, whose record is `record`. */
+/**
+ * The target of the child `handle`, whose record is `record`. An input resumes an ended child; a note leaves it ended,
+ * because it starts no turn.
+ */
 export async function childTarget(handler: TargetHost, handle: string, record: ChildRecord) {
 	const child = await childOf(handler, record);
 
@@ -179,20 +181,20 @@ export async function childTarget(handler: TargetHost, handle: string, record: C
 		conversation: child.conversation,
 		info: () => childInfo(handler, handle, record),
 		send: async (input: Input, options?: SendOptions) => {
-			await refuseEnded(child);
 			await child.send(input, context, options);
 		},
 		write: async (write: Write) => {
-			await refuseEnded(child);
 			await child.conversation.submit(write, context);
 		},
 		record,
 	};
 }
 
-/** Refuses input, notes and waits by handle on an ended child: the host requests do not resume it. */
+/** Refuses a wait on an ended child: its last turn was aborted, so it has no answer to give. */
 export async function refuseEnded(child: Child): Promise<void> {
-	if ((await child.state(context)) === "ended") throw new Error(`The child ${child.id} is closed`);
+	if ((await child.state(context)) === "ended") {
+		throw new Error(`The child ${child.id} ended: send a message to resume it`);
+	}
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
@@ -220,11 +222,6 @@ export async function childInfo(
 	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 }
 
-/** The state of the wire for the library state `state`: an ended child is `closed`. */
-export function wireState(state: State): ChildState {
-	return state === "ended" ? "closed" : state;
-}
-
 /**
  * The state of a child by handle, from `state`, the state of its conversation: `busy` also while one of its notify
  * children holds it, in `records`.
@@ -234,8 +231,8 @@ export function heldState(
 	records: Readonly<ChildrenState> | undefined,
 	conversationId: ConversationId,
 ): ChildState {
-	// An ended child that still holds its caller is closed: it runs no turn until its next input.
-	return state !== "ended" && isHeld(records, conversationId) ? "busy" : wireState(state);
+	// An ended child that still holds its caller is ended: it runs no turn until its next input.
+	return state !== "ended" && isHeld(records, conversationId) ? "busy" : state;
 }
 
 /** The model, thinking level and directory of the agent of `conversation`, for its info. */

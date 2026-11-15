@@ -82,10 +82,8 @@ async function input(message: string): Promise<void> {
 			message,
 			followUp: false,
 		});
-		const busy = () => events.findIndex((line) => !line.stopped && line.child.state === "busy");
-		await until(
-			() => busy() !== -1 && events.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"),
-		);
+		const busy = () => events.findIndex((line) => line.child.state === "busy");
+		await until(() => busy() !== -1 && events.slice(busy() + 1).some((line) => line.child.state === "idle"));
 	} finally {
 		watching.close();
 		connected.close();

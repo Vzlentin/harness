@@ -366,7 +366,7 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 		expect(before.get(turn)).toBe("assistant");
 	});
 
-	it("waits in the queue while the hosted asker is closed", async () => {
+	it("resumes a hosted asker that was stopped with the answer of the user", async () => {
 		const prompt = "Task:\nAsk then close";
 		const ask = { action: "round", slug: "closed", ...FRAME, asks: [{ title: "Closed ask" }] };
 		scripts.set(prompt, [{ name: "parley", arguments: ask }]);
@@ -377,12 +377,8 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 
 		if (closed === undefined) throw new Error("no ask");
 		await answer([{ id: closed.id, answer: "own", label: "Go" }]);
-		await new Promise((resolve) => setTimeout(resolve, 500));
-		expect(calls.some((call) => call.prompt.startsWith("the user answered the parley closed"))).toBe(false);
-		const waiting = await readUserAnswers(currentStore(), BACKGROUND_CONTEXT);
-		expect(waiting.filter(({ asker }) => asker === closed.asker)).toMatchObject([
-			{ asker: closed.asker, delivery: { source: "parley", parley: "closed" } },
-		]);
+		await until(() => calls.some((call) => call.prompt.startsWith("the user answered the parley closed")));
+		expect((await send({ type: "status", handle: child.handle })).state).not.toBe("ended");
 	});
 
 	it("does not go again to a hosted asker after a restart of the host", async () => {

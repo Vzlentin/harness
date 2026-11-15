@@ -48,7 +48,7 @@ export const NODE_MARKS = {
 	running: "◉",
 	idle: "○",
 	pending: "○",
-	closed: "✓",
+	ended: "✓",
 	completed: "✓",
 	error: "✗",
 	failed: "✗",

@@ -32,6 +32,7 @@ import { type ChildInfo, PROTOCOL_VERSION } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
+	aborted,
 	agentTurn,
 	answerContent,
 	answerOf,
@@ -472,11 +473,17 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 	});
 
-	it("renames and stops a child", async () => {
+	it("renames and stops a child, which a send resumes with its history", async () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
 		expect((await cli(["rename", handle, "summary"])).stdout).toBe(`Renamed summary (${handle})\n`);
+		await cli(["wait", handle]);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped summary (${handle})\n`);
-		expect((await cli(["status", handle])).stderr).toBe(`Unknown subagent: ${handle}\n`);
+		expect((await cli(["status", handle])).stdout).toBe(`summary (${handle}): ended (faux/faux-1, medium)\n`);
+		expect((await cli(["wait", handle])).stderr).toMatch(/^The child \d+ ended: send a message to resume it\n$/);
+		expect((await cli(["send", handle, "After the stop"])).stdout).toBe(`Prompted summary (${handle})\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to After the stop\n`);
+		expect(contexts.get("After the stop")).toEqual(["Task:\nRename me", "After the stop"]);
+		expect((await cli(["status", handle])).stdout).toBe(`summary (${handle}): idle (faux/faux-1, medium)\n`);
 	});
 
 	it("gives an answer that no wait read with the answer to the next message", async () => {
@@ -556,7 +563,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Never"]));
 		await until(() => called("Task:\nNever") === 1);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped ${handle}\n`);
-		expect((await cli(["list"])).stdout).not.toContain(handle);
+		await until(() => aborted.has("Task:\nNever"));
+		expect((await cli(["list"])).stdout).toMatch(new RegExp(`^${handle}  ended `, "m"));
 	});
 
 	it("reports a failed turn as an error", async () => {
@@ -610,7 +618,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const nested = /Spawned nested \(([a-z0-9]+)\)/.exec((await cli(["wait", handle])).stdout)?.[1] ?? "";
 		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested})`);
 		expect((await cli(["stop", handle])).stdout).toBe(`Stopped ${handle}\n`);
-		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
+		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested}): ended`);
 	});
 
 	it("lets a child spawn a child with the tool, and gives the child at agentDepthLimit 2 no subagent tool", async () => {
@@ -1269,7 +1277,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("shows a child that the library closed as closed, and refuses a wait and a send to it", async () => {
+	it("shows a child that the library ended as ended, refuses a wait, keeps it ended after a note, and resumes it with a send", async () => {
 		const store = await restartWithStore();
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
 		await cli(["wait", handle]);
@@ -1278,22 +1286,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
 		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
 		await child?.close(BACKGROUND_CONTEXT);
-		expect((await cli(["status", handle])).stdout).toBe(`${handle}: closed (faux/faux-1, medium)\n`);
-		expect((await cli(["wait", handle])).stderr).toBe(`The child ${id} is closed\n`);
-		expect((await cli(["send", handle, "After the close"])).stderr).toBe(`The child ${id} is closed\n`);
-		expect(called("After the close")).toBe(0);
+		expect((await cli(["status", handle])).stdout).toBe(`${handle}: ended (faux/faux-1, medium)\n`);
+		expect((await cli(["wait", handle])).stderr).toBe(`The child ${id} ended: send a message to resume it\n`);
 		const client = await connect({ start: false });
 
 		if (client === undefined) throw new Error("no host");
 
 		try {
-			expect((await client.request({ type: "watch", handle })).child.state).toBe("closed");
-			await expect(
-				client.request({ type: "note", requestId: "note-closed", handle, text: "Noted after the close" }),
-			).rejects.toThrow(`The child ${id} is closed`);
+			expect((await client.request({ type: "watch", handle })).child.state).toBe("ended");
+			const note = { type: "note", requestId: "note-closed", handle, text: "Noted after the close" } as const;
+			expect((await client.request(note)).child.state).toBe("ended");
 		} finally {
 			client.close();
 		}
+
+		expect((await cli(["send", handle, "After the close"])).stdout).toBe(`Prompted ${handle}\n`);
+		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to After the close\n`);
+		expect(contexts.get("After the close")).toEqual([
+			"Task:\nClosed later",
+			"Noted after the close",
+			"After the close",
+		]);
 	});
 
 	it("repairs the record of a send that is retried after a crash between its submit and its next commit", async () => {
@@ -1465,7 +1478,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Lost")).toBe(0);
 	});
 
-	it("spawns a new child for a repeated spawn of a child that was stopped", async () => {
+	it("gives the ended child to a repeated spawn of a child that was stopped, and sends nothing", async () => {
 		const client = await connect({ start: false });
 
 		if (client === undefined) throw new Error("no host");
@@ -1487,18 +1500,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 			const { handle } = await client.request(spawn);
 			await client.request({ type: "wait", handle, timeout: 10 });
 			await client.request({ type: "stop", caller, handle });
-			const again = await client.request(spawn);
-			expect(again.handle).not.toBe(handle);
-			expect(await client.request({ type: "wait", handle: again.handle, timeout: 10 })).toEqual({
-				answer: "Answer to Stopped once",
-			});
-			expect((await client.request(spawn)).handle).toBe(again.handle);
-			expect(await client.request({ type: "list", caller })).toMatchObject([{ handle: again.handle }]);
+			expect(await client.request(spawn)).toMatchObject({ handle, state: "ended" });
+			expect(await client.request({ type: "list", caller })).toMatchObject([{ handle, state: "ended" }]);
 		} finally {
 			client.close();
 		}
 
-		expect(called("Stopped once")).toBe(2);
+		expect(called("Stopped once")).toBe(1);
 	});
 
 	it("finishes a turn after the host restarts", async () => {

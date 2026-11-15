@@ -4,10 +4,11 @@
  * the entries change them with these functions, in their own commits.
  */
 import type { Context } from "@earendil-works/chord/context";
-import { Watch, type WatchCall, type WatchEnd, type WatchHandle } from "@earendil-works/chord/watch";
+import type { WatchHandle } from "@earendil-works/chord/watch";
 import type { CommitChange, ConversationId, DocumentReader, Session, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
+import { watchCommits } from "./commit-watch.ts";
 
 export * from "../protocol/todo.ts";
 
@@ -105,52 +106,12 @@ export async function watchTodos(
 	id: ConversationId,
 	context: Context,
 ): Promise<WatchHandle<Readonly<TodoList> | null>> {
-	// The observer attaches before the read, so no commit goes between them. The newest list of a commit during the read
-	// goes to the watch once it exists: at worst the list of the read again.
-	let watch: Watch<Readonly<TodoList> | null> | undefined;
-	let early: { readonly list: Readonly<TodoList> | null; readonly context: Context } | undefined;
-	let ended: WatchEnd | undefined;
-
-	const observation = session.observeCommits({
-		advance: (publication, frameContext) => {
-			for (const change of publication.changes) {
-				const list = listAfter(change, id);
-
-				if (list === undefined) continue;
-
-				if (watch === undefined) early = { list, context: frameContext };
-				else watch.advance(listCall(list), frameContext);
-			}
-		},
-		end: (end) => {
-			if (watch === undefined) ended = end;
-			else watch.end(end);
-		},
-	});
-
-	let list: Readonly<TodoList> | undefined;
-
-	try {
-		list = await session.snapshot(ConversationTodos, id, context);
-	} catch (error) {
-		observation.detach();
-		throw error;
-	}
-
-	// A throw of the listener ends the watch, and `closed` gives it.
-	watch = new Watch<Readonly<TodoList> | null>(
-		list ?? null,
-		() => observation.detach(),
-		() => {},
+	return watchCommits<Readonly<TodoList> | null>(
+		session,
+		async () => (await session.snapshot(ConversationTodos, id, context)) ?? null,
+		(change) => listAfter(change, id),
+		context,
 	);
-
-	if (early !== undefined) watch.advance(listCall(early.list), early.context);
-
-	if (ended !== undefined) watch.end(ended);
-
-	if (context.abortSignal !== undefined) watch.observeAbort(context.abortSignal);
-
-	return watch;
 }
 
 /** The list of the conversation `id` after `change`: `null` when it removed the list, nothing when it is not about it. */
@@ -161,11 +122,6 @@ function listAfter(change: CommitChange, id: ConversationId): Readonly<TodoList>
 
 	// SAFETY: only `ConversationTodos` has the kind `TODO_LIST_KIND`, and its value is a `TodoList`.
 	return change.kind === "retire" ? null : (change.value as TodoList);
-}
-
-/** The frame of a list watch that replaces its value with `list`. */
-function listCall(list: Readonly<TodoList> | null): WatchCall<Readonly<TodoList> | null> {
-	return { kind: "value", value: list, ops: [["r", list]], retired: list === null };
 }
 
 function refuseEmpty(text: string): void {

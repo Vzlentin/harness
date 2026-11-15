@@ -216,10 +216,9 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 				status: "terminal",
 				outcome: { status: "completed", result: "Answer to Fixture watched" },
 			});
-			await until(() => lines.some((line) => !line.stopped && line.child.state === "idle"));
+			await until(() => lines.some((line) => line.child.state === "idle"));
 			// The steer went into the gated turn, after the answer to the task's question.
 			expect(called("Fixture steer")).toBe(1);
-			expect(lines.some((line) => line.stopped)).toBe(false);
 			await expect(
 				request({ ...input, requestId: "steer-2", conversation: ids.child }, { start: false }),
 			).rejects.toThrow(`fixture:${id} takes input only while it works`);
@@ -229,7 +228,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("refuses a note to a closed conversation", async () => {
+	it("places a note in an ended conversation, which stays ended", async () => {
 		const idFile = join(root, "closed.ids.json");
 		const input = { cwd: root, prompt: "Fixture closed", idFile, close: true };
 		await request({ type: "start", kind: KIND, key: "closed", input }, { start: false });
@@ -237,7 +236,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		const ids: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
 		const note = { type: "note", requestId: "closed-note", text: "Too late", conversation: ids.child } as const;
 
-		await expect(request(note, { start: false })).rejects.toThrow(`The conversation ${ids.child} is closed`);
+		expect(await request(note, { start: false })).toMatchObject({ child: { conversation: ids.child, state: "ended" } });
 	});
 
 	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {

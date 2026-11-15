@@ -779,7 +779,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
-	it("shows the children in the widget, and nothing without children or without a host", async () => {
+	it("shows the children that are not ended in the widget, and nothing without children or without a host", async () => {
 		const registered = await load();
 		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
@@ -818,6 +818,16 @@ describe("the Pi extension", () => {
 		expect(options).toEqual([[`${handle}  idle      faux/faux-1  medium`, `${other}  idle      faux/faux-1  medium`]]);
 		expect(registered.notifications).toEqual([
 			{ message: `Run in another terminal: harness attach ${other}`, type: "info" },
+		]);
+		// An ended child stays in the list, and the widget leaves it out.
+		await request({ type: "stop", caller: "session", handle: other }, { start: false });
+		const live = [" <dim>subagents", ` <success>${handle}:idle`];
+		await vi.waitFor(() => expect(widgets.subagents.renders.at(-1)).toEqual(live), { timeout: 10_000 });
+		// SAFETY: as above, the handler reads only these fields of the context.
+		await registered.commands.get("subagent")?.handler("", ctx as Parameters<Command["handler"]>[1]);
+		expect(options.at(-1)).toEqual([
+			`${handle}  idle      faux/faux-1  medium`,
+			`${other}  ended     faux/faux-1  medium`,
 		]);
 		await host?.close();
 		host = undefined;

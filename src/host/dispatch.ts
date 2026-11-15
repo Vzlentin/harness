@@ -61,10 +61,10 @@ import {
 	type ChildRecord,
 	ChildRecords,
 	childRecord,
+	markAllRead,
 	markRead,
 	ownRecord,
 	recordsByAge,
-	removeRecords,
 	renameRecord,
 	spawnedHandle,
 	type UnreadAnswers,
@@ -451,17 +451,7 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 
 	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
 
-	// A child that the library closed outside `stop`, such as a subagent of a workflow session when its run ends, keeps
-	// its record until a `stop`, and is not listed.
-	const infos = await Promise.all(
-		own.map(async ([handle, record]) =>
-			(await (await childOf(handler, record)).state(context)) === "ended"
-				? undefined
-				: childInfo(handler, handle, record),
-		),
-	);
-
-	return infos.filter((info) => info !== undefined);
+	return Promise.all(own.map(([handle, record]) => childInfo(handler, handle, record)));
 }
 
 /** The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. */
@@ -488,26 +478,18 @@ async function stop(request: Extract<Request, { type: "stop" }>, handler: Handle
 	return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
 }
 
-/** Closes the child of `record` and the children it spawned, and removes their records. A repeat finishes a stop. */
+/**
+ * Ends the child of `record` and the children it spawned, and marks the requests of their records read, so that they
+ * hold no caller. The records stay, so a `send` resumes a child. A repeat finishes a stop.
+ */
 async function stopChild(handler: Handler, record: ChildRecord): Promise<void> {
-	const closed = new Set((await (await childOf(handler, record)).close(context)).map(String));
-	await removeRecords(handler.harness, closed);
+	const ended = new Set((await (await childOf(handler, record)).close(context)).map(String));
+	await markAllRead(handler.harness, ended);
 }
 
 async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
 	let handle = await spawnedHandle(harness, request.requestId);
-
-	// A stop that ended between its close and the removal of the records leaves the record of a closed child: the stop is
-	// finished, and the spawn opens a new child.
-	if (handle !== undefined) {
-		const found = await childRecord(harness, handle);
-
-		if ((await (await childOf(handler, found)).state(context)) === "ended") {
-			await stopChild(handler, found);
-			handle = undefined;
-		}
-	}
 
 	if (handle === undefined) {
 		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
@@ -527,8 +509,9 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 		if (request.tools !== undefined) spec = { ...spec, tools: request.tools };
 
-		// A stopped child keeps its key, closed, and `stop` removed its record: a repeated spawn opens a child under the
-		// next key. The keys are in a fixed order, so a retry after a crash finds the child that the first try opened.
+		// A child that a `stop` of an older host removed keeps its key, ended, and has no record: a repeated spawn opens a
+		// child under the next key. The keys are in a fixed order, so a retry after a crash finds the child that the first
+		// try opened.
 		for (let attempt = 0; handle === undefined; attempt += 1) {
 			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
@@ -621,7 +604,7 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 	try {
 		await refuseEnded(child);
 		const { main, answer } = await handler.push.done(child, signal);
-		// A close during the wait ends the turn with an abort, which is not the child's answer.
+		// An end during the wait ends the turn with an abort, which is not the child's answer.
 		await refuseEnded(child);
 		// Read the record after the answer and after a push in flight: a send is in `requests` before it can be the last
 		// request, and a push marks its answers read only once its reply is written.

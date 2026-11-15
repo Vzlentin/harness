@@ -81,18 +81,16 @@ describe("query", { timeout: 30_000 }, () => {
 		);
 	});
 
-	it("refuses an own child after its stop to the agent that stopped it", async () => {
-		const { handle, id } = await spawnWithId("a");
-		const env = { PI_SESSION_ID: "a" };
+	it("answers the agent that stopped its own child, by handle and by conversation ID", async () => {
+		const { handle, id } = await spawnWithId("c");
+		const env = { PI_SESSION_ID: "c" };
 
 		expect((await cli(["stop", handle], env)).stderr).toBe("");
-		expect((await cli(["query", handle, "Why?"], env)).stderr).toBe(`Unknown subagent: ${handle}\n`);
-		expect((await cli(["query", "--conversation", id, "Why?"], env)).stderr).toBe(
-			`The conversation ${id} is not a child of this caller\n`,
-		);
+		expect(transcriptOf((await cli(["query", handle, "Why?"], env)).stdout)).toContain("Tool call bash:");
+		expect(transcriptOf((await cli(["query", "--conversation", id, "Why?"], env)).stdout)).toContain("Tool call bash:");
 	});
 
-	it("reaches a conversation by its ID, also when it is closed", async () => {
+	it("reaches a conversation by its ID, also when it is ended", async () => {
 		const { handle, id } = await spawnWithId("a");
 		const ask = (env: NodeJS.ProcessEnv = {}) => cli(["query", "--conversation", id, "What ran?"], env);
 
@@ -101,9 +99,9 @@ describe("query", { timeout: 30_000 }, () => {
 		expect((await ask({ PI_SESSION_ID: "b" })).stderr).toBe(`The conversation ${id} is not a child of this caller\n`);
 
 		expect((await cli(["stop", handle], { PI_SESSION_ID: "a" })).stderr).toBe("");
-		const closed = await ask();
-		expect(closed.stderr).toBe("");
-		expect(transcriptOf(closed.stdout)).toContain("Tool call bash:");
+		const ended = await ask();
+		expect(ended.stderr).toBe("");
+		expect(transcriptOf(ended.stdout)).toContain("Tool call bash:");
 	});
 
 	it("reads the last part of a conversation over the bound, and says so in the first line", async () => {

@@ -346,6 +346,39 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await child.state(context)).toBe("ended");
 	});
 
+	it("resumes an ended child with an input that waits for no answer, and keeps its last request", async () => {
+		const child = await library.open(place, owner, "t:ended-input", { root: "test", ...faux, cwd: root }, context);
+		await child.ask({ type: "input", content: "Before the input", requestId: "r1" }, context);
+		await child.close(context);
+		const inspected = await library.inspect(place, String(child.id), context);
+		await inspected?.input({ type: "input", content: "Input after the end", requestId: "u1" }, context);
+		await until(() => called("Input after the end") === 1);
+		await child.conversation.waitForIdle(context);
+		expect(contexts.get("Input after the end")).toEqual(["Before the input", "Input after the end"]);
+		expect(await child.state(context)).toBe("idle");
+		expect(await child.lastRequest(context)).toBe("r1");
+	});
+
+	it("refuses and aborts an input that waits for no answer when its child ends during the submit", async () => {
+		const child = await library.open(place, owner, "t:input-race", { root: "test", ...faux, cwd: root }, context);
+		const submit = child.conversation.submit.bind(child.conversation);
+
+		vi.spyOn(child.conversation, "submit").mockImplementationOnce(async (...args) => {
+			await child.close(context);
+
+			return submit(...args);
+		});
+
+		gates.set("Input raced", Promise.withResolvers());
+		await expect(child.input({ type: "input", content: "Input raced", requestId: "u1" }, context)).rejects.toThrow(
+			`The child ${child.id} ended during the submit`,
+		);
+		expect(await child.state(context)).toBe("ended");
+		await child.conversation.waitForIdle(context);
+		expect(await child.state(context)).toBe("ended");
+		gates.delete("Input raced");
+	});
+
 	it("aborts a busy subtree when it ends", async () => {
 		const parent = await library.open(place, owner, "t:busy-end", { root: "test", ...faux, cwd: root }, context);
 		const child = await library.open(place, owner, "t:busy-end-child", { parent: String(parent.id), ...faux }, context);

@@ -168,23 +168,14 @@ export async function renameRecord(harness: Harness, handle: string, name: strin
 	}, context);
 }
 
-/** Removes the records of the children whose conversation ID is in `closed`, and the spawn requests that name them. */
-export async function removeRecords(harness: Harness, closed: ReadonlySet<string>): Promise<void> {
+/**
+ * Marks read every request of the records of the children whose conversation ID is in `conversationIds`, so that a
+ * stopped child holds no caller. An answer that was not pushed is not pushed.
+ */
+export async function markAllRead(harness: Harness, conversationIds: ReadonlySet<string>): Promise<void> {
 	await harness.commit(async (tx) => {
-		const state = await tx.doc(ChildRecords);
-
-		const removed = new Set(
-			Object.keys(state.children).filter((handle) => {
-				const child = state.children[handle];
-
-				return child !== undefined && closed.has(String(child.conversationId));
-			}),
-		);
-
-		for (const handle of removed) delete state.children[handle];
-
-		for (const [requestId, handle] of Object.entries(state.requests)) {
-			if (removed.has(handle)) delete state.requests[requestId];
+		for (const record of Object.values((await tx.doc(ChildRecords)).children)) {
+			if (conversationIds.has(String(record.conversationId))) record.read = record.requests.length;
 		}
 	}, context);
 }

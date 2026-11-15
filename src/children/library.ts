@@ -8,6 +8,7 @@ import type { Models } from "@earendil-works/pi-ai/models";
 import type * as Durable from "@earendil-works/pi-durable";
 import type {
 	AgentChange,
+	CommitChange,
 	Conversation,
 	ConversationId,
 	DocumentReader,
@@ -203,6 +204,12 @@ export type Child = {
 	 */
 	send(input: Input, context: Context, options?: { readonly admitted?: (tx: Tx) => Promise<void> }): Promise<void>;
 	/**
+	 * Admits `input` as `send` does, for a caller that waits for no answer, such as a user answer to a conversation that a
+	 * task owns: it prepares no answer and does not change the last request. A new request ID resumes an ended child, and
+	 * an end during the submit aborts the new input, and the call fails.
+	 */
+	input(input: Input, context: Context): Promise<void>;
+	/**
 	 * Sends `input` as one turn and gives its answer. A request ID answered before gives its saved answer with no new
 	 * turn. A request ID that was not answered, or whose answer does not count, is sent again as `<requestId>#2`, `#3`
 	 * and so on. With `schema`, the child must answer through its `respond` tool with a value that matches the schema,
@@ -271,14 +278,14 @@ export type Children = {
 		context: Context,
 	): Promise<Child | undefined>;
 	/**
-	 * The lineage, conversation and state of the child with the conversation ID `id`, of any owner, without its owner
-	 * operations. Nothing for a root, an unknown ID, or text that is not an ID.
+	 * The lineage, conversation, state and input of the child with the conversation ID `id`, of any owner, without its
+	 * other owner operations. Nothing for a root, an unknown ID, or text that is not an ID.
 	 */
 	inspect(
 		place: Place,
 		id: string,
 		context: Context,
-	): Promise<Pick<Child, "lineage" | "conversation" | "state"> | undefined>;
+	): Promise<Pick<Child, "lineage" | "conversation" | "state" | "input"> | undefined>;
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
 	/**
@@ -320,6 +327,19 @@ type ChildDocState = {
 	/** Ended until the next input. */
 	closed: boolean;
 };
+
+/**
+ * Whether the child `id` is ended after `change`, a change of its document, such as the commit that ends or resumes it.
+ * Nothing for another change.
+ */
+export function endAfter(change: CommitChange, id: ConversationId): boolean | undefined {
+	if (change.type !== "document" || change.kind !== "change") return undefined;
+
+	if (change.record.kind !== CHILD_DOC_KIND || change.conversationId !== id) return undefined;
+
+	// SAFETY: only `ChildDoc` has the kind `CHILD_DOC_KIND`, and its value is a `ChildDocState`.
+	return (change.value as ChildDocState).closed;
+}
 
 export function createChildren(durable: typeof Durable): Children {
 	const ChildDoc = durable.defineDoc<ChildDocState>({
@@ -516,14 +536,16 @@ export function createChildren(durable: typeof Durable): Children {
 		const turns = turn(place, id, conversation, last);
 
 		/**
-		 * The commit step of a new request ID: clears the end of this child only, not of its children, and prepares the
-		 * answer of `requestId`.
+		 * The commit step of a new request ID: clears the end of this child only, not of its children. Gives false for a
+		 * request ID admitted before, which changes nothing.
 		 */
-		const admitNew = async (tx: Tx, requestId: string, schema?: JsonObject) => {
+		const admitNew = async (tx: Tx, requestId: string) => {
+			if ((await tx.submissionByRequest(id, requestId)) !== undefined) return false;
 			const doc = await tx.doc(ChildDoc, id);
 
 			if (doc.closed) doc.closed = false;
-			await answers.prepare(tx, id, requestId, schema);
+
+			return true;
 		};
 
 		/**
@@ -633,7 +655,8 @@ export function createChildren(durable: typeof Durable): Children {
 
 				// A request that is still pending keeps its ask.
 				if (fresh) {
-					await admitNew(tx, attempt, schema);
+					await admitNew(tx, attempt);
+					await answers.prepare(tx, id, attempt, schema);
 				}
 
 				return undefined;
@@ -654,10 +677,11 @@ export function createChildren(durable: typeof Durable): Children {
 				const fresh = await commitFor(
 					place,
 					async (tx) => {
-						if ((await tx.submissionByRequest(id, input.requestId)) !== undefined) return false;
-						await admitNew(tx, input.requestId);
+						const admitted = await admitNew(tx, input.requestId);
 
-						return true;
+						if (admitted) await answers.prepare(tx, id, input.requestId);
+
+						return admitted;
 					},
 					context,
 				);
@@ -668,6 +692,10 @@ export function createChildren(durable: typeof Durable): Children {
 				};
 
 				await admitToChild(input, fresh, after, context);
+			},
+			async input(input, context) {
+				const fresh = await commitFor(place, (tx) => admitNew(tx, input.requestId), context);
+				await admitToChild(input, fresh, async () => {}, context);
 			},
 			ask,
 			settled,

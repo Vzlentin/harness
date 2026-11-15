@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -93,7 +93,7 @@ export function versionMismatch(client: number, host: number, pid: number): stri
 }
 
 /** The states of a child, as the host reports them. */
-export const CHILD_STATES = ["busy", "idle", "error", "closed"] as const;
+export const CHILD_STATES = ["busy", "idle", "error", "ended"] as const;
 
 export type ChildState = (typeof CHILD_STATES)[number];
 
@@ -522,12 +522,10 @@ export type Replies = {
 };
 
 /**
- * An event of a watch after its reply, sent as `{ event: WatchLine }`: the change of one commit, an empty change after a
- * rename, or the end when the child was stopped.
+ * An event of a watch after its reply, sent as `{ event: WatchLine }`: the change of one commit, or an empty change
+ * after a rename, an end or a resume.
  */
-export type WatchLine =
-	| { readonly change: ViewChange; readonly child: ChildInfo; readonly stopped?: undefined }
-	| { readonly stopped: true };
+export type WatchLine = { readonly change: ViewChange; readonly child: ChildInfo };
 
 /**
  * The answers of the user that the host pushes to the asker. For the ask `ask` with no parley: the line and the words

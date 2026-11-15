@@ -247,15 +247,18 @@ describe("mirror", { timeout: 30_000 }, () => {
 		await expect(child.send("Too late", false)).rejects.toThrow("Unknown subagent: abcdef");
 	});
 
-	it("fails when the child is stopped", async () => {
+	it("stays open when the child is stopped, shows it as ended, and resumes it with a message", async () => {
 		const handle = handleOf(await cli(["spawn", "--name", "doomed", "--prompt", "Doomed"]));
 		await cli(["wait", handle]);
 		const mirror = await opened({ project: "main", target: { kind: "child", handle } });
 
 		try {
 			expect((await cli(["stop", handle])).code).toBe(0);
-			await until(() => mirror.status.kind === "failed");
-			expect(mirror.status).toEqual({ kind: "failed", reason: `doomed (${handle}) was stopped` });
+			await until(() => mirror.child?.state === "ended");
+			expect(mirror.status).toEqual({ kind: "open" });
+			await mirror.send("Back again", false);
+			await until(() => mirror.child?.state === "idle");
+			expect(called("Back again")).toBe(1);
 		} finally {
 			mirror.close();
 		}

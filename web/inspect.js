@@ -410,8 +410,9 @@ export function mountInspect(container, target, { onTitle } = {}) {
 		);
 
 		usage.textContent = summary ? usageLine(summary) : "";
-		// A conversation of the children library takes input only while it works, always as a steer.
-		const takes = child !== undefined && child.state !== "closed" && (busy || !isConversation);
+		// A conversation of the children library takes input only while it works, always as a steer. A message resumes
+		// an ended child.
+		const takes = child !== undefined && (busy || !isConversation);
 		input.disabled = !takes;
 		input.placeholder = takes ? "Message" : isConversation ? "A conversation takes input only while it works" : "";
 		send.hidden = busy || isConversation;

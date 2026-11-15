@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { childTitle, runDisplayName } from "../protocol/labels.ts";
+import { childTitle } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
 import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
@@ -260,17 +260,11 @@ export class Mirror {
 			this.#child = attempt.child;
 			this.#setStatus({ kind: "open" });
 			void this.#flush();
-			const end = await this.#follow(attempt.view, attempt.lines);
+			await this.#follow(attempt.view, attempt.lines);
 			this.#client = undefined;
 			attempt.client.close();
 
 			if (this.#closing.signal.aborted) return;
-
-			if (end === "stopped") {
-				this.#fail(`${runDisplayName(this.#child ?? attempt.child)} was stopped`);
-
-				return;
-			}
 
 			if (again && Date.now() - opened < SHORT_CONNECTION_MS) {
 				this.#fail(`${HOST_CLOSED}. Run /reload to attach again`);
@@ -314,19 +308,16 @@ export class Mirror {
 		return new Error("The mirror is closed");
 	}
 
-	/** Applies each change of the watch until it ends: `stopped` when the child was stopped, else `closed`. */
-	async #follow(view: ConversationView, lines: AsyncIterable<WatchLine>): Promise<"stopped" | "closed"> {
+	/** Applies each change of the watch until it ends. */
+	async #follow(view: ConversationView, lines: AsyncIterable<WatchLine>): Promise<void> {
 		let current = view;
 
 		for await (const line of lines) {
-			if (line.stopped) return "stopped";
 			current = applyChange(current, line.change);
 			this.#view = current;
 			this.#child = line.child;
 			this.#onChange(this.#status);
 		}
-
-		return "closed";
 	}
 
 	/** Sends the waiting messages on the open connection, one at a time, in order. */

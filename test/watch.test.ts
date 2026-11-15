@@ -1,11 +1,7 @@
-import { once } from "node:events";
-import { createConnection } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { Client, request } from "../src/client/client.ts";
+import { request } from "../src/client/client.ts";
 import { todosOf } from "../src/client/view-state.ts";
 import type { Host } from "../src/host/run.ts";
-import { statePaths } from "../src/protocol/paths.ts";
-import type { WatchLine } from "../src/protocol/requests.ts";
 import { type Target, targetRef } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type TodoState } from "../src/protocol/todo.ts";
 import { applyChange } from "../src/protocol/view-change.ts";
@@ -22,11 +18,6 @@ afterAll(async () => {
 	await host?.close();
 	await tearDown();
 });
-
-/** Adds the note `text` to the conversation of `handle`. */
-async function note(handle: string, requestId: string, text: string): Promise<void> {
-	await request({ type: "note", requestId, handle, text }, { start: false });
-}
 
 /** Adds the todo `text` to the list of `target`. */
 async function addTo(target: Target, text: string): Promise<void> {
@@ -69,10 +60,7 @@ async function expectListEvents(target: Target, other: Target): Promise<void> {
 		expect(listsOf(lines)).toEqual(lists.slice(1));
 		expect(listsOf(before.lines)).toEqual(lists);
 
-		const view = before.lines.reduce(
-			(current, line) => (line.stopped ? current : applyChange(current, line.change)),
-			before.view,
-		);
+		const view = before.lines.reduce((current, line) => applyChange(current, line.change), before.view);
 
 		expect(todosOf(view)).toEqual(lists[2]);
 	} finally {
@@ -82,36 +70,26 @@ async function expectListEvents(target: Target, other: Target): Promise<void> {
 }
 
 describe("watch", { timeout: 30_000 }, () => {
-	it("sends the stopped line after the lines of the commits before the stop, to a slow client", async () => {
+	it("gives a line with the state ended after a stop, keeps the watch open, and gives the resume of a send", async () => {
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watch the stop"]));
 		await cli(["wait", handle]);
-		const socket = createConnection(statePaths("main").socket);
-		await once(socket, "connect");
-		const client = new Client(socket);
+		const watched = await openWatch({ kind: "child", handle });
+		let closed = false;
+		void watched.ended.then(() => (closed = true));
 
 		try {
-			const watched = await client.watch({ kind: "child", handle });
-			const events: WatchLine[] = [];
-
-			const ended = (async () => {
-				for await (const line of watched.lines) events.push(line);
-			})();
-
-			// The client reads nothing while the host waits for the socket to drain after the line of a large note.
-			socket.pause();
-			await note(handle, "large", "x".repeat(1_000_000));
-			await note(handle, "last", "Last note before the stop");
 			expect((await cli(["stop", handle])).code).toBe(0);
-			// The `ChildRecords` watch gets the stop after the reply.
-			await new Promise((resolve) => setTimeout(resolve, 300));
-			socket.resume();
-			await ended;
+			await until(() => watched.lines.some((line) => line.child.state === "ended"));
 
-			expect(events.at(-1)).toEqual({ stopped: true });
-			const changes = events.flatMap((line) => (line.stopped ? [] : [JSON.stringify(line.change)]));
-			expect(changes.some((change) => change.includes("Last note before the stop"))).toBe(true);
+			expect((await cli(["send", handle, "Resume the watched"])).stdout).toBe(`Prompted watched (${handle})\n`);
+			const ended = () => watched.lines.findIndex((line) => line.child.state === "ended");
+			await until(() => watched.lines.slice(ended() + 1).some((line) => line.child.state === "idle"));
+
+			const changes = watched.lines.map((line) => JSON.stringify(line.change));
+			expect(changes.some((change) => change.includes("Answer to Resume the watched"))).toBe(true);
+			expect(closed).toBe(false);
 		} finally {
-			client.close();
+			watched.client.close();
 		}
 	});
 
@@ -127,26 +105,5 @@ describe("watch", { timeout: 30_000 }, () => {
 		const other = handleOf(await cli(["spawn", "--name", "apart", "--prompt", "Keep a list apart"]));
 
 		await expectListEvents({ kind: "agent" }, { kind: "child", handle: other });
-	});
-
-	it("sends the list of todos in the whole view before the stopped line", async () => {
-		const handle = handleOf(await cli(["spawn", "--name", "stopped", "--prompt", "Stop with a list"]));
-		await cli(["wait", handle]);
-		await addTo({ kind: "child", handle }, "Before the stop");
-		const watched = await openWatch({ kind: "child", handle });
-
-		try {
-			expect((await cli(["stop", handle])).code).toBe(0);
-			await watched.ended;
-
-			expect(watched.lines.at(-1)).toEqual({ stopped: true });
-			expect(watched.lines.at(-2)).toMatchObject({
-				change: {
-					view: { docs: { [TODO_LIST_KIND]: { todos: [{ id: 1, text: "Before the stop", state: "open" }] } } },
-				},
-			});
-		} finally {
-			watched.client.close();
-		}
 	});
 });

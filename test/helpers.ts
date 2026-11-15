@@ -455,7 +455,7 @@ export async function openWatch(target: Target): Promise<{
 /** The lists of todos that the list events of `lines` gave, in order. */
 export function listsOf(lines: readonly WatchLine[]): unknown[] {
 	return lines.flatMap((line) => {
-		if (line.stopped || "view" in line.change) return [];
+		if ("view" in line.change) return [];
 		const list = line.change.docs?.[TODO_LIST_KIND];
 
 		return list === undefined ? [] : [list];
@@ -477,10 +477,8 @@ export async function inputAgent(client: Client, message: string): Promise<strin
 
 /** Waits for an idle event after a busy one. */
 export async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<void> {
-	const busy = () => events.findIndex((line) => !line.stopped && line.child.state === "busy");
-	await until(
-		() => busy() !== -1 && events.slice(busy() + 1).some((line) => !line.stopped && line.child.state === "idle"),
-	);
+	const busy = () => events.findIndex((line) => line.child.state === "busy");
+	await until(() => busy() !== -1 && events.slice(busy() + 1).some((line) => line.child.state === "idle"));
 }
 
 /** Sends `message` to the project agent, and waits until its turn ends. */

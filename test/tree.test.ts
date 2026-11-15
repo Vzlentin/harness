@@ -289,7 +289,7 @@ describe("tree", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("sends the nodes that a commit changed, and the nodes that went, to a watch", async () => {
+	it("sends the nodes that a commit changed to a watch, and keeps a stopped child as ended", async () => {
 		const project = "watched";
 		const host = await projectHost(project);
 		const prompt = "Tree turn";
@@ -339,8 +339,8 @@ describe("tree", { timeout: 60_000 }, () => {
 			await answerOf(c.handle, project);
 			await until(() => statesOf(events, c.handle).at(-1) === "idle");
 			await send({ type: "stop", caller: AGENT_CALLER, handle: c.handle }, project);
-			await until(() => events.some((event) => "removed" in event));
-			expect(events.filter((event) => "removed" in event)).toEqual([{ removed: [c.handle] }]);
+			await until(() => statesOf(events, c.handle).at(-1) === "ended");
+			expect(events.some((event) => "removed" in event)).toBe(false);
 			expect(idsOf(events).filter((id) => id !== AGENT_HANDLE && id !== c.handle)).toEqual([a.handle]);
 		} finally {
 			gate.resolve();

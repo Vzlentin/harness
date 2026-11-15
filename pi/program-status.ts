@@ -56,7 +56,7 @@ export class ProgramStatusReport {
 		const { status, child } = mirror;
 
 		if (mirror.busy) this.#worked = true;
-		else if (status.kind === "failed" || child?.state === "error" || child?.state === "closed") this.#worked = false;
+		else if (status.kind === "failed" || child?.state === "error" || child?.state === "ended") this.#worked = false;
 		const report = programStatus(mirror, this.#worked);
 		const key = `${report.state}\n${report.message}`;
 
