@@ -133,7 +133,8 @@ export default defineConfig({
 		options: { typeAware: true, typeCheck: true },
 	},
 	// The tests change `process.env`, such as `HOME`, so each test file runs in its own process.
-	test: { pool: "forks" },
+	// `test/setup.ts` clears the caller's `GIT_*` variables in each of these processes.
+	test: { pool: "forks", setupFiles: ["test/setup.ts"] },
 	pack: {
 		entry: ["src/**/*.ts"],
 		outDir: "dist",
