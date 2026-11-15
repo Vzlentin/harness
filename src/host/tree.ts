@@ -1,6 +1,7 @@
 /**
- * The tree of a project: the project agent, the children by handle, and the started tasks with their child tasks and
- * the conversations of the children library that these tasks own, each with its state and its list of todos.
+ * The tree of a project: the project agent, the children by handle, and the started tasks, each with its state and its
+ * list of todos. A started task that did not end has its child tasks and the conversations of the children library that
+ * these tasks own under it; a started task that ended has only its own node.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -13,7 +14,7 @@ import type {
 	TaskOutcome,
 	TaskRecord,
 	TaskState,
-	Tx,
+	Storage,
 } from "@earendil-works/pi-durable";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import type { RunState, TreeNode } from "../protocol/tree.ts";
@@ -25,8 +26,9 @@ import { readTodos, type TodoOwner } from "./todo.ts";
 const context = BACKGROUND_CONTEXT;
 
 /**
- * How many of the newest started tasks keep their nodes that ended. A node that ended and is older than the oldest of
- * them is left out, with the nodes under it.
+ * How many of the newest started tasks keep their nodes that ended. A started task that ended and is older than the
+ * oldest of them is left out. Under a live started task, a node that ended and is older than that oldest one is left
+ * out, with the nodes under it.
  */
 const WINDOW = 50;
 
@@ -40,7 +42,10 @@ type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
 /** What the tree reads of the host. */
 export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "project"> &
-	Pick<TaskHost, "root" | "startable">;
+	Pick<TaskHost, "root" | "startable"> & {
+		/** The reads of the tasks and the conversations of the tree, without a write transaction. */
+		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations">;
+	};
 
 /** A node, and the store ID of its conversation or its task, which orders it among its siblings. */
 type Placed = { readonly node: TreeNode; readonly order: number };
@@ -63,7 +68,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 	/** Whether the store ID `id` is not older than the oldest started task of the window. */
 	const recent = (id: number) => cutoff === undefined || id >= cutoff;
 	const kinds = entryKinds(host.startable);
-	const runs = await harness.commit((tx) => scanRuns(tx, root.id, kinds, started, recent), context);
+	const runs = await scanRuns(host.storage, root.id, kinds, started, recent);
 	const records = await harness.snapshot(ChildRecords, context);
 	const entries = recordsByAge(records);
 
@@ -177,13 +182,14 @@ function outcomeState(outcome: TaskOutcome<JsonValue>): RunState {
 }
 
 /**
- * The tasks of the tree and the conversations that they own, read in `tx`: each started task of `started` and each task
- * of the kinds `kinds` in the root conversation whose owners lead to a started task. A task that ended and whose ID is
- * not `recent` is left out, with the tasks under it. The scans of the kinds go from the newest task, and stop at the
- * first ID that is not `recent`, so the older tasks that ended are not read.
+ * The tasks of the tree and the conversations that they own, read from `storage`: each started task of `started`, and
+ * each task of the kinds `kinds` in the root conversation whose owners lead to a started task that did not end, with
+ * no task between them that is left out. A task that ended and whose ID is not `recent` is left out, with the tasks
+ * under it. Only the tasks under a live started task, and that task, give their conversations. The scans of the kinds
+ * go from the newest task, and stop at the first ID that is not `recent`, so the older tasks that ended are not read.
  */
 async function scanRuns(
-	tx: Tx,
+	storage: TreeHost["storage"],
 	rootId: ConversationId,
 	kinds: readonly string[],
 	started: ReadonlyMap<TaskId, string>,
@@ -195,14 +201,14 @@ async function scanRuns(
 		const query = { conversationId: rootId, kind } as const;
 
 		const newest = await scanWhile(
-			(cursor) => tx.scanTasks({ ...query, order: "descending" }, PAGE_SIZE, cursor),
+			(cursor) => storage.scanTasks({ ...query, order: "descending" }, PAGE_SIZE, cursor, context),
 			(task) => recent(task.id),
 		);
 
 		for (const task of newest) found.set(task.id, task);
 
 		for (const status of LIVE_STATUSES) {
-			const live = await scanWhile((cursor) => tx.scanTasks({ ...query, status }, PAGE_SIZE, cursor));
+			const live = await scanWhile((cursor) => storage.scanTasks({ ...query, status }, PAGE_SIZE, cursor, context));
 
 			for (const task of live) found.set(task.id, task);
 		}
@@ -210,25 +216,33 @@ async function scanRuns(
 
 	// A started task of a kind that no entry gives now, such as one of an entry that was removed.
 	for (const id of started.keys()) {
-		const task = recent(id) && !found.has(id) ? await tx.task(id) : undefined;
+		const task = recent(id) && !found.has(id) ? await storage.task(id, context) : undefined;
 
 		if (task !== undefined) found.set(id, task);
 	}
 
 	// A task has a higher ID than its owner, so in ID order each owner comes before the tasks that it owns.
 	const tasks: StoredTask[] = [];
-	const kept = new Set<TaskId>();
+	// The tasks whose subtree the tree shows: the started tasks that did not end, and the tasks under them.
+	const expanded = new Set<TaskId>();
 
 	for (const task of [...found.values()].sort((a, b) => a.id - b.id)) {
-		if (!started.has(task.id) && (task.owner === undefined || !kept.has(task.owner))) continue;
-		tasks.push(task);
-		kept.add(task.id);
+		if (started.has(task.id)) {
+			tasks.push(task);
+
+			if (task.state.status !== "terminal") expanded.add(task.id);
+		} else if (task.owner !== undefined && expanded.has(task.owner)) {
+			tasks.push(task);
+			expanded.add(task.id);
+		}
 	}
 
 	const conversations: { record: ConversationRecord; owner: TaskId }[] = [];
 
-	for (const task of tasks) {
-		const owned = await scanWhile((cursor) => tx.scanConversations({ ownerTaskId: task.id }, PAGE_SIZE, cursor));
+	for (const task of tasks.filter((one) => expanded.has(one.id))) {
+		const owned = await scanWhile((cursor) =>
+			storage.scanConversations({ ownerTaskId: task.id }, PAGE_SIZE, cursor, context),
+		);
 
 		for (const record of owned) conversations.push({ record, owner: task.id });
 	}

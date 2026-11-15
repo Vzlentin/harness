@@ -2,13 +2,27 @@
  * A `piDurable` entry with a task that asks a child it owns one question and completes with the answer. With `idFile`,
  * the task writes the conversation IDs of its child and its root there as JSON, after it opens the child. `overlay` and
  * `limit` go to the child's spec. With `close`, the task closes its child after the answer. With `noStore`, the child
- * does not get the tools of the store of the project.
+ * does not get the tools of the store of the project. With `below`, the task first creates a child task of its own kind
+ * with the input `below`, in a commit of its own, and owns it; pi-durable keeps the task `completing` until that child
+ * task ends.
  */
 import { writeFile } from "node:fs/promises";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Children, Place, Spec } from "../../../src/children/library.ts";
 import type { Overlay } from "../../../src/children/overlay.ts";
 import { PROJECT_EXTENSION } from "../../../src/protocol/project.ts";
+
+type Input = {
+	cwd: string;
+	prompt: string;
+	agentModel?: boolean;
+	idFile?: string;
+	overlay?: Overlay;
+	limit?: number;
+	close?: boolean;
+	noStore?: boolean;
+	below?: { prompt: string; idFile?: string };
+};
 
 export default function askEntry({
 	durable,
@@ -19,17 +33,8 @@ export default function askEntry({
 	readonly children: Children;
 	readonly place: Place;
 }) {
-	const Ask = durable.defineTask<
-		{
-			cwd: string;
-			prompt: string;
-			agentModel?: boolean;
-			idFile?: string;
-			overlay?: Overlay;
-			limit?: number;
-			close?: boolean;
-			noStore?: boolean;
-		},
+	const Ask: Durable.Task<Input, { phase: "ask" }, string, object> = durable.defineTask<
+		Input,
 		{ phase: "ask" },
 		string
 	>({
@@ -38,6 +43,20 @@ export default function askEntry({
 		initial: () => ({ phase: "ask" }),
 		phases: {
 			ask: async (task, runtime, context) => {
+				const { below } = task.input;
+
+				if (below !== undefined) {
+					await runtime.commit(async (tx) => {
+						await tx.createTask(
+							Ask,
+							{ cwd: task.input.cwd, ...below },
+							{ ownership: { kind: "task", taskId: runtime.taskId } },
+						);
+
+						return undefined;
+					}, context);
+				}
+
 				const owner = { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId } as const;
 				const model = task.input.agentModel === true ? {} : { provider: "faux", model: "faux-1" };
 				let spec: Spec = { root: "fixture", ...model, cwd: task.input.cwd };

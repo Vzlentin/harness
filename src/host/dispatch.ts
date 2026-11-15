@@ -113,8 +113,11 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly warn: (cause: unknown) => void;
 		readonly push: Push;
 		readonly sessions: Sessions;
-		/** The storage of the harness, whose entry lookup gives the thread of the source of an older rule. */
-		readonly storage: Pick<Storage, "entry">;
+		/**
+		 * The storage of the harness: its entry lookup gives the thread of the source of an older rule, and its reads of
+		 * tasks and conversations give the tree.
+		 */
+		readonly storage: Pick<Storage, "entry" | "task" | "scanTasks" | "scanConversations">;
 	};
 
 export type Handler = Base &

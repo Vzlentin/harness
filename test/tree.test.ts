@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
@@ -126,6 +126,31 @@ function statesOf(events: readonly TreeEvent[], id: string): string[] {
 		.map((node) => node.state);
 }
 
+/**
+ * Starts the `fixture.ask` task `top` in `project`: it asks `above`, then starts a child task that asks `below`. Waits
+ * until both asks are called, and gives the started task and the child conversations of the two asks.
+ */
+async function startHeldBelow(
+	project: string,
+	above: string,
+	below: string,
+): Promise<{ top: Replies["start"]; aboveChild: string; belowChild: string }> {
+	const idFile = join(root, `${project}.ids.json`);
+	const belowFile = join(root, `${project}.below.json`);
+	const input = { cwd: root, prompt: above, idFile, below: { prompt: below, idFile: belowFile } };
+	const top = await send({ type: "start", kind: "fixture.ask", key: "top", input }, project);
+	await until(() => called(below) === 1 && called(above) === 1);
+	const aboveIds: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
+	const belowIds: { child: string } = JSON.parse(await readFile(belowFile, "utf8"));
+
+	return { top, aboveChild: aboveIds.child, belowChild: belowIds.child };
+}
+
+/** The IDs of the `removed` events of `events`. */
+function removedOf(events: readonly TreeEvent[]): string[] {
+	return events.flatMap((event) => ("removed" in event ? event.removed : []));
+}
+
 /** The IDs of the nodes of the `nodes` events of `events`. */
 function idsOf(events: readonly TreeEvent[]): string[] {
 	return events.flatMap((event) => ("nodes" in event ? event.nodes.map((node) => node.id) : []));
@@ -142,15 +167,24 @@ afterAll(async () => {
 });
 
 describe("tree", { timeout: 60_000 }, () => {
-	it("gives the project agent, a child, a started task and the conversation that the task owns, with their todos", async () => {
+	it("gives the project agent, a child, a live started task and the conversation that it owns, with their todos", async () => {
 		const project = "four";
 		const host = await projectHost(project);
+		const prompt = "Tree task";
+		const gate = Promise.withResolvers<void>();
+		gates.set(prompt, gate);
 
 		try {
 			const child = await spawnAs(AGENT_CALLER, "Tree child", { notify: false, project });
 			expect(await answerOf(child.handle, project)).toBe("Answer to Tree child");
 			const idFile = join(root, "four.ids.json");
-			const run = await runTask(project, "fixture.ask", "run", { cwd: root, prompt: "Tree task", idFile });
+
+			const run = await send(
+				{ type: "start", kind: "fixture.ask", key: "run", input: { cwd: root, prompt, idFile } },
+				project,
+			);
+
+			await until(() => called(prompt) === 1);
 			const ids: { child: string; root: string } = JSON.parse(await readFile(idFile, "utf8"));
 			expect(ids.root).toBe(AGENT_CALLER);
 
@@ -161,33 +195,37 @@ describe("tree", { timeout: 60_000 }, () => {
 			await add({ key: "run" }, "Run todo", project);
 			await add({ conversation: ids.child }, "Conversation todo", project);
 
+			const agent: TreeNode = {
+				id: AGENT_HANDLE,
+				kind: "agent",
+				name: "four agent",
+				state: "idle",
+				serves: { kind: "project" },
+				todos: [open(1, "Agent todo"), { id: 2, text: "Agent todo done", state: "done" }],
+			};
+
+			const spawned: TreeNode = {
+				id: child.handle,
+				parent: AGENT_HANDLE,
+				kind: "agent",
+				name: child.handle,
+				state: "idle",
+				serves: { kind: "spawner" },
+				todos: [open(1, "Child todo")],
+			};
+
 			const nodes = await tree(project);
 
 			expect(nodes).toEqual([
-				{
-					id: AGENT_HANDLE,
-					kind: "agent",
-					name: "four agent",
-					state: "idle",
-					serves: { kind: "project" },
-					todos: [open(1, "Agent todo"), { id: 2, text: "Agent todo done", state: "done" }],
-				},
-				{
-					id: child.handle,
-					parent: AGENT_HANDLE,
-					kind: "agent",
-					name: child.handle,
-					state: "idle",
-					serves: { kind: "spawner" },
-					todos: [open(1, "Child todo")],
-				},
-				{ id: "task:run", kind: "run", name: "fixture.ask run", state: "completed", todos: [open(1, "Run todo")] },
+				agent,
+				spawned,
+				{ id: "task:run", kind: "run", name: "fixture.ask run", state: "running", todos: [open(1, "Run todo")] },
 				{
 					id: `conversation:${ids.child}`,
 					parent: "task:run",
 					kind: "agent",
 					name: `fixture:${run.id}`,
-					state: "idle",
+					state: "busy",
 					todos: [open(1, "Conversation todo")],
 				},
 			]);
@@ -197,8 +235,8 @@ describe("tree", { timeout: 60_000 }, () => {
 				stdout: [
 					"○ four agent  idle  1 open",
 					`  ○ ${child.handle}  idle  1 open`,
-					"✓ fixture.ask run  completed  1 open",
-					`  ○ fixture:${run.id}  idle  1 open`,
+					"◉ fixture.ask run  running  1 open",
+					`  ◉ fixture:${run.id}  busy  1 open`,
 					"",
 				].join("\n"),
 				stderr: "",
@@ -212,49 +250,93 @@ describe("tree", { timeout: 60_000 }, () => {
 				code: 1,
 				stderr: expect.stringContaining("  harness tree [--json]\n"),
 			});
+
+			gate.resolve();
+			await send({ type: "wait-task", key: "run" }, project);
+			expect(await tree(project)).toEqual([
+				agent,
+				spawned,
+				{ id: "task:run", kind: "run", name: "fixture.ask run", state: "completed", todos: [open(1, "Run todo")] },
+			]);
 		} finally {
+			gate.resolve();
+			gates.delete(prompt);
 			await host.close();
 		}
 	});
 
-	it("puts the child tasks of a started task under it", async () => {
+	it("puts the child tasks of a live started task under it, with the conversations that they own", async () => {
 		const project = "nested";
 		const host = await projectHost(project);
+		const prompt = "Below gate";
+		const gate = Promise.withResolvers<void>();
+		gates.set(prompt, gate);
 
 		try {
-			const deep = await runTask(project, "fixture.nest", "deep", { depth: 2, todo: "Nest" });
-			const [agent, top, middle, bottom, ...rest] = await tree(project);
+			const { top, aboveChild, belowChild } = await startHeldBelow(project, "Above", prompt);
+
+			await vi.waitFor(
+				async () => {
+					const nodes = await tree(project);
+					expect(nodes.find((node) => node.id === `conversation:${aboveChild}`)).toMatchObject({ state: "idle" });
+				},
+				{ timeout: 10_000 },
+			);
+
+			const [agent, run, task, belowConversation, aboveConversation, ...rest] = await tree(project);
 			expect(agent?.id).toBe(AGENT_HANDLE);
 			expect(rest).toEqual([]);
-			expect(top).toEqual({
-				id: "task:deep",
+			expect(run).toEqual({ id: "task:top", kind: "run", name: "fixture.ask top", state: "running", todos: [] });
+			const childId = Number(task?.id.replace(/^task:/, ""));
+			expect(childId).toBeGreaterThan(top.id);
+			expect(task).toEqual({
+				id: `task:${childId}`,
+				parent: "task:top",
 				kind: "run",
-				name: "fixture.nest deep",
-				state: "completed",
-				todos: [open(1, "Nest")],
+				name: `fixture.ask ${childId}`,
+				state: "running",
+				todos: [],
 			});
-
-			const middleId = Number(middle?.id.replace(/^task:/, ""));
-			const bottomId = Number(bottom?.id.replace(/^task:/, ""));
-			expect(middleId).toBeGreaterThan(deep.id);
-			expect(bottomId).toBeGreaterThan(middleId);
-			expect(middle).toEqual({
-				id: `task:${middleId}`,
-				parent: "task:deep",
-				kind: "run",
-				name: `fixture.nest ${middleId}`,
-				state: "completed",
-				todos: [open(1, "Nest below")],
+			expect(belowConversation).toEqual({
+				id: `conversation:${belowChild}`,
+				parent: `task:${childId}`,
+				kind: "agent",
+				name: `fixture:${childId}`,
+				state: "busy",
+				todos: [],
 			});
-			expect(bottom).toEqual({
-				id: `task:${bottomId}`,
-				parent: `task:${middleId}`,
-				kind: "run",
-				name: `fixture.nest ${bottomId}`,
-				state: "completed",
-				todos: [open(1, "Nest below below")],
+			expect(aboveConversation).toEqual({
+				id: `conversation:${aboveChild}`,
+				parent: "task:top",
+				kind: "agent",
+				name: `fixture:${top.id}`,
+				state: "idle",
+				todos: [],
 			});
 		} finally {
+			gate.resolve();
+			gates.delete(prompt);
+			await host.close();
+		}
+	});
+
+	it("gives only the run node of a started task that ended, in the tree and in a watch", async () => {
+		const project = "ended";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
+
+		try {
+			await runTask(project, "fixture.nest", "deep", { depth: 2, todo: "Nest" });
+			const [agent, ...rest] = await tree(project);
+			expect(agent?.id).toBe(AGENT_HANDLE);
+			expect(rest).toEqual([
+				{ id: "task:deep", kind: "run", name: "fixture.nest deep", state: "completed", todos: [open(1, "Nest")] },
+			]);
+
+			watch = await openTreeWatch(project);
+			expect(watch.nodes).toEqual([agent, ...rest]);
+		} finally {
+			watch?.socket.destroy();
 			await host.close();
 		}
 	});
@@ -374,6 +456,35 @@ describe("tree", { timeout: 60_000 }, () => {
 			expect(statesOf(events, child.handle)).toEqual(["idle"]);
 		} finally {
 			afterRun.gate.resolve();
+			watch?.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("sends the nodes under a run as removed to a watch when the run ends", async () => {
+		const project = "removed";
+		const host = await projectHost(project);
+		const prompt = "Removed gate";
+		const gate = Promise.withResolvers<void>();
+		gates.set(prompt, gate);
+		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
+
+		try {
+			const { aboveChild, belowChild } = await startHeldBelow(project, "Removed above", prompt);
+			watch = await openTreeWatch(project);
+			const { events } = watch;
+			const task = watch.nodes.find((node) => node.parent === "task:top" && node.kind === "run");
+			expect(task).toBeDefined();
+			const under = [task?.id, `conversation:${belowChild}`, `conversation:${aboveChild}`];
+			expect(watch.nodes.map((node) => node.id)).toEqual(expect.arrayContaining(under));
+
+			gate.resolve();
+			await until(() => under.every((id) => id !== undefined && removedOf(events).includes(id)));
+			expect(statesOf(events, "task:top").at(-1)).toBe("completed");
+			expect((await tree(project)).map((node) => node.id)).toEqual([AGENT_HANDLE, "task:top"]);
+		} finally {
+			gate.resolve();
+			gates.delete(prompt);
 			watch?.socket.destroy();
 			await host.close();
 		}
