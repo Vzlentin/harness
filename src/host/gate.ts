@@ -28,6 +28,7 @@ import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
 import { answerOf, askClassifier, classifierFailed, classifierModel } from "./classify.ts";
+import type { Degraded } from "./degraded.ts";
 import { heldFor, holdAction, markSent, readHeld, readRules, runApproved, runsFor } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -39,6 +40,9 @@ const PAGE = 50;
 const WRITES_ABOVE = 0.5;
 
 const RUNS: GateReply = { runs: true };
+
+/** The cause of the degraded state `gate-classifier`: the classifier of the gate, one for the host. */
+const GATE_CAUSE = "gate";
 
 const NO_ABORT = new AbortController().signal;
 
@@ -68,6 +72,7 @@ export type GateHost = {
 	readonly settings: SettingsManager;
 	readonly models: Models;
 	readonly signal: AbortSignal;
+	readonly degraded: Degraded;
 };
 
 /** Why the gate holds a call: the rule that it breaks, or no rule when the gate failed. */
@@ -79,8 +84,10 @@ type Hold = Pick<HeldInput, "rule" | "reason">;
  * agent and request ID is given again. A bash call that changes a rule as only the user does is held with no rule and
  * no question. With no decided conduct rule, the call runs. Otherwise the classifier answers
  * step 1 with the command, and step 2 with the command, the messages and the rules, and a call that breaks a rule is
- * held with it. A failure of the classifier holds the call with no rule and the error as the reason. A call that runs
- * marks each draft that its command names with `draft:<id>` as sent by the agent.
+ * held with it. A failure of the classifier holds the call with no rule and the error as the reason, and is the
+ * degraded state `gate-classifier` until a later classify succeeds. An approved action that runs ends the degraded
+ * state `approve-tell` of its approve. A call that runs marks each draft that its command names with `draft:<id>` as
+ * sent by the agent.
  */
 export async function gateCall(request: Extract<Request, { type: "gate" }>, host: GateHost): Promise<GateReply> {
 	if (asksNoQuestion(request.tool, request.arguments)) return RUNS;
@@ -109,7 +116,14 @@ async function checkCall(
 
 	const candidate = held.some((found) => runsFor(found, call));
 
-	if (candidate && (await harness.commit((tx) => runApproved(tx, call), context)) !== undefined) return RUNS;
+	const ran = candidate ? await harness.commit((tx) => runApproved(tx, call), context) : undefined;
+
+	// The approved action runs, so a failed tell of its approve no longer matters.
+	if (ran !== undefined) {
+		host.degraded.end("approve-tell", String(ran.id));
+
+		return RUNS;
+	}
 
 	const again = heldFor(held, agent, requestId);
 
@@ -135,7 +149,10 @@ async function checkCall(
 	return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
 }
 
-/** The rule of `rules` that the command breaks, as the classifier answers the two steps, or none. */
+/**
+ * The rule of `rules` that the command breaks, as the classifier answers the two steps, or none. A failure of the
+ * classifier throws, and starts the degraded state `gate-classifier` with no warning; its next answer ends it.
+ */
 async function brokenRule(
 	host: GateHost,
 	command: string,
@@ -143,15 +160,28 @@ async function brokenRule(
 	rules: readonly Rule[],
 ): Promise<Hold | undefined> {
 	const { models, signal } = host;
-	const model = await classifierModel(host.settings, models, "gateClassifier");
-	const first = await askClassifier(models, model, { state: { command }, questions: { writes: WRITES } }, signal);
-	const writes = answerOf(model, first, "writes", "bool");
+	const model = await classifierModel(host.settings, models, "gateClassifier", host.degraded);
 
-	if (writes.probability <= WRITES_ABOVE) return undefined;
-	const state = { action: command, last_user_messages: [...messages] };
-	const second = await askClassifier(models, model, { state, questions: { rule: ruleQuestion(rules) } }, signal);
+	try {
+		const first = await askClassifier(models, model, { state: { command }, questions: { writes: WRITES } }, signal);
+		const writes = answerOf(model, first, "writes", "bool");
 
-	return ruleOf(model, answerOf(model, second, "rule", "choice"), rules);
+		if (writes.probability <= WRITES_ABOVE) {
+			host.degraded.end("gate-classifier", GATE_CAUSE);
+
+			return undefined;
+		}
+
+		const state = { action: command, last_user_messages: [...messages] };
+		const second = await askClassifier(models, model, { state, questions: { rule: ruleQuestion(rules) } }, signal);
+		const hold = ruleOf(model, answerOf(model, second, "rule", "choice"), rules);
+		host.degraded.end("gate-classifier", GATE_CAUSE);
+
+		return hold;
+	} catch (error) {
+		host.degraded.start("gate-classifier", GATE_CAUSE, errorMessage(error));
+		throw error;
+	}
 }
 
 /** The rule of the choice `answer` of `model`, or none for `none`. */

@@ -5,6 +5,7 @@ import { type ConversationId, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Owner, Place } from "../src/children/library.ts";
+import { Degraded } from "../src/host/degraded.ts";
 import { Push } from "../src/host/push.ts";
 import { type ChildRecord, ChildRecords, markRead } from "../src/host/records.ts";
 import { library, target } from "../src/host/targets.ts";
@@ -106,6 +107,7 @@ describe("push", () => {
 			project: "main",
 			agent: async () => owner.root,
 			warn: () => {},
+			degraded: new Degraded(() => undefined),
 		});
 
 		const done = push.done(child, new AbortController().signal);

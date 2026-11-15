@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { Degraded } from "../src/host/degraded.ts";
 import {
 	AWAKE_POLL_MS,
 	type AwakeChild,
@@ -8,7 +9,7 @@ import {
 } from "../src/host/keep-awake.ts";
 import { runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import { called, cli, gates, models, setUp, tearDown, until } from "./helpers.ts";
+import { called, cli, gates, models, setUp, tearDown, until, watchProject } from "./helpers.ts";
 
 /** A child that the fake system started: its arguments, its kills, and the listeners that a test can call. */
 type FakeChild = {
@@ -67,7 +68,7 @@ function fakeSystem(platform: NodeJS.Platform = "darwin") {
 describe("the hold that keeps the Mac awake", () => {
 	it("starts one caffeinate hold on active work and keeps it over many ticks", () => {
 		const { fake, system, tickAt } = fakeSystem();
-		const awake = keepAwake({ active: () => true, warn: () => undefined, system });
+		const awake = keepAwake({ active: () => true, degraded: new Degraded(() => undefined), system });
 
 		expect(fake.polls).toEqual([AWAKE_POLL_MS]);
 		expect(fake.children).toEqual([]);
@@ -84,7 +85,7 @@ describe("the hold that keeps the Mac awake", () => {
 	it("releases the hold once work is inactive for the release delay", () => {
 		const { fake, system, tickAt } = fakeSystem();
 		let active = true;
-		keepAwake({ active: () => active, warn: () => undefined, system });
+		keepAwake({ active: () => active, degraded: new Degraded(() => undefined), system });
 		tickAt(1000);
 		active = false;
 		tickAt(1000 + RELEASE_DELAY_MS - 1000);
@@ -102,7 +103,7 @@ describe("the hold that keeps the Mac awake", () => {
 	it("keeps the same hold when work comes back within the delay, and starts a new one after a release", () => {
 		const { fake, system, tickAt } = fakeSystem();
 		let active = true;
-		keepAwake({ active: () => active, warn: () => undefined, system });
+		keepAwake({ active: () => active, degraded: new Degraded(() => undefined), system });
 		tickAt(0);
 		active = false;
 		tickAt(20_000);
@@ -125,7 +126,7 @@ describe("the hold that keeps the Mac awake", () => {
 	it("starts a new hold after one that exits", () => {
 		const { fake, system, tickAt } = fakeSystem();
 		const warnings: unknown[] = [];
-		keepAwake({ active: () => true, warn: (cause) => warnings.push(cause), system });
+		keepAwake({ active: () => true, degraded: new Degraded((cause) => warnings.push(cause)), system });
 		tickAt(0);
 		fake.children[0]?.listeners.get("exit")?.(new Error("exit"));
 		tickAt(5000);
@@ -141,7 +142,7 @@ describe("the hold that keeps the Mac awake", () => {
 			active: () => {
 				throw new Error("closed");
 			},
-			warn: (cause) => warnings.push(cause),
+			degraded: new Degraded((cause) => warnings.push(cause)),
 			system,
 		});
 		tickAt(0);
@@ -152,7 +153,7 @@ describe("the hold that keeps the Mac awake", () => {
 
 	it("kills the hold one time and stops the poll on close", () => {
 		const { fake, system, tickAt } = fakeSystem();
-		const awake = keepAwake({ active: () => true, warn: () => undefined, system });
+		const awake = keepAwake({ active: () => true, degraded: new Degraded(() => undefined), system });
 		tickAt(0);
 		awake.close();
 		awake.close();
@@ -163,7 +164,7 @@ describe("the hold that keeps the Mac awake", () => {
 
 	it("does nothing on another system", () => {
 		const { fake, system, tickAt } = fakeSystem("linux");
-		const awake = keepAwake({ active: () => true, warn: () => undefined, system });
+		const awake = keepAwake({ active: () => true, degraded: new Degraded(() => undefined), system });
 		tickAt(0);
 		awake.close();
 
@@ -174,7 +175,7 @@ describe("the hold that keeps the Mac awake", () => {
 	it("writes one warning when caffeinate cannot start, and starts no hold after it", () => {
 		const { fake, system, tickAt } = fakeSystem();
 		const warnings: unknown[] = [];
-		keepAwake({ active: () => true, warn: (cause) => warnings.push(cause), system });
+		keepAwake({ active: () => true, degraded: new Degraded((cause) => warnings.push(cause)), system });
 		tickAt(0);
 		fake.children[0]?.listeners.get("error")?.(new Error("spawn caffeinate ENOENT"));
 		tickAt(5000);
@@ -208,6 +209,35 @@ describe("the hold of a host", { timeout: 30_000 }, () => {
 
 			expect(fake.children[0]?.kills).toBe(1);
 		} finally {
+			gate.resolve();
+			await host?.close();
+		}
+	});
+
+	it("gives a watch the failed hold, which stays, with its warning", async () => {
+		const { fake, system, tickAt } = fakeSystem();
+		const stderr = vi.spyOn(process.stderr, "write");
+		const host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models, keepAwake: system });
+		const gate = Promise.withResolvers<void>();
+		gates.set("Task:\nAwake fails", gate);
+		const watch = await watchProject(MAIN_PROJECT);
+		const line = "caffeinate cannot start: spawn caffeinate ENOENT";
+
+		try {
+			await cli(["spawn", "--prompt", "Awake fails"]);
+			await until(() => called("Task:\nAwake fails") === 1);
+			tickAt(0);
+			fake.children[0]?.listeners.get("error")?.(new Error("spawn caffeinate ENOENT"));
+			await until(() => watch.events.at(-1)?.degraded.length === 1);
+			expect(watch.events.at(-1)?.degraded).toEqual([{ kind: "awake-failed", line, since: expect.any(Number) }]);
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${line}\n`);
+
+			const again = await watchProject(MAIN_PROJECT);
+			again.socket.destroy();
+			expect(again.state.degraded).toEqual(watch.events.at(-1)?.degraded);
+		} finally {
+			watch.socket.destroy();
+			stderr.mockRestore();
 			gate.resolve();
 			await host?.close();
 		}

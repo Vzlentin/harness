@@ -28,7 +28,7 @@ import { library } from "../src/host/targets.ts";
 import { TYPED_KIND } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { projectDir } from "../src/protocol/projects.ts";
+import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import { type ChildInfo, PROTOCOL_VERSION } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
@@ -58,6 +58,7 @@ import {
 	tearDown,
 	textOf,
 	toolWaits,
+	watchProject,
 	until,
 	untilIdleAfterBusy,
 } from "./helpers.ts";
@@ -1059,6 +1060,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const writes = vi.spyOn(process.stderr, "write");
 		const warnings = () => writes.mock.calls.filter(([text]) => String(text).includes(warning)).length;
 		const client = await connect({ start: false });
+		const watch = await watchProject(MAIN_PROJECT);
+		const failed = () => watch.events.at(-1)?.degraded.filter((state) => state.kind === "push-failed");
 
 		try {
 			if (client === undefined) throw new Error("no host");
@@ -1087,7 +1090,17 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			expect(warnings()).toBe(1);
 			await until(() => warnings() === 2);
+			expect(failed()).toEqual([
+				{ kind: "push-failed", line: `The push of ${handle} failed: ${warning}`, since: expect.any(Number) },
+			]);
+
+			// The state ends when the record goes.
+			await store.commit(async (tx) => {
+				delete (await tx.doc(ChildRecords)).children[handle];
+			}, BACKGROUND_CONTEXT);
+			await until(() => failed()?.length === 0);
 		} finally {
+			watch.socket.destroy();
 			client?.close();
 			writes.mockRestore();
 			await store.commit(async (tx) => {
@@ -1917,15 +1930,24 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		try {
 			const gone = await startHost();
-			await gone?.close();
-			expect(gone).toBeDefined();
-			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
-				`warning: The entry gone has no module at ${module}; the host skips it\n`,
-			);
+			const watch = await watchProject(MAIN_PROJECT);
+			watch.socket.destroy();
+			await gone.close();
+			const line = `The entry gone has no module at ${module}; the host skips it`;
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${line}\n`);
+			expect(watch.state.degraded).toEqual([{ kind: "entry-skipped", line, since: expect.any(Number) }]);
+
+			// A host that starts with no such entry has no such state.
+			await rm(entries);
+			const again = await startHost();
+			const clean = await watchProject(MAIN_PROJECT);
+			clean.socket.destroy();
+			await again.close();
+			expect(clean.state.degraded).toEqual([]);
 		} finally {
 			stderr.mockRestore();
 			process.env.XDG_STATE_HOME = join(root, "state");
-			await rm(entries);
+			await rm(entries, { force: true });
 		}
 	});
 
@@ -1984,18 +2006,93 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		try {
 			const packages = await startHost();
-			await packages?.close();
-			expect(packages).toBeDefined();
+			const watch = await watchProject(MAIN_PROJECT);
+			watch.socket.destroy();
+			await packages.close();
+
+			const lines = [
+				`${join(notObject, "package.json")} is not a valid package.json`,
+				`${join(invalidField, "package.json")} has an invalid piDurable field`,
+			];
+
 			expect(stderr.mock.calls.map(([text]) => String(text))).toEqual(
-				expect.arrayContaining([
-					`warning: ${join(notObject, "package.json")} is not a valid package.json\n`,
-					`warning: ${join(invalidField, "package.json")} has an invalid piDurable field\n`,
-				]),
+				expect.arrayContaining(lines.map((line) => `warning: ${line}\n`)),
 			);
+			expect(
+				watch.state.degraded.map(({ kind, line }) => ({ kind, line })).toSorted((a, b) => a.line.localeCompare(b.line)),
+			).toEqual(
+				lines.map((line) => ({ kind: "package-skipped", line })).toSorted((a, b) => a.line.localeCompare(b.line)),
+			);
+
+			// A host that starts with no bad package has no such state.
+			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+			const again = await startHost();
+			const clean = await watchProject(MAIN_PROJECT);
+			clean.socket.destroy();
+			await again.close();
+			expect(clean.state.degraded).toEqual([]);
 		} finally {
 			stderr.mockRestore();
 			process.env.XDG_STATE_HOME = join(root, "state");
 			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+		}
+	});
+
+	it("gives a watch the failed load of the resources of a child's directory, with its warning, until a load works", async () => {
+		const dir = realpathSync(await mkdtemp(join(root, "resources-")));
+		await mkdir(join(dir, ".pi"));
+		await writeFile(join(dir, ".pi", "settings.json"), "{}");
+		const trust = join(root, "agent", "trust.json");
+		const saved = existsSync(trust) ? readFileSync(trust, "utf8") : undefined;
+		const stderr = vi.spyOn(process.stderr, "write");
+		const watch = await watchProject(MAIN_PROJECT);
+		const failed = () => watch.events.at(-1)?.degraded.filter((state) => state.kind === "resources-failed");
+
+		try {
+			// A trust file that is not JSON makes the trust of the directory, and so its load, fail.
+			await writeFile(trust, "{");
+
+			const spawned = await request(
+				{
+					type: "spawn",
+					requestId: "resources-1",
+					caller: "resources-session",
+					notify: false,
+					provider: "faux",
+					model: "faux-1",
+					callerThinking: "medium",
+					cwd: dir,
+					prompt: "Resources",
+				},
+				{ start: false },
+			);
+
+			if (spawned === undefined) throw new Error("no host");
+			await answerOf(spawned.handle);
+			await until(() => failed()?.length === 1);
+			const [state] = failed() ?? [];
+			expect(state?.line).toMatch(new RegExp(`^${dir}: .+; no project instructions or skills$`));
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${state?.line}\n`);
+
+			// The next input loads them again, with the trust file back.
+			await (saved === undefined ? rm(trust) : writeFile(trust, saved));
+
+			const line = {
+				type: "send",
+				requestId: "resources-2",
+				caller: "resources-session",
+				handle: spawned.handle,
+				message: "Resources again",
+				followUp: false,
+				notify: false,
+			} as const;
+
+			await request(line, { start: false });
+			await until(() => failed()?.length === 0);
+		} finally {
+			watch.socket.destroy();
+			stderr.mockRestore();
+			await (saved === undefined ? rm(trust, { force: true }) : writeFile(trust, saved));
 		}
 	});
 

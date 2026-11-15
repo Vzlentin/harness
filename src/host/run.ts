@@ -23,7 +23,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import { ChildContext, PI_TRUST } from "../children/context.ts";
+import { childContext, PI_TRUST, type ResourcesReport } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
 import { projectToolsExtension } from "../project-tool.ts";
 import { onLines } from "../protocol/lines.ts";
@@ -41,6 +41,7 @@ import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts
 import { setUpAgent } from "./agent.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
+import { Degraded } from "./degraded.ts";
 import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
@@ -141,6 +142,8 @@ export async function runHost(options: {
 	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted: savedTrust(projectCwd, PI_TRUST) });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
+	// The degraded states of the host, which `watch-project` gives; each source also writes its warning to `host.log`.
+	const degraded = new Degraded(warn);
 
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
 	let harness: Harness | undefined;
@@ -159,10 +162,12 @@ export async function runHost(options: {
 		},
 	};
 
-	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, warn).catch((cause: unknown) => {
-		lock.close();
-		throw cause;
-	});
+	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, warn, degraded).catch(
+		(cause: unknown) => {
+			lock.close();
+			throw cause;
+		},
+	);
 
 	const envs = new ConversationEnvs(project, projectCwd);
 	// The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The registry
@@ -188,8 +193,13 @@ export async function runHost(options: {
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
 
+	const resources: ResourcesReport = {
+		loaded: (cwd) => degraded.end("resources-failed", cwd),
+		failed: (cwd, line) => degraded.start("resources-failed", cwd, line),
+	};
+
 	const selected = [
-		ChildContext,
+		childContext(resources),
 		RulesSection,
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
@@ -243,7 +253,7 @@ export async function runHost(options: {
 	const root = await harness.root(context);
 
 	const owner = { kind: "detached", root } as const;
-	const push = new Push({ harness, place, owner, root, project, agent, warn });
+	const push = new Push({ harness, place, owner, root, project, agent, warn, degraded });
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
 	const serving = new Serving({ harness, place, owner, root, warn });
 
@@ -261,13 +271,14 @@ export async function runHost(options: {
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		warn,
+		degraded,
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
 
 	const storeFile = storeFilePasses({ harness, storage, root, path: storePath, warn });
 
-	const awake = keepAwake({ active: () => harness.wake().active, warn, system: awakeSystem });
+	const awake = keepAwake({ active: () => harness.wake().active, degraded, system: awakeSystem });
 
 	const connections = new Set<Socket>();
 	const aborts = new Set<AbortController>();

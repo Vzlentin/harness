@@ -9,7 +9,7 @@ import { Harness } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { ChildContext } from "../src/children/context.ts";
+import { childContext } from "../src/children/context.ts";
 import { createChildren, type Owner, type Place } from "../src/children/library.ts";
 import { overlayDoc } from "../src/children/overlay.ts";
 import { request } from "../src/client/client.ts";
@@ -94,6 +94,7 @@ beforeAll(async () => {
 	new ProjectTrustStore(join(root, "agent")).set(project, true);
 
 	const registry = durable.createRegistry();
+	const ChildContext = childContext({ loaded: () => undefined, failed: () => undefined });
 	registry.install(ChildContext);
 	registry.install(library.extension);
 	registry.install(library.answerExtension);

@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -34,13 +35,15 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Component, ProgramStatus, Terminal, TUI } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { AskWrite } from "../src/protocol/project.ts";
+import { AskWrite, ProjectEvent, ProjectState } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, Delivery, Replies, Request, ServesInput, WatchLine } from "../src/protocol/requests.ts";
 import { StoreFile } from "../src/protocol/store-file.ts";
@@ -467,6 +470,42 @@ export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> 
 			{ timeout: 10_000, interval: 100 },
 		)
 	);
+}
+
+/** One line of a project watch: the reply, or an event. */
+const ProjectWatchLine = Type.Union([
+	Type.Object({ ok: Type.Literal(true), value: ProjectState }),
+	Type.Object({ event: ProjectEvent }),
+]);
+
+/**
+ * A `watch-project` request of `project` on a socket of its own: its socket, the state of the reply, and the events
+ * that came so far.
+ */
+export async function watchProject(
+	project: string,
+): Promise<{ socket: Socket; state: ProjectState; events: ProjectEvent[] }> {
+	const socket = createConnection(statePaths(project).socket);
+	await once(socket, "connect");
+	const replies: ProjectState[] = [];
+	const events: ProjectEvent[] = [];
+
+	onLines(socket, (line) => {
+		const parsed: unknown = JSON.parse(line);
+
+		if (!Value.Check(ProjectWatchLine, parsed)) throw new Error(`not a line of a project watch: ${line.slice(0, 200)}`);
+
+		if ("ok" in parsed) replies.push(parsed.value);
+		else events.push(parsed.event);
+	});
+
+	socket.write(`${JSON.stringify({ type: "watch-project" })}\n`);
+	await until(() => replies.length > 0);
+	const [state] = replies;
+
+	if (state === undefined) throw new Error("no reply");
+
+	return { socket, state, events };
 }
 
 /** Polls `check` for up to 10 s. */

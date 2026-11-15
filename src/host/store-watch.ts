@@ -16,12 +16,17 @@ export type StoreView<S, E> = {
 	events(before: S, after: S, all: boolean): E[];
 	/** Whether `change` can change the state. It gets every change of every commit, in order, and must not call the store. */
 	changes(change: CommitChange): boolean;
+	/**
+	 * Calls `request` when the state changes with no commit, and gives the function that stops it. A view without it
+	 * changes only with commits.
+	 */
+	triggers?(request: () => void): () => void;
 };
 
 /**
  * Opens a watch of `view` on `connection`, and returns the reply, with the state. A pass runs once the reply is
- * written, and after it each commit with a change that `view` marks starts a pass: the host reads the state again and
- * sends a `{ event }` line for each event of `view`. The passes run one at a time, and the commits during a pass give
+ * written, and after it each commit with a change that `view` marks, and each trigger of `view`, starts a pass: the
+ * host reads the state again and sends a `{ event }` line for each event of `view`. The passes run one at a time, and the commits during a pass give
  * one more pass. When a write waits for a slow socket to drain, the next events have every object. A pass that fails,
  * and the close of the store, end the connection. The watch stops when `signal` aborts, at the close of the socket.
  */
@@ -55,6 +60,8 @@ class StoreWatch<S, E> {
 	readonly #view: StoreView<S, E>;
 	readonly #socket: Socket;
 	readonly #observation: CommitObservation;
+	/** Stops the triggers of the view. */
+	readonly #untrigger: () => void;
 	readonly #passes = new Passes(() => this.#pass().catch(() => this.#end()));
 	/** The state that the client has, once the reply is read. */
 	#sent: { readonly state: S } | undefined;
@@ -76,6 +83,11 @@ class StoreWatch<S, E> {
 			},
 			end: () => this.#end(),
 		});
+
+		this.#untrigger =
+			view.triggers?.(() => {
+				if (this.#started) this.#passes.request();
+			}) ?? (() => {});
 	}
 
 	/** Reads the state that the reply gives, which the client then has. */
@@ -99,6 +111,7 @@ class StoreWatch<S, E> {
 	stop(): void {
 		this.#passes.stop();
 		this.#observation.detach();
+		this.#untrigger();
 	}
 
 	/** Stops the passes and ends the connection. */

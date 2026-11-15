@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { CommitObserver } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
@@ -29,7 +28,7 @@ import {
 } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import { cli, models, openDurableHost, root, setUp, tearDown, until } from "./helpers.ts";
+import { cli, models, openDurableHost, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
 
 /** The documents of the terms and of the parts of the vault, as an older version kept them in the store. */
 const OLD_TERMS = sessionDoc<{ terms: JsonValue[] }>("harness.terms", () => ({ terms: [] }));
@@ -37,12 +36,6 @@ const OLD_PARTS = sessionDoc<{ parts: JsonValue[] }>("harness.parts", () => ({ p
 
 /** The document of the rules, as an older version kept it in the store: with no `last`. */
 const OLD_RULES = sessionDoc<{ rules: JsonValue[] }>(RULES_KIND, () => ({ rules: [] }));
-
-/** One line of a project watch: the reply, or an event. */
-const WatchLine = Type.Union([
-	Type.Object({ ok: Type.Literal(true), value: ProjectState }),
-	Type.Object({ event: ProjectEvent }),
-]);
 
 const NONE: ProjectEvent["removed"] = {
 	persons: [],
@@ -63,6 +56,7 @@ function event(changes: Partial<ProjectEvent>): ProjectEvent {
 		parleys: [],
 		asks: [],
 		removed: NONE,
+		degraded: [],
 		...changes,
 	};
 }
@@ -90,36 +84,6 @@ async function send<T extends Request["type"]>(
 	return reply;
 }
 
-/**
- * A `watch-project` request of `project` on a socket of its own: its socket, the state of the reply, and the events
- * that came so far.
- */
-async function openProjectWatch(
-	project: string,
-): Promise<{ socket: Socket; state: ProjectState; events: ProjectEvent[] }> {
-	const socket = createConnection(statePaths(project).socket);
-	await once(socket, "connect");
-	const replies: ProjectState[] = [];
-	const events: ProjectEvent[] = [];
-
-	onLines(socket, (line) => {
-		const parsed: unknown = JSON.parse(line);
-
-		if (!Value.Check(WatchLine, parsed)) throw new Error(`not a line of a project watch: ${line.slice(0, 200)}`);
-
-		if ("ok" in parsed) replies.push(parsed.value);
-		else events.push(parsed.event);
-	});
-
-	socket.write(`${JSON.stringify({ type: "watch-project" })}\n`);
-	await until(() => replies.length > 0);
-	const [state] = replies;
-
-	if (state === undefined) throw new Error("no reply");
-
-	return { socket, state, events };
-}
-
 beforeAll(async () => {
 	await setUp();
 });
@@ -132,10 +96,10 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	it("sends one event with the objects that each commit changed, and the messages that wait in each thread", async () => {
 		const project = "watched";
 		const host = await projectHost(project);
-		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
 
 		try {
-			watch = await openProjectWatch(project);
+			watch = await watchProject(project);
 			const { events } = watch;
 			expect(watch.state).toEqual({
 				persons: [],
@@ -144,6 +108,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				degraded: [],
 			});
 
 			/** Waits for the next event, and gives it. */
@@ -245,7 +210,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			expect(events).toHaveLength(7);
 
-			const again = await openProjectWatch(project);
+			const again = await watchProject(project);
 			again.socket.destroy();
 
 			expect(again.state).toEqual({
@@ -255,6 +220,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				degraded: [],
 			});
 		} finally {
 			watch?.socket.destroy();
@@ -267,7 +233,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		const dir = await mkdtemp(join(root, `${project}-`));
 		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
 		let host = await runHost({ project, cwd: dir, models });
-		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
 
 		try {
 			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
@@ -333,7 +299,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			await older.close(BACKGROUND_CONTEXT);
 
 			host = await runHost({ project, cwd: dir, models });
-			watch = await openProjectWatch(project);
+			watch = await watchProject(project);
 
 			expect(watch.state).toEqual({
 				persons: [sam],
@@ -342,6 +308,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				degraded: [],
 			});
 			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules: [rule] });
 		} finally {
@@ -379,10 +346,10 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	it("gives the rule that the user creates, and the ID of the rule that the user deletes", async () => {
 		const project = "deleted";
 		const host = await projectHost(project);
-		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
 
 		try {
-			watch = await openProjectWatch(project);
+			watch = await watchProject(project);
 			const { events } = watch;
 			const create = { type: "rule", action: "create", caller: "cli", name: "go", kind: "conduct" } as const;
 			const rule = Value.Parse(Rule, await send({ ...create, value: "Ask first." }, project));
@@ -402,10 +369,10 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	it("gives a new parley, a changed parley and their asks", async () => {
 		const project = "watched-parley";
 		const host = await projectHost(project);
-		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
 
 		try {
-			watch = await openProjectWatch(project);
+			watch = await watchProject(project);
 			const { events } = watch;
 
 			const next = async (): Promise<ProjectEvent | undefined> => {
@@ -461,7 +428,21 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				await send({ type: "ask", action: "answer", caller: "user", answers: [{ id: 1, answer: "a" }] }, project),
 			);
 
-			expect(await next()).toEqual(event({ asks: answer.parleys.flatMap((each) => each.asks.slice(0, 1)) }));
+			// The answer waits for pi-1, which has no answers request open: a degraded state, with the commit or after it.
+			const waits = {
+				kind: "answer-waits",
+				line: "The answers of the user wait for pi-1, which has no answers request open",
+				since: expect.any(Number),
+			} as const;
+
+			const count = events.length;
+			await until(() => events.at(-1)?.degraded.length === 1);
+			const answered = answer.parleys.flatMap((each) => each.asks.slice(0, 1));
+			expect(events.slice(count).find((found) => found.asks.length > 0)).toEqual({
+				...event({ asks: answered }),
+				degraded: expect.any(Array),
+			});
+			expect(events.at(-1)?.degraded).toEqual([waits]);
 			expect(answer.parleys[0]?.asks[0]).toMatchObject({ author: { kind: "agent", caller: "user" } });
 
 			const noted = Value.Parse(
@@ -470,7 +451,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			);
 
 			expect(noted).toMatchObject({ id: 1, note: "store-1", by: "pi-1", author: { kind: "agent", caller: "user" } });
-			expect(await next()).toEqual(event({ asks: [noted] }));
+			expect(await next()).toEqual(event({ asks: [noted], degraded: [waits] }));
 		} finally {
 			watch?.socket.destroy();
 			await host.close();
@@ -480,7 +461,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	it("sends every object once to a watch that fell behind", async () => {
 		const project = "slow-project";
 		const host = await projectHost(project);
-		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
 
 		try {
 			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
@@ -490,7 +471,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				await send({ type: "thread", action: "add", topic: "Large", persons: [sam.id] }, project),
 			);
 
-			watch = await openProjectWatch(project);
+			watch = await watchProject(project);
 			const { events, socket } = watch;
 			const large = "x".repeat(1_000_000);
 
@@ -515,7 +496,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 
 			const index = () => events.findIndex((found) => JSON.stringify(found).includes(large));
 			await until(() => index() !== -1 && events.length > index() + 1);
-			const all = await openProjectWatch(project);
+			const all = await watchProject(project);
 			all.socket.destroy();
 			expect(events.slice(index() + 1)).toEqual([{ ...all.state, removed: NONE }]);
 		} finally {
@@ -527,7 +508,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	it("ends the connection of a watch at the close of the host", async () => {
 		const project = "closed-project";
 		const host = await projectHost(project);
-		const watch = await openProjectWatch(project);
+		const watch = await watchProject(project);
 
 		try {
 			const closed = once(watch.socket, "close");
@@ -618,6 +599,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			held: [push, merge],
 			parleys: [],
 			asks: [],
+			degraded: [],
 		};
 
 		const after: ProjectState = {
@@ -627,6 +609,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			held: [approved],
 			parleys: [],
 			asks: [],
+			degraded: [],
 		};
 
 		expect(projectEvent(before, after, false)).toEqual(
@@ -640,5 +623,110 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		expect(projectEvent(after, after, true)).toEqual(
 			event({ persons: [sam], threads: [{ ...thread, waits: [] }], held: [approved] }),
 		);
+	});
+
+	it("gives an event when only the degraded states change, with every degraded state, and none when they are equal", () => {
+		const empty: ProjectState = { persons: [], rules: [], threads: [], held: [], parleys: [], asks: [], degraded: [] };
+		const failed = { kind: "digest-failed", line: "digest: Write failed", since: 1_000 } as const;
+		const skipped = { kind: "entry-skipped", line: "The entry x has no module", since: 500 } as const;
+
+		const one: ProjectState = { ...empty, degraded: [skipped] };
+		const two: ProjectState = { ...empty, degraded: [skipped, failed] };
+
+		expect(projectEvent(one, { ...one, degraded: [{ ...skipped }] }, false)).toBeUndefined();
+		expect(projectEvent(one, two, false)).toEqual(event({ degraded: [skipped, failed] }));
+		expect(projectEvent(two, one, false)).toEqual(event({ degraded: [skipped] }));
+		expect(projectEvent(empty, { ...empty, persons: [{ id: 1, name: "Sam" }], degraded: [] }, false)).toEqual(
+			event({ persons: [{ id: 1, name: "Sam" }] }),
+		);
+	});
+
+	it("runs a pass at each trigger of its view once the reply is written, and stops the triggers when it stops", async () => {
+		const harness = { observeCommits: () => ({ detach: () => undefined }) };
+		let trigger: (() => void) | undefined;
+		let untriggered = 0;
+		let reads = 0;
+
+		const view: StoreView<number, number> = {
+			read: async () => {
+				reads += 1;
+
+				return reads;
+			},
+			events: (_before, after) => [after],
+			changes: () => false,
+			triggers: (request) => {
+				trigger = request;
+
+				return () => {
+					untriggered += 1;
+				};
+			},
+		};
+
+		const server = createServer();
+		const path = join(root, "store-watch-trigger.sock");
+		server.listen(path);
+		await once(server, "listening");
+
+		try {
+			const accepted = once(server, "connection");
+			const client = createConnection(path);
+			const [socket] = await accepted;
+
+			if (!(socket instanceof Socket)) throw new Error("no socket");
+			const lines: string[] = [];
+			onLines(client, (line) => lines.push(line));
+			const abort = new AbortController();
+			let afterReply: (() => void) | undefined;
+
+			await serveStoreWatch(harness, view, abort.signal, {
+				socket,
+				afterReply: (run) => (afterReply = () => run(Promise.resolve(true))),
+			});
+
+			// A trigger before the reply is written runs no pass.
+			trigger?.();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(reads).toBe(1);
+
+			afterReply?.();
+			await until(() => lines.length === 1);
+			trigger?.();
+			await until(() => lines.length === 2);
+			expect(lines).toEqual(['{"event":2}', '{"event":3}']);
+
+			abort.abort();
+			expect(untriggered).toBe(1);
+			client.destroy();
+		} finally {
+			server.close();
+		}
+	});
+
+	it("sends the degraded state of a classify with no classifier, which commits nothing, and no event when it repeats", async () => {
+		const project = "degraded-watch";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
+
+		try {
+			watch = await watchProject(project);
+			const { events } = watch;
+			expect(watch.state.degraded).toEqual([]);
+
+			const line = "No classifier: log in to typesafe or set todoClassifier";
+			await expect(send({ type: "classify-todos" }, project)).rejects.toThrow(line);
+			await until(() => events.length === 1);
+			expect(events).toEqual([event({ degraded: [{ kind: "no-classifier", line, since: expect.any(Number) }] })]);
+
+			// The same state again changes nothing, so the next event is the one of the next commit.
+			await expect(send({ type: "classify-todos" }, project)).rejects.toThrow(line);
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+			await until(() => events.length === 2);
+			expect(events[1]).toEqual(event({ persons: [sam], degraded: events[0]?.degraded ?? [] }));
+		} finally {
+			watch?.socket.destroy();
+			await host.close();
+		}
 	});
 });

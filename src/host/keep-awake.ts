@@ -2,6 +2,7 @@
  * The hold that keeps the Mac awake on AC power while the host has active work.
  */
 import { spawn } from "node:child_process";
+import type { Degraded } from "./degraded.ts";
 
 /** How long the hold stays after the last tick with active work. */
 export const RELEASE_DELAY_MS = 30_000;
@@ -49,14 +50,15 @@ export const NODE_AWAKE_SYSTEM: AwakeSystem = {
 /**
  * Holds the Mac awake with `caffeinate -s -w <pid>` while `active()` is true, and releases the hold
  * `RELEASE_DELAY_MS` after the last tick with active work. An `active()` that throws counts as inactive. A hold that
- * cannot start writes one warning, and no hold starts after it. Other systems get no hold.
+ * cannot start writes one warning and starts the degraded state `awake-failed` in `degraded`, which stays: no hold starts after it.
+ * Other systems get no hold.
  */
 export function keepAwake(options: {
 	readonly active: () => boolean;
-	readonly warn: (cause: unknown) => void;
+	readonly degraded: Degraded;
 	readonly system: AwakeSystem;
 }): AwakeHold {
-	const { active, warn, system } = options;
+	const { active, degraded, system } = options;
 
 	if (system.platform !== "darwin") return { close: () => undefined };
 
@@ -90,7 +92,7 @@ export function keepAwake(options: {
 
 				if (failed) return;
 				failed = true;
-				warn(new Error(`caffeinate cannot start: ${error.message}`));
+				degraded.warn("awake-failed", "caffeinate", `caffeinate cannot start: ${error.message}`);
 			});
 			child.once("exit", () => {
 				if (hold === child) hold = undefined;

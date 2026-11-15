@@ -15,6 +15,7 @@ import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Todo, TodoAnswer } from "../protocol/todo.ts";
+import type { Degraded } from "./degraded.ts";
 
 /** The classifier of each setting when Pi's settings do not have it. */
 const DEFAULT_CLASSIFIERS = {
@@ -46,12 +47,14 @@ const NEEDS_YOU: ClassifierQuestion = {
 /**
  * The classifier model of the setting `key` in Pi's effective settings, `<provider>/<id>`, read again at each call, or
  * its default without it: `typesafe/jev-latest` for `todoClassifier`, and `openrouter/typesafe/jev-1.14` for
- * `gateClassifier`. It fails when the model is unknown or its provider has no credential.
+ * `gateClassifier`. It fails when the model is unknown or its provider has no credential, which starts the degraded
+ * state `no-classifier` of `key` in `degraded`; a model that it finds ends it.
  */
 export async function classifierModel(
 	settings: SettingsManager,
 	models: Models,
 	key: ClassifierKey,
+	degraded: Degraded,
 ): Promise<ClassifierModel<ClassifierApi>> {
 	await settings.reload();
 	const effective = settings.getSettings();
@@ -65,7 +68,13 @@ export async function classifierModel(
 	const available = await models.getAvailableOfType("classifier", provider);
 	const model = available.find((found) => found.provider === provider && found.id === id);
 
-	if (model === undefined) throw new Error(`No classifier: log in to ${provider} or set ${key}`);
+	if (model === undefined) {
+		const error = new Error(`No classifier: log in to ${provider} or set ${key}`);
+		degraded.start("no-classifier", key, error.message);
+		throw error;
+	}
+
+	degraded.end("no-classifier", key);
 
 	return model;
 }

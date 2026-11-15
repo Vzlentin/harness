@@ -7,7 +7,8 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
-import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
+import { type Delivery, errorMessage, HOST_CLOSING } from "../protocol/requests.ts";
+import type { Degraded } from "./degraded.ts";
 import { CommitPasses } from "./passes.ts";
 import {
 	type ChildRecord,
@@ -31,6 +32,7 @@ export type PushHost = TargetHost & {
 	/** The root conversation, which is the project agent. */
 	readonly root: Conversation;
 	readonly warn: (cause: unknown) => void;
+	readonly degraded: Degraded;
 };
 
 /**
@@ -89,7 +91,10 @@ const MAX_RETRY_MS = 60_000;
  * the end of each `wait` and `send`, and when an `answers` request opens or its reply is written. Calls for a sweep
  * while one runs give one more sweep. After a push of a child fails, the sweeps skip that child for a time that doubles
  * with each failure, and a timer sweeps again when it ends. The answers of the user go to their askers in the same
- * sweeps, after the answers of the children of the same caller, oldest first, with the same waits.
+ * sweeps, after the answers of the children of the same caller, oldest first, with the same waits. A delivery whose
+ * last push failed is the degraded state `push-failed` until a push of it succeeds or it goes, and an asker with
+ * answers of the user and no destination is the degraded state `answer-waits` until it gets one or no answer waits for
+ * it.
  */
 export class Push {
 	readonly #host: PushHost;
@@ -288,7 +293,7 @@ export class Push {
 		const keys = new Set([...Object.keys(state?.children ?? {}), ...queued.map(({ id }) => userAnswerRequest(id))]);
 
 		for (const key of this.#failures.keys()) {
-			if (!keys.has(key)) this.#failures.delete(key);
+			if (!keys.has(key)) this.#succeed(key);
 		}
 
 		// The callers with a delivery that waits after a failed push: their later deliveries wait too, to keep the order.
@@ -313,6 +318,9 @@ export class Push {
 			asked.set(answer.asker, [...(asked.get(answer.asker) ?? []), answer]);
 		}
 
+		// The askers whose answers of the user wait with no destination; an asker that has one this sweep leaves.
+		const waiting = new Set(queued.map(({ asker }) => asker));
+
 		for (const caller of new Set([...done.keys(), ...asked.keys()])) {
 			const children = done.get(caller) ?? [];
 			const answers = asked.get(caller) ?? [];
@@ -326,12 +334,21 @@ export class Push {
 				continue;
 			}
 
-			if (destination === undefined) continue;
+			if (destination === undefined) {
+				const line = `The answers of the user wait for ${caller}, which has no answers request open`;
+
+				if (answers.length > 0) this.#host.degraded.start("answer-waits", caller, line);
+				continue;
+			}
+
+			waiting.delete(caller);
 			const held = destination.kind === "input" && destination.holdsChildren;
 			const pending = await this.#pending(held ? [] : children, answers, destination.kind === "reply");
 
 			if (pending.length > 0) await this.#deliver(caller, destination, pending);
 		}
+
+		this.#host.degraded.keepOnly("answer-waits", waiting);
 	}
 
 	/**
@@ -422,12 +439,16 @@ export class Push {
 		}
 	}
 
-	/** Forgets the failed pushes of the delivery `key`. */
+	/** Forgets the failed pushes of the delivery `key`, and ends its degraded state `push-failed`. */
 	#succeed(key: string): void {
 		this.#failures.delete(key);
+		this.#host.degraded.end("push-failed", key);
 	}
 
-	/** Counts a failed push of each of the deliveries `keys`, and writes `cause` as a warning. */
+	/**
+	 * Counts a failed push of each of the deliveries `keys`, starts their degraded state `push-failed`, and writes `cause`
+	 * as a warning.
+	 */
 	#fail(keys: readonly string[], cause: unknown): void {
 		const now = Date.now();
 
@@ -435,6 +456,7 @@ export class Push {
 			const count = (this.#failures.get(key)?.count ?? 0) + 1;
 			const wait = Math.min(FIRST_RETRY_MS * 2 ** (count - 1), MAX_RETRY_MS);
 			this.#failures.set(key, { count, retryAt: now + wait });
+			this.#host.degraded.start("push-failed", key, `The push of ${key} failed: ${errorMessage(cause)}`);
 		}
 
 		this.#host.warn(cause);

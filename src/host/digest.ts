@@ -14,7 +14,7 @@ import {
 	personNames,
 	type Thread,
 } from "../protocol/project.ts";
-import { errorMessage } from "../protocol/requests.ts";
+import type { Degraded } from "./degraded.ts";
 import { type OutState, readHeld, readOutbox, readPersons, readThreads, sessionDoc } from "./project.ts";
 import type { Found } from "./targets.ts";
 
@@ -38,7 +38,7 @@ export type Digest = {
 /** What the digest uses of the host. */
 export type DigestHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
-	readonly warn: (cause: unknown) => void;
+	readonly degraded: Degraded;
 };
 
 /**
@@ -88,12 +88,13 @@ export async function recordDigest(harness: Pick<Harness, "commit">, caller: str
 /**
  * Writes the digest of the conversation of `target` to it, as a passive entry of the kind `harness.digest`, before
  * an input, then records it. The entry goes first, and its request ID makes a repeat after a crash add nothing. It
- * never throws: a failure is a warning, and the input goes through.
+ * never throws: a failure is a warning and the degraded state `digest-failed` of the conversation, which its next
+ * digest that does not fail ends, and the input goes through.
  */
 export async function writeDigest(host: DigestHost, target: Pick<Found, "conversation" | "write">): Promise<void> {
 	const caller = String(target.conversation.id);
 
-	try {
+	await host.degraded.guard("digest-failed", caller, "digest: ", async () => {
 		const digest = await nextDigest(host.harness, caller);
 
 		if (digest === undefined) return;
@@ -104,9 +105,7 @@ export async function writeDigest(host: DigestHost, target: Pick<Found, "convers
 			entry: { kind: DIGEST_KIND, model, data: digest.data },
 		});
 		await recordDigest(host.harness, caller, digest);
-	} catch (cause) {
-		host.warn(`digest: ${errorMessage(cause)}`);
-	}
+	});
 }
 
 /** `waiting on: <persons> (<topic>, sent <time>)` or `(<topic>, draft not sent)` for each message, or `none`. */

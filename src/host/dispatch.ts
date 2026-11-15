@@ -13,6 +13,7 @@ import { approvedText, TYPED_KIND } from "../protocol/gate.ts";
 import type { AnswerAuthor } from "../protocol/project.ts";
 import {
 	type ChildInfo,
+	errorMessage,
 	PROTOCOL_VERSION,
 	type Replies,
 	type Request,
@@ -110,6 +111,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		 * classifiers of the todos and of the gate, and the model of a query.
 		 */
 		readonly settings: SettingsManager;
+		/** Writes a warning to the host's log. */
+		readonly warn: (cause: unknown) => void;
 		readonly push: Push;
 		readonly sessions: Sessions;
 	};
@@ -415,7 +418,8 @@ function parley(request: Extract<Request, { type: "parley" }>, handler: Handler)
 
 /**
  * Approves or drops the held action of `request`. An approve tells the agent of the action with a follow-up input, so
- * that it calls the command again. The input is found before the commit, and a failed delivery is a warning.
+ * that it calls the command again. The input is found before the commit, and a failed delivery is a warning and the
+ * degraded state `approve-tell` of the action, until the action runs.
  */
 async function held(request: Extract<Request, { type: "held" }>, handler: Handler): Promise<Replies["held"]> {
 	const { id, caller } = request;
@@ -430,7 +434,14 @@ async function held(request: Extract<Request, { type: "held" }>, handler: Handle
 		content: approvedText(approved),
 		whenBusy: "followUp",
 		requestId: `approve:${approved.id}`,
-	}).catch(handler.warn);
+	}).catch((cause: unknown) => {
+		handler.warn(cause);
+		handler.degraded.start(
+			"approve-tell",
+			String(approved.id),
+			`The tell of approved action ${approved.id} failed: ${errorMessage(cause)}`,
+		);
+	});
 
 	return approved;
 }
@@ -443,7 +454,7 @@ async function classify(
 	request: Extract<Request, { type: "classify-todos" }>,
 	handler: Handler,
 ): Promise<Replies["classify-todos"]> {
-	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier");
+	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier", handler.degraded);
 
 	const owner: TodoOwner =
 		request.list === undefined ? { kind: "conversation", id: handler.root.id } : await listOwner(request.list, handler);

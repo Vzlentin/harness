@@ -13,7 +13,8 @@ import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-d
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveModel } from "../children/model.ts";
-import { errorMessage, Json } from "../protocol/requests.ts";
+import { Json } from "../protocol/requests.ts";
+import type { Degraded } from "./degraded.ts";
 import type { CatchUpHook, CatchUpPart } from "./entries.ts";
 import type { Found } from "./targets.ts";
 
@@ -27,6 +28,10 @@ const ENTRY_KIND = "harness.catchup";
 
 /** Between the short SHA and the subject of a commit in the `git log` output. */
 const FIELD_SEPARATOR = "\u001f";
+
+/** The causes of the degraded state `catch-up-failed` of a whole catch-up and of Git. */
+const CATCH_UP_CAUSE = "catch-up";
+const GIT_CAUSE = "git";
 
 type SeenState = {
 	/** The head of the default branch at the last catch-up; null without a repository or a branch. */
@@ -109,7 +114,7 @@ export type CatchUpHost = {
 	readonly cwd: string;
 	/** The catch-up hooks of the entries, in load order. */
 	readonly catchUps: readonly CatchUpHook[];
-	readonly warn: (cause: unknown) => void;
+	readonly degraded: Degraded;
 };
 
 /**
@@ -155,65 +160,74 @@ const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
 /**
  * Writes the catch-up entry of the project agent with `write`, before the input `requestId`, when a catch-up hook gave
  * lines or the default branch moved since the last one. The catch-ups of one agent run one at a time. It never throws: a
- * failure is a warning, and the input goes through.
+ * failure is a warning and starts the degraded state `catch-up-failed` of the cause `catch-up`, which the next catch-up
+ * that ends ends, and the input goes through.
  */
 export function catchUp(host: CatchUpHost, write: WriteEntry, requestId: string): Promise<void> {
-	const done = (lastCatchUps.get(host.root) ?? Promise.resolve())
-		.then(async () => {
-			const { harness, root } = host;
-
-			// A repeated input must not get an entry after its own first submission.
-			if ((await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context)) !== undefined) return;
-			const seen = await harness.snapshot(Seen, root.id, context);
-
-			// The entry of an earlier catch-up that stopped after its commit. Its request ID makes a repeat add nothing.
-			if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
-			const before = seen ?? NOTHING_SEEN;
-			const git = await headCommits(host, before.mainSha);
-			const mainSha = git === undefined ? before.mainSha : git.head;
-			const next: SeenState = { mainSha, catchups: before.catchups, hooks: { ...before.hooks } };
-			const data: CatchUpData = {};
-			const lines: string[] = [];
-
-			for (const hook of host.catchUps) {
-				const part = await hookPart(host, hook, before.hooks[hook.kind]);
-
-				if (part === undefined) continue;
-				next.hooks[hook.kind] = part.seen;
-
-				if (part.lines.length === 0) continue;
-				lines.push(...part.lines);
-
-				if (part.data !== undefined) data.hooks = { ...data.hooks, [hook.kind]: part.data };
-			}
-
-			if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
-
-			if (git?.reset !== undefined) data.reset = git.reset;
-
-			const fresh = seen !== undefined && (lines.length > 0 || data.commits !== undefined || data.reset !== undefined);
-
-			if (fresh) {
-				next.catchups += 1;
-				next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(lines, data), data };
-			}
-
-			if (seen !== undefined && sameSeen(seen, next)) return;
-
-			// The new state and its entry go in one commit; the entry is written after it.
-			await harness.commit(async (tx) => {
-				const doc = await tx.doc(Seen, root.id);
-				delete doc.entry;
-				Object.assign(doc, next);
-			}, context);
-
-			if (next.entry !== undefined) await writePlanned(host, write, next.entry);
-		})
-		.catch((cause: unknown) => host.warn(`catch-up: ${errorMessage(cause)}`));
+	const done = (lastCatchUps.get(host.root) ?? Promise.resolve()).then(async () => {
+		await host.degraded.guard("catch-up-failed", CATCH_UP_CAUSE, "catch-up: ", () =>
+			runCatchUp(host, write, requestId),
+		);
+	});
 
 	lastCatchUps.set(host.root, done);
 
 	return done;
+}
+
+/**
+ * Runs the catch-up of the input `requestId`: reads what the agent saw at the last one, the hooks and the default
+ * branch, and writes the new state and its entry with `write`.
+ */
+async function runCatchUp(host: CatchUpHost, write: WriteEntry, requestId: string): Promise<void> {
+	const { harness, root } = host;
+
+	// A repeated input must not get an entry after its own first submission.
+	if ((await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context)) !== undefined) return;
+	const seen = await harness.snapshot(Seen, root.id, context);
+
+	// The entry of an earlier catch-up that stopped after its commit. Its request ID makes a repeat add nothing.
+	if (seen?.entry !== undefined) await writePlanned(host, write, seen.entry);
+	const before = seen ?? NOTHING_SEEN;
+	const git = await headCommits(host, before.mainSha);
+	const mainSha = git === undefined ? before.mainSha : git.head;
+	const next: SeenState = { mainSha, catchups: before.catchups, hooks: { ...before.hooks } };
+	const data: CatchUpData = {};
+	const lines: string[] = [];
+
+	for (const hook of host.catchUps) {
+		const part = await hookPart(host, hook, before.hooks[hook.kind]);
+
+		if (part === undefined) continue;
+		next.hooks[hook.kind] = part.seen;
+
+		if (part.lines.length === 0) continue;
+		lines.push(...part.lines);
+
+		if (part.data !== undefined) data.hooks = { ...data.hooks, [hook.kind]: part.data };
+	}
+
+	if (git !== undefined && git.commits.length > 0) data.commits = { branch: git.branch, commits: git.commits };
+
+	if (git?.reset !== undefined) data.reset = git.reset;
+
+	const fresh = seen !== undefined && (lines.length > 0 || data.commits !== undefined || data.reset !== undefined);
+
+	if (fresh) {
+		next.catchups += 1;
+		next.entry = { requestId: `catchup:${next.catchups}`, text: catchUpText(lines, data), data };
+	}
+
+	if (seen !== undefined && sameSeen(seen, next)) return;
+
+	// The new state and its entry go in one commit; the entry is written after it.
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Seen, root.id);
+		delete doc.entry;
+		Object.assign(doc, next);
+	}, context);
+
+	if (next.entry !== undefined) await writePlanned(host, write, next.entry);
 }
 
 /** Writes the planned entry `entry`, then removes it from the `harness.seen` document. */
@@ -234,60 +248,55 @@ function sameSeen(a: Readonly<SeenState>, b: Readonly<SeenState>): boolean {
 
 /**
  * The part of the catch-up hook `hook`, which gets `seen`, what it said the agent saw at the last catch-up. A hook
- * that throws, such as for an invalid part, gives a warning and nothing, so it keeps its last `seen`.
+ * that throws, such as for an invalid part, gives a warning and nothing, so it keeps its last `seen`, and starts the
+ * degraded state `catch-up-failed` of the cause `hook:<kind>`, which its next part ends.
  */
-async function hookPart(
-	host: CatchUpHost,
-	hook: CatchUpHook,
-	seen: JsonValue | undefined,
-): Promise<CatchUpPart | undefined> {
-	try {
-		return await hook.run(host.harness, seen);
-	} catch (error) {
-		host.warn(`catch-up: ${hook.kind}: ${errorMessage(error)}`);
-
-		return undefined;
-	}
+function hookPart(host: CatchUpHost, hook: CatchUpHook, seen: JsonValue | undefined): Promise<CatchUpPart | undefined> {
+	return host.degraded.guard("catch-up-failed", `hook:${hook.kind}`, `catch-up: ${hook.kind}: `, () =>
+		hook.run(host.harness, seen),
+	);
 }
 
 /**
  * The head of the default branch, and the commits since `since` on it: none when `since` is null or the head. Nothing
- * without a repository or a default branch, or when Git fails.
+ * without a repository or a default branch, or when Git fails, which is a warning and the degraded state
+ * `catch-up-failed` of the cause `git` until Git works again.
  */
-async function headCommits(host: CatchUpHost, since: string | null): Promise<HeadCommits | undefined> {
-	try {
-		const origin = await gitOut(host.cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
-		const branch = origin?.replace(/^origin\//, "") || "main";
-		const head = await gitOut(host.cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+function headCommits(host: CatchUpHost, since: string | null): Promise<HeadCommits | undefined> {
+	const { cwd } = host;
 
-		if (head === undefined) return undefined;
+	return host.degraded.guard(
+		"catch-up-failed",
+		GIT_CAUSE,
+		"catch-up: git: ",
+		async (): Promise<HeadCommits | undefined> => {
+			const origin = await gitOut(cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+			const branch = origin?.replace(/^origin\//, "") || "main";
+			const head = await gitOut(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
 
-		if (since === null || since === head) return { head, branch, commits: [] };
+			if (head === undefined) return undefined;
 
-		// A gone SHA, a force-push and a new default branch all leave a last head that the head does not contain.
-		if ((await gitOut(host.cwd, ["merge-base", "--is-ancestor", since, head])) === undefined) {
-			return { head, branch, commits: [], reset: { branch, from: since, head } };
-		}
+			if (since === null || since === head) return { head, branch, commits: [] };
 
-		const log = await execGit("git", ["log", `--format=%h${FIELD_SEPARATOR}%s`, `${since}..${head}`], {
-			cwd: host.cwd,
-		});
+			// A gone SHA, a force-push and a new default branch all leave a last head that the head does not contain.
+			if ((await gitOut(cwd, ["merge-base", "--is-ancestor", since, head])) === undefined) {
+				return { head, branch, commits: [], reset: { branch, from: since, head } };
+			}
 
-		const commits = log.stdout
-			.split("\n")
-			.filter((line) => line !== "")
-			.map((line) => {
-				const [sha = "", ...subject] = line.split(FIELD_SEPARATOR);
+			const log = await execGit("git", ["log", `--format=%h${FIELD_SEPARATOR}%s`, `${since}..${head}`], { cwd });
 
-				return { sha, subject: subject.join(FIELD_SEPARATOR) };
-			});
+			const commits = log.stdout
+				.split("\n")
+				.filter((line) => line !== "")
+				.map((line) => {
+					const [sha = "", ...subject] = line.split(FIELD_SEPARATOR);
 
-		return { head, branch, commits };
-	} catch (error) {
-		host.warn(`catch-up: git: ${errorMessage(error)}`);
+					return { sha, subject: subject.join(FIELD_SEPARATOR) };
+				});
 
-		return undefined;
-	}
+			return { head, branch, commits };
+		},
+	);
 }
 
 /**

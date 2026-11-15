@@ -11,11 +11,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Write } from "../src/children/library.ts";
 import { type Client, connect } from "../src/client/client.ts";
 import { type CatchUpHost, catchUp } from "../src/host/agent.ts";
+import { Degraded } from "../src/host/degraded.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { projectDir } from "../src/protocol/projects.ts";
-import type { WatchLine } from "../src/protocol/requests.ts";
+import { errorMessage, type WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, contexts, models, root, setUp, tearDown, until } from "./helpers.ts";
 
@@ -122,8 +123,8 @@ async function withStore(
 
 	try {
 		const root = await store.root(BACKGROUND_CONTEXT);
-		const warn = (cause: unknown) => warnings.push(String(cause));
-		await use(store, { harness: store, root, cwd: repo, catchUps: [], warn }, warnings);
+		const degraded = new Degraded((cause) => warnings.push(errorMessage(cause)));
+		await use(store, { harness: store, root, cwd: repo, catchUps: [], degraded }, warnings);
 	} finally {
 		await store.close(BACKGROUND_CONTEXT);
 	}
@@ -264,10 +265,14 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 			);
 			failing?.mockRestore();
 			expect(warnings).toEqual(["catch-up: Store failed"]);
+			expect(agent.degraded.list()).toEqual([
+				{ kind: "catch-up-failed", line: "catch-up: Store failed", since: expect.any(Number) },
+			]);
 
 			await git("commit", "--quiet", "--allow-empty", "-m", "Later change");
 			const later = await git("rev-parse", "--short", "HEAD");
 			await catchUp(agent, write, "direct-2");
+			expect(agent.degraded.list()).toEqual([]);
 
 			// The write fails once: the next catch-up writes the planned entry.
 			await git("commit", "--quiet", "--allow-empty", "-m", "Third change");
@@ -402,6 +407,32 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 			expect((await store.snapshot(Seen, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT))?.hooks).toEqual({
 				[HOOK_KIND]: "s2",
 			});
+		});
+	});
+
+	it("keeps a failed catch-up hook as a degraded state until the hook gives a part", async () => {
+		await withStore(async (_store, agent, warnings) => {
+			let fail = true;
+
+			const hook = {
+				kind: "fixture.failing",
+				run: async () => {
+					if (fail) throw new Error("Hook failed");
+
+					return { seen: null, lines: [] };
+				},
+			};
+
+			const hooked = { ...agent, catchUps: [hook] };
+			await catchUp(hooked, writer(agent), "direct-hook-1");
+			expect(warnings).toEqual(["catch-up: fixture.failing: Hook failed"]);
+			expect(agent.degraded.list()).toEqual([
+				{ kind: "catch-up-failed", line: "catch-up: fixture.failing: Hook failed", since: expect.any(Number) },
+			]);
+
+			fail = false;
+			await catchUp(hooked, writer(agent), "direct-hook-2");
+			expect(agent.degraded.list()).toEqual([]);
 		});
 	});
 });

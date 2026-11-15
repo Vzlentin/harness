@@ -574,7 +574,39 @@ export const ProjectThread = Type.Object({ ...Thread.properties, waits: Type.Arr
 export type ProjectThread = Static<typeof ProjectThread>;
 
 /**
- * The reply of `watch-project`: every person, rule, thread with its waits, held action, parley and ask, in ID order.
+ * The kinds of the degraded states of a host: the gate classifier failed (`gate-classifier`), a classifier setting has
+ * no model with a credential (`no-classifier`), a package or an entry was skipped at the start (`package-skipped`,
+ * `entry-skipped`), a push of answers failed and waits (`push-failed`), the tell of an approved action failed
+ * (`approve-tell`), answers of the user wait for an asker with no open `answers` request (`answer-waits`), the awake
+ * hold failed (`awake-failed`), a catch-up or a digest failed (`catch-up-failed`, `digest-failed`), and the project
+ * instructions and skills of a directory failed to load (`resources-failed`).
+ */
+export const DEGRADED_KINDS = [
+	"gate-classifier",
+	"no-classifier",
+	"package-skipped",
+	"entry-skipped",
+	"push-failed",
+	"approve-tell",
+	"answer-waits",
+	"awake-failed",
+	"catch-up-failed",
+	"digest-failed",
+	"resources-failed",
+] as const;
+
+export const DegradedKind = Type.Enum(DEGRADED_KINDS);
+
+export type DegradedKind = Static<typeof DegradedKind>;
+
+/** A degraded state of the host: its kind, a line for the user, and the time of its start in epoch milliseconds. */
+export const DegradedState = Type.Object({ kind: DegradedKind, line: Text, since: Time });
+
+export type DegradedState = Static<typeof DegradedState>;
+
+/**
+ * The reply of `watch-project`: every person, rule, thread with its waits, held action, parley and ask, in ID order,
+ * and the degraded states of the host, oldest first.
  */
 export const ProjectState = Type.Object({
 	persons: Type.Array(Person),
@@ -583,13 +615,15 @@ export const ProjectState = Type.Object({
 	held: Type.Array(HeldAction),
 	parleys: Type.Array(Parley),
 	asks: Type.Array(Ask),
+	degraded: Type.Array(DegradedState),
 });
 
 export type ProjectState = Static<typeof ProjectState>;
 
 /**
  * An event of `watch-project` after its reply: the objects of each kind that are new or changed, and in `removed` the
- * IDs of each kind of the objects that went. Every list is there, empty when nothing of its kind changed.
+ * IDs of each kind of the objects that went. Every list is there, empty when nothing of its kind changed. `degraded`
+ * is the whole list of the degraded states of the host.
  */
 export const ProjectEvent = Type.Object({
 	...ProjectState.properties,

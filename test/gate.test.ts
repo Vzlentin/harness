@@ -1,7 +1,5 @@
-import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { createConnection, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -16,23 +14,21 @@ import { createProvider } from "@earendil-works/pi-ai/models";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
+import { Degraded } from "../src/host/degraded.ts";
 import { type GateHost, gateCall } from "../src/host/gate.ts";
 import { approveHeld, changeRule, holdAction } from "../src/host/project.ts";
+import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
-import { onLines } from "../src/protocol/lines.ts";
-import { statePaths } from "../src/protocol/paths.ts";
 import {
 	AskList,
 	DigestReply,
 	type HeldAction,
 	Message,
 	Person,
-	ProjectEvent,
-	ProjectState,
 	Rule,
 	Thread,
 	ThreadMessages,
@@ -53,6 +49,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	watchProject,
 } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gate-cases.json");
@@ -281,26 +278,6 @@ function heldOf(reply: GateReply): HeldAction {
 	return reply.held;
 }
 
-/** A `watch-project` of `project` on a socket of its own, with the events that came so far. */
-async function watchProject(project: string): Promise<{ socket: Socket; events: ProjectEvent[] }> {
-	const socket = createConnection(statePaths(project).socket);
-	await once(socket, "connect");
-	const events: ProjectEvent[] = [];
-	let replied = false;
-
-	onLines(socket, (line) => {
-		const parsed: unknown = JSON.parse(line);
-
-		if (Value.Check(Type.Object({ ok: Type.Literal(true), value: ProjectState }), parsed)) replied = true;
-		else events.push(Value.Parse(Type.Object({ event: ProjectEvent }), parsed).event);
-	});
-
-	socket.write(`${JSON.stringify({ type: "watch-project" })}\n`);
-	await until(() => replied);
-
-	return { socket, events };
-}
-
 /** Writes Pi's global settings of the tests, with `gateClassifier` when it is given. */
 async function setGateClassifier(name: string | undefined): Promise<void> {
 	const settings =
@@ -486,6 +463,84 @@ describe("gate", { timeout: 60_000 }, () => {
 		}
 	});
 
+	it("gives a watch the degraded states of the gate classifier, with no warning, until the classifier answers", async () => {
+		const project = "gate-degraded";
+		const host = await projectHost(project);
+		const watch = await watchProject(project);
+		const stderr = vi.spyOn(process.stderr, "write");
+		const push = "git push origin feature";
+
+		/** The kinds and lines of the degraded states of the last event. */
+		const degraded = () => watch.events.at(-1)?.degraded.map(({ kind, line }) => ({ kind, line }));
+
+		try {
+			expect(watch.state.degraded).toEqual([]);
+			const source = await sourceMessage(project);
+			const rule = await addRule(project, source, { name: "go", kind: "conduct", value: "Go.", status: "decided" });
+			conduct = [String(rule.id)];
+
+			// With no credential, there is only the state of the missing classifier.
+			loggedIn = false;
+			heldOf(await gate("agent", "no-credential", push, project));
+			const noClassifier = "No classifier: log in to openrouter or set gateClassifier";
+			await until(() => degraded()?.length === 1);
+			expect(watch.events.at(-1)?.degraded).toEqual([
+				{ kind: "no-classifier", line: noClassifier, since: expect.any(Number) },
+			]);
+
+			// With a credential, a classifier that fails replaces it.
+			loggedIn = true;
+			heldOf(await gate("agent", "failed", push, project));
+			const failed = "The classifier openrouter/typesafe/jev-1.14 failed: overloaded";
+			await until(() => degraded()?.[0]?.kind === "gate-classifier");
+			expect(degraded()).toEqual([{ kind: "gate-classifier", line: failed }]);
+
+			// A classify that answers ends it.
+			recorded.set(push, { writes: 0.02, rule: "none" });
+			expect(await gate("agent", "answered", push, project)).toEqual({ runs: true });
+			await until(() => degraded()?.length === 0);
+			expect(stderr.mock.calls.map(([text]) => String(text)).filter((text) => text.startsWith("warning:"))).toEqual([]);
+		} finally {
+			stderr.mockRestore();
+			watch.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("gives a watch a failed tell of an approve, with its warning, until the approved command runs", async () => {
+		const project = "gate-tell";
+		const host = await projectHost(project);
+		const watch = await watchProject(project);
+		const merge = "glab mr merge 7 --yes";
+		const stderr = vi.spyOn(process.stderr, "write");
+
+		const inputOf = vi.spyOn(Push.prototype, "inputOf").mockResolvedValue(async () => {
+			throw new Error("The agent is gone");
+		});
+
+		try {
+			const source = await sourceMessage(project);
+			const rule = await addRule(project, source, { name: "go", kind: "conduct", value: "Go.", status: "decided" });
+			conduct = [String(rule.id)];
+			recorded.set(merge, { writes: 0.98, rule: String(rule.id) });
+			const held = heldOf(await gate("khan", "call-1", merge, project));
+			await send({ type: "held", action: "approve", caller: "user", id: held.id }, project);
+
+			const line = `The tell of approved action ${held.id} failed: The agent is gone`;
+			await until(() => watch.events.at(-1)?.degraded.length === 1);
+			expect(watch.events.at(-1)?.degraded).toEqual([{ kind: "approve-tell", line, since: expect.any(Number) }]);
+			expect(stderr.mock.calls.map(([text]) => String(text))).toContain("warning: The agent is gone\n");
+
+			expect(await gate("khan", "call-2", merge, project)).toEqual({ runs: true });
+			await until(() => watch.events.at(-1)?.degraded.length === 0);
+		} finally {
+			inputOf.mockRestore();
+			stderr.mockRestore();
+			watch.socket.destroy();
+			await host.close();
+		}
+	});
+
 	it("gives a held call again, runs an approved command once for its agent, and shows the held actions in the watch", async () => {
 		const project = "gate-held";
 		const host = await projectHost(project);
@@ -655,6 +710,7 @@ describe("gate", { timeout: 60_000 }, () => {
 				settings: SettingsManager.inMemory(),
 				models,
 				signal: new AbortController().signal,
+				degraded: new Degraded(() => undefined),
 			};
 
 			const gated = (requestId: string) =>

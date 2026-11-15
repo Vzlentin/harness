@@ -10,6 +10,7 @@ import type { Host } from "../src/host/run.ts";
 import { readUserAnswers } from "../src/host/user-answers.ts";
 import { deliveryText } from "../src/protocol/labels.ts";
 import { Ask, AskList, AskWrite, ParleyAsks } from "../src/protocol/project.ts";
+import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import type { Delivery, Replies, Request } from "../src/protocol/requests.ts";
 import {
 	before,
@@ -23,6 +24,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	watchProject,
 } from "./helpers.ts";
 
 let host: Host | undefined;
@@ -226,16 +228,29 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("waits for an asker with no listener, also over a restart of the host", async () => {
+	it("waits for an asker with no listener, also over a restart of the host, as a degraded state", async () => {
+		const line = "The answers of the user wait for pi-later, which has no answers request open";
+		const watch = await watchProject(MAIN_PROJECT);
+
+		/** The degraded state of the answers for pi-later in the last event of `watched`. */
+		const waits = (watched: Awaited<ReturnType<typeof watchProject>>) =>
+			(watched.events.at(-1) ?? watched.state).degraded.filter((state) => state.line === line);
+
 		const [id] = await round("pi-later", [{ title: "Later" }]);
 		await answer([{ id: id ?? 0, answer: "own", label: "Fine" }]);
+		await until(() => waits(watch).length === 1);
+		expect(waits(watch)).toEqual([{ kind: "answer-waits", line, since: expect.any(Number) }]);
+		watch.socket.destroy();
 		await restart();
+		const again = await watchProject(MAIN_PROJECT);
 		const answers = listen("pi-later");
 
 		try {
 			await untilCount(answers.deliveries, 1);
 			expect(answers.deliveries).toMatchObject([{ source: "ask", ask: id, text: `${id} · Later · own · Fine\n` }]);
+			await until(() => waits(again).length === 0);
 		} finally {
+			again.socket.destroy();
 			answers.listener.close();
 		}
 	});

@@ -23,6 +23,7 @@ import {
 import {
 	defineExtension,
 	defineTool,
+	type Extension,
 	type PromptInput,
 	section,
 	type ToolRegistration,
@@ -79,12 +80,22 @@ export const PI_TRUST: TrustApi = {
 const resources = new Map<string, Promise<Resources>>();
 
 /**
+ * What the load of the resources of a directory tells the host: each load that gives them, and each that fails, with
+ * the line of its warning.
+ */
+export type ResourcesReport = {
+	loaded(cwd: string): void;
+	failed(cwd: string, line: string): void;
+};
+
+/**
  * The project instructions and skills of `cwd`, as Pi loads them at startup. Project skills load only for a project
  * that Pi trusts now. They are loaded once per directory and trust. Missing packages are skipped, not installed. A
  * load that fails gives no resources, with a warning, as Pi skips a resource it cannot load, and the next request
- * tries again. A change to an `AGENTS.md` file or to a skill is seen only after the host restarts.
+ * tries again. `report` gets each load that gives the resources and each that fails. A change to an `AGENTS.md` file or
+ * to a skill is seen only after the host restarts.
  */
-async function resourcesOf(cwd: string): Promise<Resources> {
+async function resourcesOf(cwd: string, report: ResourcesReport): Promise<Resources> {
 	try {
 		const trusted = savedTrust(cwd, PI_TRUST);
 		const key = `${trusted}:${cwd}`;
@@ -96,9 +107,14 @@ async function resourcesOf(cwd: string): Promise<Resources> {
 			found.catch(() => resources.delete(key));
 		}
 
-		return await found;
+		const loaded = await found;
+		report.loaded(cwd);
+
+		return loaded;
 	} catch (error) {
-		process.stderr.write(`warning: ${cwd}: ${errorMessage(error)}; no project instructions or skills\n`);
+		const line = `${cwd}: ${errorMessage(error)}; no project instructions or skills`;
+		process.stderr.write(`warning: ${line}\n`);
+		report.failed(cwd, line);
 
 		return { context: [], skills: [] };
 	}
@@ -134,55 +150,64 @@ function skillPath(resource: {
 const cwdOf = (input: PromptInput): string | undefined => input.env?.cwd ?? input.agent.cwd;
 
 /** The resources of the conversation's directory, as its overlay changes them. */
-async function inputResources(input: PromptInput, context: Context): Promise<Resources | undefined> {
+async function inputResources(
+	input: PromptInput,
+	context: Context,
+	report: ResourcesReport,
+): Promise<Resources | undefined> {
 	const cwd = cwdOf(input);
 
 	if (cwd === undefined) return undefined;
-	const loaded = await resourcesOf(cwd);
+	const loaded = await resourcesOf(cwd, report);
 	const files = await overlayOf(input.read, input.conversationId, context);
 
 	return files === undefined ? loaded : withOverlay(loaded, files);
 }
 
-/** The tools and sections that children get; a conversation selects it by default. */
-export const ChildContext = defineExtension({
-	name: "pi-subagent-context",
-	tools: [
-		overlayRead(),
-		piTool(createGrepTool),
-		piTool(createFindTool),
-		piTool(createLsTool),
-		createWriteTool(),
-		createEditTool(),
-		createBashTool(),
-	],
-	sections: [
-		section("project_context", async (input, context) => {
-			const files = (await inputResources(input, context))?.context ?? [];
+/**
+ * The tools and sections that children get; a conversation selects it by default. `report` gets each load of the
+ * resources of a directory.
+ */
+export function childContext(report: ResourcesReport): Extension {
+	return defineExtension({
+		name: "pi-subagent-context",
+		tools: [
+			overlayRead(),
+			piTool(createGrepTool),
+			piTool(createFindTool),
+			piTool(createLsTool),
+			createWriteTool(),
+			createEditTool(),
+			createBashTool(),
+		],
+		sections: [
+			section("project_context", async (input, context) => {
+				const files = (await inputResources(input, context, report))?.context ?? [];
 
-			if (files.length === 0) return undefined;
+				if (files.length === 0) return undefined;
 
-			return [
-				"Project-specific instructions and guidelines:",
-				...files.map(
-					({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
-				),
-			].join("\n\n");
-		}),
-		section("skills", async (input, context) => {
-			// As in Pi, skills need a tool that reads their files, and the hint names the first one offered.
-			const offered = input.agent.tools.map(({ name }) => name);
-			const callable = input.agent.callable.map(({ name }) => name);
+				return [
+					"Project-specific instructions and guidelines:",
+					...files.map(
+						({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
+					),
+				].join("\n\n");
+			}),
+			section("skills", async (input, context) => {
+				// As in Pi, skills need a tool that reads their files, and the hint names the first one offered.
+				const offered = input.agent.tools.map(({ name }) => name);
+				const callable = input.agent.callable.map(({ name }) => name);
 
-			const reader =
-				(["read", "bash"] as const).find((name) => offered.includes(name)) ??
-				(callable.includes("read") || callable.includes("bash") ? "indirect" : undefined);
+				const reader =
+					(["read", "bash"] as const).find((name) => offered.includes(name)) ??
+					(callable.includes("read") || callable.includes("bash") ? "indirect" : undefined);
 
-			if (reader === undefined) return undefined;
-			const skills = (await inputResources(input, context))?.skills ?? [];
+				if (reader === undefined) return undefined;
+				const skills = (await inputResources(input, context, report))?.skills ?? [];
 
-			return formatSkillsForPrompt(skills, reader).trim() || undefined;
-		}),
-		section("cwd", (input) => cwdOf(input)?.replace(/\\/g, "/")),
-	],
-});
+				return formatSkillsForPrompt(skills, reader).trim() || undefined;
+			}),
+			section("cwd", (input) => cwdOf(input)?.replace(/\\/g, "/")),
+		],
+	});
+}

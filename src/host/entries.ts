@@ -22,6 +22,7 @@ import { Value } from "typebox/value";
 import type { createChildren, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
 import { Json } from "../protocol/requests.ts";
+import type { Degraded } from "./degraded.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 
@@ -98,7 +99,8 @@ const Manifest = Type.Object({
  * `entries.json` (see `readEntries`), with the children library `children`, in one shared event bus, as one entry whose `close()` closes each of them and
  * passes its errors to `warn`. When an entry fails to load, returns an invalid result, or gives the kind of catch-up
  * hook of an earlier entry, the entries loaded before it close. Missing packages are skipped, not installed, and so is
- * an entry module of `entries.json` that does not exist, such as one of an uninstalled package, with a warning.
+ * an entry module of `entries.json` that does not exist, such as one of an uninstalled package, with a warning. A
+ * package or an entry that it skips is a degraded state in `degraded` for the life of the host.
  */
 export async function loadEntries(
 	cwd: string,
@@ -107,6 +109,7 @@ export async function loadEntries(
 	place: Place,
 	children: ChildrenLibrary,
 	warn: (cause: unknown) => void,
+	degraded: Degraded,
 ): Promise<LoadedEntries> {
 	const modules = new Set<string>();
 
@@ -119,12 +122,12 @@ export async function loadEntries(
 		const manifest: unknown = JSON.parse(await readFile(path, "utf8").catch(() => "{}"));
 
 		if (!Value.Check(PackageJson, manifest)) {
-			warn(new Error(`${path} is not a valid package.json`));
+			degraded.warn("package-skipped", path, `${path} is not a valid package.json`);
 			continue;
 		}
 
 		if (!Value.Check(Manifest, manifest)) {
-			warn(new Error(`${path} has an invalid piDurable field`));
+			degraded.warn("package-skipped", path, `${path} has an invalid piDurable field`);
 			continue;
 		}
 
@@ -132,8 +135,12 @@ export async function loadEntries(
 	}
 
 	for (const [name, module] of Object.entries(readEntries())) {
-		if (existsSync(module)) modules.add(module);
-		else warn(new Error(`The entry ${name} has no module at ${module}; the host skips it`));
+		if (existsSync(module)) {
+			modules.add(module);
+			continue;
+		}
+
+		degraded.warn("entry-skipped", name, `The entry ${name} has no module at ${module}; the host skips it`);
 	}
 
 	const events = createEventBus();

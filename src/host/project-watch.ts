@@ -4,8 +4,10 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { isWaiting, type ProjectEvent, type ProjectState, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
+import type { Degraded } from "./degraded.ts";
 import {
 	joinMessage,
 	outStates,
@@ -25,28 +27,35 @@ import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-export type ProjectHost = { readonly harness: Harness };
+export type ProjectHost = { readonly harness: Harness; readonly degraded: Degraded };
 
 /**
  * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
  * the reply is written, and after it each commit that changes a person, a rule, a thread, a message, a held action,
- * a parley or an ask starts a pass: the host reads the objects again and sends one
- * `{ event: ProjectEvent }` with the objects that are new or changed and the IDs of those that went, only when one of
- * its lists is not empty. The passes run one at a time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the next event has
- * every object. A pass that fails, and the close of the store, end the connection. The watch stops when the socket
+ * a parley or an ask starts a pass, and so does each change of the degraded states of the host: the host reads the
+ * objects again and sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that
+ * went and every degraded state, only when one of its lists is not empty or the degraded states changed. The passes run
+ * one at a time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the
+ * next event has every object. A pass that fails, and the close of the store, end the connection. The watch stops when the socket
  * closes.
  */
 export function serveProjectWatch(
 	handler: ProjectHost & { readonly signal: AbortSignal },
 	connection: Connection,
 ): Promise<Replies["watch-project"]> {
-	return serveStoreWatch(handler.harness, new ProjectView(handler.harness), handler.signal, connection);
+	return serveStoreWatch(
+		handler.harness,
+		new ProjectView(handler.harness, handler.degraded),
+		handler.signal,
+		connection,
+	);
 }
 
 /**
  * The event from `before` to `after`: the objects of `after` that `before` does not have the same, every object of
  * `after` when `all` is true, and the IDs of the objects of `before` that `after` does not have. It is `undefined` when
- * all its lists are empty.
+ * all its lists are empty and the degraded states of `before` and `after` are equal. It has every degraded state of
+ * `after`.
  */
 export function projectEvent(before: ProjectState, after: ProjectState, all: boolean): ProjectEvent | undefined {
 	const event: ProjectEvent = {
@@ -64,6 +73,7 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 			parleys: removed(before.parleys, after.parleys),
 			asks: removed(before.asks, after.asks),
 		},
+		degraded: after.degraded,
 	};
 
 	const lists = [
@@ -76,19 +86,23 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 		...Object.values(event.removed),
 	];
 
-	return lists.some((list) => list.length > 0) ? event : undefined;
+	const changes = lists.some((list) => list.length > 0) || !Value.Equal(before.degraded, after.degraded);
+
+	return changes ? event : undefined;
 }
 
-/** The objects of the project, and the commits that can change them. */
+/** The objects of the project and the degraded states of the host, and the commits that can change them. */
 class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	readonly #harness: Harness;
+	readonly #degraded: Degraded;
 	/** The IDs of the threads that got a message since the last read, whose messages the next read reads again. */
 	#fresh = new Set<number>();
 	/** The messages out of each thread, by thread ID, as the last read read them, with no state. */
 	#out = new Map<number, StoredMessage[]>();
 
-	constructor(harness: Harness) {
+	constructor(harness: Harness, degraded: Degraded) {
 		this.#harness = harness;
+		this.#degraded = degraded;
 	}
 
 	/**
@@ -132,7 +146,15 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			}),
 		}));
 
-		return { ...persons, ...rules, threads: withWaits, ...held, ...parleys, ...asks };
+		return {
+			...persons,
+			...rules,
+			threads: withWaits,
+			...held,
+			...parleys,
+			...asks,
+			degraded: this.#degraded.list(),
+		};
 	}
 
 	events(before: ProjectState, after: ProjectState, all: boolean): ProjectEvent[] {
@@ -148,6 +170,11 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		if (change.type === "entry") this.#fresh.add(change.value.conversationId);
 
 		return true;
+	}
+
+	/** Requests a pass at each change of the degraded states. */
+	triggers(request: () => void): () => void {
+		return this.#degraded.subscribe(request);
 	}
 }
 
