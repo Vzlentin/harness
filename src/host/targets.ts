@@ -99,6 +99,7 @@ async function agentTarget(handler: TargetHost) {
 			handle: AGENT_HANDLE,
 			name: `${project} agent`,
 			state: await turn.state(context),
+			serves: { kind: "project" },
 		}),
 		send: (input: Input) => turn.send(input, context),
 		write: async (write: Write) => {
@@ -251,26 +252,36 @@ export async function refuseEnded(child: Child): Promise<void> {
 }
 
 /**
+ * How `endChildren` ends its records: with their subtree, or `served`, each record alone, by the end of what it serves.
+ * With `keepAnswers`, the records of `records` stay unread, so their callers still get their answers.
+ */
+export type EndOptions = { readonly keepAnswers: boolean } | { readonly served: true };
+
+/**
  * Ends the children of `records` and the children they spawned, and marks the requests of the records of the ended
- * children read, so that they hold no caller. With `keepAnswers`, the records of `records` stay unread, so their
- * callers still get their answers. The records stay, so a `send` resumes a child. A repeat finishes an end.
+ * children read, so that they hold no caller. With `served`, it ends each child of `records` alone, and marks its
+ * record as ended by the end of what it serves in the same commit. The records stay, so a `send` resumes a child. A
+ * repeat finishes an end.
  */
 export async function endChildren(
 	host: Pick<TargetHost, "harness" | "place" | "owner">,
 	records: readonly ChildRecord[],
-	options: { readonly keepAnswers: boolean },
+	options: EndOptions,
 ): Promise<void> {
 	const ended = new Set<string>();
+	const served = "served" in options;
 
 	for (const record of records) {
-		for (const id of await (await childOf(host, record)).close(context)) ended.add(String(id));
+		const child = await childOf(host, record);
+
+		for (const id of await child.close(context, served ? { alone: true } : undefined)) ended.add(String(id));
 	}
 
-	if (options.keepAnswers) {
+	if ("keepAnswers" in options && options.keepAnswers) {
 		for (const record of records) ended.delete(String(record.conversationId));
 	}
 
-	await markAllRead(host.harness, ended);
+	await markAllRead(host.harness, ended, { servedEnded: served });
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
@@ -279,6 +290,22 @@ export async function childOf(handler: Pick<TargetHost, "place" | "owner">, reco
 	if (child === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
 
 	return child;
+}
+
+/** Whether the child of `record` is ended. */
+export async function childEnded(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<boolean> {
+	return (await (await childOf(handler, record)).state(context)) === "ended";
+}
+
+/**
+ * Whether the deliveries to the child of `record` wait: the end of what it serves ended it, and no message resumed it
+ * since. As input, they would resume it.
+ */
+export async function heldByServing(
+	handler: Pick<TargetHost, "place" | "owner">,
+	record: ChildRecord,
+): Promise<boolean> {
+	return record.servedEnd === "ended" && (await childEnded(handler, record));
 }
 
 /** The info of `handle`. A caller that already has the record gives it as `record`. */
@@ -293,7 +320,7 @@ export async function childInfo(
 	const records = await handler.harness.snapshot(ChildRecords, context);
 	const state = heldState(childState, records, record.conversationId);
 
-	const fields = await agentFields(child.conversation);
+	const fields = { ...(await agentFields(child.conversation)), serves: record.serves };
 
 	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 }

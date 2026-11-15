@@ -68,6 +68,7 @@ import {
 	type UnreadAnswers,
 	unreadAnswers,
 } from "./records.ts";
+import { servesOf } from "./serving.ts";
 import type { Sessions } from "./sessions.ts";
 import {
 	callerConversation,
@@ -491,6 +492,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		const parent = (await callerConversation(handler, request.caller)) === undefined ? undefined : request.caller;
 
 		const settings = await spawnSettings(handler.settings);
+		const serves = await servesOf(handler, request.serves);
 
 		let spec: Spec = {
 			...(parent === undefined ? { root: request.caller } : { parent }),
@@ -516,6 +518,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 					caller: request.caller,
 					conversationId: id,
 					name: request.name,
+					serves,
 				});
 			});
 

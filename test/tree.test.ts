@@ -169,6 +169,7 @@ describe("tree", { timeout: 60_000 }, () => {
 					kind: "agent",
 					name: "four agent",
 					state: "idle",
+					serves: { kind: "project" },
 					todos: [open(1, "Agent todo"), { id: 2, text: "Agent todo done", state: "done" }],
 				},
 				{
@@ -177,6 +178,7 @@ describe("tree", { timeout: 60_000 }, () => {
 					kind: "agent",
 					name: child.handle,
 					state: "idle",
+					serves: { kind: "spawner" },
 					todos: [open(1, "Child todo")],
 				},
 				{ id: "task:run", kind: "run", name: "fixture.ask run", state: "completed", todos: [open(1, "Run todo")] },
@@ -318,6 +320,7 @@ describe("tree", { timeout: 60_000 }, () => {
 							kind: "agent",
 							name: a.handle,
 							state: "idle",
+							serves: { kind: "spawner" },
 							todos: [open(1, "Todo of A")],
 						},
 					],

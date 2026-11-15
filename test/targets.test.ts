@@ -57,7 +57,14 @@ describe("read marks", () => {
 			{ id: "b", notify: true },
 		];
 
-		await putRecord("marks", { caller: "cli", createdAt: "", conversationId, requests, read: 0 });
+		await putRecord("marks", {
+			caller: "cli",
+			createdAt: "",
+			conversationId,
+			requests,
+			read: 0,
+			serves: { kind: "spawner" },
+		});
 		await markRead(harness, "marks", 2, "push:marks:2");
 		expect(await recordOf("marks")).toMatchObject({ read: 2, pushed: "push:marks:2" });
 		await markRead(harness, "marks", 1, "spawn:a");
@@ -88,6 +95,7 @@ describe("push", () => {
 			conversationId: holder.id,
 			requests: [{ id: "never", notify: true }],
 			read: 0,
+			serves: { kind: "spawner" },
 		});
 
 		const push = new Push({
@@ -102,8 +110,9 @@ describe("push", () => {
 
 		const done = push.done(child, new AbortController().signal);
 		await new Promise((resolve) => setTimeout(resolve, 200));
-		push.close();
+		const closed = push.close();
 		const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("still waiting")), 2_000));
 		await expect(Promise.race([done, timeout])).rejects.toThrow("The host is closing");
+		await closed;
 	});
 });

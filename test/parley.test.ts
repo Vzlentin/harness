@@ -1,6 +1,5 @@
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import {
 	Ask,
@@ -13,35 +12,10 @@ import {
 	ParleyAsks,
 	ParleyList,
 } from "../src/protocol/project.ts";
-import type { Replies, Request } from "../src/protocol/requests.ts";
-import { setUp, startHost, tearDown } from "./helpers.ts";
+import type { Request } from "../src/protocol/requests.ts";
+import { answer, framed, OPTIONS, round, send, setUp, startHost, tearDown } from "./helpers.ts";
 
 let host: Host | undefined;
-
-/** Sends `line` to the host through the socket. */
-async function send<T extends Request["type"]>(line: Extract<Request, { type: T }>): Promise<Replies[T]> {
-	const reply = await request(line, { start: false });
-
-	if (reply === undefined) throw new Error("no host");
-
-	return reply;
-}
-
-/** Writes a round of `asks` for the parley `parley` as the caller `caller`, and gives the reply. */
-async function round(
-	caller: string,
-	parley: Extract<Request, { type: "ask"; action: "round" }>["parley"],
-	asks: Extract<Request, { type: "ask"; action: "round" }>["asks"],
-): Promise<AskWrite> {
-	const line = parley === undefined ? { asks } : { parley, asks };
-
-	return Value.Parse(AskWrite, await send({ type: "ask", action: "round", caller, ...line }));
-}
-
-/** Writes `answers` as the caller `user`, and gives the reply. */
-async function answer(answers: Extract<Request, { type: "ask"; action: "answer" }>["answers"]): Promise<AskWrite> {
-	return Value.Parse(AskWrite, await send({ type: "ask", action: "answer", caller: "user", answers }));
-}
 
 async function readParley(slug: string): Promise<ParleyAsks> {
 	return Value.Parse(ParleyAsks, await send({ type: "parley", action: "read", slug }));
@@ -53,26 +27,6 @@ async function stored(): Promise<{ parleys: ParleyList; open: AskList }> {
 		parleys: Value.Parse(ParleyList, await send({ type: "parley", action: "list" })),
 		open: Value.Parse(AskList, await send({ type: "ask", action: "list" })),
 	};
-}
-
-const OPTIONS = [
-	{ key: "a", label: "In the store", gains: ["One writer"], costs: ["A protocol bump"] },
-	{ key: "b", label: "In files" },
-];
-
-/** A parley `slug` with one call, its design sense and a read-back: the IDs of its call and of its read-back. */
-async function framed(slug: string): Promise<{ call: number; readBack: number }> {
-	const written = await round(
-		"pi-1",
-		{ slug, title: "Where asks live", goal: "Pick the place.", design_sense: "One writer." },
-		[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
-	);
-
-	const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
-
-	if (call === undefined || readBack === undefined) throw new Error("no asks");
-
-	return { call, readBack };
 }
 
 beforeAll(async () => {

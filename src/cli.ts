@@ -102,12 +102,25 @@ function spawnArgs(args: string[]): ToolArgs {
 			case "--file":
 				files.push(valueAfter(args, i, option));
 				break;
+			case "--parley":
+				spawn.serves = onlyServes(spawn, { parley: valueAfter(args, i, option) });
+				break;
+			case "--todo":
+				spawn.serves = onlyServes(spawn, { todo: todoId(valueAfter(args, i, option)) });
+				break;
 			default:
 				fail(`Unknown spawn argument: ${option}`);
 		}
 	}
 
 	return { ...spawn, prompts, files };
+}
+
+/** `serves`, what the child of `spawn` serves, when no option gave it before. */
+function onlyServes(spawn: ToolArgs, serves: NonNullable<ToolArgs["serves"]>): NonNullable<ToolArgs["serves"]> {
+	if (spawn.serves !== undefined) fail("A spawn serves one thing: give --parley or --todo once");
+
+	return serves;
 }
 
 function sendArgs(args: string[]): ToolArgs {
@@ -621,7 +634,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		spawn: toolCommand(
 			[
 				"  harness spawn [--name <name>] [--provider <provider>] [--model <model>] [--thinking <level>]",
-				"    [--cwd <dir>] [--tools <names>] (--prompt <text> | --file <path>)...",
+				"    [--cwd <dir>] [--tools <names>] [--parley <slug> | --todo <id>] (--prompt <text> | --file <path>)...",
 			],
 			spawnArgs,
 		),

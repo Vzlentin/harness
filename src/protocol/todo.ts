@@ -8,6 +8,11 @@ export const TodoState = Type.Enum(TODO_STATES);
 
 export type TodoState = Static<typeof TodoState>;
 
+/** Whether `status`, the state of a todo or the status of a parley, is final: `done` or `dropped`. */
+export function isFinished(status: string): status is "done" | "dropped" {
+	return status === "done" || status === "dropped";
+}
+
 /** A line of intent with a state. Its ID is its place in its list: 1, 2, 3 and so on. */
 export const Todo = Type.Object({
 	id: Type.Integer({ minimum: 1 }),

@@ -35,7 +35,7 @@ When the project has decided conduct rules, the host gates each tool call that i
 - `["read", "grep", "find", "ls", "bash"]`: investigation that may run tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
-Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
+Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end once their own todos are done. A subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "todo": <id> }` of the project list) ends when that parley or todo ends, once its own todos are done. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
 
 ## Answers and wait
 

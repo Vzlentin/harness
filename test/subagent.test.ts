@@ -917,8 +917,21 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		const opened = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
 			const harness = await open(...args);
-			// The first conversation lookup after the spawn commits its record is the one before the submit.
-			vi.spyOn(harness, "conversation").mockRejectedValueOnce(new Error("Stopped before submit"));
+			const lookup = harness.conversation.bind(harness);
+			let stopped = false;
+
+			// The first lookup of the child's conversation after the spawn commits its record is the one before the submit.
+			vi.spyOn(harness, "conversation").mockImplementation(async (id, lookupContext) => {
+				const state = await harness.snapshot(ChildRecords, lookupContext);
+				const handle = state?.requests["spawn-interrupted"];
+
+				if (!stopped && handle !== undefined && state?.children[handle]?.conversationId === id) {
+					stopped = true;
+					throw new Error("Stopped before submit");
+				}
+
+				return lookup(id, lookupContext);
+			});
 
 			return harness;
 		});
@@ -1048,6 +1061,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 					conversationId,
 					requests: [{ id: "backoff-request", notify: true }],
 					read: 0,
+					serves: { kind: "spawner" },
 				};
 			}, BACKGROUND_CONTEXT);
 			await until(() => warnings() === 1);
@@ -1681,10 +1695,41 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("makes each child of a store from version 4 serve its spawner", async () => {
+		process.env.XDG_STATE_HOME = join(root, "state-v4");
+		const caller = "v4-session";
+
+		try {
+			const conversationId = await olderChildrenStore(4, caller, (id) => ({
+				children: {
+					v4kid: { caller, createdAt: new Date().toISOString(), conversationId: id, requests: [], read: 0 },
+				},
+				requests: {},
+			}));
+
+			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
+
+			try {
+				const children = await request({ type: "list", caller }, { start: false });
+				expect(children?.map((info) => [info.handle, info.serves])).toEqual([["v4kid", { kind: "spawner" }]]);
+			} finally {
+				await migrated?.close();
+			}
+
+			expect((await storedChildren())?.children.v4kid).toMatchObject({
+				caller,
+				conversationId,
+				serves: { kind: "spawner" },
+			});
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+		}
+	});
+
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 5);
+		const stateDir = await childrenStore("new-state", 6);
 		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 5 than 4");
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 6 than 5");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 

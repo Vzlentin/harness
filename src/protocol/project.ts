@@ -1,5 +1,6 @@
 import { type Static, type TProperties, Type } from "typebox";
 import { SLUG } from "./paths.ts";
+import { isFinished } from "./todo.ts";
 
 /** The ID of a person, a rule, a term, a part or a held action: its place in its list, 1, 2, 3 and so on. */
 export const LocalId = Type.Integer({ minimum: 1 });
@@ -804,7 +805,7 @@ function askStateText(ask: Ask): string {
  */
 export function parleyShowText(reply: ParleyAsks): string {
 	const { parley } = reply;
-	const status = parley.status === "done" || parley.status === "dropped" ? ` (${parley.status})` : "";
+	const status = isFinished(parley.status) ? ` (${parley.status})` : "";
 	const blocks = [`# ${parley.title}${status}`, parley.goal];
 
 	for (const ask of reply.asks) {

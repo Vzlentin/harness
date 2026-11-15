@@ -238,10 +238,11 @@ export type Child = {
 	 * Ends the child and its subtree: marks them ended in one commit, then withdraws their queued input and aborts them,
 	 * background work included. A child stays ended until its next input. A repeat finishes the aborts of an end that
 	 * stopped. Gives the conversations it ended, parents first. With `below`, it does this only for the subtree under the
-	 * child, and the child keeps its state. A turn of the child's conversation that a task outside the child's owner
-	 * sent, such as a later task of its group, is aborted only through `conversation.abort`.
+	 * child, and the child keeps its state; with `alone`, only for the child, and its subtree keeps its state. A turn of
+	 * the child's conversation that a task outside the child's owner sent, such as a later task of its group, is aborted
+	 * only through `conversation.abort`.
 	 */
-	close(context: Context, options?: { readonly below?: boolean }): Promise<ConversationId[]>;
+	close(context: Context, options?: { readonly below: true } | { readonly alone: true }): Promise<ConversationId[]>;
 };
 
 export type Children = {
@@ -722,10 +723,14 @@ export function createChildren(durable: typeof Durable): Children {
 					place,
 					async (tx) => {
 						const members = [id];
+						const alone = options !== undefined && "alone" in options;
 
 						// The loop also visits the IDs that it appends.
-						for (const member of members) members.push(...(await tx.doc(ChildDoc, member)).children);
-						const ending = members.slice(options?.below === true ? 1 : 0);
+						for (const member of alone ? [] : members) {
+							members.push(...(await tx.doc(ChildDoc, member)).children);
+						}
+
+						const ending = members.slice(options !== undefined && "below" in options ? 1 : 0);
 
 						for (const member of ending) (await tx.doc(ChildDoc, member)).closed = true;
 

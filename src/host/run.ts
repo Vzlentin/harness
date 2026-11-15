@@ -48,6 +48,7 @@ import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
+import { Serving } from "./serving.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
 
@@ -246,6 +247,7 @@ export async function runHost(options: {
 	const owner = { kind: "detached", root } as const;
 	const push = new Push({ harness, place, owner, root, project, agent, warn });
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
+	const serving = new Serving({ harness, place, owner, root, warn });
 
 	base = {
 		harness,
@@ -342,8 +344,9 @@ export async function runHost(options: {
 			resolveListen();
 		});
 	}).catch(async (cause: unknown) => {
-		push.close();
+		await push.close();
 		await sessions.close();
+		await serving.close();
 		awake.close();
 		await bridge.close();
 		await entries.close();
@@ -360,9 +363,10 @@ export async function runHost(options: {
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
-			push.close();
+			const pushClosed = push.close();
 			// The socket closes that follow are not session ends.
 			const sessionsClosed = sessions.close();
+			const servingClosed = serving.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
@@ -383,7 +387,9 @@ export async function runHost(options: {
 				// script that runs gets no outcome and continues after a restart.
 				await entries.close();
 				await sandbox.close();
+				await pushClosed;
 				await sessionsClosed;
+				await servingClosed;
 				await harness.close(context);
 
 				await envs.cleanup(context);

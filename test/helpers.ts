@@ -34,12 +34,14 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Component, ProgramStatus, Terminal, TUI } from "@earendil-works/pi-tui";
+import { Value } from "typebox/value";
 import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { AskWrite } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import type { ChildInfo, Delivery, WatchLine } from "../src/protocol/requests.ts";
+import type { ChildInfo, Delivery, Replies, Request, ServesInput, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 
@@ -499,17 +501,18 @@ export async function agentTurn(message: string): Promise<void> {
 
 /**
  * The options of a spawn through the socket: whether its answers are pushed, its request ID
- * (`<caller>:<prompt>` by default), and the project of its host.
+ * (`<caller>:<prompt>` by default), the project of its host, and what the child serves.
  */
 type SpawnOptions = {
 	readonly notify: boolean;
 	readonly requestId?: string;
 	readonly project?: string;
+	readonly serves?: ServesInput;
 };
 
 /** Spawns a child of `caller` with the first message `prompt` through the socket, as the tool does. */
 export async function spawnAs(caller: string, prompt: string, options: SpawnOptions): Promise<ChildInfo> {
-	const spawn = {
+	let spawn: Extract<Request, { type: "spawn" }> = {
 		type: "spawn",
 		requestId: options.requestId ?? `${caller}:${prompt}`,
 		caller,
@@ -519,7 +522,9 @@ export async function spawnAs(caller: string, prompt: string, options: SpawnOpti
 		callerThinking: "medium",
 		cwd: root,
 		prompt,
-	} as const;
+	};
+
+	if (options.serves !== undefined) spawn = { ...spawn, serves: options.serves };
 
 	const spawned = await request(spawn, {
 		start: false,
@@ -540,14 +545,68 @@ export async function answerOf(handle: string, project?: string): Promise<string
 	return reply.answer;
 }
 
-/** The handle and the conversation ID of a new child of `caller`, which prints its `PI_SESSION_ID`. */
-export async function spawnWithId(caller: string): Promise<{ handle: string; id: string }> {
-	const child = await spawnAs(caller, "Task:\nEnvironment", { notify: false });
+/**
+ * The handle and the conversation ID of a new child of `caller`, which prints its `PI_SESSION_ID`, and serves `serves`.
+ * The request ID comes from `requestId`, by default the caller.
+ */
+export async function spawnWithId(
+	caller: string,
+	options: { readonly serves?: ServesInput; readonly requestId?: string } = {},
+): Promise<{ handle: string; id: string }> {
+	const child = await spawnAs(caller, "Task:\nEnvironment", { notify: false, ...options });
 	const id = /^Tool said: (\d+) /.exec(await answerOf(child.handle))?.[1];
 
 	if (id === undefined) throw new Error("no conversation ID");
 
 	return { handle: child.handle, id };
+}
+
+/** Sends `line` to the host of the main project through the socket. */
+export async function send<T extends Request["type"]>(line: Extract<Request, { type: T }>): Promise<Replies[T]> {
+	const reply = await request(line, { start: false });
+
+	if (reply === undefined) throw new Error("no host");
+
+	return reply;
+}
+
+/** Writes a round of `asks` for the parley `parley` as the caller `caller`, and gives the reply. */
+export async function round(
+	caller: string,
+	parley: Extract<Request, { type: "ask"; action: "round" }>["parley"],
+	asks: Extract<Request, { type: "ask"; action: "round" }>["asks"],
+): Promise<AskWrite> {
+	const line = parley === undefined ? { asks } : { parley, asks };
+
+	return Value.Parse(AskWrite, await send({ type: "ask", action: "round", caller, ...line }));
+}
+
+/** Writes `answers` as the caller `user`, and gives the reply. */
+export async function answer(
+	answers: Extract<Request, { type: "ask"; action: "answer" }>["answers"],
+): Promise<AskWrite> {
+	return Value.Parse(AskWrite, await send({ type: "ask", action: "answer", caller: "user", answers }));
+}
+
+/** The options of the call of `framed`. */
+export const OPTIONS = [
+	{ key: "a", label: "In the store", gains: ["One writer"], costs: ["A protocol bump"] },
+	{ key: "b", label: "In files" },
+];
+
+/** A parley `slug` with one call, its design sense and a read-back: the IDs of its call and of its read-back. */
+export async function framed(slug: string): Promise<{ call: number; readBack: number }> {
+	const written = await round(
+		"pi-1",
+		{ slug, title: "Where asks live", goal: "Pick the place.", design_sense: "One writer." },
+		[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
+	);
+
+	const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
+
+	if (call === undefined || readBack === undefined) throw new Error("no asks");
+
+	return { call, readBack };
 }
 
 /** The state of the child `handle` of the main host, or nothing when no host runs. */

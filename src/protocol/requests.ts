@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 28;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -97,6 +97,29 @@ export const CHILD_STATES = ["busy", "idle", "error", "ended"] as const;
 
 export type ChildState = (typeof CHILD_STATES)[number];
 
+/** What a `spawn` names that the child serves: a parley by slug, or a todo of the list of the project by ID. */
+export const ServesInput = Type.Union([
+	Type.Object({ parley: Slug }, { additionalProperties: false }),
+	Type.Object({ todo: Todo.properties.id }, { additionalProperties: false }),
+]);
+
+export type ServesInput = Static<typeof ServesInput>;
+
+/**
+ * What an agent serves, whose end ends the agent: the agent that spawned it, an open parley until it is no longer open,
+ * a contract until it is done or dropped, or a todo of the list of the project until it is done or dropped. The project
+ * agent serves the project, which never ends.
+ */
+export const Served = Type.Union([
+	Type.Object({ kind: Type.Literal("spawner") }),
+	Type.Object({ kind: Type.Literal("parley"), slug: Slug }),
+	Type.Object({ kind: Type.Literal("contract"), slug: Slug }),
+	Type.Object({ kind: Type.Literal("todo"), id: Todo.properties.id }),
+	Type.Object({ kind: Type.Literal("project") }),
+]);
+
+export type Served = Static<typeof Served>;
+
 /**
  * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`
  * target, `handle` and `conversation` are the conversation ID, and `name` is the child's lineage key.
@@ -111,6 +134,8 @@ export type ChildInfo = {
 	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
+	/** What the child serves. A conversation of the children library with no record of a child has none. */
+	readonly serves?: Served;
 };
 
 /** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */
@@ -186,6 +211,8 @@ export const RequestLine = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
 		prompt: Type.String(),
+		/** What the child serves. Without it, the child serves its caller. */
+		serves: Type.Optional(ServesInput),
 	}),
 	Type.Object({
 		type: Type.Literal("send"),

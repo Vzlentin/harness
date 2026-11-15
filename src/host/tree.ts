@@ -78,6 +78,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			name: `${host.project} agent`,
 			state: await agentTurn(place, root).state(context),
 			todos: await todosOf(host, { kind: "conversation", id: root.id }),
+			serves: { kind: "project" },
 		},
 	});
 
@@ -129,6 +130,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			name: record.name ?? handle,
 			state,
 			todos: await todosOf(host, { kind: "conversation", id: record.conversationId }),
+			serves: record.serves,
 		};
 
 		const parent = await callerNode(host, entries, record.caller);

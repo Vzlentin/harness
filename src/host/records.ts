@@ -10,6 +10,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
+import type { Served } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -26,7 +27,23 @@ export type ChildRecord = {
 	read: number;
 	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
 	pushed?: string;
+	/** What the child serves, fixed at its spawn. */
+	serves: ChildServes;
+	/**
+	 * Whether the end of what the child serves was applied to it: `ended` when the rule ended it, `passed` when the
+	 * child was already ended, by a `stop` or the end of its session. The rule ends a child once, so a resumed child
+	 * stays.
+	 */
+	servedEnd?: "ended" | "passed";
 };
+
+/** What a child serves: what an agent serves, except the project. */
+export type ChildServes = Exclude<Served, { readonly kind: "project" }>;
+
+/** A record of version 4, which has no `serves`. */
+type RecordV4 = Omit<ChildRecord, "serves" | "servedEnd">;
+
+type ChildrenV4 = { children: Record<string, RecordV4>; requests: Record<string, string> };
 
 /** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
 export type ChildRequest = { id: string; notify: boolean };
@@ -71,34 +88,47 @@ const ChildrenV3 = Type.Object({
 });
 
 /**
- * The children by handle, and the handle of each spawn request ID. Version 4 has no kind of a child; version 3 marked
- * the children of a kernel with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their
- * IDs in `sent` and those without `notify` in `quiet`. Version 2 leaves each child's last request to the children
- * library; a store with version 1 has children that the library does not know.
+ * The children by handle, and the handle of each spawn request ID. Version 5 has what each child serves; the children
+ * of an older version serve their spawner. Version 4 has no kind of a child; version 3 marked the children of a kernel
+ * with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their IDs in `sent` and those
+ * without `notify` in `quiet`. Version 2 leaves each child's last request to the children library; a store with
+ * version 1 has children that the library does not know.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
-	version: 4,
+	version: 5,
 	scope: "session",
 	checkpointWhen: () => false,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
 
-		if (fromVersion === 2) return migrateV2(Value.Parse(ChildrenV2, value));
+		if (fromVersion === 2) return migrateV4(migrateV2(Value.Parse(ChildrenV2, value)));
 
-		return migrateV3(Value.Parse(ChildrenV3, value));
+		// A record of version 4 is a record of version 3 without a kind.
+		return migrateV4(migrateV3(Value.Parse(ChildrenV3, value)));
 	},
 });
 
+/** Makes each child of `state` serve its spawner. */
+function migrateV4(state: ChildrenV4): ChildrenState {
+	const serves: ChildServes = { kind: "spawner" };
+
+	const children = Object.fromEntries(
+		Object.entries(state.children).map(([handle, record]) => [handle, { ...record, serves }]),
+	);
+
+	return { children, requests: state.requests };
+}
+
 /** Drops the kind of each child of `state`. */
-function migrateV3(state: Static<typeof ChildrenV3>): ChildrenState {
+function migrateV3(state: Static<typeof ChildrenV3>): ChildrenV4 {
 	for (const record of Object.values(state.children)) delete record.kind;
 
 	return state;
 }
 
-function migrateV2(state: Static<typeof ChildrenV2>): ChildrenState {
+function migrateV2(state: Static<typeof ChildrenV2>): ChildrenV4 {
 	const children = Object.fromEntries(
 		Object.entries(state.children).map(([handle, { sent = [], quiet = [], read = 0, ...rest }]) => [
 			handle,
@@ -140,6 +170,7 @@ export async function addRecord(
 		readonly caller: string;
 		readonly conversationId: ConversationId;
 		readonly name: string | undefined;
+		readonly serves: ChildServes;
 	},
 ): Promise<void> {
 	const current = await tx.doc(ChildRecords);
@@ -153,6 +184,7 @@ export async function addRecord(
 		conversationId: child.conversationId,
 		requests: [],
 		read: 0,
+		serves: child.serves,
 	};
 
 	if (child.name !== undefined) record = { name: child.name, ...record };
@@ -170,13 +202,33 @@ export async function renameRecord(harness: Harness, handle: string, name: strin
 
 /**
  * Marks read every request of the records of the children whose conversation ID is in `conversationIds`, so that a
- * stopped child holds no caller. An answer that was not pushed is not pushed.
+ * stopped child holds no caller. An answer that was not pushed is not pushed. With `servedEnded`, it also marks each of
+ * these records as ended by the end of what it serves (`servedEnd` is `ended`).
  */
-export async function markAllRead(harness: Harness, conversationIds: ReadonlySet<string>): Promise<void> {
+export async function markAllRead(
+	harness: Harness,
+	conversationIds: ReadonlySet<string>,
+	options: { readonly servedEnded: boolean },
+): Promise<void> {
 	await harness.commit(async (tx) => {
 		for (const record of Object.values((await tx.doc(ChildRecords)).children)) {
-			if (conversationIds.has(String(record.conversationId))) record.read = record.requests.length;
+			if (!conversationIds.has(String(record.conversationId))) continue;
+			record.read = record.requests.length;
+
+			if (options.servedEnded) record.servedEnd = "ended";
 		}
+	}, context);
+}
+
+/**
+ * Marks the record of `handle` as passed by the end of what it serves (`servedEnd` is `passed`): the child was already
+ * ended, so the rule does not end it again, and its deliveries do not wait.
+ */
+export async function markServedPassed(harness: Harness, handle: string): Promise<void> {
+	await harness.commit(async (tx) => {
+		const record = (await tx.doc(ChildRecords)).children[handle];
+
+		if (record !== undefined) record.servedEnd ??= "passed";
 	}, context);
 }
 

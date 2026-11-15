@@ -4,11 +4,11 @@
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { type CommitChange, type CommitObservation, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
+import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import { type Delivery, HOST_CLOSING } from "../protocol/requests.ts";
-import { Passes } from "./passes.ts";
+import { CommitPasses } from "./passes.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -21,7 +21,7 @@ import {
 	unreadAnswers,
 	unreadNotify,
 } from "./records.ts";
-import { childOf, childTarget, library, type TargetHost, target } from "./targets.ts";
+import { childOf, childTarget, heldByServing, library, type TargetHost, target } from "./targets.ts";
 import { readUserAnswers, removeUserAnswer, USER_ANSWERS_KIND, type UserAnswer } from "./user-answers.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -103,8 +103,7 @@ export class Push {
 	readonly #sweepEnds = new Set<() => void>();
 	/** The deliveries whose last pushes failed, by key. */
 	readonly #failures = new Map<string, Failure>();
-	readonly #observation: CommitObservation;
-	readonly #passes = new Passes(() => this.#pass());
+	readonly #passes: CommitPasses;
 	/** The timer of the sweep at the end of the earliest wait of `#failures`. */
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#closed = false;
@@ -118,14 +117,7 @@ export class Push {
 
 	constructor(host: PushHost) {
 		this.#host = host;
-		// The listener only schedules a sweep: it must not call the store.
-		this.#observation = host.harness.observeCommits({
-			advance: (publication) => {
-				if (publication.changes.some(endsTurn)) this.schedule();
-			},
-			end: () => {},
-		});
-		this.schedule();
+		this.#passes = new CommitPasses(host.harness, endsTurn, () => this.#pass());
 	}
 
 	/** Schedules a sweep. */
@@ -252,16 +244,20 @@ export class Push {
 		return [...this.#listeners.values()].some((listener) => listener.socket === socket);
 	}
 
-	/** Stops the sweeps, and wakes each `done()` that waits for one, which then throws. */
-	close(): void {
+	/**
+	 * Stops the sweeps, and wakes each `done()` that waits for one, which then throws. It resolves once the sweep in
+	 * progress ends.
+	 */
+	close(): Promise<void> {
 		this.#closed = true;
-		this.#passes.stop();
-		this.#observation.detach();
+		const closed = this.#passes.close();
 		clearTimeout(this.#retry);
 		const ends = [...this.#sweepEnds];
 		this.#sweepEnds.clear();
 
 		for (const end of ends) end();
+
+		return closed;
 	}
 
 	/**
@@ -379,10 +375,16 @@ export class Push {
 	/**
 	 * Where the answers for `caller` go: its open `answers` request, else the input of a conversation of the host (a
 	 * child, the project agent, or another conversation of the children library, such as a child of a task), which resumes
-	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait.
+	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait. The
+	 * deliveries of a child that the end of what it serves ended wait too, until a message resumes it: as input, they
+	 * would resume it.
 	 */
 	async #destination(caller: string, entries: readonly Entry[]): Promise<Destination | undefined> {
 		if (this.#listeners.has(caller)) return { kind: "reply" };
+		const parent = conversationEntry(entries, caller);
+
+		if (parent !== undefined && (await heldByServing(this.#host, parent[1]))) return undefined;
+
 		const send = await this.#input(caller, entries);
 
 		return send === undefined ? undefined : { kind: "input", send };
