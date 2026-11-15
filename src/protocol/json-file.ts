@@ -56,13 +56,20 @@ export function updateJsonFile<T>(path: string, read: () => T, change: (value: T
 		const value = change(read());
 
 		if (value === undefined) return false;
-		// A temporary file, then a rename, so a stop in between does not truncate the file.
-		const temporary = `${path}.${process.pid}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(value, null, "\t")}\n`);
-		renameSync(temporary, path);
+		writeJsonFile(path, value);
 
 		return true;
 	});
+}
+
+/**
+ * Writes `value` as JSON to the file `path`, through a temporary file and a rename, so a stop in between does not
+ * truncate the file. It takes no lock: the caller is the only process that writes the file, or holds its lock.
+ */
+export function writeJsonFile<T>(path: string, value: T): void {
+	const temporary = `${path}.${process.pid}.tmp`;
+	writeFileSync(temporary, `${JSON.stringify(value, null, "\t")}\n`);
+	renameSync(temporary, path);
 }
 
 /**

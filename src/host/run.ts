@@ -17,6 +17,7 @@ import {
 	Harness,
 	type HarnessInspection,
 	type HarnessSettings,
+	type Storage,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -51,6 +52,7 @@ import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
 import { Serving } from "./serving.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
+import { storeFilePasses } from "./store-file.ts";
 import { library } from "./targets.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
@@ -125,7 +127,7 @@ export async function runHost(options: {
 		sessionEndMs = SESSION_END_MS,
 	} = options;
 
-	const { dir: stateDir, socket: socketPath } = statePaths(project);
+	const { dir: stateDir, socket: socketPath, store: storePath } = statePaths(project);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
@@ -142,6 +144,8 @@ export async function runHost(options: {
 
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
 	let harness: Harness | undefined;
+	// The storage of the harness, whose scan `store.json` uses for the lists of the callers.
+	let storage: Storage | undefined;
 
 	const place: Place = {
 		get store() {
@@ -201,10 +205,11 @@ export async function runHost(options: {
 		registry.install(library.extension);
 		registry.install(library.answerExtension);
 		registry.install(startable);
+		// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
+		// node:sqlite waits synchronously, so such a wait stops the event loop for as long as it lasts.
+		storage = await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: STORE_LOCK_WAIT_MS });
 		harness = await Harness.open(
-			// Clients such as the workflows CLI read the store file while the host writes, so wait longer than 5 s for its lock.
-			// node:sqlite waits synchronously, so such a wait stops the event loop for as long as it lasts.
-			await openNodeSqliteStorage(join(stateDir, "durable.sqlite"), { busyTimeoutMs: STORE_LOCK_WAIT_MS }),
+			storage,
 			{
 				models,
 				registry,
@@ -259,6 +264,8 @@ export async function runHost(options: {
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
+
+	const storeFile = storeFilePasses({ harness, storage, root, path: storePath, warn });
 
 	const awake = keepAwake({ active: () => harness.wake().active, warn, system: awakeSystem });
 
@@ -340,6 +347,7 @@ export async function runHost(options: {
 		await push.close();
 		await sessions.close();
 		await serving.close();
+		await storeFile.close();
 		awake.close();
 		await bridge.close();
 		await entries.close();
@@ -360,6 +368,7 @@ export async function runHost(options: {
 			// The socket closes that follow are not session ends.
 			const sessionsClosed = sessions.close();
 			const servingClosed = serving.close();
+			const storeFileClosed = storeFile.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
@@ -383,6 +392,7 @@ export async function runHost(options: {
 				await pushClosed;
 				await sessionsClosed;
 				await servingClosed;
+				await storeFileClosed;
 				await harness.close(context);
 
 				await envs.cleanup(context);

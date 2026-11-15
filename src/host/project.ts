@@ -7,6 +7,7 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import type {
+	CommitChange,
 	ConversationId,
 	Cursor,
 	JsonObject,
@@ -76,7 +77,6 @@ const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
  * store from before `last` has none, and its last rule has the highest ID.
  */
 const Rules = sessionDoc<RuleList & { last?: number }>(RULES_KIND, () => ({ rules: [] }));
-
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
 const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
 const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
@@ -98,6 +98,23 @@ export type StoredMessage = MessageData & { id: number; thread: number };
 export type OutState = { id: number; thread: number; state: MessageState; written: number; at: number; by: string };
 
 const MessageEntry = durable.defineEntry<MessageData>(MESSAGE_KIND);
+
+/** The kinds of the documents of the project. A message is an entry, not a document; its state out is in the outbox. */
+const PROJECT_DOCS: ReadonlySet<string> = new Set(
+	[Persons, Threads, Rules, Held, Parleys, Asks, Outbox].map((doc) => doc.definition.kind),
+);
+
+/** Whether `change` can change an object of the project: a message, or a document of the project. */
+export function projectChange(change: CommitChange): boolean {
+	switch (change.type) {
+		case "entry":
+			return change.value.kind === MESSAGE_KIND;
+		case "document":
+			return PROJECT_DOCS.has(change.record.kind);
+		default:
+			return false;
+	}
+}
 
 /** Adds a person with the next ID of the list, and gives it. */
 export async function addPerson(tx: Tx, input: PersonAdd): Promise<Person> {
@@ -465,6 +482,13 @@ export async function readRules(
 	);
 
 	return { rules: rules.map((rule) => ({ ...rule })) };
+}
+
+/** The highest ID that a rule had, also a rule that is gone, or 0 when no rule was set. */
+export async function readLastRuleId(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<number> {
+	const list = await reader.snapshot(Rules, context);
+
+	return list === undefined ? 0 : highRuleId(list);
 }
 
 /** A parley in the status `open`. */

@@ -13,6 +13,8 @@ export * from "./project.ts";
 
 export * from "./requests.ts";
 
+export * from "./store-file.ts";
+
 export * from "./target.ts";
 
 export * from "./todo.ts";

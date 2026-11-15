@@ -4,24 +4,12 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness } from "@earendil-works/pi-durable";
-import {
-	ASKS_KIND,
-	HELD_KIND,
-	isWaiting,
-	MESSAGE_KIND,
-	OUTBOX_KIND,
-	PARLEYS_KIND,
-	PERSONS_KIND,
-	type ProjectEvent,
-	type ProjectState,
-	type ProjectThread,
-	RULES_KIND,
-	THREADS_KIND,
-} from "../protocol/project.ts";
+import { isWaiting, type ProjectEvent, type ProjectState, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
 import {
 	joinMessage,
 	outStates,
+	projectChange,
 	readAsks,
 	readHeld,
 	readOutbox,
@@ -36,17 +24,6 @@ import type { Connection } from "./push.ts";
 import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 
 const context = BACKGROUND_CONTEXT;
-
-/** The kinds of the documents of the project. A message is an entry, not a document; its state out is in the outbox. */
-const PROJECT_DOCS: ReadonlySet<string> = new Set([
-	PERSONS_KIND,
-	THREADS_KIND,
-	RULES_KIND,
-	HELD_KIND,
-	PARLEYS_KIND,
-	ASKS_KIND,
-	OUTBOX_KIND,
-]);
 
 export type ProjectHost = { readonly harness: Harness };
 
@@ -166,17 +143,11 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 
 	/** Whether `change` can change an object of the project. It records the threads that get a message. */
 	changes(change: CommitChange): boolean {
-		switch (change.type) {
-			case "entry":
-				if (change.value.kind !== MESSAGE_KIND) return false;
-				this.#fresh.add(change.value.conversationId);
+		if (!projectChange(change)) return false;
 
-				return true;
-			case "document":
-				return PROJECT_DOCS.has(change.record.kind);
-			default:
-				return false;
-		}
+		if (change.type === "entry") this.#fresh.add(change.value.conversationId);
+
+		return true;
 	}
 }
 

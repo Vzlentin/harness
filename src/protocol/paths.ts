@@ -18,12 +18,12 @@ function stateRoot(): string {
 	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness");
 }
 
-export type StatePaths = { dir: string; socket: string; log: string };
+export type StatePaths = { dir: string; socket: string; log: string; store: string };
 
 export function statePaths(project: string): StatePaths {
 	const dir = join(stateRoot(), project);
 
-	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
+	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log"), store: join(dir, "store.json") };
 }
 
 /** The folder of the page `slug`, which the inspect routes serve. It throws for a slug that is not valid. */
