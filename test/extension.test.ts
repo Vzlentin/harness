@@ -23,6 +23,7 @@ import {
 	createEventBus,
 	type EventBus,
 	type ExtensionAPI,
+	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ExtensionHandler,
 	type ExtensionWidgetOptions,
@@ -981,6 +982,52 @@ describe("the Pi extension", () => {
 		expect(own).toEqual({ todos: [{ id: 1, text: "Write the plan", state: "doing" }] });
 		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
 		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
+	});
+
+	it("adds a session todo with /todo, from its arguments or an input, and refreshes the widget", async () => {
+		host = await startHost();
+		const registered = await load();
+		const widgets = noWidgets();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
+		await vi.waitFor(() => expect(widgets.todos.renders).toEqual([[], []]), { timeout: 10_000 });
+		const command = registered.commands.get("todo");
+		const inputs = ["From the input", undefined];
+
+		const ctx: Pick<ExtensionCommandContext, "hasUI"> & {
+			readonly sessionManager: Pick<ExtensionCommandContext["sessionManager"], "getSessionId">;
+			readonly ui: Pick<ExtensionCommandContext["ui"], "input" | "notify">;
+		} = {
+			hasUI: true,
+			sessionManager: { getSessionId: () => "session" },
+			ui: {
+				input: async () => inputs.shift(),
+				notify: (message: string, type?: "info" | "warning" | "error") => {
+					registered.notifications.push({ message, type });
+				},
+			},
+		};
+
+		expect(command?.description).toBe("Add a todo to this session's list");
+		// SAFETY: the handler of `/todo` reads only these fields of the context.
+		const commandCtx = ctx as Parameters<Command["handler"]>[1];
+		await command?.handler("From the arguments", commandCtx);
+		expect(widgets.todos.renders.at(-1)).toEqual([" <dim>todos 0/1", " ○ 1 From the arguments"]);
+		await command?.handler("", commandCtx);
+		// A cancel adds nothing.
+		await command?.handler("", commandCtx);
+
+		expect(registered.notifications).toEqual([
+			{ message: "○ 1 From the arguments", type: "info" },
+			{ message: "○ 2 From the input", type: "info" },
+		]);
+		expect(await request({ type: "todo", caller: "session", action: "list" }, { start: false })).toEqual({
+			todos: [
+				{ id: 1, text: "From the arguments", state: "open" },
+				{ id: 2, text: "From the input", state: "open" },
+			],
+		});
+		expect(widgets.todos.renders.at(-1)).toEqual([" <dim>todos 0/2", " ○ 1 From the arguments", " ○ 2 From the input"]);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 
 	it("gives the thread, rule and parley tools of the host, on the store of the project", async () => {

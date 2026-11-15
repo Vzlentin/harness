@@ -1,5 +1,5 @@
 /**
- * The `todo` tool of a Pi session, and the todo widget above the editor, which shows the list of the agent of the
+ * The `todo` tool, `/todo`, and the todo widget above the editor, which shows the list of the agent of the
  * session: the session itself, or the agent that a mirror session shows.
  */
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -69,6 +69,33 @@ export function registerTodo(pi: ExtensionAPI, harness: Pick<Harness, "client" |
 			await todos.refresh();
 
 			return { content: [{ type: "text", text }], details: undefined, structuredContent: data };
+		},
+	});
+
+	pi.registerCommand("todo", {
+		description: "Add a todo to this session's list",
+		handler: async (args, ctx) => {
+			const text = args.trim() ? args : ctx.hasUI ? await ctx.ui.input("New todo") : undefined;
+
+			if (text === undefined) {
+				if (!ctx.hasUI) process.stderr.write("Usage: /todo <text>\n");
+
+				return;
+			}
+
+			try {
+				const scope = { caller: ctx.sessionManager.getSessionId(), send: tool.sendToHost, signal: undefined };
+				const { text: line } = await tool.runTodoTool({ action: "add", text }, scope, {});
+				await todos.refresh();
+
+				if (ctx.hasUI) ctx.ui.notify(line.trimEnd(), "info");
+				else process.stdout.write(line);
+			} catch (error) {
+				const message = protocol.errorMessage(error);
+
+				if (ctx.hasUI) ctx.ui.notify(`harness: ${message}`, "error");
+				else process.stderr.write(`harness: ${message}\n`);
+			}
 		},
 	});
 

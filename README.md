@@ -15,9 +15,10 @@ With Pi:
 pi install npm:@vzlentin/pi-agents
 ```
 
-This adds the `subagent` tool, the `subagent` skill, the `/subagent`, `/harness` and `/vc` commands, the subagents
-widget and the tools bridge in the IPython kernels of pi-ipython to Pi. Pi installs `@vzlentin/harness` with it, in its own npm
-folder, and Pi's tools find the `harness` command. Pi and the `harness` command use the same host. With
+This adds the `subagent` tool, the `subagent` skill, the `/subagent`, `/todo`, `/harness` and `/vc` commands, the
+subagents and todo widgets and the tools bridge in the IPython kernels of pi-ipython to Pi. Pi installs
+`@vzlentin/harness` with it, in its own npm folder, and Pi's tools find the `harness` command. Pi and the `harness`
+command use the same host. With
 [workflows](https://github.com/Vzlentin/workflows), install `npm:@vzlentin/pi-workflows` instead: it brings pi-agents
 with it.
 
@@ -66,6 +67,8 @@ harness main                # open the agent of the main project in Pi
 
 In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
 type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
+
+In Pi, `/todo <text>` adds a todo to the session's list. `/todo` alone asks for the text.
 
 In Pi, `/rules` lists the rules of the project, the open ones first, and lets you decide, retire, edit, create or
 delete one. An agent only proposes a rule: it adds it as open with its `rule` tool, and only you put it in effect.
