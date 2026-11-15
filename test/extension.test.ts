@@ -28,6 +28,7 @@ import {
 	type ExtensionHandler,
 	type ExtensionWidgetOptions,
 	type NormalizedBuildSystemPromptOptions,
+	type SessionEntry,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type Theme,
@@ -984,21 +985,22 @@ describe("the Pi extension", () => {
 		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
 	});
 
-	it("adds a session todo with /todo, from its arguments or an input, and refreshes the widget", async () => {
+	it("adds a session todo with /todo, from its arguments or an input, refreshes the widget, and refuses in a mirror session", async () => {
 		host = await startHost();
 		const registered = await load();
 		const widgets = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, widgets);
 		await vi.waitFor(() => expect(widgets.todos.renders).toEqual([[], []]), { timeout: 10_000 });
 		const command = registered.commands.get("todo");
-		const inputs = ["From the input", undefined];
+		const inputs = ["From the input", undefined, "", "   "];
+		let branch: SessionEntry[] = [];
 
 		const ctx: Pick<ExtensionCommandContext, "hasUI"> & {
-			readonly sessionManager: Pick<ExtensionCommandContext["sessionManager"], "getSessionId">;
+			readonly sessionManager: Pick<ExtensionCommandContext["sessionManager"], "getBranch" | "getSessionId">;
 			readonly ui: Pick<ExtensionCommandContext["ui"], "input" | "notify">;
 		} = {
 			hasUI: true,
-			sessionManager: { getSessionId: () => "session" },
+			sessionManager: { getBranch: () => branch, getSessionId: () => "session" },
 			ui: {
 				input: async () => inputs.shift(),
 				notify: (message: string, type?: "info" | "warning" | "error") => {
@@ -1013,12 +1015,19 @@ describe("the Pi extension", () => {
 		await command?.handler("From the arguments", commandCtx);
 		expect(widgets.todos.renders.at(-1)).toEqual([" <dim>todos 0/1", " ○ 1 From the arguments"]);
 		await command?.handler("", commandCtx);
-		// A cancel adds nothing.
+		// A cancel, an empty answer and an answer of spaces add nothing and show nothing.
 		await command?.handler("", commandCtx);
+		await command?.handler("", commandCtx);
+		await command?.handler(" ", commandCtx);
+		expect(inputs).toEqual([]);
+		// A mirror session shows the list of the mirrored agent, so /todo refuses.
+		branch = [MIRROR];
+		await command?.handler("In a mirror", commandCtx);
 
 		expect(registered.notifications).toEqual([
 			{ message: "○ 1 From the arguments", type: "info" },
 			{ message: "○ 2 From the input", type: "info" },
+			{ message: "harness: /todo does not work in a mirror session", type: "error" },
 		]);
 		expect(await request({ type: "todo", caller: "session", action: "list" }, { start: false })).toEqual({
 			todos: [

@@ -6,7 +6,9 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Todo, TodoList } from "../dist/protocol/index.js";
 import type { Harness } from "./index.ts";
+import { mirrorEntry } from "./mirror-entry.ts";
 import { PolledWidget } from "./polled-widget.ts";
+import { report, reportError } from "./report.ts";
 
 /** The most lines that the todo widget shows, with its header. */
 const MAX_LINES = 10;
@@ -35,11 +37,15 @@ export function todoWidgetLines(
 
 /**
  * Registers the `todo` tool, whose caller is the session ID, and gives the todo widget. Its reads get the list of the
- * session as the subagents widget reads the children, and at once after each `todo` call. In a mirror session, nothing
- * reads, and the attachment shows the list of the mirrored agent in its `widget`. `registerMirror` starts the widget at
- * the start of each session, and stops it at the end.
+ * session as the subagents widget reads the children, and at once after each `todo` call and each `/todo`. `/todo` adds
+ * to the list of the session, so it refuses in a mirror session, whose widget shows another list. In a mirror session,
+ * nothing reads, and the attachment shows the list of the mirrored agent in its `widget`. `registerMirror` starts the
+ * widget at the start of each session, and stops it at the end.
  */
-export function registerTodo(pi: ExtensionAPI, harness: Pick<Harness, "client" | "protocol" | "tool">): PolledWidget {
+export function registerTodo(
+	pi: ExtensionAPI,
+	harness: Pick<Harness, "client" | "mirror" | "protocol" | "tool">,
+): PolledWidget {
 	const { client, protocol, tool } = harness;
 
 	const todos = new PolledWidget(
@@ -75,10 +81,17 @@ export function registerTodo(pi: ExtensionAPI, harness: Pick<Harness, "client" |
 	pi.registerCommand("todo", {
 		description: "Add a todo to this session's list",
 		handler: async (args, ctx) => {
-			const text = args.trim() ? args : ctx.hasUI ? await ctx.ui.input("New todo") : undefined;
+			// The todo widget of a mirror session shows the list of the mirrored agent, not the list of the session.
+			if (mirrorEntry(harness, ctx.sessionManager.getBranch()) !== undefined) {
+				report(ctx, "harness: /todo does not work in a mirror session", "error");
 
-			if (text === undefined) {
-				if (!ctx.hasUI) process.stderr.write("Usage: /todo <text>\n");
+				return;
+			}
+
+			const text = (args.trim() ? args : ctx.hasUI ? await ctx.ui.input("New todo") : undefined)?.trim();
+
+			if (!text) {
+				if (!ctx.hasUI) report(ctx, "Usage: /todo <text>", "error");
 
 				return;
 			}
@@ -87,14 +100,9 @@ export function registerTodo(pi: ExtensionAPI, harness: Pick<Harness, "client" |
 				const scope = { caller: ctx.sessionManager.getSessionId(), send: tool.sendToHost, signal: undefined };
 				const { text: line } = await tool.runTodoTool({ action: "add", text }, scope, {});
 				await todos.refresh();
-
-				if (ctx.hasUI) ctx.ui.notify(line.trimEnd(), "info");
-				else process.stdout.write(line);
+				report(ctx, line.trimEnd(), "info");
 			} catch (error) {
-				const message = protocol.errorMessage(error);
-
-				if (ctx.hasUI) ctx.ui.notify(`harness: ${message}`, "error");
-				else process.stderr.write(`harness: ${message}\n`);
+				reportError(ctx, protocol.errorMessage, error);
 			}
 		},
 	});

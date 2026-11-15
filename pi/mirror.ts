@@ -6,21 +6,14 @@
  */
 
 import { homedir } from "node:os";
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import type { MirrorTarget } from "../dist/client/mirror.js";
 import { Attachment } from "./attachment.ts";
 import type { Harness } from "./index.ts";
+import { type MirrorEntry, mirrorEntry } from "./mirror-entry.ts";
 import type { PolledWidget } from "./polled-widget.ts";
-
-/** The mirror entry of a session: its ID and its target. */
-type MirrorEntry = { readonly id: string; readonly target: MirrorTarget };
 
 /** Registers `--harness`, `--harness-child` and `--harness-conversation`. */
 function registerFlags(pi: ExtensionAPI, harness: Harness): void {
@@ -167,19 +160,6 @@ export function registerMirror(pi: ExtensionAPI, harness: Harness, todos: Polled
 	pi.on("model_select", (event) => {
 		if (event.source !== "restore") attached?.models.piSelected(event.model.provider, event.model.id);
 	});
-}
-
-/** The newest mirror entry of `entries` with a valid target. */
-function mirrorEntry(harness: Harness, entries: readonly SessionEntry[]): MirrorEntry | undefined {
-	const { MIRROR_ENTRY, fromMirrorEntry, isMirrorEntry } = harness.mirror;
-
-	for (const entry of entries.toReversed()) {
-		if (entry.type === "custom" && entry.customType === MIRROR_ENTRY && isMirrorEntry(entry.data)) {
-			return { id: entry.id, target: fromMirrorEntry(entry.data) };
-		}
-	}
-
-	return undefined;
 }
 
 /**

@@ -4,6 +4,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type * as protocol from "../dist/protocol/index.js";
 import type { Harness } from "./index.ts";
+import { reportError } from "./report.ts";
 
 const NEW_RULE = "New rule";
 
@@ -53,10 +54,7 @@ export function registerRules(pi: ExtensionAPI, harness: Pick<Harness, "projectT
 				const { text } = await projectTool.sendRuleChange(change, scope);
 				ctx.ui.notify(text.trimEnd(), "info");
 			} catch (error) {
-				const message = protocol.errorMessage(error);
-
-				if (ctx.hasUI) ctx.ui.notify(`harness: ${message}`, "error");
-				else process.stderr.write(`harness: ${message}\n`);
+				reportError(ctx, protocol.errorMessage, error);
 			}
 		},
 	});
