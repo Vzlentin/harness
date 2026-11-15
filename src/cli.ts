@@ -8,6 +8,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { request } from "./client/client.ts";
+import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
@@ -30,7 +31,7 @@ import {
 	projectOf,
 	readProjects,
 } from "./protocol/projects.ts";
-import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
+import { type ChildInfo, errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
@@ -405,13 +406,23 @@ function commandTarget(args: string[]) {
 	return { target: parseTarget({ handle: first }), rest: args.slice(1) };
 }
 
-/** Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. */
+/**
+ * Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. With
+ * `--side` in an hc terminal, it opens it in a new herdr-app pane to the right in the tab of that terminal, and exits.
+ */
 async function attachCommand(args: string[], project: string | undefined): Promise<void> {
 	const { target, rest } = commandTarget(args);
+	const side = rest.length === 1 && rest[0] === "--side";
 
-	if (rest.length > 0) usage();
+	if (rest.length > 0 && !side) usage();
+	const name = projectOf(project, process.env, process.cwd());
+	const child = await checkTarget({ project: name, target });
 
-	await openInPi({ project: projectOf(project, process.env, process.cwd()), target });
+	if (side && inHerdr(process.env)) {
+		await openInHerdr(child, target, { side: true }, { ...process.env, [HARNESS_PROJECT]: name });
+	} else {
+		runPi({ project: name, target });
+	}
 }
 
 /** Prints the answer of the query model to a question about a child, or a conversation with `--conversation <id>`. */
@@ -438,7 +449,10 @@ async function stopCommand(args: string[], project: string | undefined): Promise
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	await openInPi({ project: name, target: { kind: "agent" } });
+	const target: MirrorTarget = { project: name, target: { kind: "agent" } };
+
+	await checkTarget(target);
+	runPi(target);
 }
 
 /** The `PATH` without the `node_modules/.bin` folders that npm adds: pi-coding-agent there has its own `pi`. */
@@ -450,13 +464,18 @@ function userPath(): string {
 }
 
 /**
- * Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. It starts
- * the host when none runs. A first watch fails before Pi starts for an unknown child, an unknown conversation and a
- * project agent without a model.
+ * Sends a first watch of `target` and gives its child. It starts the host when none runs, and fails for an unknown
+ * child, an unknown conversation and a project agent without a model, before anything opens.
  */
-async function openInPi(target: MirrorTarget): Promise<void> {
-	await request({ type: "watch", ...targetRef(target.target) }, { start: true, project: target.project });
+async function checkTarget(target: MirrorTarget): Promise<ChildInfo> {
+	const { project } = target;
+	const { child } = await request({ type: "watch", ...targetRef(target.target) }, { start: true, project });
 
+	return child;
+}
+
+/** Runs Pi in this terminal with a mirror session of `target` (see the Pi extension), and exits with its code. */
+function runPi(target: MirrorTarget): void {
 	const result = spawnSync("pi", piArgs(target), {
 		stdio: "inherit",
 		env: { ...process.env, PATH: userPath() },
@@ -655,7 +674,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			run: todoCommand,
 		},
 		attach: {
-			usage: ["  harness attach <handle>", "  harness attach --conversation <id>"],
+			usage: ["  harness attach (<handle> | --conversation <id>) [--side]"],
 			run: attachCommand,
 		},
 		inspect: {

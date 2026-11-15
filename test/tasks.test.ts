@@ -14,9 +14,11 @@ import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {
 	aborted,
+	CLI,
 	called,
 	calls,
 	cli,
+	fakeHc,
 	fakePi,
 	gates,
 	logLines,
@@ -345,6 +347,18 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			expect(await cli(["attach", "--conversation", ids.child], pi.env)).toMatchObject({ code: 3, stderr: "" });
 			expect(logLines(pi.log)).toEqual([`--harness main --harness-conversation ${ids.child} HARNESS_PROJECT=`]);
 
+			// With --side in an hc terminal, the conversation opens in a new pane to the right, and Pi does not start here.
+			const hc = await fakeHc();
+			const env = { ...hc.env, PATH: `${dirname(pi.log)}:${hc.env.PATH}` };
+			expect(await cli(["attach", "--conversation", ids.child, "--side"], env)).toMatchObject({ code: 0, stderr: "" });
+			const [get, run] = logLines(hc.log);
+			expect(get).toBe("get --json t3");
+			expect(run).toMatch(new RegExp(`^run --bg --keep --no-parent --cwd ${root} --name \\S+ `));
+			expect(run).toContain(" --label herdr.space=s1 --label herdr.tab=b2 -- ");
+			expect(run).toMatch(new RegExp(` ${CLI} --project main attach --conversation ${ids.child}$`));
+			expect(run).not.toContain("--side");
+			expect(logLines(pi.log)).toHaveLength(1);
+
 			for (const conversation of ["999999", ids.root]) {
 				expect(await cli(["attach", "--conversation", conversation], pi.env)).toMatchObject({
 					code: 1,
@@ -358,13 +372,13 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			]) {
 				const usage = await cli(args, pi.env);
 				expect(usage.code).toBe(1);
-				expect(usage.stderr).toContain("harness attach --conversation <id>");
+				expect(usage.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
 			}
 
 			// The usage comes before the project check.
 			const noProject = await cli(["attach"], { ...pi.env, HARNESS_PROJECT: "nosuch" });
 			expect(noProject.code).toBe(1);
-			expect(noProject.stderr).toContain("harness attach --conversation <id>");
+			expect(noProject.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
 			expect(noProject.stderr).not.toContain("Unknown harness project");
 
 			expect(logLines(pi.log)).toHaveLength(1);

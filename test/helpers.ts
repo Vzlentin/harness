@@ -758,6 +758,34 @@ exit 3
 	return { env: { PATH: `${bin}:${process.env.PATH}` }, log };
 }
 
+/** The output of `hc get --json t3` for the terminal `t3` of the caller, in the space `s1` and the tab `b2`. */
+export const CALLER = JSON.stringify({ address: "t3", labels: { "herdr.space": "s1", "herdr.tab": "b2" } });
+
+/**
+ * An `hc` on `PATH` that logs its arguments to `log`, one line for each call, and prints `terminal` for `get`. Its
+ * environment is that of the hc terminal `t3`. With `fail`, each call whose first word is `failOn` writes `fail` to
+ * stderr and exits with 1, after the log line.
+ */
+export async function fakeHc(
+	terminal = CALLER,
+	fail?: string,
+	failOn = "run",
+): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+	const bin = await mkdtemp(join(root, "bin-"));
+	const log = join(bin, "hc.log");
+
+	const script = `#!/bin/sh
+echo "$*" >> "${log}"
+${fail === undefined ? "" : `if [ "$1" = "${failOn}" ]; then echo '${fail}' >&2; exit 1; fi`}
+if [ "$1" = "get" ]; then echo '${terminal}'; fi
+`;
+
+	await writeFile(join(bin, "hc"), script);
+	await chmod(join(bin, "hc"), 0o755);
+
+	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HC_TERMINAL_ID: "t3" }, log };
+}
+
 /** The lines of the log file `log`, or none when it does not exist. */
 export function logLines(log: string): string[] {
 	return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];

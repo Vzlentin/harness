@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -13,9 +13,11 @@ import { statePaths } from "../src/protocol/paths.ts";
 import type { ChildInfo, WatchLine } from "../src/protocol/requests.ts";
 import { applyChange } from "../src/protocol/view-change.ts";
 import {
+	CALLER,
 	CLI,
 	called,
 	cli,
+	fakeHc,
 	fakePi,
 	gates,
 	handleOf,
@@ -49,34 +51,6 @@ async function hostClient(): Promise<Client> {
 	if (client === undefined) throw new Error("no host");
 
 	return client;
-}
-
-/** The output of `hc get --json t3` for the terminal `t3` of the caller, in the space `s1` and the tab `b2`. */
-const CALLER = JSON.stringify({ address: "t3", labels: { "herdr.space": "s1", "herdr.tab": "b2" } });
-
-/**
- * An `hc` on `PATH` that logs its arguments to `log`, one line for each call, and prints `terminal` for `get`. Its
- * environment is that of the hc terminal `t3`. With `fail`, each call whose first word is `failOn` writes `fail` to
- * stderr and exits with 1, after the log line.
- */
-async function fakeHc(
-	terminal = CALLER,
-	fail?: string,
-	failOn = "run",
-): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
-	const bin = await mkdtemp(join(root, "bin-"));
-	const log = join(bin, "hc.log");
-
-	const script = `#!/bin/sh
-echo "$*" >> "${log}"
-${fail === undefined ? "" : `if [ "$1" = "${failOn}" ]; then echo '${fail}' >&2; exit 1; fi`}
-if [ "$1" = "get" ]; then echo '${terminal}'; fi
-`;
-
-	await writeFile(join(bin, "hc"), script);
-	await chmod(join(bin, "hc"), 0o755);
-
-	return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HC_TERMINAL_ID: "t3" }, log };
 }
 
 /** A child named `name`, in `root`, as the host lists it. */
@@ -293,6 +267,47 @@ describe("subagent", { timeout: 30_000 }, () => {
 			code: 1,
 			stderr: "pi is not on PATH. Install Pi to open the agent\n",
 		});
+	});
+
+	it("opens a child with --side in a new herdr-app pane to the right of the caller, and exits", async () => {
+		const hc = await fakeHc();
+		const pi = await fakePi();
+		const handle = handleOf(await cli(["spawn", "--name", "sided", "--prompt", "Side me"]));
+		const env = { ...hc.env, PATH: `${dirname(pi.log)}:${hc.env.PATH}` };
+		const xdg = `env XDG_STATE_HOME=${hc.env.XDG_STATE_HOME} XDG_CONFIG_HOME=${hc.env.XDG_CONFIG_HOME}`;
+		const children = (await request({ type: "list", caller: "cli" }, { start: false })) ?? [];
+		const child = children.find((found) => found.handle === handle);
+
+		if (child === undefined) throw new Error("no child");
+		expect(await cli(["attach", handle, "--side"], env)).toMatchObject({ code: 0, stderr: "" });
+		expect(logLines(hc.log)).toEqual([
+			"get --json t3",
+			`run --bg --keep --no-parent --cwd ${child.cwd} --name sided --label herdr.space=s1 --label herdr.tab=b2 -- ${xdg} ${process.execPath} ${CLI} --project main attach ${handle}`,
+		]);
+		expect(logLines(pi.log)).toEqual([]);
+
+		// Outside an hc terminal, --side opens Pi in this terminal.
+		expect(await cli(["attach", handle, "--side"], { ...env, HC_TERMINAL_ID: "" })).toMatchObject({ code: 3 });
+		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_PROJECT=`]);
+		expect(logLines(hc.log)).toHaveLength(2);
+
+		// --side comes after the target, and no other word does.
+		for (const args of [
+			["attach", "--side", handle],
+			["attach", handle, "--side", "extra"],
+		]) {
+			const usage = await cli(args, env);
+			expect(usage.code).toBe(1);
+			expect(usage.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
+		}
+
+		const noTab = await fakeHc(JSON.stringify({ address: "t3", labels: { "herdr.space": "s1" } }));
+		expect(await cli(["attach", handle, "--side"], noTab.env)).toMatchObject({
+			code: 1,
+			stderr: "The hc terminal t3 has no herdr.tab label\n",
+		});
+		expect(logLines(noTab.log)).toEqual(["get --json t3"]);
+		expect(logLines(pi.log)).toHaveLength(1);
 	});
 
 	it("opens Pi without the node_modules/.bin folders on PATH, whose pi comes from pi-coding-agent", async () => {

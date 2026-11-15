@@ -22,9 +22,9 @@ const TAB_LABEL = "herdr.tab";
 const TerminalLabels = Type.Object({ labels: Type.Record(Type.String(), Type.String()) });
 
 /**
- * Where `openConversationPane` shows a conversation: in a new tab of the space `space`, in a new tab of the space of
- * the hc terminal of this process when `space` is not given, or with `side` in a new pane to the right in the tab of
- * that terminal.
+ * Where `openInHerdr` shows a target, a child or a conversation: in a new tab of the space `space`, in a new tab of the
+ * space of the hc terminal of this process when `space` is not given, or with `side` in a new pane to the right in the
+ * tab of that terminal.
  */
 export type ConversationPlace = { space?: string; side?: never } | { side: true; space?: never };
 
@@ -119,7 +119,7 @@ function openCommand(target: MirrorTarget, env: NodeJS.ProcessEnv): string[] {
  * without it, the terminal gets the labels of the hc terminal of this process that `place` needs. It rejects before it
  * starts a terminal when it cannot read these labels, and it rejects when an `hc` call fails.
  */
-async function openInHc(
+export async function openInHerdr(
 	child: ChildInfo,
 	target: MirrorTarget["target"],
 	place: ConversationPlace,
@@ -146,7 +146,7 @@ async function openInHc(
  * terminal has no `herdr.space` label, and it rejects when an `hc` call fails.
  */
 export function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
-	return openInHc(child, parseTarget({ handle: child.handle }), {}, env);
+	return openInHerdr(child, parseTarget({ handle: child.handle }), {}, env);
 }
 
 /**
@@ -160,5 +160,5 @@ export function openConversationPane(
 	place: ConversationPlace,
 	env: NodeJS.ProcessEnv,
 ): Promise<void> {
-	return openInHc(conversation, { kind: "conversation", id: conversation.handle }, place, env);
+	return openInHerdr(conversation, { kind: "conversation", id: conversation.handle }, place, env);
 }
