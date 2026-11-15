@@ -1529,6 +1529,40 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Lost")).toBe(0);
 	});
 
+	it("starts a new child for a spawn with the name of an ended child, and leaves the ended one ended", async () => {
+		const client = await connect({ start: false });
+
+		if (client === undefined) throw new Error("no host");
+		const caller = "namer";
+
+		const spawn = {
+			type: "spawn",
+			caller,
+			notify: true,
+			provider: "faux",
+			model: "faux-1",
+			callerThinking: "medium",
+			cwd: root,
+			name: "twin",
+		} as const;
+
+		try {
+			const first = await client.request({ ...spawn, requestId: "twin-1", prompt: "Twin one" });
+			await client.request({ type: "wait", handle: first.handle, timeout: 10 });
+			await client.request({ type: "stop", caller, handle: first.handle });
+			const second = await client.request({ ...spawn, requestId: "twin-2", prompt: "Twin two" });
+			await client.request({ type: "wait", handle: second.handle, timeout: 10 });
+
+			expect(second.handle).not.toBe(first.handle);
+			expect(await client.request({ type: "status", handle: first.handle })).toMatchObject({ state: "ended" });
+			expect(await client.request({ type: "status", handle: second.handle })).toMatchObject({ name: "twin" });
+		} finally {
+			client.close();
+		}
+
+		expect(called("Twin two")).toBe(1);
+	});
+
 	it("gives the ended child to a repeated spawn of a child that was stopped, and sends nothing", async () => {
 		const client = await connect({ start: false });
 
