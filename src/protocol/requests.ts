@@ -50,9 +50,9 @@ import type { ViewChange } from "./view-change.ts";
 
 /**
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
- * refuses the `hello` of a client with another version.
+ * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 28;
+export const PROTOCOL_VERSION = 29;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -184,7 +184,12 @@ export const Json = Type.Cyclic(
  * allowed.
  */
 export const RequestLine = Type.Union([
-	Type.Object({ type: Type.Literal("hello"), version: Type.Number() }),
+	Type.Object({
+		type: Type.Literal("hello"),
+		version: Type.Number(),
+		/** Whether the client is not a harness client and checks the version of the host itself. */
+		external: Type.Optional(Type.Boolean()),
+	}),
 	Type.Object({
 		type: Type.Literal("spawn"),
 		requestId: Type.String(),

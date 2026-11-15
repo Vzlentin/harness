@@ -96,19 +96,29 @@ function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
 const ErrorReply = Type.Object({ ok: Type.Literal(false), error: Type.String() });
 
 /** The error of the main host's reply to one raw request line, which the typed client cannot send. */
-function rawError(line: string): Promise<string> {
+async function rawError(line: string): Promise<string> {
+	const [reply] = await rawReplies([line]);
+
+	if (Value.Check(ErrorReply, reply)) return reply.error;
+	throw new Error(`Not an error reply: ${JSON.stringify(reply)}`);
+}
+
+/** The main host's replies to raw request lines, sent in order on one connection. */
+function rawReplies(lines: readonly string[]): Promise<unknown[]> {
 	const socket = createConnection(statePaths("main").socket);
+	const replies: unknown[] = [];
 
-	return new Promise((resolveError, rejectError) => {
-		socket.once("error", rejectError);
+	return new Promise((resolveReplies, rejectReplies) => {
+		socket.once("error", rejectReplies);
 		onLines(socket, (reply) => {
-			socket.destroy();
-			const parsed: unknown = JSON.parse(reply);
+			replies.push(JSON.parse(reply));
 
-			if (Value.Check(ErrorReply, parsed)) resolveError(parsed.error);
-			else rejectError(new Error(`Not an error reply: ${reply}`));
+			if (replies.length === lines.length) {
+				socket.destroy();
+				resolveReplies(replies);
+			}
 		});
-		socket.write(`${line}\n`);
+		socket.write(lines.map((line) => `${line}\n`).join(""));
 	});
 }
 
@@ -1873,6 +1883,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 		expect(await rawError(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION + 1 }))).toBe(
 			`The harness host (pid ${pid}) uses protocol ${PROTOCOL_VERSION}, not ${PROTOCOL_VERSION + 1}. The host is older: stop it with kill ${pid} and run the command again`,
+		);
+	});
+
+	it("answers a hello of another protocol version with external: true, and serves the connection", async () => {
+		const { pid } = process;
+
+		for (const version of [PROTOCOL_VERSION + 1, 1]) {
+			const [hello, list] = await rawReplies([
+				JSON.stringify({ type: "hello", version, external: true }),
+				JSON.stringify({ type: "list", caller: "cli" }),
+			]);
+
+			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid } });
+			expect(list).toMatchObject({ ok: true });
+		}
+	});
+
+	it("refuses a hello of another protocol version with external: false", async () => {
+		const { pid } = process;
+		expect(await rawError(JSON.stringify({ type: "hello", version: 1, external: false }))).toBe(
+			`This client uses harness protocol 1 and the host (pid ${pid}) uses ${PROTOCOL_VERSION}. Reload Pi with /reload, or use the harness CLI of the host's install`,
 		);
 	});
 

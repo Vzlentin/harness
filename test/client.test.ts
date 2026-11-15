@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { Client } from "../src/client/client.ts";
+import { Client, connect } from "../src/client/client.ts";
 import { onLines } from "../src/protocol/lines.ts";
+import { statePaths } from "../src/protocol/paths.ts";
+import { PROTOCOL_VERSION, versionMismatch } from "../src/protocol/requests.ts";
 
 let server: Server | undefined;
 let dir: string | undefined;
@@ -62,4 +64,32 @@ describe("client", () => {
 			);
 		});
 	}
+
+	it("refuses a host of another protocol version, and sends a hello without external", async () => {
+		const state = process.env.XDG_STATE_HOME;
+		// macOS limits a Unix socket path to 104 bytes, so the state folder stays under /tmp.
+		dir = await mkdtemp("/tmp/harness-client-");
+		process.env.XDG_STATE_HOME = dir;
+
+		try {
+			const { socket } = statePaths("main");
+			await mkdir(dirname(socket), { recursive: true });
+			const hellos: unknown[] = [];
+			server = createServer((connection: Socket) => {
+				onLines(connection, (line) => {
+					hellos.push(JSON.parse(line));
+					connection.write(`${JSON.stringify({ ok: true, value: { version: PROTOCOL_VERSION + 1, pid: 7 } })}\n`);
+				});
+			});
+			await new Promise<void>((resolve) => server?.listen(socket, resolve));
+
+			await expect(connect({ start: false, project: "main" })).rejects.toThrow(
+				versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7),
+			);
+			expect(hellos).toEqual([{ type: "hello", version: PROTOCOL_VERSION }]);
+		} finally {
+			if (state === undefined) delete process.env.XDG_STATE_HOME;
+			else process.env.XDG_STATE_HOME = state;
+		}
+	});
 });

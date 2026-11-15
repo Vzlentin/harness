@@ -208,7 +208,7 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 }
 
 function hello(request: Extract<Request, { type: "hello" }>): Replies["hello"] {
-	if (request.version !== PROTOCOL_VERSION) {
+	if (request.version !== PROTOCOL_VERSION && request.external !== true) {
 		throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
 	}
 
