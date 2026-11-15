@@ -29,6 +29,8 @@ A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi s
 
 When the project has decided conduct rules, the host gates each tool call that is not a read, for you and for each child. A call that breaks a rule does not run: it fails with `Held as action <id>: <reason>`. Read the reason, and do not call the same command again to get around it. When the user approves the action, a message tells you so: call the command again, and it runs one time.
 
+Only the user puts a rule in effect. With the `rule` tool, you add a rule as open, and change a rule that is still open. To change a decided rule, add a new rule with `replaces`. Do not run `harness rule decide`, `retire`, `edit`, `create` or `delete`: the gate holds each such command until the user approves it.
+
 `tools` is an allowlist. An unknown name is an error. Common choices:
 
 - `["read", "grep", "find", "ls"]`: enforced read-only repository investigation.

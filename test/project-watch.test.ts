@@ -23,6 +23,7 @@ import {
 	ProjectEvent,
 	ProjectState,
 	Rule,
+	RULES_KIND,
 	Thread,
 } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
@@ -32,6 +33,9 @@ import { cli, models, openDurableHost, root, setUp, tearDown, until } from "./he
 /** The documents of the terms and of the parts of the vault, as an older version kept them in the store. */
 const OLD_TERMS = sessionDoc<{ terms: JsonValue[] }>("harness.terms", () => ({ terms: [] }));
 const OLD_PARTS = sessionDoc<{ parts: JsonValue[] }>("harness.parts", () => ({ parts: [] }));
+
+/** The document of the rules, as an older version kept it in the store: with no `last`. */
+const OLD_RULES = sessionDoc<{ rules: JsonValue[] }>(RULES_KIND, () => ({ rules: [] }));
 
 /** One line of a project watch: the reply, or an event. */
 const WatchLine = Type.Union([
@@ -227,18 +231,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 
 			const decided = Value.Parse(
 				Rule,
-				await send(
-					{
-						type: "rule",
-						action: "set",
-						caller: "cli",
-						id: rule.id,
-						status: "decided",
-						saidBy: sam.id,
-						source: asked.id,
-					},
-					project,
-				),
+				await send({ type: "rule", action: "decide", caller: "cli", id: rule.id }, project),
 			);
 
 			expect(await next()).toEqual(event({ rules: [decided] }));
@@ -353,6 +346,55 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		} finally {
 			watch?.socket.destroy();
 			await host?.close();
+		}
+	});
+
+	it("never gives again the ID of a deleted rule of a store with no last ID", async () => {
+		const project = "no-last";
+		const dir = await mkdtemp(join(root, `${project}-`));
+		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
+		let host = await runHost({ project, cwd: dir, models });
+
+		try {
+			await host?.close();
+			const older = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
+			const fields = { kind: "domain", status: "decided", saidBy: "user", at: 1_000, by: "cli" };
+
+			await older.commit(async (tx) => {
+				const list = await tx.doc(OLD_RULES);
+				list.rules.push({ ...fields, id: 1, name: "a", value: "A." }, { ...fields, id: 2, name: "b", value: "B." });
+			}, BACKGROUND_CONTEXT);
+			await older.close(BACKGROUND_CONTEXT);
+
+			host = await runHost({ project, cwd: dir, models });
+			await send({ type: "rule", action: "delete", caller: "cli", id: 2 }, project);
+			const create = { type: "rule", action: "create", caller: "cli", name: "c", kind: "domain", value: "C." } as const;
+			expect(await send(create, project)).toMatchObject({ id: 3 });
+		} finally {
+			await host?.close();
+		}
+	});
+
+	it("gives the rule that the user creates, and the ID of the rule that the user deletes", async () => {
+		const project = "deleted";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof openProjectWatch>> | undefined;
+
+		try {
+			watch = await openProjectWatch(project);
+			const { events } = watch;
+			const create = { type: "rule", action: "create", caller: "cli", name: "go", kind: "conduct" } as const;
+			const rule = Value.Parse(Rule, await send({ ...create, value: "Ask first." }, project));
+			expect(rule).toMatchObject({ id: 1, status: "decided", saidBy: "user" });
+			await until(() => events.length === 1);
+			expect(events[0]).toEqual(event({ rules: [rule] }));
+
+			await send({ type: "rule", action: "delete", caller: "cli", id: rule.id }, project);
+			await until(() => events.length === 2);
+			expect(events[1]).toEqual(event({ removed: { ...NONE, rules: [rule.id] } }));
+		} finally {
+			watch?.socket.destroy();
+			await host.close();
 		}
 	});
 

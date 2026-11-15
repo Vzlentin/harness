@@ -24,10 +24,13 @@ import {
 	type PersonList,
 	type ProjectState,
 	type Rule,
+	RuleCreate,
 	RuleEdit,
 	RuleFilter,
 	type RuleList,
 	RuleNew,
+	RuleStateChange,
+	RuleUserEdit,
 	Slug,
 	Thread,
 	ThreadAdd,
@@ -360,7 +363,7 @@ export const RequestLine = Type.Union([
 	 * last digest of the caller, and records it as given. A Pi session sends it before each turn.
 	 */
 	Type.Object({ type: Type.Literal("digest"), caller: Type.String() }),
-	/** Adds a rule, which retires the rule `replaces`, and replies with it. */
+	/** Adds an open rule, which can name the rule `replaces`, and replies with it. */
 	Type.Object({
 		type: Type.Literal("rule"),
 		action: Type.Literal("set"),
@@ -368,8 +371,8 @@ export const RequestLine = Type.Union([
 		...RuleNew.properties,
 	}),
 	/**
-	 * Changes the rule `id`, and replies with it. It comes after the new rule, so a new rule without `source` fails on
-	 * `source`. The host refuses a change with `replaces`.
+	 * Changes the open rule `id`, and replies with it. It comes after the new rule, so a new rule without `source` fails on
+	 * `source`. The host refuses a change with `replaces`, and a change of a rule that is not open.
 	 */
 	Type.Object({
 		type: Type.Literal("rule"),
@@ -379,6 +382,15 @@ export const RequestLine = Type.Union([
 	}),
 	/** Replies with the rules, in ID order: with `kind` or `status`, only those that have it. */
 	Type.Object({ type: Type.Literal("rule"), action: Type.Literal("list"), ...RuleFilter.properties }),
+	/**
+	 * Decides, retires or deletes the rule `id` for the user, and replies with it. A decide retires the rule that the
+	 * decided rule replaces. No tool sends it.
+	 */
+	Type.Object({ type: Type.Literal("rule"), caller: Type.String(), ...RuleStateChange.properties }),
+	/** Changes the text of the rule `id` for the user, who becomes its author, and replies with it. No tool sends it. */
+	Type.Object({ type: Type.Literal("rule"), caller: Type.String(), ...RuleUserEdit.properties }),
+	/** Adds a decided rule of the user, and replies with it. No tool sends it. */
+	Type.Object({ type: Type.Literal("rule"), caller: Type.String(), ...RuleCreate.properties }),
 	/**
 	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
 	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open.
@@ -504,7 +516,7 @@ export type Replies = {
 	readonly thread: Thread | ThreadList | ThreadMessages;
 	readonly message: Message;
 	readonly digest: DigestReply;
-	/** The rule of `set`, or the rules of `list`. */
+	/** The rule of `set`, `decide`, `retire`, `delete`, `edit` and `create`, or the rules of `list`. */
 	readonly rule: Rule | RuleList;
 	readonly gate: GateReply;
 	readonly held: HeldAction;

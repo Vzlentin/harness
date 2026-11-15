@@ -31,13 +31,14 @@ import {
 	Rule,
 	RULE_KINDS,
 	RULE_STATES,
+	type RuleFilter,
 	RuleList,
+	type RuleUserChange,
 	ruleLine,
 	ThreadList,
 	threadLine,
 	ThreadMessages,
 } from "./protocol/project.ts";
-import type { Request } from "./protocol/requests.ts";
 import { type DurableScope, listText, NO_ABORT, oneOf, required, type ToolScope } from "./tool.ts";
 
 export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages between the user and the persons of the project.
@@ -49,10 +50,10 @@ export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages b
 When you send a draft yourself, put \`draft:<id>\` in the command, such as the shell comment \`# draft:12\`: the draft is sent once the call runs.
 A person prints as \`<name> (<id>)\`: its ID is the \`from\` of \`log\`, and the \`saidBy\` of a rule.`;
 
-export const RULE_TOOL_DESCRIPTION = `Keep the rules of the project. A conduct rule says how to act. A domain rule says what is true for the project.
-- set: without \`id\`, add a rule with \`name\`, \`kind\`, \`value\`, and \`status\` (default open); \`replaces\` retires the rule that it replaces. With \`id\`, change the fields that you give. Each set needs \`saidBy\`, the ID of the person who said it or user, and \`source\`, the ID of the message that says it (see the \`thread\` tool).
-- list: the rules, only those of \`kind\` and of \`status\` when you give them.
-Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> in message <source>]\`, where the author is \`user\` or \`<name> (<id>)\`.`;
+export const RULE_TOOL_DESCRIPTION = `Keep the rules of the project. A conduct rule says how to act. A domain rule says what is true for the project. You propose a rule; only the user puts it in effect.
+- set: without \`id\`, add an open rule with \`name\`, \`kind\` and \`value\`; \`replaces\` names the rule that it replaces, which is retired when the user decides the new one. With \`id\`, change the fields that you give of an open rule. To change a decided rule, add a new rule that replaces it. Each set needs \`saidBy\`, the ID of the person who said it or user, and \`source\`, the ID of the message that says it (see the \`thread\` tool).
+- list: the rules, only those of \`kind\` when you give it.
+Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> in message <source>]\`, where the status is ${oneOf(RULE_STATES)} and the author is \`user\` or \`<name> (<id>)\`. A rule of the user has no source.`;
 
 export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone or in a parley: a group of asks with a slug, a title, a goal, evidence and a design sense.
 - round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley.
@@ -122,13 +123,8 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				Type.Enum(RULE_KINDS, { description: `set: ${oneOf(RULE_KINDS)}; list: only the rules of this kind` }),
 			),
 			value: text("set: what the rule says"),
-			status: Type.Optional(
-				Type.Enum(RULE_STATES, {
-					description: `set: ${oneOf(RULE_STATES)}, default open for a new rule; list: only the rules with this status`,
-				}),
-			),
 			...provenance,
-			replaces: id("set: on a new rule, the ID of the rule that it replaces and retires"),
+			replaces: id("set: on a new rule, the ID of the rule that it replaces"),
 		}),
 		output: Type.Union([
 			Type.Object({ action: Type.Literal("set"), value: Rule }),
@@ -358,23 +354,40 @@ async function runRuleTool(args: Static<ProjectSchemas["rule"]["parameters"]>, s
 		}
 
 		case "list": {
-			let request: Extract<Request, { type: "rule"; action: "list" }> = { type: "rule", action };
+			const { entries, text } = await sendRuleList(args.kind === undefined ? {} : { kind: args.kind }, scope);
 
-			if (args.kind !== undefined) request = { ...request, kind: args.kind };
-
-			if (args.status !== undefined) request = { ...request, status: args.status };
-			const reply = replyOf(RuleList, await scope.send(request, signal), "list of rules");
-			const names = await sendPersonNames(scope, signal);
-
-			return {
-				text: listText(reply.rules, (rule) => ruleLine(rule, names), "No rules"),
-				data: { action, value: reply },
-			};
+			return { text, data: { action, value: { rules: entries.map(({ rule }) => rule) } } };
 		}
 
 		default:
 			throw new Error(`Unknown action: ${String(action)}`);
 	}
+}
+
+/** The rules of `filter`, in ID order, each with its line, and the text of the list, or `No rules`. */
+export async function sendRuleList(
+	filter: RuleFilter,
+	scope: ProjectScope,
+): Promise<{ entries: { rule: Rule; line: string }[]; text: string }> {
+	const signal = scope.signal ?? NO_ABORT;
+	const reply = await scope.send({ type: "rule", action: "list", ...filter }, signal);
+	const list = replyOf(RuleList, reply, "list of rules");
+	const names = await sendPersonNames(scope, signal);
+	const entries = list.rules.map((rule) => ({ rule, line: ruleLine(rule, names) }));
+
+	return { entries, text: listText(entries, ({ line }) => line, "No rules") };
+}
+
+/** Sends the change `change` of a rule by the user, and gives the rule and its line. No tool sends it. */
+export async function sendRuleChange(
+	change: RuleUserChange,
+	scope: ProjectScope,
+): Promise<{ rule: Rule; text: string }> {
+	const signal = scope.signal ?? NO_ABORT;
+	const rule = replyOf(Rule, await scope.send({ ...change, type: "rule", caller: scope.caller }, signal), "rule");
+	const names = await sendPersonNames(scope, signal);
+
+	return { rule, text: `${ruleLine(rule, names)}\n` };
 }
 
 type ParleyArgs = Static<ProjectSchemas["parley"]["parameters"]>;

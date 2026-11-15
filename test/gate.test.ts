@@ -19,7 +19,7 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type GateHost, gateCall } from "../src/host/gate.ts";
-import { addPerson, addThread, approveHeld, holdAction, logMessage, setRule } from "../src/host/project.ts";
+import { approveHeld, changeRule, holdAction } from "../src/host/project.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -53,7 +53,10 @@ import {
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gate-cases.json");
 
-/** The rules and the cases of the spike of 13 Nov, with the result that each case expects. */
+/**
+ * The rules and the cases of the spike of 13 Nov, with the result that each case expects, but its rule and its case of a
+ * change of a rule by an agent: the host refuses that change, and the gate holds its bash command with no question.
+ */
 const GateCases = Type.Object({
 	rules: Type.Array(Type.String()),
 	cases: Type.Array(
@@ -80,7 +83,6 @@ const BROKEN: ReadonlyMap<string, string> = new Map([
 	["a05-curl-merge", "R4"],
 	["a07-push-master", "R6"],
 	["a09-jira-comment-no-go", "R4"],
-	["a10-rule-change-agent", "R5"],
 	["a11-deploy-prod", "R4"],
 	["a18-python-post", "R4"],
 	["a19-airflow-trigger", "R4"],
@@ -217,11 +219,20 @@ async function sourceMessage(project: string): Promise<number> {
 /** The fields of a new rule of the tests. */
 type RuleFields = Pick<Rule, "name" | "kind" | "value" | "status">;
 
-/** Adds the rule `fields`, said by the user in the message `source`, to the store of `project`, and gives it. */
+/**
+ * Adds the rule `fields`, said by the user in the message `source`, to the store of `project`, and gives it. A decided or
+ * retired rule gets its status from a change of the user.
+ */
 async function addRule(project: string, source: number, fields: RuleFields): Promise<Rule> {
-	const line = { type: "rule", action: "set", caller: "cli", ...fields, saidBy: "user", source } as const;
+	const { status, ...text } = fields;
+	const line = { type: "rule", action: "set", caller: "cli", ...text, saidBy: "user", source } as const;
+	const rule = Value.Parse(Rule, await send(line, project));
 
-	return Value.Parse(Rule, await send(line, project));
+	if (status === "open") return rule;
+	const action = status === "decided" ? "decide" : "retire";
+	const change = { type: "rule", action, caller: "cli", id: rule.id } as const;
+
+	return Value.Parse(Rule, await send(change, project));
 }
 
 /** The reply of `gate` for a `bash` call of `command` by `caller`, with the ID `requestId`. */
@@ -366,7 +377,7 @@ describe("gate", { timeout: 60_000 }, () => {
 			}
 
 			// The stub refuses other choices, so a domain rule is not a choice of step 2.
-			expect(conduct).toEqual(["1", "2", "3", "4", "5", "6"]);
+			expect(conduct).toEqual(["1", "2", "3", "4", "5"]);
 		} finally {
 			await host.close();
 		}
@@ -420,7 +431,7 @@ describe("gate", { timeout: 60_000 }, () => {
 
 			// A write of the store asks, with the tool and its JSON arguments as the command. With no answer, the
 			// classifier fails, and the gate holds the call with no rule.
-			const args = { action: "set", id: 1, status: "retired", saidBy: "user", source };
+			const args = { action: "set", id: 1, value: "Push only after a review.", saidBy: "user", source };
 
 			const line = {
 				type: "gate",
@@ -594,21 +605,8 @@ describe("gate", { timeout: 60_000 }, () => {
 		const push = "git push origin main";
 
 		try {
-			const sam = await harness.commit((tx) => addPerson(tx, { name: "Sam" }), BACKGROUND_CONTEXT);
-
-			const thread = await harness.commit(
-				(tx) => addThread(tx, { topic: "Rules", persons: [sam.id] }),
-				BACKGROUND_CONTEXT,
-			);
-
-			const log = { thread: thread.id, from: "user", direction: "in", text: "The rules." } as const;
-			const source = await harness.commit((tx) => logMessage(tx, log, "cli"), BACKGROUND_CONTEXT);
-			const fields = { name: "go", kind: "conduct", value: "Push only with a go.", status: "decided" } as const;
-
-			const rule = await harness.commit(
-				(tx) => setRule(tx, { ...fields, saidBy: "user", source: source.id }, "cli"),
-				BACKGROUND_CONTEXT,
-			);
+			const fields = { action: "create", name: "go", kind: "conduct", value: "Push only with a go." } as const;
+			const rule = await harness.commit((tx) => changeRule(tx, fields, "cli"), BACKGROUND_CONTEXT);
 
 			const call = { agent: "khan", tool: "bash", command: push, rule: rule.id, reason: "No go." };
 			const held = await harness.commit((tx) => holdAction(tx, { ...call, requestId: "call-1" }), BACKGROUND_CONTEXT);
@@ -680,7 +678,7 @@ describe("gate", { timeout: 60_000 }, () => {
 			scripts.set(approval, [bash, bash]);
 			await agentTurn("Gate me");
 			const [refused] = cellResults.get("Gate me") ?? [];
-			expect(refused).toContain(`Held as action 1: ${reason}`);
+			expect(refused).toMatch(new RegExp(`Held as action \\d+: ${reason}`));
 			expect(refused).not.toContain("\ngated");
 			// Step 2 has the last messages of the user in the conversation of the agent.
 			expect(asked.at(-1)?.context.state).toMatchObject({ action: command, last_user_messages: ["Gate me"] });
@@ -693,6 +691,57 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect(ran).not.toContain("Held");
 			expect(again).toContain(`Held as action 2: ${reason}`);
 			expect(asked.at(-1)?.context.state).toMatchObject({ last_user_messages: ["Gate me", approval] });
+		} finally {
+			await host?.close();
+		}
+	});
+
+	it("holds a bash call of a hosted agent that changes a rule with no question, and the same change of a terminal runs", async () => {
+		const host = await startHost();
+
+		try {
+			const source = await sourceMessage(MAIN_PROJECT);
+			const fields = { name: "go", kind: "conduct", value: "Ask first.", status: "open" } as const;
+			const rule = await addRule(MAIN_PROJECT, source, fields);
+			const command = `echo harness rule decide ${rule.id}`;
+			const reason = "Only the user decides, retires, edits, creates or deletes a rule";
+			scripts.set("Decide it", [{ name: "bash", arguments: { command } }]);
+			await agentTurn("Decide it");
+			const [refused] = cellResults.get("Decide it") ?? [];
+			expect(refused).toMatch(new RegExp(`Held as action \\d+: ${reason}`));
+			// The command line alone holds the call, with no question to the classifier.
+			expect(asked).toEqual([]);
+
+			const held = [];
+
+			for (const action of ["retire", "edit", "create", "delete"]) {
+				const found = heldOf(await gate("agent", action, `harness rule ${action} 1`));
+				expect(found).toMatchObject({ tool: "bash", reason });
+				expect(found.rule).toBeUndefined();
+				held.push(found);
+			}
+
+			expect(asked).toEqual([]);
+			// A read of the rules goes to the questions of the decided conduct rules of the test before.
+			recorded.set("harness rule list", { writes: 0.02, rule: "none" });
+			expect(await gate("agent", "list", "harness rule list")).toEqual({ runs: true });
+			expect(await send({ type: "rule", action: "list", status: "open" })).toMatchObject({ rules: [{ id: rule.id }] });
+
+			// The CLI takes the action only right after `rule`, so a change that the pattern of the gate misses does not run.
+			const early = await cli(["rule", "--kind", "domain", "edit", String(rule.id)]);
+			expect(early).toMatchObject({ code: 1, stdout: "", stderr: expect.stringMatching(/^Usage:/) });
+			expect(await send({ type: "rule", action: "list", status: "open" })).toMatchObject({
+				rules: [{ id: rule.id, kind: "conduct" }],
+			});
+
+			const decided = await cli(["rule", "decide", String(rule.id)]);
+			const line = `${rule.id} go (conduct, decided): Ask first. [said by user in message ${source}]\n`;
+			expect(decided).toEqual({ code: 0, stdout: line, stderr: "" });
+
+			// An approve lets the held command run one time.
+			await send({ type: "held", action: "approve", caller: "user", id: held[0]?.id ?? 0 });
+			expect(await gate("agent", "retire-again", "harness rule retire 1")).toEqual({ runs: true });
+			expect(heldOf(await gate("agent", "retire-third", "harness rule retire 1"))).toMatchObject({ reason });
 		} finally {
 			await host?.close();
 		}

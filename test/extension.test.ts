@@ -1000,7 +1000,7 @@ describe("the Pi extension", () => {
 		expect(await tools.get("rule")?.call(rule)).toBe(
 			`1 hello (conduct, open): Say hello. [said by Sam (1) in message ${source}]\n`,
 		);
-		await expect(tools.get("rule")?.call({ action: "set", id: 1, status: "retired", saidBy: 1 })).rejects.toThrow(
+		await expect(tools.get("rule")?.call({ action: "set", id: 1, value: "Say hi.", saidBy: 1 })).rejects.toThrow(
 			"set requires source",
 		);
 
@@ -1046,6 +1046,74 @@ describe("the Pi extension", () => {
 			"mark requires state",
 		);
 		expect(await agentStartMessage(registered)).toMatchObject({ content: "waiting on: none\nheld: none" });
+	});
+
+	it("lists the rules with /rules, open first, and makes the change that the user picks, or with no UI only prints them", async () => {
+		host = await startHost();
+		const registered = await load();
+		const create = { type: "rule", action: "create", caller: "cli", kind: "domain" } as const;
+		await request({ ...create, name: "done", value: "Done." }, { start: false });
+		await request({ ...create, name: "gone", value: "Gone." }, { start: false });
+		await request({ type: "rule", action: "retire", caller: "cli", id: 2 }, { start: false });
+		await request({ type: "person", action: "add", name: "Sam" }, { start: false });
+		const thread = await request({ type: "thread", action: "add", topic: "Rules", persons: [1] }, { start: false });
+		const log = { type: "message", action: "log", caller: "cli", from: 1, direction: "in", text: "Hi" } as const;
+
+		if (thread === undefined || !("id" in thread)) throw new Error("no host");
+		const said = await request({ ...log, thread: thread.id }, { start: false });
+		const set = { type: "rule", action: "set", caller: "cli", saidBy: 1, source: said?.id ?? 0 } as const;
+		await request({ ...set, name: "ask", kind: "conduct", value: "Ask first." }, { start: false });
+
+		const lines = [
+			`3 ask (conduct, open): Ask first. [said by Sam (1) in message ${said?.id}]`,
+			"1 done (domain, decided): Done. [said by user]",
+			"2 gone (domain, retired): Gone. [said by user]",
+		];
+
+		const written: unknown[][] = [];
+		const write = vi.spyOn(process.stdout, "write").mockImplementation((...args) => written.push(args) > 0);
+		const quiet = { hasUI: false, sessionManager: { getSessionId: () => "session" }, ui: {} };
+
+		try {
+			// SAFETY: with no UI, the handler of `/rules` reads only these fields of the context.
+			await registered.commands.get("rules")?.handler("", quiet as Parameters<Command["handler"]>[1]);
+		} finally {
+			write.mockRestore();
+		}
+
+		expect(written).toEqual([[lines.map((line) => `${line}\n`).join("")]]);
+		expect(await request({ type: "rule", action: "list", status: "open" }, { start: false })).toMatchObject({
+			rules: [{ id: 3 }],
+		});
+
+		const options: string[][] = [];
+
+		const ctx = {
+			hasUI: true,
+			sessionManager: { getSessionId: () => "session" },
+			ui: {
+				select: async (_title: string, items: string[]) => {
+					options.push(items);
+
+					return items.includes("Decide") ? "Decide" : lines[0];
+				},
+				notify: (message: string, type?: string) => {
+					registered.notifications.push({ message, type });
+				},
+			},
+		};
+
+		// SAFETY: for a decide, the handler of `/rules` reads only these fields of the context.
+		await registered.commands.get("rules")?.handler("", ctx as Parameters<Command["handler"]>[1]);
+		expect(options).toEqual([
+			["New rule", ...lines],
+			["Decide", "Retire", "Edit", "Delete"],
+		]);
+		const decided = `3 ask (conduct, decided): Ask first. [said by Sam (1) in message ${said?.id}]`;
+		expect(registered.notifications).toEqual([{ message: decided, type: "info" }]);
+		expect(await request({ type: "rule", action: "list", status: "decided" }, { start: false })).toMatchObject({
+			rules: [{ id: 1 }, { id: 3, by: "session" }],
+		});
 	});
 
 	it("shows the todos of the session while one is open or doing, at once after a call, only on a change, and nothing without a host", async () => {
@@ -1134,13 +1202,14 @@ describe("the Pi extension", () => {
 					name: "ask",
 					kind: "conduct",
 					value: "Ask first.",
-					status: "decided",
 					saidBy: "user",
 					source: said?.id ?? 0,
 				},
 				{ start: false },
 			),
 		);
+
+		await request({ type: "rule", action: "decide", caller: "user", id: rule.id }, { start: false });
 
 		const reason = `It breaks rule ${rule.id} ask: Ask first.`;
 		const push = { toolName: "bash", input: { command: "git push" } };

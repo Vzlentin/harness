@@ -131,8 +131,8 @@ export const RuleStatus = Type.Enum(RULE_STATES);
 export type RuleStatus = Static<typeof RuleStatus>;
 
 /**
- * A rule of the project, with who said it and the message that is its source. `at` is the time of its last change, in
- * epoch milliseconds, and `by` is the caller of that change.
+ * A rule of the project, with who said it and the message that is its source. A rule that the user creates or edits has
+ * no source. `at` is the time of its last change, in epoch milliseconds, and `by` is the caller of that change.
  */
 export const Rule = Type.Object({
 	id: LocalId,
@@ -141,7 +141,7 @@ export const Rule = Type.Object({
 	value: Text,
 	status: RuleStatus,
 	saidBy: Author,
-	source: StoreId,
+	source: Type.Optional(StoreId),
 	replaces: Type.Optional(LocalId),
 	at: Time,
 	by: Caller,
@@ -151,8 +151,8 @@ export type Rule = Static<typeof Rule>;
 
 /**
  * The fields of each held action: the request ID of the call that the gate held, the caller that made it, its tool, its
- * command as it runs, the decided conduct rule that it breaks, absent when the gate failed, and the reason. `at` is the
- * time of its last change, and `by` is the caller of that change.
+ * command as it runs, the decided conduct rule that it breaks, absent when the gate failed or the call changes a rule,
+ * and the reason. `at` is the time of its last change, and `by` is the caller of that change.
  */
 const HeldFields = {
 	id: LocalId,
@@ -413,13 +413,16 @@ export const MessageMarkInput = Type.Object({ message: StoreId, state: MessageMa
 
 export type MessageMarkInput = Static<typeof MessageMarkInput>;
 
-/** The input of a new rule, which can replace an older rule. Its status defaults to `open`. */
+/**
+ * The input of a new rule of an agent, which can name the older rule that it replaces. Its status is `open`: only the
+ * user changes the status of a rule.
+ */
 export const RuleNew = Type.Object({
 	id: Type.Optional(Type.Never()),
 	name: Text,
 	kind: RuleKind,
 	value: Text,
-	status: Type.Optional(RuleStatus),
+	status: Type.Optional(Type.Never()),
 	saidBy: Author,
 	source: StoreId,
 	replaces: Type.Optional(LocalId),
@@ -427,13 +430,13 @@ export const RuleNew = Type.Object({
 
 export type RuleNew = Static<typeof RuleNew>;
 
-/** The input of a change of the rule `id`. The host refuses `replaces` on a change. */
+/** The input of a change of the open rule `id` by an agent. The host refuses `replaces` on a change. */
 export const RuleEdit = Type.Object({
 	id: LocalId,
 	name: Type.Optional(Text),
 	kind: Type.Optional(RuleKind),
 	value: Type.Optional(Text),
-	status: Type.Optional(RuleStatus),
+	status: Type.Optional(Type.Never()),
 	saidBy: Author,
 	source: StoreId,
 	replaces: Type.Optional(LocalId),
@@ -445,6 +448,36 @@ export type RuleEdit = Static<typeof RuleEdit>;
 export const RuleSet = Type.Union([RuleNew, RuleEdit]);
 
 export type RuleSet = Static<typeof RuleSet>;
+
+/**
+ * A change of the status of the rule `id` by the user: `decide` puts an open rule in effect, `retire` ends an open or a
+ * decided rule, and `delete` removes the rule.
+ */
+export const RuleStateChange = Type.Object({
+	action: Type.Union([Type.Literal("decide"), Type.Literal("retire"), Type.Literal("delete")]),
+	id: LocalId,
+});
+
+export type RuleStateChange = Static<typeof RuleStateChange>;
+
+/** A change of the text of the rule `id`, in any status, by the user. */
+export const RuleUserEdit = Type.Object({
+	action: Type.Literal("edit"),
+	id: LocalId,
+	name: Type.Optional(Text),
+	kind: Type.Optional(RuleKind),
+	value: Type.Optional(Text),
+});
+
+export type RuleUserEdit = Static<typeof RuleUserEdit>;
+
+/** A new rule of the user, which is decided. */
+export const RuleCreate = Type.Object({ action: Type.Literal("create"), name: Text, kind: RuleKind, value: Text });
+
+export type RuleCreate = Static<typeof RuleCreate>;
+
+/** A change of a rule that only the user makes. */
+export type RuleUserChange = RuleStateChange | RuleUserEdit | RuleCreate;
 
 /** The filter of a read of the rules: only the rules of `kind` and of `status` when they are given. */
 export const RuleFilter = Type.Object({ kind: Type.Optional(RuleKind), status: Type.Optional(RuleStatus) });
@@ -587,7 +620,9 @@ export function messageLine(message: Message, names: PersonNames): string {
 }
 
 function saidLine(fact: Pick<Rule, "saidBy" | "source">, names: PersonNames): string {
-	return `said by ${authorText(fact.saidBy, names)} in message ${fact.source}`;
+	const source = fact.source === undefined ? "" : ` in message ${fact.source}`;
+
+	return `said by ${authorText(fact.saidBy, names)}${source}`;
 }
 
 export function ruleLine(rule: Rule, names: PersonNames): string {

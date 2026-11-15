@@ -59,11 +59,15 @@ harness page <folder> --slug <slug>  # put a page on harness inspect; its Send p
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
 harness tree                # print the agents and the runs of the project, with their todos
+harness rule list           # the rules of the project (rule decide|retire|delete <id>, rule edit, rule create)
 harness main                # open the agent of the main project in Pi
 ```
 
 In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
 type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
+
+In Pi, `/rules` lists the rules of the project, the open ones first, and lets you decide, retire, edit, create or
+delete one. An agent only proposes a rule: it adds it as open with its `rule` tool, and only you put it in effect.
 
 In Pi, `/vc` (or `ctrl+shift+y`) selects a block of the agent messages, such as a code block, and copies it. A copy
 that holds a draft of a thread marks that draft sent.
@@ -71,7 +75,8 @@ that holds a draft of a thread marks that draft sent.
 When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
 
 When a project has decided conduct rules, a gate holds each tool call of its agents that breaks one, until you
-approve it. The classifier of the gate is `gateClassifier` in Pi's settings (default `openrouter/typesafe/jev-1.14`).
+approve it. The gate also holds each bash call of an agent that decides, retires, edits, creates or deletes a rule,
+such as `harness rule decide 3`, with no model call. The classifier of the gate is `gateClassifier` in Pi's settings (default `openrouter/typesafe/jev-1.14`).
 When the host does not answer, Pi asks you one time whether to run with no gate until it answers.
 
 Before your input, the agent of a project gets a short catch-up: the workflows runs that ended and the new commits on

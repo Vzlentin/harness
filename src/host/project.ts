@@ -55,6 +55,7 @@ import {
 	type RuleFilter,
 	type RuleList,
 	type RuleSet,
+	type RuleUserChange,
 	RULES_KIND,
 	type Thread,
 	type ThreadAdd,
@@ -69,7 +70,13 @@ const PAGE = 200;
 
 const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
-const Rules = sessionDoc<RuleList>(RULES_KIND, () => ({ rules: [] }));
+
+/**
+ * The rules, with `last`, the highest ID that a rule had, so that the ID of a deleted rule is never given again. A
+ * store from before `last` has none, and its last rule has the highest ID.
+ */
+const Rules = sessionDoc<RuleList & { last?: number }>(RULES_KIND, () => ({ rules: [] }));
+
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
 const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
 const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
@@ -188,8 +195,8 @@ export async function readOutbox(reader: Pick<DocumentReader, "snapshot">, conte
 }
 
 /**
- * Adds or changes a rule for the caller `by`, and gives it. A new rule has the status `open` by default, and retires the rule that it
- * replaces; the retired rule keeps its own author and source.
+ * Adds or changes a rule of an agent for the caller `by`, and gives it. A new rule is `open`, and `replaces` names the
+ * rule that it replaces, which a decide of the new rule retires. Only an open rule changes.
  */
 export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule> {
 	if (change.id !== undefined && change.replaces !== undefined) {
@@ -203,40 +210,94 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 	let rule: Rule;
 
 	if (change.id === undefined) {
-		const replaced = change.replaces === undefined ? undefined : known(list.rules, change.replaces, "rule");
 		rule = {
-			id: nextId(list.rules),
+			id: nextRuleId(list),
 			name: change.name,
 			kind: change.kind,
 			value: change.value,
-			status: change.status ?? "open",
+			status: "open",
 			saidBy: change.saidBy,
 			source: change.source,
 			at,
 			by,
 		};
 
-		if (replaced !== undefined) {
-			rule.replaces = replaced.id;
-			Object.assign(replaced, { status: "retired", at, by });
-		}
-
+		if (change.replaces !== undefined) rule.replaces = known(list.rules, change.replaces, "rule").id;
 		list.rules.push(rule);
 	} else {
 		rule = known(list.rules, change.id, "rule");
+		mustBeOpen(rule);
+		setRuleText(rule, change);
 		Object.assign(rule, { saidBy: change.saidBy, source: change.source, at, by });
-
-		if (change.name !== undefined) rule.name = change.name;
-
-		if (change.kind !== undefined) rule.kind = change.kind;
-
-		if (change.value !== undefined) rule.value = change.value;
-
-		if (change.status !== undefined) rule.status = change.status;
 	}
 
 	// A draft cannot be used after its commit, so the rule is a copy.
 	return { ...rule };
+}
+
+/** Fails when `rule` is not open. */
+function mustBeOpen(rule: Rule): void {
+	if (rule.status !== "open") throw new Error(`Rule ${rule.id} is ${rule.status}, not open`);
+}
+
+/** Sets on `rule` the name, the kind and the value of `text` that are given. */
+function setRuleText(rule: Rule, text: Partial<Pick<Rule, "name" | "kind" | "value">>): void {
+	if (text.name !== undefined) rule.name = text.name;
+
+	if (text.kind !== undefined) rule.kind = text.kind;
+
+	if (text.value !== undefined) rule.value = text.value;
+}
+
+/**
+ * Makes the change `change` of the user for the caller `by`, and gives the rule. A decide puts an open rule in effect,
+ * and retires the rule that it replaces when that rule is there and not retired. A retire ends an open or a decided
+ * rule. An edit changes the text of a rule in any status, and makes the user its author with no source. A create adds
+ * a decided rule of the user. A delete removes the rule; its ID is never given again.
+ */
+export async function changeRule(tx: Tx, change: RuleUserChange, by: string): Promise<Rule> {
+	const list = await tx.doc(Rules);
+	const at = Date.now();
+
+	if (change.action === "create") {
+		const { name, kind, value } = change;
+		const created: Rule = { id: nextRuleId(list), name, kind, value, status: "decided", saidBy: "user", at, by };
+		list.rules.push(created);
+
+		return { ...created };
+	}
+
+	const rule = known(list.rules, change.id, "rule");
+
+	switch (change.action) {
+		case "decide": {
+			mustBeOpen(rule);
+			const replaced = list.rules.find((found) => found.id === rule.replaces);
+
+			if (replaced !== undefined && replaced.status !== "retired")
+				Object.assign(replaced, { status: "retired", at, by });
+			Object.assign(rule, { status: "decided", at, by });
+
+			return { ...rule };
+		}
+
+		case "retire":
+			if (rule.status === "retired") throw new Error(`Rule ${rule.id} is retired`);
+			Object.assign(rule, { status: "retired", at, by });
+
+			return { ...rule };
+		case "edit":
+			setRuleText(rule, change);
+			Object.assign(rule, { saidBy: "user", at, by });
+			delete rule.source;
+
+			return { ...rule };
+		case "delete":
+			list.last = highRuleId(list);
+			list.rules.splice(list.rules.indexOf(rule), 1);
+
+			return { ...rule };
+	}
 }
 
 /**
@@ -757,6 +818,19 @@ export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T)
 
 function nextId(items: readonly { readonly id: number }[]): number {
 	return (items.at(-1)?.id ?? 0) + 1;
+}
+
+/** The highest ID that a rule of `list` had. */
+function highRuleId(list: RuleList & { last?: number }): number {
+	return Math.max(list.last ?? 0, list.rules.at(-1)?.id ?? 0);
+}
+
+/** The next ID of a rule of `list`, recorded as its `last`. */
+function nextRuleId(list: RuleList & { last?: number }): number {
+	const id = highRuleId(list) + 1;
+	list.last = id;
+
+	return id;
 }
 
 function known<T extends { readonly id: number }>(items: readonly T[], id: number, name: string): T {

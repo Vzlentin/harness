@@ -38,13 +38,18 @@ const NO_ABORT = new AbortController().signal;
 /** The marker of a draft in a command, `draft:<id>`, such as in the shell comment `# draft:12`. */
 const DRAFT_MARKER = /\bdraft:(\d+)\b/g;
 
-/** Step 1: whether the command can write outside the machine or change a decided rule. */
+/** A command that changes a rule as only the user does, such as `harness rule decide 3`. */
+const RULE_CHANGE = /\brule\s+(decide|retire|edit|create|delete)\b/;
+
+const RULE_CHANGE_REASON = "Only the user decides, retires, edits, creates or deletes a rule";
+
+/** Step 1: whether the command can write outside the machine. */
 const WRITES: ClassifierQuestion = {
 	type: "bool",
 	instructions:
-		"Does this command write to a system outside this machine that other people see or use (send, post, merge, deploy, trigger, push, update a shared document or ticket), or change a decided rule?",
+		"Does this command write to a system outside this machine that other people see or use (send, post, merge, deploy, trigger, push, update a shared document or ticket)?",
 	criteria: {
-		true: "It writes outside or changes a rule.",
+		true: "It writes outside.",
 		false: "It only reads, or changes local files only.",
 	},
 };
@@ -64,7 +69,8 @@ type Hold = Pick<HeldInput, "rule" | "reason">;
 /**
  * The reply of the gate to `request`, in this order. A read runs. An approved action of the same agent, tool and command
  * that ran for no call, or for this call, runs, and is marked as run by this call. A held or dropped action of the same
- * agent and request ID is given again. With no decided conduct rule, the call runs. Otherwise the classifier answers
+ * agent and request ID is given again. A bash call that changes a rule as only the user does is held with no rule and
+ * no question. With no decided conduct rule, the call runs. Otherwise the classifier answers
  * step 1 with the command, and step 2 with the command, the messages and the rules, and a call that breaks a rule is
  * held with it. A failure of the classifier holds the call with no rule and the error as the reason. A call that runs
  * marks each draft that its command names with `draft:<id>` as sent by the agent.
@@ -101,6 +107,13 @@ async function checkCall(
 	const again = heldFor(held, agent, requestId);
 
 	if (again !== undefined) return { runs: false, held: again };
+
+	if (tool === "bash" && RULE_CHANGE.test(command)) {
+		const input: HeldInput = { requestId, agent, tool, command, reason: RULE_CHANGE_REASON };
+
+		return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
+	}
+
 	const { rules } = await readRules(harness, { kind: "conduct", status: "decided" }, context);
 
 	if (rules.length === 0) return RUNS;

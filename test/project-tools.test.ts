@@ -146,18 +146,16 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 				},
 			},
 			{ name: "rule", arguments: { action: "set", id: 1, status: "decided", saidBy: "user", source: draft.id } },
-			{ name: "rule", arguments: { action: "list", status: "open" } },
+			{ name: "rule", arguments: { action: "list", kind: "domain" } },
 		]);
 
 		const second = handleOf(await cli(["spawn", "--prompt", "Keep the facts"]));
 		await cli(["wait", second]);
-		expect(cellResults.get(facts)).toEqual([
-			`1 scope (domain, open): 45 and 54. [said by user in message ${draft.id}]\n`,
-			`1 scope (domain, decided): 45 and 54. [said by user in message ${draft.id}]\n`,
-			"No rules\n",
-		]);
+		const line = `1 scope (domain, open): 45 and 54. [said by user in message ${draft.id}]\n`;
+		// A child cannot decide a rule: the tool has no status, so its validator drops it, and the rule stays open.
+		expect(cellResults.get(facts)).toEqual([line, line, line]);
 		const rules = await send({ type: "rule", action: "list" });
-		expect(rules).toMatchObject({ rules: [{ id: 1, status: "decided", saidBy: "user", source: draft.id }] });
+		expect(rules).toMatchObject({ rules: [{ id: 1, status: "open", saidBy: "user", source: draft.id }] });
 		// The second child wrote the facts, so its conversation is their caller, not the one that logged the messages.
 		const factsBy = Value.Parse(RuleList, rules).rules[0]?.by;
 		expect(factsBy).toMatch(/^\d+$/);

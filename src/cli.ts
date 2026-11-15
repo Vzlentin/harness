@@ -12,6 +12,7 @@ import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
+import { sendRuleChange, sendRuleList } from "./project-tool.ts";
 import {
 	cliCaller,
 	HARNESS_PROJECT,
@@ -21,7 +22,15 @@ import {
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
 import { pageDir } from "./protocol/paths.ts";
-import { ParleyAsks, parleyShowText } from "./protocol/project.ts";
+import {
+	ParleyAsks,
+	parleyShowText,
+	Rule,
+	type RuleFilter,
+	RuleKind,
+	RuleStatus,
+	type RuleUserChange,
+} from "./protocol/project.ts";
 import {
 	addProject,
 	type CommandName,
@@ -333,6 +342,120 @@ async function parleyCommand(args: string[], project: string | undefined): Promi
 
 	if (!Value.Check(ParleyAsks, reply)) throw new Error("The host replied with no parley");
 	process.stdout.write(parleyShowText(reply));
+}
+
+/** The options of `rule` after its action, by name, and the words that are not options. */
+type RuleOptions = { readonly words: readonly string[]; readonly options: ReadonlyMap<string, string> };
+
+const RULE_OPTIONS: ReadonlySet<string> = new Set(["--name", "--kind", "--value", "--status"]);
+
+function ruleOptions(args: string[]): RuleOptions {
+	const words: string[] = [];
+	const options = new Map<string, string>();
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+
+		if (!arg.startsWith("--")) {
+			words.push(arg);
+			continue;
+		}
+
+		if (!RULE_OPTIONS.has(arg) || options.has(arg)) fail(`Unknown rule argument: ${arg}`);
+		options.set(arg, valueAfter(args, i, arg));
+		i++;
+	}
+
+	return { words, options };
+}
+
+/** Prints the usage when `options` has an option that is not one of `allowed`. */
+function onlyOptions(options: RuleOptions["options"], allowed: readonly string[]): void {
+	if ([...options.keys()].some((option) => !allowed.includes(option))) usage();
+}
+
+function ruleId(value: string | undefined): number {
+	const id = Number(value);
+
+	if (!Value.Check(Rule.properties.id, id)) fail(`Invalid rule id: ${value}`);
+
+	return id;
+}
+
+function ruleKind(value: string | undefined): RuleKind | undefined {
+	if (value !== undefined && !Value.Check(RuleKind, value)) fail(`Invalid rule kind: ${value}`);
+
+	return value;
+}
+
+function ruleStatus(value: string | undefined): RuleStatus | undefined {
+	if (value !== undefined && !Value.Check(RuleStatus, value)) fail(`Invalid rule status: ${value}`);
+
+	return value;
+}
+
+/**
+ * The change of a rule by the user from the arguments of `rule`, or the filter of `rule list`. The action is the first
+ * argument, `list` when there is none, and the options come after it.
+ */
+function ruleArgs(args: string[]): RuleUserChange | { readonly action: "list"; readonly filter: RuleFilter } {
+	const [action = "list", ...after] = args;
+	const { words: rest, options } = ruleOptions(after);
+
+	switch (action) {
+		case "list": {
+			onlyOptions(options, ["--kind", "--status"]);
+
+			if (rest.length !== 0) usage();
+			const kind = ruleKind(options.get("--kind"));
+			const status = ruleStatus(options.get("--status"));
+
+			return { action, filter: { ...(kind && { kind }), ...(status && { status }) } };
+		}
+
+		case "decide":
+		case "retire":
+		case "delete":
+			onlyOptions(options, []);
+
+			if (rest.length !== 1) usage();
+
+			return { action, id: ruleId(rest[0]) };
+		case "edit": {
+			onlyOptions(options, ["--name", "--kind", "--value"]);
+
+			if (rest.length !== 1) usage();
+			const name = options.get("--name");
+			const kind = ruleKind(options.get("--kind"));
+			const value = options.get("--value");
+
+			return { action, id: ruleId(rest[0]), ...(name && { name }), ...(kind && { kind }), ...(value && { value }) };
+		}
+
+		case "create": {
+			onlyOptions(options, ["--name", "--kind", "--value"]);
+			const name = options.get("--name");
+			const kind = ruleKind(options.get("--kind"));
+			const value = options.get("--value");
+
+			if (rest.length !== 0 || name === undefined || kind === undefined || value === undefined) usage();
+
+			return { action, name, kind, value };
+		}
+
+		default:
+			usage();
+	}
+}
+
+/** Lists the rules of the project, or makes a change of a rule as the user, and prints the lines. */
+async function ruleCommand(args: string[], project: string | undefined): Promise<void> {
+	const call = ruleArgs(args);
+	const scope = cliScope(project);
+
+	const { text } = call.action === "list" ? await sendRuleList(call.filter, scope) : await sendRuleChange(call, scope);
+
+	process.stdout.write(text);
 }
 
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
@@ -666,6 +789,15 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
 		parley: { usage: ["  harness parley show <slug>"], run: parleyCommand },
+		rule: {
+			usage: [
+				"  harness rule [list [--kind <kind>] [--status <status>]]",
+				"  harness rule (decide | retire | delete) <id>",
+				"  harness rule edit <id> [--name <name>] [--kind <kind>] [--value <text>]",
+				"  harness rule create --name <name> --kind <kind> --value <text>",
+			],
+			run: ruleCommand,
+		},
 		todo: {
 			usage: [
 				"  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]",

@@ -1,9 +1,9 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the answers
- * of the user to the asks of the session, the `todo` tool and the todo widget, the `thread`, `rule`
- * and `parley` tools of the store of the project, the gate on the tool calls of the session, the mirror sessions of
- * `/harness`, the tools bridge in the IPython kernels of the session, and `/vc`, the visual copy of the transcript,
- * which marks a copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
+ * of the user to the asks of the session, the `todo` tool and the todo widget, the `thread`, `rule` and `parley` tools
+ * of the store of the project, `/rules`, the gate on the tool calls of the session, the mirror sessions of `/harness`,
+ * the tools bridge in the IPython kernels of the session, and `/vc`, the visual copy of the transcript, which marks a
+ * copied draft sent. They use the client of `@vzlentin/harness`, the dependency of this package, from its built
  * `dist/`, and start the host of that install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
@@ -35,6 +35,7 @@ import { registerGate } from "./gate.ts";
 import { registerMirror } from "./mirror.ts";
 import { PolledWidget } from "./polled-widget.ts";
 import { registerProject } from "./project.ts";
+import { registerRules } from "./rules.ts";
 import { registerTodo } from "./todo.ts";
 import { registerVisualCopy } from "./visual-copy.ts";
 
@@ -90,6 +91,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	registerMirror(pi, harness, registerTodo(pi, harness));
 	registerBridge(pi, harness);
 	registerProject(pi, harness);
+	registerRules(pi, harness);
 	registerGate(pi, harness);
 	registerVisualCopy(pi, harness);
 	// One open `answers` request for each session brings the answers of its children, and the answers of the user to its

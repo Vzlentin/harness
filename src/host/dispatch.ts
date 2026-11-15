@@ -29,6 +29,7 @@ import {
 	addThread,
 	answerAsks,
 	approveHeld,
+	changeRule,
 	dropAsk,
 	dropHeld,
 	endParley,
@@ -350,6 +351,15 @@ function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Pr
 			return handler.harness.commit((tx) => setRule(tx, request, request.caller), context);
 		case "list":
 			return readRules(handler.harness, request, context);
+		case "decide":
+		case "retire":
+		case "delete":
+		case "edit":
+		case "create": {
+			const { type: _, caller, ...change } = request;
+
+			return handler.harness.commit((tx) => changeRule(tx, change, caller), context);
+		}
 	}
 }
 

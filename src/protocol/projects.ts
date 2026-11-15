@@ -20,6 +20,7 @@ const COMMANDS = [
 	"query",
 	"tree",
 	"parley",
+	"rule",
 	"todo",
 	"attach",
 	"host",

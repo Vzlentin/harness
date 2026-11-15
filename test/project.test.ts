@@ -166,13 +166,20 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				name: "ask first",
 				kind: "conduct",
 				value: "Ask before a write that Sam sees.",
-				status: "decided",
 				saidBy: sam.id,
 				source: asked.id,
 			}),
 		);
 
-		// A new rule that replaces the scope retires it.
+		expect(await send({ type: "rule", action: "decide", caller: "user", id: ask.id })).toMatchObject({
+			id: ask.id,
+			status: "decided",
+			saidBy: sam.id,
+			source: asked.id,
+			by: "user",
+		});
+
+		// A new rule names the rule that it replaces, which stays open until the user decides the new rule.
 		const wider = Value.Parse(
 			Rule,
 			await send({
@@ -189,6 +196,11 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		);
 
 		expect(wider).toMatchObject({ id: 3, replaces: scope.id, status: "open", saidBy: sam.id, source: asked.id });
+		expect(await send({ type: "rule", action: "list", status: "retired" })).toEqual({ rules: [] });
+		expect(await send({ type: "rule", action: "decide", caller: "user", id: wider.id })).toMatchObject({
+			id: wider.id,
+			status: "decided",
+		});
 		// The retired rule keeps the person who said it and its source message.
 		expect(await send({ type: "rule", action: "list", status: "retired" })).toMatchObject({
 			rules: [{ id: scope.id, status: "retired", saidBy: "user", source: answer.id }],
@@ -206,7 +218,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			rules: [
 				{ id: scope.id, status: "retired" },
 				{ id: ask.id, status: "decided", saidBy: sam.id },
-				{ id: wider.id, status: "open" },
+				{ id: wider.id, status: "decided" },
 			],
 		});
 
@@ -283,8 +295,15 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			[noName, "Invalid rule request: name is required"],
 			[{ ...newRule, name: " " }, "Invalid rule request: name is not valid"],
 			[
-				{ type: "rule", action: "set", caller: "cli", id: rule.id, status: "retired", saidBy: "user" },
+				{ type: "rule", action: "set", caller: "cli", id: rule.id, value: "x", saidBy: "user" },
 				"Invalid rule request: source is required",
+			],
+			[{ ...newRule, status: "decided" }, "Invalid rule request: status is not allowed"],
+			[{ ...newRule, id: rule.id, status: "retired" }, "Invalid rule request: status is not allowed"],
+			[{ type: "rule", action: "decide", caller: "cli" }, "Invalid rule request: id is required"],
+			[
+				{ type: "rule", action: "create", caller: "cli", name: "x", kind: "domain" },
+				"Invalid rule request: value is required",
 			],
 			[{ type: "term", action: "list" }, "Unknown request: term"],
 			[
@@ -296,7 +315,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				{ type: "part", action: "add", caller: "cli", kind: "table", path: "x.md", rules: [], terms: [] },
 				"Unknown request: part",
 			],
-			[{ ...newRule, status: "final" }, "Invalid rule request: status is not valid"],
 			[{ type: "thread", action: "add", topic: "No one", persons: [] }, "Invalid thread request: persons is not valid"],
 			[{ type: "person", action: "add", name: " " }, "Invalid person request: name is not valid"],
 		];
@@ -336,11 +354,16 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				action: "set",
 				caller: "cli",
 				id: 99,
-				status: "retired",
+				value: "x",
 				saidBy: "user",
 				source: message.id,
 			}),
 		).rejects.toThrow("Unknown rule: 99");
+
+		for (const action of ["decide", "retire", "delete", "edit"] as const) {
+			await expect(send({ type: "rule", action, caller: "cli", id: 99 })).rejects.toThrow("Unknown rule: 99");
+		}
+
 		expect(await read()).toEqual(before);
 	});
 
@@ -376,8 +399,15 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 
 			const said = { type: "rule", action: "set", caller: "cli", saidBy: "user", source } as const;
 
-			const add = async (name: string, kind: "conduct" | "domain", status: "open" | "decided" | "retired") =>
-				Value.Parse(Rule, await send({ ...said, name, kind, value: `The rule ${name}.`, status }, "rules")).id;
+			const add = async (name: string, kind: "conduct" | "domain", status: "open" | "decided" | "retired") => {
+				const { id } = Value.Parse(Rule, await send({ ...said, name, kind, value: `The rule ${name}.` }, "rules"));
+
+				if (status === "decided") await send({ type: "rule", action: "decide", caller: "user", id }, "rules");
+
+				if (status === "retired") await send({ type: "rule", action: "retire", caller: "user", id }, "rules");
+
+				return id;
+			};
 
 			const openConduct = await add("a", "conduct", "open");
 			const decidedConduct = await add("b", "conduct", "decided");
@@ -403,6 +433,130 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			});
 		} finally {
 			await rules.close();
+		}
+	});
+
+	it("lets an agent change only an open rule, and the user decide, retire, edit, create and delete a rule", async () => {
+		const project = "user-rules";
+		const dir = await mkdtemp(join(root, `${project}-`));
+		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
+
+		const run = async () => {
+			const found = await runHost({ project, cwd: dir, models });
+
+			if (found === undefined) throw new Error("no host");
+
+			return found;
+		};
+
+		let started = await run();
+
+		try {
+			const person = Value.Parse(Person, await send({ type: "person", action: "add", name: "Lea" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Rules", persons: [person.id] }, project),
+			);
+
+			const log = { type: "message", action: "log", caller: "cli", thread: thread.id, from: "user" } as const;
+			const source = (await send({ ...log, direction: "out", text: "Rules." }, project)).id;
+			const said = { type: "rule", action: "set", caller: "agent", saidBy: "user", source } as const;
+			const old = Value.Parse(Rule, await send({ ...said, name: "old", kind: "domain", value: "Old." }, project));
+
+			const next = Value.Parse(
+				Rule,
+				await send({ ...said, name: "new", kind: "domain", value: "New.", replaces: old.id }, project),
+			);
+
+			const decide = { type: "rule", action: "decide", caller: "user" } as const;
+			await send({ ...decide, id: old.id }, project);
+
+			// An agent changes an open rule only, and the user decides an open rule only.
+			await expect(send({ ...said, id: old.id, value: "Changed." }, project)).rejects.toThrow(
+				`Rule ${old.id} is decided, not open`,
+			);
+			await expect(send({ ...decide, id: old.id }, project)).rejects.toThrow(`Rule ${old.id} is decided, not open`);
+			// The decide of the new rule retires the rule that it replaces.
+			expect(await send({ ...decide, id: next.id }, project)).toMatchObject({ id: next.id, status: "decided" });
+			expect(await send({ type: "rule", action: "list", status: "retired" }, project)).toMatchObject({
+				rules: [{ id: old.id, saidBy: "user", source, by: "user" }],
+			});
+			await expect(send({ type: "rule", action: "retire", caller: "user", id: old.id }, project)).rejects.toThrow(
+				`Rule ${old.id} is retired`,
+			);
+
+			// An edit of the user keeps the status, and makes the user its author with no source.
+			const edited = await cli(["--project", project, "rule", "edit", String(next.id), "--value", "Newer."]);
+			expect(edited).toEqual({
+				code: 0,
+				stdout: `${next.id} new (domain, decided): Newer. [said by user; replaces ${old.id}]\n`,
+				stderr: "",
+			});
+
+			const created = await cli([
+				"--project",
+				project,
+				"rule",
+				"create",
+				"--name",
+				"go",
+				"--kind",
+				"conduct",
+				"--value",
+				"Ask first.",
+			]);
+
+			expect(created.stdout).toBe(`${next.id + 1} go (conduct, decided): Ask first. [said by user]\n`);
+			const stored = Value.Parse(RuleList, await send({ type: "rule", action: "list" }, project)).rules;
+			expect(stored.find((rule) => rule.id === next.id)).not.toHaveProperty("source");
+
+			// A delete removes the rule, and its ID is never given again, also after a restart.
+			const deleted = await cli(["--project", project, "rule", "delete", String(next.id + 1)]);
+			expect(deleted.code).toBe(0);
+			await started.close();
+			started = await run();
+
+			expect(await send({ type: "rule", action: "list" }, project)).toMatchObject({
+				rules: [{ id: old.id }, { id: next.id }],
+			});
+
+			const third = await send({ ...said, name: "third", kind: "domain", value: "Third.", replaces: next.id }, project);
+			expect(third).toMatchObject({ id: next.id + 2, status: "open" });
+			await send({ type: "rule", action: "delete", caller: "user", id: next.id }, project);
+			// A decide of a rule whose replaced rule went retires nothing.
+			expect(await send({ ...decide, id: next.id + 2 }, project)).toMatchObject({ status: "decided" });
+			expect(await send({ type: "rule", action: "list" }, project)).toMatchObject({
+				rules: [
+					{ id: old.id, status: "retired" },
+					{ id: next.id + 2, status: "decided" },
+				],
+			});
+			expect((await cli(["--project", project, "rule", "decide", "0"])).stderr).toBe("Invalid rule id: 0\n");
+			expect((await cli(["--project", project, "rule", "retire", "99"])).stderr).toBe("Unknown rule: 99\n");
+		} finally {
+			await started.close();
+		}
+	});
+
+	it("stores only the fields of a rule for a create and an edit of the user", async () => {
+		const project = "user-rule-fields";
+		const started = await projectHost(project);
+
+		try {
+			const fields = { type: "rule", action: "create", name: "a", kind: "domain", value: "A." } as const;
+			await send({ ...fields, caller: "cli" }, project);
+			const at = expect.any(Number);
+			const created = { id: 1, name: "a", kind: "domain", value: "A.", status: "decided", saidBy: "user", at };
+			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules: [{ ...created, by: "cli" }] });
+
+			await send({ type: "rule", action: "edit", caller: "cli2", id: 1, value: "B." }, project);
+
+			expect(await send({ type: "rule", action: "list" }, project)).toEqual({
+				rules: [{ ...created, value: "B.", by: "cli2" }],
+			});
+		} finally {
+			await started.close();
 		}
 	});
 
