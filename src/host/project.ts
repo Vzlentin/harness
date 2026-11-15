@@ -64,6 +64,7 @@ import {
 	type ThreadMessages,
 	THREADS_KIND,
 } from "../protocol/project.ts";
+import type { StoreFile } from "../protocol/store-file.ts";
 import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
 
 /** The number of entries that one page of a thread read gives. */
@@ -482,6 +483,48 @@ export async function readRules(
 	);
 
 	return { rules: rules.map((rule) => ({ ...rule })) };
+}
+
+/**
+ * Writes the lists of `file` in `tx`, into a store whose lists are empty. Each thread gets a new conversation and each
+ * message a new entry, in file order, and the source of each rule gets the new ID of its message. Each message out gets
+ * its state in the outbox, with its time as `written` and its last change. `last` of the rules is the higher of the
+ * file and the store.
+ */
+export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
+	const messageIds = new Map<number, number>();
+	const threads = await tx.doc(Threads);
+	const outbox = await tx.doc(Outbox);
+
+	for (const { messages, ...thread } of file.threads) {
+		const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+		threads.threads.push(copyThread({ ...thread, id: conversation.id }));
+
+		for (const message of messages) {
+			const { from, direction, at, text, by } = message;
+			const entry = await tx.appendEntry(MessageEntry, conversation.id, { data: { from, direction, at, text, by } });
+			messageIds.set(message.id, entry.id);
+
+			if (message.direction === "out") {
+				const { state, changed } = message;
+				outbox.messages.push({ id: entry.id, thread: conversation.id, state, written: at, ...changed });
+			}
+		}
+	}
+
+	(await tx.doc(Persons)).persons.push(...file.persons);
+	const rules = await tx.doc(Rules);
+
+	rules.rules.push(
+		...file.rules.map((rule) =>
+			rule.source === undefined ? rule : { ...rule, source: mappedId(messageIds, rule.source, "message") },
+		),
+	);
+
+	rules.last = Math.max(file.lastRule, highRuleId(rules));
+	(await tx.doc(Held)).held.push(...file.held);
+	(await tx.doc(Parleys)).parleys.push(...file.parleys);
+	(await tx.doc(Asks)).asks.push(...file.asks);
 }
 
 /** The highest ID that a rule had, also a rule that is gone, or 0 when no rule was set. */
@@ -907,6 +950,15 @@ function copyThread(thread: Thread): Thread {
 
 function copyHeld(held: HeldAction): HeldAction {
 	return held.state === "approved" && held.ran !== undefined ? { ...held, ran: { ...held.ran } } : { ...held };
+}
+
+/** The new ID of the old ID `id` of a `name` in `ids`. */
+function mappedId(ids: ReadonlyMap<number, number>, id: number, name: string): number {
+	const found = ids.get(id);
+
+	if (found === undefined) throw new Error(`Unknown ${name}: ${id}`);
+
+	return found;
 }
 
 function conversationId(id: number): ConversationId {

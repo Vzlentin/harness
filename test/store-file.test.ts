@@ -1,53 +1,19 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { request } from "../src/client/client.ts";
-import { type Host, runHost } from "../src/host/run.ts";
+import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { Message, Person, Rule, Thread } from "../src/protocol/project.ts";
-import type { Replies, Request } from "../src/protocol/requests.ts";
-import { STORE_FILE_VERSION, StoreFile } from "../src/protocol/store-file.ts";
+import { STORE_FILE_VERSION } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { Todo } from "../src/protocol/todo.ts";
-import { cli, models, root, setUp, tearDown, until } from "./helpers.ts";
+import { projectHost, readStoreFile, send, setUp, tearDown, until } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
-
-/** Runs the host of the new project `name` in this process. */
-async function projectHost(name: string): Promise<Host> {
-	const dir = await mkdtemp(join(root, `${name}-`));
-	expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
-	const host = await runHost({ project: name, cwd: dir, models });
-
-	if (host === undefined) throw new Error("no host");
-
-	return host;
-}
-
-/** Sends `line` to the host of `project` through the socket. */
-async function send<T extends Request["type"]>(
-	line: Extract<Request, { type: T }>,
-	project: string,
-): Promise<Replies[T]> {
-	const reply = await request(line, { start: false, project });
-
-	if (reply === undefined) throw new Error("no host");
-
-	return reply;
-}
-
-/** `store.json` of `project`, as a program with no host reads it, or undefined while it does not exist. */
-function readStoreFile(project: string): StoreFile | undefined {
-	const path = statePaths(project).store;
-
-	if (!existsSync(path)) return undefined;
-
-	return Value.Parse(StoreFile, JSON.parse(readFileSync(path, "utf8")));
-}
 
 beforeAll(async () => {
 	await setUp();

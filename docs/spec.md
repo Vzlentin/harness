@@ -101,7 +101,7 @@ harness create web --cwd ~/Dev/web
 harness projects
 ```
 
-- `create <name> --cwd <dir>` prints `Created <name> (<dir>)`, where `<dir>` is the real path of the directory. A relative `--cwd` is relative to the current directory. The name has 1 to 32 characters: `a-z` first, then `a-z`, `0-9` or `-`. It cannot be `main` or a command name (`spawn`, `status`, `rename`, `send`, `wait`, `stop`, `list`, `query`, `tree`, `parley`, `rule`, `todo`, `attach`, `host`, `create`, `projects`, `inspect` or `page`); `addProject` of `@vzlentin/harness/projects` refuses these names too, with `A project cannot have the name <name>`, and `COMMAND_NAMES` gives the command names. A name that exists, and a directory that does not exist, are errors.
+- `create <name> --cwd <dir>` prints `Created <name> (<dir>)`, where `<dir>` is the real path of the directory. A relative `--cwd` is relative to the current directory. The name has 1 to 32 characters: `a-z` first, then `a-z`, `0-9` or `-`. It cannot be `main` or a command name (`spawn`, `status`, `rename`, `send`, `wait`, `stop`, `list`, `query`, `tree`, `parley`, `rule`, `todo`, `attach`, `host`, `create`, `projects`, `inspect`, `page` or `store`); `addProject` of `@vzlentin/harness/projects` refuses these names too, with `A project cannot have the name <name>`, and `COMMAND_NAMES` gives the command names. A name that exists, and a directory that does not exist, are errors.
 - `projects` prints `<name>  <dir>` for each project, in creation order, then `main`.
 - `--version` prints the version of the package. It takes no argument and no `--project`.
 
@@ -178,6 +178,22 @@ harness rule create --name <name> --kind <kind> --value <text>
 - `decide`, `retire`, `edit`, `create` and `delete` send the `rule` request of the same name, and print the line of the rule of the reply.
 - An ID that is not a positive integer fails with `Invalid rule id: <value>`, a kind that is not `conduct` or `domain` with `Invalid rule kind: <value>`, a status that is not `open`, `decided` or `retired` with `Invalid rule status: <value>`, and an unknown option with `Unknown rule argument: <option>`. Other arguments print the usage. The other errors come from the host.
 - The gate holds a `bash` call of an agent that runs one of these changes, until the user approves it (see the `gate` request in [Host](#host)).
+
+### Store
+
+`harness store load` writes the lists of a store file, such as the `store.json` of another project (see [Host](#host)), into the store of the project. The project is `--project`, then `HARNESS_PROJECT`, then the cwd. The host of the project must be down: the command takes the lock of the host, and starts no host.
+
+```sh
+harness store load <file>
+```
+
+- The command checks the file before it opens the store. A file with a `version` other than 1 fails with `<file> has the version <version>: harness store load reads only the version 1`. A file that is not JSON, that does not match the schema of `store.json`, that has an ID twice, or whose references do not resolve fails with `<file> is not a store file: <reason>`. The IDs: each ID is there once in `persons`, `threads`, `rules`, `held`, `parleys`, `asks`, `todos` and each list of `callerTodos`, each message ID is there once in all the threads together, and each caller is there once in `callerTodos`. The references: each message names its thread, and the `source` of each rule names a message of the file. The schema gives each message out `changed` and no message in.
+- When a host runs for the project, it fails with `A harness host runs for <project>: stop it, then run harness store load again`.
+- When a list of the store has an item, it fails with `The store of <project> is not empty: harness store load writes only into an empty store`. The highest ID that a rule had does not count.
+- The store cannot keep the IDs of the threads and the messages. Each thread gets a new ID and each message a new ID, in file order, and the `source` of each rule gets the new ID of its message. Text that holds an ID, such as the command of a held action or the text of a message, does not change. The IDs of the persons, rules, held actions, parleys, asks and todos, and the callers, do not change. Each message out gets its state in the outbox of the store: its `state`, its `at` as the time it was written, and the last change of its state from `changed`.
+- The highest ID that a rule had is the higher of `lastRule` and the one of the store, so the ID of a deleted rule is never given again.
+- The command writes all the lists in one commit, also the list of each caller with no todos. When the store has no root conversation, that commit creates it.
+- It prints one line `<list>: <count>` for each list, in this order: `persons`, `threads`, `messages`, `rules`, `held`, `parleys`, `asks`, `outbox`, the messages out, `todos`, and `callerTodos`, the todos of all the callers. Other arguments print the usage.
 
 ## Open in Pi
 

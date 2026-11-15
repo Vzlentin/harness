@@ -166,6 +166,23 @@ export async function readCallerTodos(
 	);
 }
 
+/**
+ * Writes `todos` to the list of the root conversation `root` in `tx`, and the list of each caller of `callerTodos`, also
+ * an empty one, into a store whose lists are empty.
+ */
+export async function loadTodos(
+	tx: Tx,
+	root: ConversationId,
+	todos: readonly Todo[],
+	callerTodos: readonly CallerTodoList[],
+): Promise<void> {
+	(await draftOf(tx, { kind: "conversation", id: root })).todos.push(...todos.map((todo) => ({ ...todo })));
+
+	for (const list of callerTodos) {
+		(await draftOf(tx, { kind: "caller", caller: list.caller })).todos.push(...list.todos.map((todo) => ({ ...todo })));
+	}
+}
+
 /** Whether `change` can change the list of the conversation `id` or the list of a caller. */
 export function todoListChange(change: CommitChange, id: ConversationId): boolean {
 	return (

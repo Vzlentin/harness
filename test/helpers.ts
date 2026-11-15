@@ -39,9 +39,11 @@ import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import { AskWrite } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, Delivery, Replies, Request, ServesInput, WatchLine } from "../src/protocol/requests.ts";
+import { StoreFile } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 
@@ -407,12 +409,36 @@ export function handleOf(result: Result): string {
 export async function startHost(
 	project = MAIN_PROJECT,
 	options: { readonly sessionEndMs?: number } = {},
-): Promise<Host | undefined> {
+): Promise<Host> {
 	const host = await runHost({ project, cwd: projectDir(project), models, ...options });
 
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
 	return host;
+}
+
+/** Adds the project `name` with a new directory, and gives the directory. */
+export async function createProject(name: string): Promise<string> {
+	const dir = await mkdtemp(join(root, `${name}-`));
+	expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
+
+	return dir;
+}
+
+/** Adds the project `name` with a new directory, and runs its host in this process. */
+export async function projectHost(name: string): Promise<Host> {
+	await createProject(name);
+
+	return startHost(name);
+}
+
+/** `store.json` of `project`, as a program with no host reads it, or undefined while it does not exist. */
+export function readStoreFile(project: string): StoreFile | undefined {
+	const path = statePaths(project).store;
+
+	if (!existsSync(path)) return undefined;
+
+	return Value.Parse(StoreFile, JSON.parse(readFileSync(path, "utf8")));
 }
 
 /**
@@ -595,9 +621,12 @@ export async function spawnWithId(
 	return { handle: child.handle, id };
 }
 
-/** Sends `line` to the host of the main project through the socket. */
-export async function send<T extends Request["type"]>(line: Extract<Request, { type: T }>): Promise<Replies[T]> {
-	const reply = await request(line, { start: false });
+/** Sends `line` to the host of `project`, the main project by default, through the socket. */
+export async function send<T extends Request["type"]>(
+	line: Extract<Request, { type: T }>,
+	project?: string,
+): Promise<Replies[T]> {
+	const reply = await request(line, { start: false, project });
 
 	if (reply === undefined) throw new Error("no host");
 

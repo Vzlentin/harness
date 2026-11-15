@@ -474,6 +474,18 @@ function projectsCommand(args: string[]): void {
 	process.stdout.write(`${MAIN_PROJECT}\n`);
 }
 
+/** Loads a store file into the empty store of the project while no host runs, and prints the count of each list. */
+async function storeCommand(args: string[], project: string | undefined): Promise<void> {
+	const [action, file, ...rest] = args;
+
+	if (action !== "load" || file === undefined || rest.length !== 0) usage();
+	const name = projectOf(project, process.env, process.cwd());
+	const { loadStore } = await import("./host/store-load.ts");
+	const counts = await loadStore(name, file);
+
+	for (const [key, count] of Object.entries(counts)) process.stdout.write(`${key}: ${count}\n`);
+}
+
 /**
  * Runs the host of `project` in this process with Pi's models. It exits at once when another host runs. The project
  * comes only from `--project`, not from the env: a host can start from a child's shell of another project.
@@ -820,6 +832,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			],
 			run: pageCommand,
 		},
+		store: { usage: ["  harness store load <file>"], run: storeCommand },
 		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },
 		projects: { usage: ["  harness projects"], run: projectsCommand },

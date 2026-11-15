@@ -28,6 +28,7 @@ const COMMANDS = [
 	"projects",
 	"inspect",
 	"page",
+	"store",
 ] as const;
 
 /** A command of the `harness` CLI. */

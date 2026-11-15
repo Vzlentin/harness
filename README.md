@@ -60,6 +60,7 @@ harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
 harness tree                # print the agents and the runs of the project, with their todos
 harness rule list           # the rules of the project (rule decide|retire|delete <id>, rule edit, rule create)
+harness store load <file>   # load a store.json into the empty store of a project, with its host down
 harness main                # open the agent of the main project in Pi
 ```
 

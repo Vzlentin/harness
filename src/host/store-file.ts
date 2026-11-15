@@ -3,7 +3,7 @@
  * changes one, so a program can read them with no host and no store.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Conversation, Harness, Storage } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { type FileMessage, STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
@@ -47,16 +47,21 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 		host.harness,
 		(change) => projectChange(change) || todoListChange(change, host.root.id),
 		() =>
-			readStoreFile(host)
+			readStoreFile(host.harness, host.storage, host.root.id)
 				.then((file) => writeJsonFile(host.path, file))
 				.catch((cause: unknown) => host.warn(`Could not write ${host.path}: ${errorMessage(cause)}`)),
 	);
 }
 
-/** Every list of the file, as the store has them now. */
-async function readStoreFile(host: StoreFileHost): Promise<StoreFile> {
-	const { harness, root } = host;
-
+/**
+ * Every list of the file, as the store of `harness` has them now, with the list of the project from the root
+ * conversation `root`. `storage`, the storage of `harness`, lists the callers that have a list of todos.
+ */
+export async function readStoreFile(
+	harness: Harness,
+	storage: Pick<Storage, "scanDocuments">,
+	root: ConversationId,
+): Promise<StoreFile> {
 	const [persons, threads, rules, lastRule, held, parleys, asks] = await Promise.all([
 		readPersons(harness, context),
 		readThreads(harness, context),
@@ -73,8 +78,8 @@ async function readStoreFile(host: StoreFileHost): Promise<StoreFile> {
 
 	// The outbox is read after the messages, so that each message out that they have has its state there.
 	const outbox = new Map((await readOutbox(harness, context)).map((out) => [out.id, out]));
-	const todos = await readTodos(harness, { kind: "conversation", id: root.id }, context);
-	const callerTodos = await readCallerTodos(harness, host.storage, context);
+	const todos = await readTodos(harness, { kind: "conversation", id: root }, context);
+	const callerTodos = await readCallerTodos(harness, storage, context);
 
 	return {
 		version: STORE_FILE_VERSION,

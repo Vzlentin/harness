@@ -4,7 +4,6 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -47,6 +46,7 @@ import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
+import { takeLock } from "./lock.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
@@ -468,25 +468,6 @@ async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> 
 
 	await Promise.race([promise, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))]);
 	clearTimeout(timer);
-}
-
-/**
- * The lock of the host, a write transaction on `lock.sqlite`, held until `close()`. The system drops it when the
- * process ends. It is undefined when another process holds it. `IMMEDIATE`, not `EXCLUSIVE`: two hosts that start at
- * the same time can both fail `EXCLUSIVE`, each holding a lock the other one needs, and then no host runs.
- */
-function takeLock(directory: string): DatabaseSync | undefined {
-	const database = new DatabaseSync(join(directory, "lock.sqlite"), { timeout: 0 });
-
-	try {
-		database.exec("BEGIN IMMEDIATE");
-
-		return database;
-	} catch {
-		database.close();
-
-		return undefined;
-	}
 }
 
 /** Pi's run settings from `settings`, read at every use, with `extensions` as the default selection. */
