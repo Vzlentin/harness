@@ -629,6 +629,18 @@ export async function dropAsk(tx: Tx, ref: AskRef, by: string): Promise<AskWrite
 }
 
 /**
+ * Sets `note`, the ID of a note in the vault, on the ask of `ref` for the caller `by`, and gives the ask. An ask in any
+ * state takes a note, also in a parley that is not open, and a second note replaces the first.
+ */
+export async function noteAsk(tx: Tx, ref: AskRef, note: string, by: string): Promise<Ask> {
+	const parleys = (await tx.doc(Parleys)).parleys;
+	const ask = resolveAsk(parleys, (await tx.doc(Asks)).asks, ref);
+	Object.assign(ask, { note, at: Date.now(), by });
+
+	return Value.Clone(ask);
+}
+
+/**
  * Makes the caller `by` the asker of the open asks of the parley `slug`, and gives the parley and its asks. The parley
  * is open or a contract: a contract has no open ask, so its take changes no ask. The answers of the parley that wait in
  * the queue go: the reply has them, and no asker gets them after the take.

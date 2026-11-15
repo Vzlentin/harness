@@ -154,6 +154,34 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		expect(byNumber).toMatchObject({ id: call, state: "answered", answer: "b" });
 	});
 
+	it("records the vault note of an ask in any state, by its ID or by its number in its parley", async () => {
+		const lone = (await round("khan", undefined, [{ title: "Note it?" }])).asks[0]?.id ?? 0;
+		const answered = (await answer([{ id: lone, answer: "own", label: "Yes" }])).asks[0];
+		const { call, readBack } = await framed("noted");
+
+		const noted = await send({ type: "ask", action: "note", caller: "pi-1", id: lone, note: "20261115-ask" });
+		expect(noted).toEqual({ ...answered, note: "20261115-ask", at: Value.Parse(Ask, noted).at, by: "pi-1" });
+		expect(await send({ type: "ask", action: "read", id: lone })).toEqual(noted);
+
+		// A second note replaces the first, and the note of an open ask of a parley stays after its answer.
+		await send({ type: "ask", action: "note", caller: "pi-1", slug: "noted", n: 1, note: "first" });
+
+		const second = Value.Parse(
+			Ask,
+			await send({ type: "ask", action: "note", caller: "pi-2", slug: "noted", n: 1, note: "second note" }),
+		);
+
+		expect(second).toMatchObject({ id: call, state: "open", note: "second note", asker: "pi-1", by: "pi-2" });
+		const read = await readParley("noted");
+		expect(read.asks[0]).toEqual(second);
+		expect(read.asks[1]).not.toHaveProperty("note");
+
+		await answer([{ id: call, answer: "a" }]);
+		const kept = Value.Parse(Ask, await send({ type: "ask", action: "read", slug: "noted", n: 1 }));
+		expect(kept).toMatchObject({ state: "answered", answer: "a", note: "second note" });
+		expect(Value.Parse(Ask, await send({ type: "ask", action: "read", id: readBack }))).not.toHaveProperty("note");
+	});
+
 	it("keeps only the known fields of an option and of an answer", async () => {
 		const roundLine = {
 			type: "ask",
@@ -318,6 +346,11 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			[{ type: "parley", action: "take", caller: "pi-2", slug: "ghost" }, "Unknown parley: ghost"],
 			[{ type: "parley", action: "read", slug: "ghost" }, "Unknown parley: ghost"],
 			[{ type: "ask", action: "read", id: 999 }, "Unknown ask: 999"],
+			[{ type: "ask", action: "note", caller: "pi-1", id: 999, note: "n" }, "Unknown ask: 999"],
+			[
+				{ type: "ask", action: "note", caller: "pi-1", slug: "checked", n: 9, note: "n" },
+				"Parley checked has no ask 9",
+			],
 			[{ type: "ask", action: "read", slug: "checked", n: 9 }, "Parley checked has no ask 9"],
 			[
 				{ type: "parley", action: "end", caller: "pi-1", slug: "checked", status: "done" },
@@ -358,6 +391,13 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				"Invalid ask request: id is not allowed",
 			],
 			[{ type: "ask", action: "read", slug: "checked" }, "Invalid ask request: n is required"],
+			[{ type: "ask", action: "note", caller: "pi-1", id: call }, "Invalid ask request: note is required"],
+			[{ type: "ask", action: "note", caller: "pi-1", id: call, note: "" }, "Invalid ask request: note is not valid"],
+			[{ type: "ask", action: "note", caller: "pi-1", id: call, note: "  " }, "Invalid ask request: note is not valid"],
+			[
+				{ type: "ask", action: "note", caller: "pi-1", id: call, slug: "checked", n: 1, note: "n" },
+				"Invalid ask request: id is not allowed",
+			],
 			[
 				{ type: "ask", action: "answer", caller: "user", answers: [{ id: call, answer: "own" }] },
 				"Invalid ask request: label is required",

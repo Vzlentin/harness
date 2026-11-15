@@ -18,6 +18,9 @@ const StoreId = Type.Integer({ minimum: 1 });
 /** A text with at least one character that is not white space. */
 const Text = Type.String({ pattern: "\\S" });
 
+/** The ID of a note in the vault: the `id` of its front matter, kept as it is given. */
+export const NoteId = Text;
+
 /** A time in epoch milliseconds. */
 const Time = Type.Integer({ minimum: 0 });
 
@@ -255,11 +258,15 @@ const KeyAnswer = {
 	words: Type.Optional(Words),
 };
 
-/** The fields of each ask: its question, the parley that it serves with its number there, its asker, and its last change. */
+/**
+ * The fields of each ask: its question, the parley that it serves with its number there, the ID of its note in the
+ * vault, its asker, and its last change.
+ */
 const AskFields = {
 	id: LocalId,
 	...AskQuestion,
 	parley: Type.Optional(Type.Object({ id: LocalId, n: LocalId })),
+	note: Type.Optional(NoteId),
 	asker: Caller,
 	at: Time,
 	by: Caller,
@@ -268,7 +275,8 @@ const AskFields = {
 /**
  * A question that someone put to the user, in one of its states: `open`, then `answered` or `dropped`. `asker` is the
  * caller that wrote it or took its parley last. `parley` is the parley that it serves, and `n` its number there, which
- * never changes. `at` is the time of its last change, and `by` the caller of that change.
+ * never changes. `note` is the ID of the note of the ask in the vault. `at` is the time of its last change, and `by`
+ * the caller of that change.
  */
 export const Ask = Type.Union([
 	Type.Object({ ...AskFields, state: Type.Literal("open") }),

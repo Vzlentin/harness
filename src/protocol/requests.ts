@@ -15,6 +15,7 @@ import {
 	type Message,
 	MessageLog,
 	MessageMarkInput,
+	NoteId,
 	type Parley,
 	type ParleyAsks,
 	ParleyEnd,
@@ -413,6 +414,11 @@ export const RequestLine = Type.Union([
 	}),
 	/** Drops the open ask of `id`, or of `slug` and `n`, and replies with the write. */
 	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String() }),
+	/**
+	 * Sets `note`, the ID of the note in the vault, on the ask of `id`, or of `slug` and `n`, in any state, and replies
+	 * with the ask. A second note replaces the first. No tool sends it.
+	 */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("note"), caller: Type.String(), note: NoteId }),
 	/** Replies with the ask of `id`, or of `slug` and `n`, in any state. */
 	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("read") }),
 	/** Replies with the open asks, in ID order. */

@@ -319,11 +319,12 @@ A child's system prompt has what a Pi session in the child's working directory g
 
 An ask is a question that someone put to the user, with his answer. A parley is a group of asks with a frame, which ends as a contract. The host keeps both in the store of the project (see [Host](#host)), in the documents `harness.asks` and `harness.parleys`, and it is their one writer. An ask names its asker, and its parley when it has one. A parley names no asker and no ask.
 
-An ask is `{ id, title, kind?, tension?, options?, plan?, view?, parley?, asker, state, answer?, label?, words?, at, by }`:
+An ask is `{ id, title, kind?, tension?, options?, plan?, view?, parley?, note?, asker, state, answer?, label?, words?, at, by }`:
 
 - `id` is the next ID of the one list of asks of the project.
 - `title` is the question. `kind` is `your call` or `my call`. `options` is a list that is not empty of `{ key, label, gains?, costs? }`: `key` is one lowercase letter, unique in the ask, and `gains` and `costs` are lists of texts that are not empty. `plan` is the key of the option that the asker proposes. `view` is a text that explains the ask, in Markdown.
 - `parley` is `{ id, n }`: the ID of its parley, and its number in that parley, 1, 2, 3 and so on. The number never changes.
+- `note` is the ID of the note of the ask in the vault: the `id` of the front matter of that note, kept as it is given. Only `ask note` sets it.
 - `asker` is the caller of the round that wrote it, or of the last `parley take` of its parley.
 - `state` is `open`, `answered` or `dropped`. An open ask takes an answer and a drop. An answered ask takes a new answer, which replaces `answer`, `label` and `words` as one unit. A dropped ask takes nothing. `askTransition(state, event)` of `@vzlentin/harness/protocol` gives the state after an `answer` or a `drop`, or `undefined`.
 - Only an answered ask has `answer`: the key of one of its options, `ok`, or `own`. `own` needs `label`, the short name of the answer of the user. `words` are the exact words of the user, a list of texts that is not empty, in Markdown.
@@ -340,13 +341,14 @@ The requests have an `action`, and each write has a `caller`. A request names on
 - `ask round { caller, parley?, asks }` writes one or more asks, with the state `open` and the caller as their asker. With `parley` `{ slug, title?, goal?, evidence?, design_sense? }`, the asks serve the parley `slug`, and take its next numbers. A new slug makes an open parley, which needs `title` and `goal`. A known slug must be an open parley, and the fields that `parley` gives replace its own. The reply is the write: the parley with its asks, or the new asks when they have no parley.
 - `ask answer { caller, answers }` writes one or more answers `{ id, answer, label?, words? }` or `{ slug, n, answer, label?, words? }` in one write, each of another ask. When an answer `ok` goes to a read-back, the parley becomes `contract` in the same write, after every answer of the write. The reply is the write: each parley of the answered asks, with its status after the write, and the answered asks with no parley.
 - `ask drop { caller, id }` or `ask drop { caller, slug, n }` drops an open ask, and replies with the write: its parley, or the ask when it has no parley.
+- `ask note { caller, id, note }` or `ask note { caller, slug, n, note }` sets `note`, the ID of the vault note of the ask (not a `note` request of a child), and replies with the ask. The ask can be in any state, and its parley in any status. A second note replaces the first, and no request removes it. It sets `at` and `by`, and keeps `asker`. An answer or a drop keeps the note. Any caller can send it: the host does not check the caller, and no tool or command sends it.
 - `ask read { id }` or `ask read { slug, n }` replies with the ask, in any state.
 - `ask list` replies with `{ asks }`, the open asks.
 - `parley take { caller, slug }` makes the caller the asker of each open ask of the parley `slug`, which is open or a contract, and replies with `{ parley, asks }`. A contract has no open ask, so its take changes no ask. The answers of the parley that wait for an asker (see [Push](#push)) leave the queue in the same write: the taker has them in the reply, and no asker gets them after.
 - `parley end { caller, slug, status }` ends the contract `slug` with the status `done` or `dropped`, and replies with the parley.
 - `parley read { slug }` replies with `{ parley, asks }`, the asks in the order of their numbers. `parley list` replies with `{ parleys }`.
 
-No request removes an ask or a parley. A request that fails changes nothing. The checks inside one request run at the request: an empty list of asks or of answers, an option key used twice, a `plan` that is not a key of the options, two answers of one ask, a text that is not plain, and a slug that is not valid fail with `Invalid ask request: <field> is not valid` or `Invalid parley request: <field> is not valid`, and an answer `own` without `label` with `Invalid ask request: label is required`. The checks against the store fail with:
+No request removes an ask or a parley. A request that fails changes nothing. The checks inside one request run at the request: an empty list of asks or of answers, an option key used twice, a `plan` that is not a key of the options, two answers of one ask, a text that is not plain, a slug that is not valid, and a `note` that is empty or blank fail with `Invalid ask request: <field> is not valid` or `Invalid parley request: <field> is not valid`, an answer `own` without `label` with `Invalid ask request: label is required`, and an `ask note` without `note` with `Invalid ask request: note is required`. The checks against the store fail with:
 
 - `Unknown ask: <id>`, `Unknown parley: <slug>`, and `Parley <slug> has no ask <n>`.
 - `Ask <id> has two answers in one write`, when an answer by ID and an answer by number name the same ask.

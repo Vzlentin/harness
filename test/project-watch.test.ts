@@ -16,6 +16,7 @@ import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import {
+	Ask,
 	AskWrite,
 	type HeldAction,
 	Message,
@@ -461,6 +462,14 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			);
 
 			expect(await next()).toEqual(event({ asks: answer.parleys.flatMap((each) => each.asks.slice(0, 1)) }));
+
+			const noted = Value.Parse(
+				Ask,
+				await send({ type: "ask", action: "note", caller: "pi-1", slug: "store", n: 1, note: "store-1" }, project),
+			);
+
+			expect(noted).toMatchObject({ id: 1, note: "store-1" });
+			expect(await next()).toEqual(event({ asks: [noted] }));
 		} finally {
 			watch?.socket.destroy();
 			await host.close();
