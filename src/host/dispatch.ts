@@ -77,6 +77,7 @@ import {
 	childTarget,
 	type Found,
 	library,
+	refuseEnded,
 	type SendOptions,
 	type TargetHost,
 	target,
@@ -454,7 +455,7 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 	// its record until a `stop`, and is not listed.
 	const infos = await Promise.all(
 		own.map(async ([handle, record]) =>
-			(await (await childOf(handler, record)).state(context)) === "closed"
+			(await (await childOf(handler, record)).state(context)) === "ended"
 				? undefined
 				: childInfo(handler, handle, record),
 		),
@@ -502,7 +503,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	if (handle !== undefined) {
 		const found = await childRecord(harness, handle);
 
-		if ((await (await childOf(handler, found)).state(context)) === "closed") {
+		if ((await (await childOf(handler, found)).state(context)) === "ended") {
 			await stopChild(handler, found);
 			handle = undefined;
 		}
@@ -542,7 +543,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 
 			handle = await spawnedHandle(harness, request.requestId);
 
-			if (handle === undefined && (await opened.state(context)) !== "closed")
+			if (handle === undefined && (await opened.state(context)) !== "ended")
 				throw new Error(`Missing subagent of ${request.requestId}`);
 		}
 	}
@@ -617,15 +618,11 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 	const waiting = withAbortSignal(signal, context);
 	let text: UnreadAnswers;
 
-	const refuseClosed = async () => {
-		if ((await child.state(context)) === "closed") throw new Error(`The child ${child.id} is closed`);
-	};
-
 	try {
-		await refuseClosed();
+		await refuseEnded(child);
 		const { main, answer } = await handler.push.done(child, signal);
 		// A close during the wait ends the turn with an abort, which is not the child's answer.
-		await refuseClosed();
+		await refuseEnded(child);
 		// Read the record after the answer and after a push in flight: a send is in `requests` before it can be the last
 		// request, and a push marks its answers read only once its reply is written.
 		await handler.push.written(request.handle);

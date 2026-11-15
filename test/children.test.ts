@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren, type Owner, type Place, type Spec } from "../src/children/library.ts";
 import { REMINDER } from "../src/children/respond.ts";
-import { called, gates, models, requests, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
+import { called, contexts, gates, models, requests, root, SCHEMA_ANSWER, setUp, tearDown, until } from "./helpers.ts";
 
 const library = createChildren(durable);
 const faux = { provider: "faux", model: "faux-1" } as const;
@@ -50,21 +50,23 @@ function placeholder(name: string) {
 
 const DELEGATION = ["subagent", "workflow"];
 
-beforeAll(async () => {
-	await setUp();
+/** A resumed pi-durable host over the sqlite file `name` in the test root, with the library and the test tools. */
+async function openHarness(name: string): Promise<{ harness: Harness; place: Place }> {
 	const registry = durable.createRegistry();
 	registry.install(library.extension);
 	registry.install(library.answerExtension);
 	registry.install(durable.defineExtension({ name: "test-holder", tasks: [Holder] }));
 	const tools = [...DELEGATION, "lookup"].map(placeholder);
 	registry.install(durable.defineExtension({ name: "test-tools", tools }));
-	harness = await Harness.open(
-		await openNodeSqliteStorage(join(root, "children.sqlite")),
-		{ models, registry },
-		context,
-	);
-	harness.resume();
-	place = { store: harness, models, registry: registry.snapshot() };
+	const opened = await Harness.open(await openNodeSqliteStorage(join(root, name)), { models, registry }, context);
+	opened.resume();
+
+	return { harness: opened, place: { store: opened, models, registry: registry.snapshot() } };
+}
+
+beforeAll(async () => {
+	await setUp();
+	({ harness, place } = await openHarness("children.sqlite"));
 	owner = { kind: "detached", root: await harness.root(context) };
 });
 
@@ -119,7 +121,7 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await library.find(place, owner, { key: "t:none" }, context)).toBeUndefined();
 	});
 
-	it("answers a request, sums the spend of the subtree and closes the subtree", async () => {
+	it("answers a request, sums the spend of the subtree and ends the subtree", async () => {
 		const parent = await library.open(place, owner, "t:parent", { root: "test", ...faux, cwd: root }, context);
 
 		const child = await library.open(
@@ -144,7 +146,7 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(childTokens).toBeGreaterThan(0);
 		expect((await parent.usage(context)).models["faux/faux-1"]?.totalTokens).toBe(parentTokens + childTokens);
 		expect(await parent.close(context)).toEqual([parent.id, child.id]);
-		expect(await child.state(context)).toBe("closed");
+		expect(await child.state(context)).toBe("ended");
 	});
 
 	it("sums the usage of a tool named __proto__ as an own key", async () => {
@@ -257,11 +259,11 @@ describe("children library", { timeout: 30_000 }, () => {
 		await harness.abortTask(third, context);
 	});
 
-	it("closes only the subtree under a child with below, and the child stays open", async () => {
+	it("ends only the subtree under a child with below, and the child keeps its state", async () => {
 		const parent = await library.open(place, owner, "t:below", { root: "test", ...faux, cwd: root }, context);
 		const child = await library.open(place, owner, "t:below-child", { parent: String(parent.id), ...faux }, context);
 		expect(await parent.close(context, { below: true })).toEqual([child.id]);
-		expect(await child.state(context)).toBe("closed");
+		expect(await child.state(context)).toBe("ended");
 		expect(await parent.state(context)).toBe("idle");
 		expect(await parent.ask({ type: "input", content: "Still open", requestId: "r1" }, context)).toMatchObject({
 			status: "ok",
@@ -283,33 +285,107 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await child.settled(context, "r1")).toMatchObject({ status: "ok", text: "Answer to Slow" });
 	});
 
-	it("withdraws queued input when it closes a child", async () => {
+	it("withdraws queued input when it ends a child, and a new input resumes it", async () => {
 		const child = await library.open(place, owner, "t:queue", { root: "test", ...faux, cwd: root }, context);
 		gates.set("Busy", Promise.withResolvers());
 		await child.send({ type: "input", content: "Busy", requestId: "r1" }, context);
 		await until(() => called("Busy") === 1);
 		await child.send({ type: "input", content: "Queued", whenBusy: "followUp", requestId: "r2" }, context);
 		await child.close(context);
+		expect(await child.state(context)).toBe("ended");
+		expect(await child.settled(context, "r1")).toMatchObject({ status: "failed", reason: "unanswered" });
 		expect(await child.settled(context, "r2")).toMatchObject({ status: "failed", reason: "unanswered" });
 		expect(called("Queued")).toBe(0);
-		await expect(child.send({ type: "input", content: "Revived", requestId: "r3" }, context)).rejects.toThrow(
-			`The child ${child.id} is closed`,
-		);
-		expect(await child.state(context)).toBe("closed");
-		expect(called("Revived")).toBe(0);
+		gates.delete("Busy");
+		await child.send({ type: "input", content: "Revived", requestId: "r3" }, context);
+		expect(await child.settled(context, "r3")).toMatchObject({ status: "ok", text: "Answer to Revived" });
+		expect(await child.state(context)).toBe("idle");
+		expect(called("Queued")).toBe(0);
 	});
 
-	it("refuses a write and an ask to a closed child", async () => {
-		const child = await library.open(place, owner, "t:closed-input", { root: "test", ...faux, cwd: root }, context);
+	it("answers an ask to an ended child with its history", async () => {
+		const child = await library.open(place, owner, "t:resume", { root: "test", ...faux, cwd: root }, context);
+		await child.ask({ type: "input", content: "First of resume", requestId: "r1" }, context);
 		await child.close(context);
-		const model = [{ role: "user", content: "Written after the close", timestamp: Date.now() }] as const;
-		await expect(
-			child.write({ type: "write", requestId: "w1", entry: { kind: "test.note", model } }, context),
-		).rejects.toThrow(`The child ${child.id} is closed`);
-		await expect(
-			child.ask({ type: "input", content: "Asked after the close", requestId: "r1" }, context),
-		).rejects.toThrow(`The child ${child.id} is closed`);
-		expect(called("Asked after the close")).toBe(0);
+		expect(await child.state(context)).toBe("ended");
+		expect(await child.ask({ type: "input", content: "After the end", requestId: "r2" }, context)).toMatchObject({
+			status: "ok",
+			text: "Answer to After the end",
+		});
+		expect(contexts.get("After the end")).toEqual(["First of resume", "After the end"]);
+		expect(await child.state(context)).toBe("idle");
+	});
+
+	it("resumes only the child that takes the input: its ended children stay ended", async () => {
+		const parent = await library.open(place, owner, "t:resume-parent", { root: "test", ...faux, cwd: root }, context);
+		const child = await library.open(place, owner, "t:resume-child", { parent: String(parent.id), ...faux }, context);
+		await parent.close(context);
+		await parent.ask({ type: "input", content: "Parent resumed", requestId: "r1" }, context);
+		expect(await parent.state(context)).toBe("idle");
+		expect(await child.state(context)).toBe("ended");
+	});
+
+	it("keeps a note to an ended child, and the child stays ended", async () => {
+		const child = await library.open(place, owner, "t:ended-note", { root: "test", ...faux, cwd: root }, context);
+		await child.close(context);
+		const model = [{ role: "user", content: "Written after the end", timestamp: Date.now() }] as const;
+		await child.conversation.submit({ type: "write", requestId: "w1", entry: { kind: "test.note", model } }, context);
+		expect(await child.state(context)).toBe("ended");
+		await child.ask({ type: "input", content: "After the note", requestId: "r1" }, context);
+		expect(contexts.get("After the note")).toEqual(["Written after the end", "After the note"]);
+	});
+
+	it("does not resume an ended child for a request ID admitted before", async () => {
+		const child = await library.open(place, owner, "t:ended-repeat", { root: "test", ...faux, cwd: root }, context);
+		const input = { type: "input", content: "Repeated", requestId: "r1" } as const;
+		await child.send(input, context);
+		await child.settled(context, "r1");
+		await child.close(context);
+		await child.send(input, context);
+		expect(called("Repeated")).toBe(1);
+		expect(await child.state(context)).toBe("ended");
+	});
+
+	it("aborts a busy subtree when it ends", async () => {
+		const parent = await library.open(place, owner, "t:busy-end", { root: "test", ...faux, cwd: root }, context);
+		const child = await library.open(place, owner, "t:busy-end-child", { parent: String(parent.id), ...faux }, context);
+		gates.set("Parent busy", Promise.withResolvers());
+		gates.set("Child busy", Promise.withResolvers());
+		await parent.send({ type: "input", content: "Parent busy", requestId: "r1" }, context);
+		await child.send({ type: "input", content: "Child busy", requestId: "r1" }, context);
+		await until(() => called("Parent busy") === 1 && called("Child busy") === 1);
+		expect(await parent.close(context)).toEqual([parent.id, child.id]);
+		expect(await parent.settled(context, "r1")).toMatchObject({ status: "failed", reason: "unanswered" });
+		expect(await child.settled(context, "r1")).toMatchObject({ status: "failed", reason: "unanswered" });
+		expect([await parent.state(context), await child.state(context)]).toEqual(["ended", "ended"]);
+		gates.delete("Parent busy");
+		gates.delete("Child busy");
+	});
+
+	it("keeps the end in the store, and resumes the child with its history after a reopen", async () => {
+		const first = await openHarness("children-reopen.sqlite");
+		const firstOwner: Owner = { kind: "detached", root: await first.harness.root(context) };
+		const spec = { root: "test", ...faux, cwd: root };
+		const opened = await library.open(first.place, firstOwner, "t:reopen", spec, context);
+		await opened.ask({ type: "input", content: "Before the reopen", requestId: "r1" }, context);
+		await opened.close(context);
+		await first.harness.close(context);
+
+		const second = await openHarness("children-reopen.sqlite");
+
+		try {
+			const secondOwner: Owner = { kind: "detached", root: await second.harness.root(context) };
+			const child = await library.find(second.place, secondOwner, { key: "t:reopen" }, context);
+			expect(await child?.state(context)).toBe("ended");
+			expect(await child?.ask({ type: "input", content: "After the reopen", requestId: "r2" }, context)).toMatchObject({
+				status: "ok",
+				text: "Answer to After the reopen",
+			});
+			expect(contexts.get("After the reopen")).toEqual(["Before the reopen", "After the reopen"]);
+			expect(await child?.state(context)).toBe("idle");
+		} finally {
+			await second.harness.close(context);
+		}
 	});
 
 	it("refuses an explicit thinking level that the model does not have", async () => {
@@ -514,7 +590,7 @@ describe("children library", { timeout: 30_000 }, () => {
 		expect(await child.settled(context)).toMatchObject({ status: "ok", text: "Answer to Before" });
 	});
 
-	it("refuses and aborts a send whose child closes during the submit", async () => {
+	it("refuses and aborts a send whose child ends during the submit", async () => {
 		const child = await library.open(place, owner, "t:close-race", { root: "test", ...faux, cwd: root }, context);
 		const submit = child.conversation.submit.bind(child.conversation);
 
@@ -526,13 +602,14 @@ describe("children library", { timeout: 30_000 }, () => {
 
 		gates.set("Raced", Promise.withResolvers());
 		await expect(child.send({ type: "input", content: "Raced", requestId: "r1" }, context)).rejects.toThrow(
-			`The child ${child.id} is closed`,
+			`The child ${child.id} ended during the submit`,
 		);
 		expect(await child.settled(context, "r1")).toMatchObject({ status: "failed", reason: "unanswered" });
+		expect(await child.state(context)).toBe("ended");
 		gates.delete("Raced");
 	});
 
-	it("marks the whole subtree closed before it aborts any of it", async () => {
+	it("marks the whole subtree ended before it aborts any of it", async () => {
 		const parent = await library.open(place, owner, "t:atomic", { root: "test", ...faux, cwd: root }, context);
 		const child = await library.open(place, owner, "t:atomic-child", { parent: String(parent.id), ...faux }, context);
 		const states: string[] = [];
@@ -554,16 +631,16 @@ describe("children library", { timeout: 30_000 }, () => {
 		const closing = await library.find(watched, owner, { id: String(parent.id) }, context);
 		states.length = 0;
 		await closing?.close(context);
-		expect(states).toEqual(["closed", "closed"]);
+		expect(states).toEqual(["ended", "ended"]);
 	});
 
-	it("refuses a child of a closed parent", async () => {
-		const parent = await library.open(place, owner, "t:closed-parent", { root: "test", ...faux }, context);
+	it("opens a child under an ended parent, and the parent stays ended", async () => {
+		const parent = await library.open(place, owner, "t:ended-parent", { root: "test", ...faux }, context);
 		await parent.close(context);
-		await expect(
-			library.open(place, owner, "t:orphan", { parent: String(parent.id), ...faux }, context),
-		).rejects.toThrow(`The child ${parent.id} is closed`);
-		expect(await library.find(place, owner, { key: "t:orphan" }, context)).toBeUndefined();
+		const child = await library.open(place, owner, "t:late", { parent: String(parent.id), ...faux }, context);
+		expect(await library.find(place, owner, { key: "t:late" }, context)).toMatchObject({ id: child.id });
+		expect(await parent.state(context)).toBe("ended");
+		expect(await child.state(context)).toBe("idle");
 	});
 
 	it("a send stops a running schema ask", async () => {

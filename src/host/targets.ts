@@ -11,6 +11,7 @@ import {
 	type Input,
 	type Owner,
 	type Place,
+	type State,
 	type Turn,
 	type Write,
 } from "../children/library.ts";
@@ -124,7 +125,7 @@ async function conversationTarget(handler: TargetHost, id: string) {
 		handle: id,
 		conversation: id,
 		name: lineage.key,
-		state: await child.state(context),
+		state: wireState(await child.state(context)),
 		...(await agentFields(conversation)),
 	});
 
@@ -138,7 +139,7 @@ async function conversationTarget(handler: TargetHost, id: string) {
 			await conversation.submit({ ...input, whenBusy: "steer" }, context);
 		},
 		write: async (write: Write) => {
-			if ((await child.state(context)) === "closed") throw new Error(`The conversation ${id} is closed`);
+			if ((await child.state(context)) === "ended") throw new Error(`The conversation ${id} is closed`);
 			await conversation.submit(write, context);
 		},
 		record: undefined,
@@ -177,10 +178,21 @@ export async function childTarget(handler: TargetHost, handle: string, record: C
 	return {
 		conversation: child.conversation,
 		info: () => childInfo(handler, handle, record),
-		send: (input: Input, options?: SendOptions) => child.send(input, context, options),
-		write: (write: Write) => child.write(write, context),
+		send: async (input: Input, options?: SendOptions) => {
+			await refuseEnded(child);
+			await child.send(input, context, options);
+		},
+		write: async (write: Write) => {
+			await refuseEnded(child);
+			await child.conversation.submit(write, context);
+		},
 		record,
 	};
+}
+
+/** Refuses input, notes and waits by handle on an ended child: the host requests do not resume it. */
+export async function refuseEnded(child: Child): Promise<void> {
+	if ((await child.state(context)) === "ended") throw new Error(`The child ${child.id} is closed`);
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
@@ -208,17 +220,22 @@ export async function childInfo(
 	return record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 }
 
+/** The state of the wire for the library state `state`: an ended child is `closed`. */
+export function wireState(state: State): ChildState {
+	return state === "ended" ? "closed" : state;
+}
+
 /**
  * The state of a child by handle, from `state`, the state of its conversation: `busy` also while one of its notify
  * children holds it, in `records`.
  */
 export function heldState(
-	state: ChildState,
+	state: State,
 	records: Readonly<ChildrenState> | undefined,
 	conversationId: ConversationId,
 ): ChildState {
-	// A closed child that still holds its caller is closed: it never runs again.
-	return state !== "closed" && isHeld(records, conversationId) ? "busy" : state;
+	// An ended child that still holds its caller is closed: it runs no turn until its next input.
+	return state !== "ended" && isHeld(records, conversationId) ? "busy" : wireState(state);
 }
 
 /** The model, thinking level and directory of the agent of `conversation`, for its info. */

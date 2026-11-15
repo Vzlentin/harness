@@ -18,7 +18,7 @@ import type {
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import type { RunState, TreeNode } from "../protocol/tree.ts";
 import { callerHandle, type ChildRecord, ChildRecords, recordsByAge } from "./records.ts";
-import { agentTurn, childOf, heldState, library, type TargetHost } from "./targets.ts";
+import { agentTurn, childOf, heldState, library, type TargetHost, wireState } from "./targets.ts";
 import { entryKinds, StartedTasks, type TaskHost } from "./tasks.ts";
 import { readTodos, type TodoOwner } from "./todo.ts";
 
@@ -102,7 +102,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 		const child = await library.inspect(place, String(record.id), context);
 
 		if (child === undefined) return undefined;
-		const state = await child.state(context);
+		const state = wireState(await child.state(context));
 
 		if (state === "closed" && !recent(record.id)) return undefined;
 

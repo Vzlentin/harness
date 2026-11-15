@@ -463,7 +463,7 @@ export class Push {
 		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
 		const inspected = await library.inspect(this.#host.place, caller, context);
 
-		if ((await inspected?.state(context)) === "closed") return undefined;
+		if ((await inspected?.state(context)) === "ended") return undefined;
 		const parent = conversationEntry(entries, caller);
 
 		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
@@ -509,7 +509,7 @@ export class Push {
 		const child = await childOf(this.#host, record);
 		const state = await child.state(context);
 
-		if (state === "busy" || state === "closed") return undefined;
+		if (state === "busy" || state === "ended") return undefined;
 		const last = await child.lastRequest(context);
 		const ids = record.requests.map((request) => request.id);
 
