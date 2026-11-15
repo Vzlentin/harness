@@ -134,8 +134,9 @@ export const RuleStatus = Type.Enum(RULE_STATES);
 export type RuleStatus = Static<typeof RuleStatus>;
 
 /**
- * A rule of the project, with who said it and the message that is its source. A rule that the user creates or edits has
- * no source. `at` is the time of its last change, in epoch milliseconds, and `by` is the caller of that change.
+ * A rule of the project, with who said it, the message that is its source, and the thread of that message. A rule that
+ * the user creates or edits has no source and no thread. `at` is the time of its last change, in epoch milliseconds,
+ * and `by` is the caller of that change.
  */
 export const Rule = Type.Object({
 	id: LocalId,
@@ -145,6 +146,8 @@ export const Rule = Type.Object({
 	status: RuleStatus,
 	saidBy: Author,
 	source: Type.Optional(StoreId),
+	/** The thread of the message `source`; a rule with no source has none. */
+	thread: Type.Optional(StoreId),
 	replaces: Type.Optional(LocalId),
 	at: Time,
 	by: Caller,

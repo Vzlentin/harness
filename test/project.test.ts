@@ -172,7 +172,15 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			}),
 		);
 
-		expect(scope).toMatchObject({ id: 1, name: "scope", status: "open", saidBy: "user", source: answer.id });
+		// A rule gives the thread of its source message.
+		expect(scope).toMatchObject({
+			id: 1,
+			name: "scope",
+			status: "open",
+			saidBy: "user",
+			source: answer.id,
+			thread: thread.id,
+		});
 
 		const ask = Value.Parse(
 			Rule,
@@ -218,9 +226,9 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			id: wider.id,
 			status: "decided",
 		});
-		// The retired rule keeps the person who said it and its source message.
+		// The retired rule keeps the person who said it, its source message and the thread of that message.
 		expect(await send({ type: "rule", action: "list", status: "retired" })).toMatchObject({
-			rules: [{ id: scope.id, status: "retired", saidBy: "user", source: answer.id }],
+			rules: [{ id: scope.id, status: "retired", saidBy: "user", source: answer.id, thread: thread.id }],
 		});
 
 		const stored = {
@@ -486,6 +494,22 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				await send({ ...said, name: "new", kind: "domain", value: "New.", replaces: old.id }, project),
 			);
 
+			expect(next).toMatchObject({ source, thread: thread.id });
+
+			// A changed source gives the thread of the new source.
+			const other = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Other", persons: [person.id] }, project),
+			);
+
+			const otherSource = (await send({ ...log, thread: other.id, direction: "out", text: "Other." }, project)).id;
+
+			expect(await send({ ...said, id: next.id, source: otherSource }, project)).toMatchObject({
+				id: next.id,
+				source: otherSource,
+				thread: other.id,
+			});
+
 			const decide = { type: "rule", action: "decide", caller: "user" } as const;
 			await send({ ...decide, id: old.id }, project);
 
@@ -527,6 +551,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			expect(created.stdout).toBe(`${next.id + 1} go (conduct, decided): Ask first. [said by user]\n`);
 			const stored = Value.Parse(RuleList, await send({ type: "rule", action: "list" }, project)).rules;
 			expect(stored.find((rule) => rule.id === next.id)).not.toHaveProperty("source");
+			expect(stored.find((rule) => rule.id === next.id)).not.toHaveProperty("thread");
 
 			// A delete removes the rule, and its ID is never given again, also after a restart.
 			const deleted = await cli(["--project", project, "rule", "delete", String(next.id + 1)]);

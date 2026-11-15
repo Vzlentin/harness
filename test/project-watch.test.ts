@@ -28,7 +28,7 @@ import {
 } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import { cli, models, openDurableHost, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
+import { cli, models, openDurableHost, readStoreFile, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
 
 /** The documents of the terms and of the parts of the vault, as an older version kept them in the store. */
 const OLD_TERMS = sessionDoc<{ terms: JsonValue[] }>("harness.terms", () => ({ terms: [] }));
@@ -340,6 +340,130 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			expect(await send(create, project)).toMatchObject({ id: 3 });
 		} finally {
 			await host?.close();
+		}
+	});
+
+	it("gives the thread of the source of a rule that an older store wrote with no thread", async () => {
+		const project = "no-thread";
+		const dir = await mkdtemp(join(root, `${project}-`));
+		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
+		let host = await runHost({ project, cwd: dir, models });
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const said = Value.Parse(
+				Message,
+				await send(
+					{
+						type: "message",
+						action: "log",
+						caller: "cli",
+						thread: thread.id,
+						from: "user",
+						direction: "out",
+						text: "45 and 54.",
+					},
+					project,
+				),
+			);
+
+			await host?.close();
+			const older = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
+			const fields = { kind: "domain", status: "decided", saidBy: "user", at: 1_000, by: "cli" };
+
+			await older.commit(async (tx) => {
+				const list = await tx.doc(OLD_RULES);
+				list.rules.push(
+					{ ...fields, id: 1, name: "scope", value: "45 and 54.", source: said.id },
+					{ ...fields, id: 2, name: "user", value: "Ask first." },
+				);
+			}, BACKGROUND_CONTEXT);
+			await older.close(BACKGROUND_CONTEXT);
+
+			host = await runHost({ project, cwd: dir, models });
+
+			const rules = [
+				{ ...fields, id: 1, name: "scope", value: "45 and 54.", source: said.id, thread: thread.id },
+				{ ...fields, id: 2, name: "user", value: "Ask first." },
+			];
+
+			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules });
+			watch = await watchProject(project);
+			expect(watch.state.rules).toEqual(rules);
+			await until(() => readStoreFile(project)?.rules.length === 2);
+			expect(readStoreFile(project)?.rules).toEqual(rules);
+		} finally {
+			watch?.socket.destroy();
+			await host?.close();
+		}
+	});
+
+	it("gives the new source of a changed rule with the thread of that source", async () => {
+		const project = "moved-source";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+
+			/** Adds a thread with Sam and one message in it, and gives the thread and the message. */
+			const said = async (topic: string): Promise<[Thread, Message]> => {
+				const thread = Value.Parse(
+					Thread,
+					await send({ type: "thread", action: "add", topic, persons: [sam.id] }, project),
+				);
+
+				const message = Value.Parse(
+					Message,
+					await send(
+						{
+							type: "message",
+							action: "log",
+							caller: "cli",
+							thread: thread.id,
+							from: sam.id,
+							direction: "in",
+							text: topic,
+						},
+						project,
+					),
+				);
+
+				return [thread, message];
+			};
+
+			const [first, firstMessage] = await said("Scope");
+			const [second, secondMessage] = await said("Scope again");
+			const fields = { caller: "cli", name: "scope", kind: "domain", value: "45 and 54.", saidBy: sam.id } as const;
+
+			const rule = Value.Parse(
+				Rule,
+				await send({ type: "rule", action: "set", ...fields, source: firstMessage.id }, project),
+			);
+
+			expect(rule.thread).toBe(first.id);
+			watch = await watchProject(project);
+			const { events } = watch;
+
+			const changed = Value.Parse(
+				Rule,
+				await send({ type: "rule", action: "set", ...fields, id: rule.id, source: secondMessage.id }, project),
+			);
+
+			await until(() => events.length === 1);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(events).toEqual([event({ rules: [changed] })]);
+			expect(changed).toMatchObject({ id: rule.id, source: secondMessage.id, thread: second.id });
+		} finally {
+			watch?.socket.destroy();
+			await host.close();
 		}
 	});
 

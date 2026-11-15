@@ -28,8 +28,11 @@ const context = BACKGROUND_CONTEXT;
 /** What the file uses of the host. */
 export type StoreFileHost = {
 	readonly harness: Harness;
-	/** The storage of `harness`, whose scan lists the callers that have a list of todos. */
-	readonly storage: Pick<Storage, "scanDocuments">;
+	/**
+	 * The storage of `harness`, whose scan lists the callers that have a list of todos, and whose entry lookup gives the
+	 * thread of the source of an older rule.
+	 */
+	readonly storage: Pick<Storage, "scanDocuments" | "entry">;
 	/** The root conversation, whose list is the list of the project. */
 	readonly root: Conversation;
 	/** The file, `store.json` in the state folder of the project. */
@@ -54,17 +57,18 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 
 /**
  * Every list of the file, as the store of `harness` has them now, with the list of the project from the root
- * conversation `root`. `storage`, the storage of `harness`, lists the callers that have a list of todos.
+ * conversation `root`. `storage`, the storage of `harness`, lists the callers that have a list of todos, and gives the
+ * thread of the source of an older rule.
  */
 export async function readStoreFile(
 	harness: Harness,
-	storage: Pick<Storage, "scanDocuments">,
+	storage: Pick<Storage, "scanDocuments" | "entry">,
 	root: ConversationId,
 ): Promise<StoreFile> {
 	const [persons, threads, rules, lastRule, held, parleys, asks] = await Promise.all([
 		readPersons(harness, context),
 		readThreads(harness, context),
-		readRules(harness, {}, context),
+		readRules({ harness, storage }, {}, context),
 		readLastRuleId(harness, context),
 		readHeld(harness, context),
 		readParleys(harness, context),

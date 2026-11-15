@@ -268,6 +268,7 @@ export async function runHost(options: {
 		settings,
 		push,
 		sessions,
+		storage,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		warn,

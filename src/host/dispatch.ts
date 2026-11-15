@@ -4,7 +4,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type * as durable from "@earendil-works/pi-durable";
-import type { Harness } from "@earendil-works/pi-durable";
+import type { Harness, Storage } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
@@ -113,6 +113,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly warn: (cause: unknown) => void;
 		readonly push: Push;
 		readonly sessions: Sessions;
+		/** The storage of the harness, whose entry lookup gives the thread of the source of an older rule. */
+		readonly storage: Pick<Storage, "entry">;
 	};
 
 export type Handler = Base &
@@ -367,7 +369,7 @@ function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Pr
 		case "set":
 			return handler.harness.commit((tx) => setRule(tx, request, request.caller), context);
 		case "list":
-			return readRules(handler.harness, request, context);
+			return readRules(handler, request, context);
 		case "decide":
 		case "retire":
 		case "delete":

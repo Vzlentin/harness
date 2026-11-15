@@ -3,7 +3,7 @@
  * rule in any status, and the source of a rule is a message of a thread.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { DocumentReader, Tx } from "@earendil-works/pi-durable";
+import type { ConversationId, DocumentReader, Storage, Tx } from "@earendil-works/pi-durable";
 import {
 	type Rule,
 	type RuleFilter,
@@ -22,14 +22,15 @@ const Rules = sessionDoc<RuleList & { last?: number }>(RULES_KIND, () => ({ rule
 
 /**
  * Adds or changes a rule of an agent for the caller `by`, and gives it. A new rule is `open`, and `replaces` names the
- * rule that it replaces, which a decide of the new rule retires. Only an open rule changes.
+ * rule that it replaces, which a decide of the new rule retires. Only an open rule changes. The rule gets the thread of
+ * its source message.
  */
 export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule> {
 	if (change.id !== undefined && change.replaces !== undefined) {
 		throw new Error("A change of a rule cannot replace a rule: set replaces on a new rule");
 	}
 
-	await knownSource(tx, change.source);
+	const thread = await knownSource(tx, change.source);
 	await knownAuthor(tx, change.saidBy);
 	const list = await tx.doc(Rules);
 	const at = Date.now();
@@ -44,6 +45,7 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 			status: "open",
 			saidBy: change.saidBy,
 			source: change.source,
+			thread,
 			at,
 			by,
 		};
@@ -54,7 +56,7 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 		rule = known(list.rules, change.id, "rule");
 		mustBeOpen(rule);
 		setRuleText(rule, change);
-		Object.assign(rule, { saidBy: change.saidBy, source: change.source, at, by });
+		Object.assign(rule, { saidBy: change.saidBy, source: change.source, thread, at, by });
 	}
 
 	// A draft cannot be used after its commit, so the rule is a copy.
@@ -78,8 +80,8 @@ function setRuleText(rule: Rule, text: Partial<Pick<Rule, "name" | "kind" | "val
 /**
  * Makes the change `change` of the user for the caller `by`, and gives the rule. A decide puts an open rule in effect,
  * and retires the rule that it replaces when that rule is there and not retired. A retire ends an open or a decided
- * rule. An edit changes the text of a rule in any status, and makes the user its author with no source. A create adds
- * a decided rule of the user. A delete removes the rule; its ID is never given again.
+ * rule. An edit changes the text of a rule in any status, and makes the user its author with no source and no
+ * thread. A create adds a decided rule of the user. A delete removes the rule; its ID is never given again.
  */
 export async function changeRule(tx: Tx, change: RuleUserChange, by: string): Promise<Rule> {
 	const list = await tx.doc(Rules);
@@ -116,6 +118,7 @@ export async function changeRule(tx: Tx, change: RuleUserChange, by: string): Pr
 			setRuleText(rule, change);
 			Object.assign(rule, { saidBy: "user", at, by });
 			delete rule.source;
+			delete rule.thread;
 
 			return { ...rule };
 		case "delete":
@@ -126,8 +129,11 @@ export async function changeRule(tx: Tx, change: RuleUserChange, by: string): Pr
 	}
 }
 
-/** The rules, in ID order: with `filter`, only those of its kind and its status. */
-export async function readRules(
+/**
+ * The rules as the store has them, in ID order: with `filter`, only those of its kind and its status. A rule that an
+ * older store wrote has a source and no thread; `readRules` gives its thread.
+ */
+export async function readStoredRules(
 	reader: Pick<DocumentReader, "snapshot">,
 	filter: RuleFilter,
 	context: Context,
@@ -144,22 +150,52 @@ export async function readRules(
 }
 
 /**
+ * The rules of `readStoredRules`, each rule with a source with the thread of its source. A rule that an older store
+ * wrote has a source and no thread: it gets the thread from one lookup of its message in `storage`, the storage of
+ * `harness`, and stays with no thread when the message is not there.
+ */
+export async function readRules(
+	host: { readonly harness: Pick<DocumentReader, "snapshot">; readonly storage: Pick<Storage, "entry"> },
+	filter: RuleFilter,
+	context: Context,
+): Promise<RuleList> {
+	const list = await readStoredRules(host.harness, filter, context);
+
+	await Promise.all(
+		list.rules.map(async (rule) => {
+			if (rule.source === undefined || rule.thread !== undefined) return;
+			const found = await host.storage.entry(entryId(rule.source), context);
+
+			if (found !== undefined) rule.thread = found.entry.conversationId;
+		}),
+	);
+
+	return list;
+}
+
+/**
  * Writes the rules `rules` of a store file in `tx`, into a store with no rules. The source of each rule gets the new ID
- * of its message in `messageIds`, which maps the ID of each message of the file to its new ID. `last` is the higher of
- * `lastRule` and the store.
+ * of its message in `messages`, which maps the ID of each message of the file to its new ID and the new ID of its
+ * thread, and its thread gets that new thread, whatever thread the file gives. `last` is the higher of `lastRule` and
+ * the store.
  */
 export async function loadRules(
 	tx: Tx,
 	rules: readonly Rule[],
 	lastRule: number,
-	messageIds: ReadonlyMap<number, number>,
+	messages: ReadonlyMap<number, { id: number; thread: number }>,
 ): Promise<void> {
 	const list = await tx.doc(Rules);
 
 	list.rules.push(
-		...rules.map((rule) =>
-			rule.source === undefined ? rule : { ...rule, source: mappedId(messageIds, rule.source, "message") },
-		),
+		...rules.map((fileRule) => {
+			const { thread: _, ...rule } = fileRule;
+
+			if (rule.source === undefined) return rule;
+			const message = mappedId(messages, rule.source, "message");
+
+			return { ...rule, source: message.id, thread: message.thread };
+		}),
 	);
 
 	list.last = Math.max(lastRule, highRuleId(list));
@@ -185,12 +221,17 @@ function nextRuleId(list: RuleList & { last?: number }): number {
 	return id;
 }
 
-async function knownSource(tx: Tx, id: number): Promise<void> {
-	if ((await tx.entry(MessageEntry, entryId(id))) === undefined) throw new Error(`Unknown message: ${id}`);
+/** The thread of the message `id`. */
+async function knownSource(tx: Tx, id: number): Promise<ConversationId> {
+	const entry = await tx.entry(MessageEntry, entryId(id));
+
+	if (entry === undefined) throw new Error(`Unknown message: ${id}`);
+
+	return entry.conversationId;
 }
 
-/** The new ID of the old ID `id` of a `name` in `ids`. */
-function mappedId(ids: ReadonlyMap<number, number>, id: number, name: string): number {
+/** The value in `ids` of the old ID `id` of a `name`. */
+function mappedId<T>(ids: ReadonlyMap<number, T>, id: number, name: string): T {
 	const found = ids.get(id);
 
 	if (found === undefined) throw new Error(`Unknown ${name}: ${id}`);

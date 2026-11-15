@@ -4,13 +4,13 @@
  */
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import { RULES_SECTION, rulesSection } from "../protocol/project.ts";
-import { readRules } from "./project-rules.ts";
+import { readStoredRules } from "./project-rules.ts";
 
 export const RulesSection = defineExtension({
 	name: "harness-rules",
 	sections: [
 		section(RULES_SECTION, async (input, context) =>
-			rulesSection((await readRules(input.read, { status: "decided" }, context)).rules),
+			rulesSection((await readStoredRules(input.read, { status: "decided" }, context)).rules),
 		),
 	],
 });

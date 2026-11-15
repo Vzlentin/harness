@@ -29,7 +29,7 @@ import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
 import { answerOf, askClassifier, classifierFailed, classifierModel } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
-import { readRules } from "./project-rules.ts";
+import { readStoredRules } from "./project-rules.ts";
 import { heldFor, holdAction, markSent, readHeld, runApproved, runsFor } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -136,7 +136,7 @@ async function checkCall(
 		return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
 	}
 
-	const { rules } = await readRules(harness, { kind: "conduct", status: "decided" }, context);
+	const { rules } = await readStoredRules(harness, { kind: "conduct", status: "decided" }, context);
 
 	if (rules.length === 0) return RUNS;
 

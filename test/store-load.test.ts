@@ -44,7 +44,10 @@ function load(project: string, path: string) {
 	return cli(["--project", project, "store", "load", path]);
 }
 
-/** `file` with the IDs of its threads and messages put back to the IDs of `before`, by thread and message order. */
+/**
+ * `file` with the IDs of its threads and messages, and the sources and threads of its rules, put back to the IDs of
+ * `before`, by thread and message order.
+ */
 function idsOf(file: StoreFile, before: StoreFile): StoreFile {
 	const threads = new Map(file.threads.map((thread, index) => [thread.id, before.threads[index]?.id ?? -1]));
 	const messages = new Map<number, number>();
@@ -63,7 +66,11 @@ function idsOf(file: StoreFile, before: StoreFile): StoreFile {
 			id: thread(found.id),
 			messages: found.messages.map((one) => ({ ...one, id: message(one.id), thread: thread(one.thread) })),
 		})),
-		rules: file.rules.map((rule) => (rule.source === undefined ? rule : { ...rule, source: message(rule.source) })),
+		rules: file.rules.map((rule) =>
+			rule.source === undefined || rule.thread === undefined
+				? rule
+				: { ...rule, source: message(rule.source), thread: thread(rule.thread) },
+		),
 	};
 }
 
@@ -165,6 +172,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 
 		if (source === undefined) throw new Error("no store.json");
 		expect(source.lastRule).toBeGreaterThan(source.rules.at(-1)?.id ?? 0);
+		expect(source.rules.map((rule) => rule.thread)).toEqual([source.threads[0]?.id]);
 		const outs = source.threads.flatMap((thread) => thread.messages.filter((message) => message.direction === "out"));
 		expect(outs.map((out) => out.state).sort()).toEqual(["answered", "draft", "dropped", "sent"]);
 		const path = join(root, "load-source.json");
@@ -185,6 +193,19 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		});
 
 		expect(idsOf(await hostedFile("load-new"), source)).toEqual(source);
+
+		// A rule that an older file gives with a source and no thread gets the new thread of its source message.
+		await createProject("load-old");
+		const old = join(root, "load-old.json");
+		const oldRules = source.rules.map((rule) => ({ ...rule, thread: undefined }));
+		await writeFile(old, JSON.stringify({ ...source, rules: oldRules }));
+		expect(await load("load-old", old)).toMatchObject({ code: 0, stderr: "" });
+		const oldLoaded = await hostedFile("load-old");
+		const [oldRule] = oldLoaded.rules;
+		const sourceThread = oldLoaded.threads.find((found) => found.messages.some((one) => one.id === oldRule?.source));
+		expect(oldRule?.thread).toBeDefined();
+		expect(oldRule?.thread).toBe(sourceThread?.id);
+		expect(idsOf(oldLoaded, source)).toEqual(source);
 
 		// A store that is not empty stays as it is.
 		expect(await load("load-target", path)).toEqual({

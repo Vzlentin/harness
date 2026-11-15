@@ -3,7 +3,7 @@
  * then an event with the objects that changed and the IDs of those that went, after the commits that change them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { CommitChange, Harness } from "@earendil-works/pi-durable";
+import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { isWaiting, type ProjectEvent, type ProjectState, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
@@ -27,7 +27,12 @@ import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-export type ProjectHost = { readonly harness: Harness; readonly degraded: Degraded };
+export type ProjectHost = {
+	readonly harness: Harness;
+	/** The storage of `harness`, whose entry lookup gives the thread of the source of an older rule. */
+	readonly storage: Pick<Storage, "entry">;
+	readonly degraded: Degraded;
+};
 
 /**
  * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
@@ -43,12 +48,7 @@ export function serveProjectWatch(
 	handler: ProjectHost & { readonly signal: AbortSignal },
 	connection: Connection,
 ): Promise<Replies["watch-project"]> {
-	return serveStoreWatch(
-		handler.harness,
-		new ProjectView(handler.harness, handler.degraded),
-		handler.signal,
-		connection,
-	);
+	return serveStoreWatch(handler.harness, new ProjectView(handler), handler.signal, connection);
 }
 
 /**
@@ -93,16 +93,14 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 
 /** The objects of the project and the degraded states of the host, and the commits that can change them. */
 class ProjectView implements StoreView<ProjectState, ProjectEvent> {
-	readonly #harness: Harness;
-	readonly #degraded: Degraded;
+	readonly #host: ProjectHost;
 	/** The IDs of the threads that got a message since the last read, whose messages the next read reads again. */
 	#fresh = new Set<number>();
 	/** The messages out of each thread, by thread ID, as the last read read them, with no state. */
 	#out = new Map<number, StoredMessage[]>();
 
-	constructor(harness: Harness, degraded: Degraded) {
-		this.#harness = harness;
-		this.#degraded = degraded;
+	constructor(host: ProjectHost) {
+		this.#host = host;
 	}
 
 	/**
@@ -114,19 +112,19 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		this.#fresh = new Set();
 
 		const [persons, rules, threads, held, parleys, asks] = await Promise.all([
-			readPersons(this.#harness, context),
-			readRules(this.#harness, {}, context),
-			readThreads(this.#harness, context),
-			readHeld(this.#harness, context),
-			readParleys(this.#harness, context),
-			readAsks(this.#harness, context),
+			readPersons(this.#host.harness, context),
+			readRules(this.#host, {}, context),
+			readThreads(this.#host.harness, context),
+			readHeld(this.#host.harness, context),
+			readParleys(this.#host.harness, context),
+			readAsks(this.#host.harness, context),
 		]);
 
 		const out = new Map(
 			await Promise.all(
 				threads.threads.map(async (thread): Promise<[number, StoredMessage[]]> => {
 					const known = fresh.has(thread.id) ? undefined : this.#out.get(thread.id);
-					const messages = known ?? (await readStored(this.#harness, thread.id, context));
+					const messages = known ?? (await readStored(this.#host.harness, thread.id, context));
 
 					return [thread.id, messages.filter((message) => message.direction === "out")];
 				}),
@@ -135,7 +133,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 
 		this.#out = out;
 		// The outbox is read after the messages, so that each message out that they have has its state there.
-		const states = outStates(await readOutbox(this.#harness, context));
+		const states = outStates(await readOutbox(this.#host.harness, context));
 
 		const withWaits: ProjectThread[] = threads.threads.map((thread) => ({
 			...thread,
@@ -153,7 +151,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			...held,
 			...parleys,
 			...asks,
-			degraded: this.#degraded.list(),
+			degraded: this.#host.degraded.list(),
 		};
 	}
 
@@ -174,7 +172,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 
 	/** Requests a pass at each change of the degraded states. */
 	triggers(request: () => void): () => void {
-		return this.#degraded.subscribe(request);
+		return this.#host.degraded.subscribe(request);
 	}
 }
 

@@ -336,12 +336,12 @@ export function joinMessage(message: StoredMessage, states: ReadonlyMap<number, 
 
 /**
  * Writes the lists of `file` in `tx`, into a store whose lists are empty. Each thread gets a new conversation and each
- * message a new entry, in file order, and the source of each rule gets the new ID of its message. Each message out gets
- * its state in the outbox, with its time as `written` and its last change. `last` of the rules is the higher of the
- * file and the store.
+ * message a new entry, in file order, and the source of each rule gets the new ID of its message, and its thread the new
+ * ID of the thread of that message. Each message out gets its state in the outbox, with its time as `written` and its
+ * last change. `last` of the rules is the higher of the file and the store.
  */
 export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
-	const messageIds = new Map<number, number>();
+	const messageIds = new Map<number, { id: number; thread: number }>();
 	const threads = await tx.doc(Threads);
 	const outbox = await tx.doc(Outbox);
 
@@ -352,7 +352,7 @@ export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
 		for (const message of messages) {
 			const { from, direction, at, text, by } = message;
 			const entry = await tx.appendEntry(MessageEntry, conversation.id, { data: { from, direction, at, text, by } });
-			messageIds.set(message.id, entry.id);
+			messageIds.set(message.id, { id: entry.id, thread: conversation.id });
 
 			if (message.direction === "out") {
 				const { state, changed } = message;
