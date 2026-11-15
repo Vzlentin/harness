@@ -43,7 +43,8 @@ export function projectsPath(): string {
 }
 
 /**
- * The projects, name to real directory, in creation order. It is empty when the file does not exist. It throws when the
+ * The projects, name to absolute directory, in creation order. `create` saves real paths, but a hand-written file can
+ * have a path through a symbolic link. It is empty when the file does not exist. It throws when the
  * file is not an object of valid names to absolute directories.
  */
 export function readProjects(): Record<string, string> {
@@ -116,7 +117,8 @@ export function memoryDir(name: string, dir: string): string | undefined {
 
 /**
  * The project of a command: `HARNESS_PROJECT` in `env`, then the project with the longest directory that is `cwd` or
- * contains it, then `main`. An unknown `HARNESS_PROJECT` is an error.
+ * contains it, then `main`. It compares the real paths of `cwd` and of the directories (see `realOrWritten`). An unknown
+ * `HARNESS_PROJECT` is an error.
  */
 export function resolveProject(
 	env: NodeJS.ProcessEnv,
@@ -124,18 +126,30 @@ export function resolveProject(
 	projects: Readonly<Record<string, string>> = readProjects(),
 ): string {
 	if (env[HARNESS_PROJECT]) return checkProject(env[HARNESS_PROJECT], projects);
+	const real = realOrWritten(cwd);
 	let found = MAIN_PROJECT;
 	let length = -1;
 
-	for (const [name, dir] of Object.entries(projects)) {
-		// The first project wins over a later one with the same directory.
-		if (dir.length > length && (cwd === dir || cwd.startsWith(dir.endsWith(sep) ? dir : dir + sep))) {
+	for (const [name, written] of Object.entries(projects)) {
+		const dir = realOrWritten(written);
+
+		// The first project wins over a later one with the same real directory.
+		if (dir.length > length && (real === dir || real.startsWith(dir.endsWith(sep) ? dir : dir + sep))) {
 			found = name;
 			length = dir.length;
 		}
 	}
 
 	return found;
+}
+
+/** The real path of `path`, or `path` as written when it does not exist. */
+function realOrWritten(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 /**

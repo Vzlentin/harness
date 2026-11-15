@@ -54,6 +54,30 @@ describe("projects", { timeout: 30_000 }, () => {
 		);
 	});
 
+	it("compares the current directory and the project directories by their real paths", async () => {
+		const base = realpathSync(root);
+		const real = join(base, "real");
+		const link = join(base, "real-link");
+		const missing = join(base, "missing-dir");
+		await mkdir(join(real, "src"), { recursive: true });
+		await symlink(real, link);
+
+		const cases: [Record<string, string>, string, string][] = [
+			[{ p: link }, real, "p"],
+			[{ p: link }, join(real, "src"), "p"],
+			[{ p: real }, link, "p"],
+			[{ p: real }, join(link, "src"), "p"],
+			// The same real directory: the first one created wins, whatever the length of the written path.
+			[{ first: real, second: link }, join(link, "src"), "first"],
+			[{ first: link, second: real }, real, "first"],
+			// A path that does not exist is compared as written.
+			[{ p: missing }, join(missing, "src"), "p"],
+			[{ p: missing }, real, "main"],
+		];
+
+		for (const [projects, cwd, project] of cases) expect(resolveProject({}, cwd, projects)).toBe(project);
+	});
+
 	it("prints the version of the package", async () => {
 		const { version } = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
 		expect(await cli(["--version"])).toEqual({ code: 0, stdout: `${version}\n`, stderr: "" });
@@ -192,6 +216,25 @@ describe("projects", { timeout: 30_000 }, () => {
 		}
 
 		await until(() => !existsSync(statePaths("a").socket) && !existsSync(statePaths("b").socket));
+	});
+
+	it("routes a command from the real directory to a project saved with a link path", async () => {
+		const valid = readFileSync(projectsPath(), "utf8");
+		const link = join(realpathSync(root), "a-link");
+		await symlink(realpathSync(dirA), link);
+		writeFileSync(projectsPath(), JSON.stringify({ a: link }));
+		const hostMain = await startHost();
+		const hostA = await startHost("a");
+
+		try {
+			const handle = handleOf(await cli(["--project", "a", "spawn", "--prompt", "Through a link"], {}, dirB));
+			// The CLI process has the real path of dirA as its cwd.
+			expect((await cli(["list"], {}, dirA)).stdout).toContain(handle);
+		} finally {
+			await hostA?.close();
+			await hostMain?.close();
+			writeFileSync(projectsPath(), valid);
+		}
 	});
 
 	it("refuses a projects file with an invalid project", async () => {
