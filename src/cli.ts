@@ -34,7 +34,7 @@ import { errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
-import { runQuery, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
+import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -141,8 +141,8 @@ function waitArgs(args: string[]): ToolArgs {
 	return { action: "wait", handle, timeout };
 }
 
-/** The arguments of `status` or `stop`: one handle. */
-function handleArgs(action: "status" | "stop", args: string[]): ToolArgs {
+/** The arguments of `status`: one handle. */
+function handleArgs(action: "status", args: string[]): ToolArgs {
 	const [handle] = args;
 
 	if (args.length !== 1 || handle === undefined) usage();
@@ -412,6 +412,16 @@ async function queryCommand(args: string[], project: string | undefined): Promis
 	process.stdout.write(text);
 }
 
+/** Stops a child, or the child of the conversation `<id>` with `--conversation <id>`, and the children it spawned. */
+async function stopCommand(args: string[], project: string | undefined): Promise<void> {
+	const { target, rest } = commandTarget(args);
+
+	if (rest.length > 0) usage();
+	const { text } = await runStop(targetRef(target), cliScope(project));
+
+	process.stdout.write(text);
+}
+
 /** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
 async function agentCommand(name: string, project: string | undefined): Promise<void> {
 	if (project !== undefined) fail(`harness ${name} takes no --project`);
@@ -619,7 +629,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		rename: toolCommand(["  harness rename <handle> <name>"], renameArgs),
 		send: toolCommand(["  harness send <handle> [--follow-up] <message>"], sendArgs),
 		wait: toolCommand(["  harness wait <handle> [--timeout <seconds>]"], waitArgs),
-		stop: toolCommand(["  harness stop <handle>"], (args) => handleArgs("stop", args)),
+		stop: { usage: ["  harness stop (<handle> | --conversation <id>)"], run: stopCommand },
 		list: toolCommand(["  harness list"], listArgs),
 		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },

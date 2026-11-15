@@ -239,6 +239,22 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect(await request(note, { start: false })).toMatchObject({ child: { conversation: ids.child, state: "ended" } });
 	});
 
+	it("refuses to stop a task's child, which is not a subagent, and the project agent", async () => {
+		const ids = await startWithIds("unstopped", "Fixture unstopped");
+		expect(await taskRequest("wait-task", "unstopped")).toMatchObject({ outcome: { status: "completed" } });
+		const stop = { type: "stop", caller: "cli" } as const;
+
+		await expect(request({ ...stop, conversation: ids.child }, { start: false })).rejects.toThrow(
+			`The conversation ${ids.child} is not a subagent`,
+		);
+		await expect(request({ ...stop, conversation: ids.root }, { start: false })).rejects.toThrow(
+			`Unknown conversation: ${ids.root}`,
+		);
+		await expect(request({ ...stop, handle: AGENT_HANDLE }, { start: false })).rejects.toThrow(
+			`Unknown subagent: ${AGENT_HANDLE}`,
+		);
+	});
+
 	it("aborts a task's child by conversation, and refuses other conversation IDs", async () => {
 		gates.set("Fixture aborted", Promise.withResolvers());
 		const ids = await startWithIds("aborted", "Fixture aborted");

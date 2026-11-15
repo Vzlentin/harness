@@ -52,6 +52,7 @@ import {
 	setSettings,
 	setUp,
 	startHost,
+	spawnWithId,
 	startHostProcess,
 	tearDown,
 	textOf,
@@ -590,7 +591,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["list"], other)).stdout).toBe(`mine (${handle})  busy      faux/faux-1  medium\n`);
 		expect((await cli(["list"], { PI_SESSION_ID: "third" })).stdout).toBe("No subagents\n");
 		expect((await cli(["send", handle, "Hi"])).stderr).toBe(`Subagent ${handle} belongs to another session\n`);
-		expect((await cli(["stop", handle])).stderr).toBe(`Subagent ${handle} belongs to another session\n`);
+		expect((await cli(["stop", handle], { PI_SESSION_ID: "third" })).stderr).toBe(
+			`Subagent ${handle} belongs to another session\n`,
+		);
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// A mirror session may send to the child of any caller.
@@ -598,6 +601,40 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const sent = await request({ ...mirror, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From mirror\n`);
+	});
+
+	it("lets a terminal that is not an agent stop the child of any caller", async () => {
+		const other = { PI_SESSION_ID: "stopped-session" };
+		gates.set("Task:\nAnyone", Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--name", "mine", "--prompt", "Anyone"], other));
+
+		try {
+			expect((await cli(["stop", handle])).stdout).toBe(`Stopped mine (${handle})\n`);
+			expect(aborted.has("Task:\nAnyone")).toBe(true);
+			expect((await cli(["list"], other)).stdout).toBe(`mine (${handle})  ended     faux/faux-1  medium\n`);
+		} finally {
+			gates.get("Task:\nAnyone")?.resolve();
+			gates.delete("Task:\nAnyone");
+		}
+	});
+
+	it("stops a child by conversation ID, for its caller and for a terminal that is not an agent", async () => {
+		const other = await spawnWithId("other-session");
+		const third = { PI_SESSION_ID: "third" };
+		expect((await cli(["stop", "--conversation", other.id], third)).stderr).toBe(
+			`The conversation ${other.id} is not a child of this caller\n`,
+		);
+		expect((await cli(["stop", "--conversation", other.id])).stdout).toBe(`Stopped ${other.handle}\n`);
+		expect((await cli(["status", other.handle])).stdout).toBe(`${other.handle}: ended (faux/faux-1, medium)\n`);
+
+		const own = await spawnWithId("third");
+		expect((await cli(["stop", "--conversation", own.id], third)).stdout).toBe(`Stopped ${own.handle}\n`);
+		expect((await cli(["stop", "--conversation", "999999"])).stderr).toBe("Unknown conversation: 999999\n");
+		expect((await cli(["stop", "--conversation", own.id, "extra"])).stderr).toContain("Usage:");
+
+		// Both targets at once: the type refuses it, so the line goes through JSON.
+		const both = JSON.parse(JSON.stringify({ type: "stop", caller: "cli", handle: own.handle, conversation: own.id }));
+		await expect(request(both, { start: false })).rejects.toThrow("Invalid stop request: conversation is not allowed");
 	});
 
 	it("lets a child spawn a child, but not a third level, with agentDepthLimit 2", async () => {

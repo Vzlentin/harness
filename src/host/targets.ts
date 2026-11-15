@@ -15,9 +15,18 @@ import {
 	type Turn,
 	type Write,
 } from "../children/library.ts";
+import { CLI_CALLER } from "../protocol/env.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
-import { type ChildRecord, ChildRecords, type ChildrenState, childRecord, isHeld } from "./records.ts";
+import {
+	type ChildRecord,
+	ChildRecords,
+	type ChildrenState,
+	childRecord,
+	conversationEntry,
+	isHeld,
+	ownRecord,
+} from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -155,6 +164,49 @@ async function libraryConversation(place: Place, id: string) {
 	if (child === undefined) throw new Error(`Unknown conversation: ${id}`);
 
 	return child;
+}
+
+/**
+ * The handle and the record of the child of `target`, when `caller` may reach it: `cli`, a terminal that is not an
+ * agent, any child; another caller only a child that it spawned. The project agent, and a conversation with no record,
+ * such as a session of a task, are not children of this host.
+ */
+export async function callerEntry(
+	host: Pick<TargetHost, "harness" | "place">,
+	target: Target,
+	caller: string,
+): Promise<readonly [string, ChildRecord]> {
+	switch (target.kind) {
+		case "child":
+			return [
+				target.handle,
+				caller === CLI_CALLER
+					? await childRecord(host.harness, target.handle)
+					: await ownRecord(host.harness, target.handle, caller),
+			];
+		case "agent":
+			throw new Error(`Unknown subagent: ${AGENT_HANDLE}`);
+		case "conversation":
+			return conversationEntryOf(host, target.id, caller);
+	}
+}
+
+async function conversationEntryOf(
+	host: Pick<TargetHost, "harness" | "place">,
+	id: string,
+	caller: string,
+): Promise<readonly [string, ChildRecord]> {
+	const conversation = (await libraryConversation(host.place, id)).conversation.id;
+	const state = await host.harness.snapshot(ChildRecords, context);
+	const entry = conversationEntry(Object.entries(state?.children ?? {}), String(conversation));
+
+	if (caller !== CLI_CALLER && entry?.[1].caller !== caller) {
+		throw new Error(`The conversation ${id} is not a child of this caller`);
+	}
+
+	if (entry === undefined) throw new Error(`The conversation ${id} is not a subagent`);
+
+	return entry;
 }
 
 /**

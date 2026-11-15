@@ -536,6 +536,16 @@ export async function answerOf(handle: string, project?: string): Promise<string
 	return reply.answer;
 }
 
+/** The handle and the conversation ID of a new child of `caller`, which prints its `PI_SESSION_ID`. */
+export async function spawnWithId(caller: string): Promise<{ handle: string; id: string }> {
+	const child = await spawnAs(caller, "Task:\nEnvironment", { notify: false });
+	const id = /^Tool said: (\d+) /.exec(await answerOf(child.handle))?.[1];
+
+	if (id === undefined) throw new Error("no conversation ID");
+
+	return { handle: child.handle, id };
+}
+
 /** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
 export const reports: unknown[] = [];
 

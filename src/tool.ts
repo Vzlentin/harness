@@ -204,11 +204,8 @@ export async function runTool(args: ToolArgs, scope: ToolScope): Promise<ToolRes
 			return { text, data: { action, value: [...children] } };
 		}
 
-		case "stop": {
-			const stopped = await send({ type: "stop", caller, handle: handle() }, signal);
-
-			return { text: `Stopped ${runDisplayName(stopped)}\n`, data: { action, value: stopped } };
-		}
+		case "stop":
+			return runStop({ handle: handle() }, scope);
 
 		case "query":
 			return runQuery({ handle: handle() }, required(args.question?.trim(), "question", action), scope);
@@ -227,6 +224,16 @@ export async function runQuery(
 	const reply = await scope.send({ type: "query", caller: scope.caller, question, ...ref }, scope.signal ?? NO_ABORT);
 
 	return { text: `${reply.answer}\n`, data: { action: "query", value: reply } };
+}
+
+/** Stops the child of `ref` and the children it spawned, for the action `stop` and `harness stop`. */
+export async function runStop(
+	ref: TargetRef,
+	scope: Pick<ToolScope, "caller" | "send" | "signal">,
+): Promise<ToolResult> {
+	const stopped = await scope.send({ type: "stop", caller: scope.caller, ...ref }, scope.signal ?? NO_ABORT);
+
+	return { text: `Stopped ${runDisplayName(stopped)}\n`, data: { action: "stop", value: stopped } };
 }
 
 /** The spawn request of `args`, with the caller's own provider, model, thinking level and working directory from `scope`. */

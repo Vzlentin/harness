@@ -90,7 +90,9 @@ harness wait <handle>
 harness rename <handle> "new name"
 harness send <handle> "message"
 harness send <handle> --follow-up "message"
-harness stop <handle>
+harness stop (<handle> | --conversation <id>)
 ```
+
+A terminal that is not an agent (`PI_SESSION_ID` is not set) can stop any subagent, also the subagent of another session.
 
 The CLI takes the provider, model, and reasoning level from the bash environment. Never pass `$PI_PROVIDER`, `$PI_MODEL`, or `$PI_REASONING_LEVEL` back to it explicitly. Repeat `--prompt` and `--file` as needed; `--tools` is a comma-separated list. Run `harness spawn` and `harness wait` directly, without piping or redirecting their output, so the bash tool returns it. Set the bash timeout above the default 1800-second deadline of `wait`.

@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version.
  */
-export const PROTOCOL_VERSION = 26;
+export const PROTOCOL_VERSION = 27;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -209,7 +209,12 @@ export const RequestLine = Type.Union([
 	 */
 	Type.Object({ type: Type.Literal("answers"), caller: Type.String() }),
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
-	Type.Object({ type: Type.Literal("stop"), caller: Type.String(), handle: Type.String() }),
+	/**
+	 * Ends the child of the target and the children it spawned. The records stay, so a `send` resumes a child. The caller
+	 * `cli` can stop any child; another caller only its own children. The project agent and a conversation with no record
+	 * cannot be stopped.
+	 */
+	...withTarget({ type: Type.Literal("stop"), caller: Type.String() }),
 	/**
 	 * The stream of the child for a mirror session of the Pi extension: the reply, then one `{ event: WatchLine }` line
 	 * after each commit to the child's conversation and after each rename. Every other line on the connection stays a

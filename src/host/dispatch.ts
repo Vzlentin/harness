@@ -72,6 +72,7 @@ import {
 } from "./records.ts";
 import {
 	callerConversation,
+	callerEntry,
 	childInfo,
 	childOf,
 	childTarget,
@@ -472,10 +473,11 @@ async function rename(request: Extract<Request, { type: "rename" }>, handler: Ha
 }
 
 async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
-	const record = await ownRecord(handler.harness, request.handle, request.caller);
+	const [handle, record] = await callerEntry(handler, parseTarget(request), request.caller);
+
 	await stopChild(handler, record);
 
-	return record.name === undefined ? { handle: request.handle } : { handle: request.handle, name: record.name };
+	return record.name === undefined ? { handle } : { handle, name: record.name };
 }
 
 /**

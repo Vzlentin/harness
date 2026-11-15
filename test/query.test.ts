@@ -12,6 +12,7 @@ import {
 	setSettings,
 	setUp,
 	spawnAs,
+	spawnWithId,
 	startHost,
 	tearDown,
 } from "./helpers.ts";
@@ -32,16 +33,6 @@ afterAll(async () => {
 /** The transcript that the query model got in the answer `answer`, which the faux model gives as `Answer to <prompt>`. */
 function transcriptOf(answer: string): string {
 	return /<transcript>\n([\s\S]*)\n<\/transcript>/.exec(answer)?.[1] ?? "";
-}
-
-/** The handle and the conversation ID of a new child of `caller`, which prints its `PI_SESSION_ID`. */
-async function spawnWithId(caller: string): Promise<{ handle: string; id: string }> {
-	const child = await spawnAs(caller, "Task:\nEnvironment", { notify: false });
-	const id = /^Tool said: (\d+) /.exec(await answerOf(child.handle))?.[1];
-
-	if (id === undefined) throw new Error("no conversation ID");
-
-	return { handle: child.handle, id };
 }
 
 describe("query", { timeout: 30_000 }, () => {

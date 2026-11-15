@@ -15,8 +15,7 @@ import { userText } from "../protocol/gate.ts";
 import { MAX_QUERY, QUERY_CUT_LINE } from "../protocol/query.ts";
 import type { Replies, Request } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";
-import { ChildRecords, conversationEntry, ownRecord } from "./records.ts";
-import { type TargetHost, targetConversation } from "./targets.ts";
+import { callerEntry, type TargetHost, targetConversation } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -71,23 +70,9 @@ export async function queryConversation(
 async function queriedConversation(host: QueryHost, ref: Target, caller: string): Promise<ConversationId> {
 	if (caller === CLI_CALLER) return targetConversation(host, ref);
 
-	switch (ref.kind) {
-		case "child":
-			return (await ownRecord(host.harness, ref.handle, caller)).conversationId;
-		case "agent":
-			throw new Error("Only a terminal that is not an agent can query the project agent");
-		case "conversation": {
-			const id = await targetConversation(host, ref);
-			const state = await host.harness.snapshot(ChildRecords, context);
-			const entry = conversationEntry(Object.entries(state?.children ?? {}), String(id));
+	if (ref.kind === "agent") throw new Error("Only a terminal that is not an agent can query the project agent");
 
-			if (entry?.[1].caller !== caller) {
-				throw new Error(`The conversation ${ref.id} is not a child of this caller`);
-			}
-
-			return id;
-		}
-	}
+	return (await callerEntry(host, ref, caller))[1].conversationId;
 }
 
 /**
