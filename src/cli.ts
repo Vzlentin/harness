@@ -12,7 +12,7 @@ import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
-import { sendRuleChange, sendRuleList } from "./project-tool.ts";
+import { sendAskNote, sendRuleChange, sendRuleList } from "./project-tool.ts";
 import {
 	cliCaller,
 	HARNESS_PROJECT,
@@ -23,6 +23,7 @@ import {
 } from "./protocol/env.ts";
 import { pageDir } from "./protocol/paths.ts";
 import {
+	LocalId,
 	ParleyAsks,
 	parleyShowText,
 	Rule,
@@ -333,15 +334,34 @@ async function treeCommand(args: string[], project: string | undefined): Promise
 	);
 }
 
-/** Prints the parley `slug` of the project as Markdown: its frame, its asks with their answers, and its contract. */
+/**
+ * Prints the parley `slug` of the project as Markdown: its frame, its asks with their answers, and its contract. With
+ * `note`, records the note of an ask for the caller, and prints the line of the ask.
+ */
 async function parleyCommand(args: string[], project: string | undefined): Promise<void> {
 	const [action, slug] = args;
+
+	if (action === "note") return noteCommand(args.slice(1), project);
 
 	if (args.length !== 2 || action !== "show" || slug === undefined) usage();
 	const reply = await request({ type: "parley", action: "read", slug }, { start: true, project });
 
 	if (!Value.Check(ParleyAsks, reply)) throw new Error("The host replied with no parley");
 	process.stdout.write(parleyShowText(reply));
+}
+
+/** Runs `parley note [<slug>] <ask> <note>`: the ask is its number in the parley `slug`, else its ID. */
+async function noteCommand(args: string[], project: string | undefined): Promise<void> {
+	if (args.length !== 2 && args.length !== 3) usage();
+	const [slug, value, note] = args.length === 3 ? args : [undefined, ...args];
+
+	if (value === undefined || note === undefined) usage();
+	const n = Number(value);
+
+	if (!Value.Check(LocalId, n)) fail(`Invalid ask: ${value}`);
+	const { text } = await sendAskNote(slug, n, note, cliScope(project));
+
+	process.stdout.write(text);
 }
 
 /** The options of `rule` after its action, by name, and the words that are not options. */
@@ -800,7 +820,10 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		list: toolCommand(["  harness list"], listArgs),
 		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
-		parley: { usage: ["  harness parley show <slug>"], run: parleyCommand },
+		parley: {
+			usage: ["  harness parley show <slug>", "  harness parley note [<slug>] <ask> <note>"],
+			run: parleyCommand,
+		},
 		rule: {
 			usage: [
 				"  harness rule [list [--kind <kind>] [--status <status>]]",

@@ -535,12 +535,15 @@ export async function dropAsk(tx: Tx, ref: AskRef, by: string): Promise<AskWrite
 }
 
 /**
- * Sets `note`, the ID of a note in the vault, on the ask of `ref` for the caller `by`, and gives the ask. An ask in any
- * state takes a note, also in a parley that is not open, and a second note replaces the first.
+ * Sets `note`, the ID of a note in the vault, on the ask of `ref` for the caller `by`, and gives the ask. Only the asker
+ * of the ask records its note. An ask in any state takes a note, also in a parley that is not open, and a second note
+ * replaces the first.
  */
 export async function noteAsk(tx: Tx, ref: AskRef, note: string, by: string): Promise<Ask> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const ask = resolveAsk(parleys, (await tx.doc(Asks)).asks, ref);
+
+	if (ask.asker !== by) throw new Error(`Ask ${ask.id} was asked by another caller: only its asker records its note`);
 	Object.assign(ask, { note, at: Date.now(), by });
 
 	return Value.Clone(ask);

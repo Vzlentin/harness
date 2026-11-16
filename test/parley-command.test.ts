@@ -110,10 +110,55 @@ describe("harness parley show", { timeout: 30_000 }, () => {
 	});
 
 	it("prints the usage for other arguments", async () => {
-		for (const args of [["list"], ["show"], ["show", "made", "more"], []]) {
+		for (const args of [
+			["list"],
+			["show"],
+			["show", "made", "more"],
+			[],
+			["note", "1"],
+			["note", "a", "1", "n", "x"],
+		]) {
 			const result = await cli(["parley", ...args]);
 			expect(result).toMatchObject({ code: 1, stdout: "" });
-			expect(result.stderr).toContain("  harness parley show <slug>\n");
+			expect(result.stderr).toContain("  harness parley show <slug>\n  harness parley note [<slug>] <ask> <note>\n");
 		}
+	});
+});
+
+describe("harness parley note", { timeout: 30_000 }, () => {
+	const asker = { PI_SESSION_ID: "pi-1" };
+
+	it("records the note of an ask by its number in its parley, and prints the line of the ask", async () => {
+		await framed("noted");
+
+		expect(await cli(["parley", "note", "noted", "1", "20261115-noted"], asker)).toEqual({
+			code: 0,
+			stdout: "1 · Where · your call · open · plan a · In the store\n",
+			stderr: "",
+		});
+		expect(await send({ type: "ask", action: "read", slug: "noted", n: 1 })).toMatchObject({
+			note: "20261115-noted",
+			by: "pi-1",
+		});
+	});
+
+	it("records the note of an ask with no parley by its ID", async () => {
+		const written = await send({ type: "ask", action: "round", caller: "pi-1", asks: [{ title: "Alone" }] });
+		const id = "asks" in written ? (written.asks[0]?.id ?? 0) : 0;
+
+		expect(await cli(["parley", "note", String(id), "alone"], asker)).toEqual({
+			code: 0,
+			stdout: `${id} · Alone · open\n`,
+			stderr: "",
+		});
+		expect(await send({ type: "ask", action: "read", id })).toMatchObject({ note: "alone" });
+	});
+
+	it("fails with one line for an ask that is not a number", async () => {
+		expect(await cli(["parley", "note", "noted", "x", "n"], asker)).toEqual({
+			code: 1,
+			stdout: "",
+			stderr: "Invalid ask: x\n",
+		});
 	});
 });

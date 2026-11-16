@@ -59,6 +59,7 @@ export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone
 - round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley.
 - answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract.
 - drop: drop the open ask \`ask\`.
+- note: record \`note\`, the ID of the note in the vault that explains the ask \`ask\`, in any state. Only the asker of the ask records its note, and a second note replaces the first.
 - take: become the asker of the open asks of the parley \`slug\`, open or a contract. It gives the answers that waited for the asker.
 - end: end the contract \`slug\` with \`status\`: done or dropped.
 - read: the parley \`slug\` and its asks, or the ask \`ask\` and its view.
@@ -139,6 +140,7 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 					Type.Literal("round"),
 					Type.Literal("answer"),
 					Type.Literal("drop"),
+					Type.Literal("note"),
 					Type.Literal("take"),
 					Type.Literal("end"),
 					Type.Literal("read"),
@@ -146,7 +148,7 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				],
 				{ description: "What to do" },
 			),
-			slug: text("round, answer, drop, read: the parley of the asks; take, end: the parley"),
+			slug: text("round, answer, drop, note, read: the parley of the asks; take, end: the parley"),
 			title: text("round: the title of the parley"),
 			goal: text("round: the goal of the parley"),
 			evidence: Type.Optional(
@@ -186,7 +188,8 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 					{ description: "answer: the answers, each of another ask" },
 				),
 			),
-			ask: id("drop, read: the ask, its number with slug, else its ID"),
+			ask: id("drop, note, read: the ask, its number with slug, else its ID"),
+			note: Type.Optional(Type.String({ description: "note: the ID of the note in the vault that explains the ask" })),
 			status: Type.Optional(
 				Type.Union([Type.Literal("done"), Type.Literal("dropped")], { description: "end: done or dropped" }),
 			),
@@ -196,6 +199,7 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				action: Type.Union([Type.Literal("round"), Type.Literal("answer"), Type.Literal("drop")]),
 				value: AskWrite,
 			}),
+			Type.Object({ action: Type.Literal("note"), value: Ask }),
 			Type.Object({ action: Type.Literal("take"), value: ParleyAsks }),
 			Type.Object({ action: Type.Literal("end"), value: Parley }),
 			Type.Object({ action: Type.Literal("read"), value: Type.Union([ParleyAsks, Ask]) }),
@@ -390,6 +394,22 @@ export async function sendRuleChange(
 	return { rule, text: `${ruleLine(rule, names)}\n` };
 }
 
+/**
+ * Sends the note `note` of the ask `n` for the caller of `scope`, and gives the ask and its line.
+ * The ask is its number in the parley `slug`, or its ID without `slug`.
+ */
+export async function sendAskNote(
+	slug: string | undefined,
+	n: number,
+	note: string,
+	scope: ProjectScope,
+): Promise<{ ask: Ask; text: string }> {
+	const request = { type: "ask", action: "note", caller: scope.caller, ...askRef(slug, n), note } as const;
+	const ask = replyOf(Ask, await scope.send(request, scope.signal ?? NO_ABORT), "ask");
+
+	return { ask, text: `${askLine(ask)}\n` };
+}
+
 type ParleyArgs = Static<ProjectSchemas["parley"]["parameters"]>;
 
 /** The ask `n` of a call: its number in the parley `slug`, or its ID without `slug`. */
@@ -466,6 +486,13 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
 
 			return { text: writeText(reply), data: { action, value: reply } };
+		}
+
+		case "note": {
+			const n = required(args.ask, "ask", action);
+			const { ask, text } = await sendAskNote(slug, n, required(args.note, "note", action), scope);
+
+			return { text, data: { action, value: ask } };
 		}
 
 		case "take": {

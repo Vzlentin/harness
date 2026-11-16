@@ -1092,6 +1092,33 @@ describe("the Pi extension", () => {
 		await expect(tools.get("parley")?.call({ action: "end", slug: "pi", status: "done" })).rejects.toThrow(
 			"Parley pi is open",
 		);
+		// The asker records the vault note of an ask, by its number in its parley or by its ID.
+		expect(await tools.get("parley")?.call({ action: "note", slug: "pi", ask: 1, note: "20261115-pi" })).toBe(
+			"1 · Where · your call · open · plan a · Here\n",
+		);
+		expect(tools.get("parley")?.structured.at(-1)).toMatchObject({
+			action: "note",
+			value: { note: "20261115-pi", asker: "session", by: "session", parley: { n: 1 } },
+		});
+		const lone = await tools.get("parley")?.call({ action: "round", asks: [{ title: "Alone" }] });
+		const loneId = Number(lone?.split(" ")[0]);
+		expect(await tools.get("parley")?.call({ action: "note", ask: loneId, note: "alone" })).toBe(
+			`${loneId} · Alone · open\n`,
+		);
+		expect(tools.get("parley")?.structured.at(-1)).toMatchObject({
+			action: "note",
+			value: { id: loneId, note: "alone" },
+		});
+		await expect(tools.get("parley")?.call({ action: "note", slug: "pi", note: "n" })).rejects.toThrow(
+			"note requires ask",
+		);
+		await expect(tools.get("parley")?.call({ action: "note", ask: loneId })).rejects.toThrow("note requires note");
+		await expect(tools.get("parley")?.call({ action: "note", ask: loneId, note: "  " })).rejects.toThrow(
+			"Invalid ask request: note is not valid",
+		);
+		expect(await request({ type: "ask", action: "read", id: loneId }, { start: false })).toMatchObject({
+			note: "alone",
+		});
 		// The answers of the parley tool are the answers of the agent of the session.
 		await tools.get("parley")?.call({ action: "answer", slug: "pi", answers: [{ ask: 1, answer: "a" }] });
 		expect(await request({ type: "ask", action: "read", slug: "pi", n: 1 }, { start: false })).toMatchObject({

@@ -204,6 +204,7 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 			{ name: "parley", arguments: { action: "read", slug: "where", ask: 9 } },
 			{ name: "parley", arguments: { action: "list" } },
 			{ name: "parley", arguments: { action: "drop", slug: "nope" } },
+			{ name: "parley", arguments: { action: "note", slug: "where", ask: 1, note: "20261115-where" } },
 		]);
 
 		const handle = handleOf(await cli(["spawn", "--prompt", "Keep the parley"]));
@@ -231,6 +232,11 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(answered).toMatchObject({ state: "answered", author: { kind: "hosted", conversation: Number(by) } });
 		// The runner refuses the drop before it reads the unknown parley.
 		expect(results[9]).toContain("drop requires ask");
+		// The asker records the vault note of an ask of a contract.
+		expect(results[10]).toBe("1 · Where · your call · b · In files\n");
+		expect(await request({ type: "ask", action: "read", slug: "where", n: 1 }, { start: false })).toMatchObject({
+			note: "20261115-where",
+		});
 	});
 
 	it("runs the flow of the parley skill from its first round to the contract", async () => {

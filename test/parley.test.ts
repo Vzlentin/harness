@@ -172,8 +172,8 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		expect(byUser).toMatchObject({ by: "user", author: { kind: "user" } });
 
 		// A note keeps the author of the answer, and changes only `by`.
-		const noted = await send({ type: "ask", action: "note", caller: "pi-2", id: lone, note: "who" });
-		expect(noted).toMatchObject({ by: "pi-2", author: { kind: "user" } });
+		const noted = await send({ type: "ask", action: "note", caller: "khan", id: lone, note: "who" });
+		expect(noted).toMatchObject({ by: "khan", author: { kind: "user" } });
 
 		// A new answer with no mark writes its own author.
 		const byAgent = Value.Parse(
@@ -195,8 +195,8 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		const answered = (await answer([{ id: lone, answer: "own", label: "Yes" }])).asks[0];
 		const { call, readBack } = await framed("noted");
 
-		const noted = await send({ type: "ask", action: "note", caller: "pi-1", id: lone, note: "20261115-ask" });
-		expect(noted).toEqual({ ...answered, note: "20261115-ask", at: Value.Parse(Ask, noted).at, by: "pi-1" });
+		const noted = await send({ type: "ask", action: "note", caller: "khan", id: lone, note: "20261115-ask" });
+		expect(noted).toEqual({ ...answered, note: "20261115-ask", at: Value.Parse(Ask, noted).at, by: "khan" });
 		expect(await send({ type: "ask", action: "read", id: lone })).toEqual(noted);
 
 		// A second note replaces the first, and the note of an open ask of a parley stays after its answer.
@@ -204,10 +204,10 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 
 		const second = Value.Parse(
 			Ask,
-			await send({ type: "ask", action: "note", caller: "pi-2", slug: "noted", n: 1, note: "second note" }),
+			await send({ type: "ask", action: "note", caller: "pi-1", slug: "noted", n: 1, note: "second note" }),
 		);
 
-		expect(second).toMatchObject({ id: call, state: "open", note: "second note", asker: "pi-1", by: "pi-2" });
+		expect(second).toMatchObject({ id: call, state: "open", note: "second note", asker: "pi-1", by: "pi-1" });
 		const read = await readParley("noted");
 		expect(read.asks[0]).toEqual(second);
 		expect(read.asks[1]).not.toHaveProperty("note");
@@ -216,6 +216,18 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		const kept = Value.Parse(Ask, await send({ type: "ask", action: "read", slug: "noted", n: 1 }));
 		expect(kept).toMatchObject({ state: "answered", answer: "a", note: "second note" });
 		expect(Value.Parse(Ask, await send({ type: "ask", action: "read", id: readBack }))).not.toHaveProperty("note");
+	});
+
+	it("records the vault note of an ask only for its asker", async () => {
+		const lone = (await round("khan", undefined, [{ title: "Whose note?" }])).asks[0]?.id ?? 0;
+
+		await expect(send({ type: "ask", action: "note", caller: "pi-2", id: lone, note: "theirs" })).rejects.toThrow(
+			`Ask ${lone} was asked by another caller: only its asker records its note`,
+		);
+
+		const read = Value.Parse(Ask, await send({ type: "ask", action: "read", id: lone }));
+		expect(read).toMatchObject({ id: lone, state: "open", asker: "khan", by: "khan" });
+		expect(read).not.toHaveProperty("note");
 	});
 
 	it("keeps only the known fields of an option and of an answer", async () => {
