@@ -22,11 +22,11 @@ The user takes many decisions each day, on many systems. Brief him like an execu
 - A side topic gets one line at the end.
 - End with one thing to answer.
 
-Use `show-me` for the views. When the topic is something that the user looks at or drives (an app, a page, a CLI or a TUI), Round 1 is the page of its screens, made with no ask from him. The page starts with the rundown. Fill each screen with real data from his system: his runs, files, names and numbers. Never use placeholder text. When the thing does not exist yet, show a mock of each screen. For every other topic, make a page when the rundown or a call is too complex for the chat, or when the user asks for it. To make a page, load `artifacts`: it makes the page.
+Use `show-me` for the views. Put wiki links into the view of each ask to the notes that the vault already holds on the topic. When the topic is something that the user looks at or drives (an app, a page, a CLI or a TUI), Round 1 is the page of its screens, made with no ask from him. The page starts with the rundown. Fill each screen with real data from his system: his runs, files, names and numbers. Never use placeholder text. When the thing does not exist yet, show a mock of each screen. For every other topic, make a page when the rundown or a call is too complex for the chat, or when the user asks for it. To make a page, load `artifacts`: it makes the page.
 
 ## Rules
 
-- Do not make the user repeat himself. Read the parleys (the `list` and `read` actions of the `parley` tool), the earlier records and the memory first, when they exist.
+- Do not make the user repeat himself. Read the parleys (the `list` and `read` actions of the `parley` tool), the vault notes on the topic, the earlier records and the memory first, when they exist.
 - Get the facts yourself. Ask the user only what only he can answer.
 
 ## Design sense
@@ -45,9 +45,15 @@ Life also shapes by deletion: a hand gets its fingers when the cells between the
 
 ## Flow
 
-1. Get the facts. Search the parleys with the `list` and `read` actions, and the earlier records on the topic. A settled decision stays settled until the user opens it again.
+1. Get the facts. Search the parleys with the `list` and `read` actions, the vault, and the earlier records on the topic. A settled decision stays settled until the user opens it again.
 2. Sort the calls, and add them with the `round` action. A your call is taste, priority, or how it must work for the user: it has no answer until the user gives one. A my call is a choice that evidence can settle: its plan is yours, and one line of evidence goes in the `gains` of its plan option. A call that waits its turn goes into the round that asks it. A call that adds a noun has, as option `a`, the option that reuses an existing noun. When your plan is another option, its `gains` give the evidence for it.
 3. Ask in the chat: the rundown, then the text of the `read` action. Its last line is the answer line that takes all your plans. When the topic is something that the user looks at or drives, Round 1 is the page of its screens, with the rundown at its top, and that output in the chat (see How you talk).
 4. Write each answer line with the `answer` action. For `?N`, explain N first.
-5. When no call is open, the answers are the contract. Read back first: the terms in your own words, with each answer, as an ask with no options in a `round`, for his `ok` or his correction. Set the design sense in the same `round`.
-6. His `ok`, written with `answer`, makes the parley a contract. Goal files come after it, and they cite its slug.
+5. Save each answered ask to the vault. The answer adds the todo `Save to the vault: <title>`.
+   - Ask your next question first. Do the todo while the user decides.
+   - Write the view and the decision into the vault. Prefer an update of a note that exists.
+   - Give the note an `id` in its front matter.
+   - Record that ID with the `note` action of the `parley` tool, or with `harness parley note`. This closes the todo.
+   - When nothing is worth a note, drop the todo (`todo` tool, `set`, `dropped`), and say why in one line.
+6. When no call is open, the answers are the contract. Read back first: the terms in your own words, with each answer, as an ask with no options in a `round`, for his `ok` or his correction. Set the design sense in the same `round`.
+7. His `ok`, written with `answer`, makes the parley a contract. Goal files come after it, and they cite its slug.
