@@ -311,6 +311,11 @@ export const Ask = Type.Union([
 
 export type Ask = Static<typeof Ask>;
 
+/** Whether `ask` is the read-back of a parley: an ask of a parley with no options, which the user answers with `ok`. */
+export function isReadBack(ask: Ask): boolean {
+	return ask.parley !== undefined && ask.options === undefined;
+}
+
 /** The states of an ask. */
 export type AskState = Ask["state"];
 
@@ -826,7 +831,7 @@ export function parleyShowText(reply: ParleyAsks): string {
 	const blocks = [`# ${parley.title}${status}`, parley.goal];
 
 	for (const ask of reply.asks) {
-		if (ask.options === undefined) continue;
+		if (isReadBack(ask)) continue;
 		blocks.push(`## ${askNumber(ask)}. ${ask.title}`, askStateText(ask));
 
 		if (ask.state === "answered") blocks.push(...(ask.words ?? []));

@@ -155,7 +155,27 @@ function brokenReference(file: StoreFile): string | undefined {
 
 	const rule = file.rules.find((found) => found.source !== undefined && !messages.has(found.source));
 
-	return rule === undefined ? undefined : `the source of the rule ${rule.id} is no message of the file`;
+	if (rule !== undefined) return `the source of the rule ${rule.id} is no message of the file`;
+
+	return unknownAsk(file);
+}
+
+/** The first todo of `file` whose `ask` is no ask of the file, as a reason, or undefined when there is none. */
+function unknownAsk(file: StoreFile): string | undefined {
+	const asks = new Set(file.asks.map((ask) => ask.id));
+
+	const lists = [
+		{ of: "", todos: file.todos },
+		...file.callerTodos.map((list) => ({ of: ` of ${list.caller}`, todos: list.todos })),
+	];
+
+	for (const { of, todos } of lists) {
+		const todo = todos.find((found) => found.ask !== undefined && !asks.has(found.ask));
+
+		if (todo !== undefined) return `the ask of the todo ${todo.id}${of} is no ask of the file`;
+	}
+
+	return undefined;
 }
 
 /** The count of each list of `file`. */

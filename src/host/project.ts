@@ -24,6 +24,7 @@ import {
 	type HeldAction,
 	type HeldInput,
 	type HeldList,
+	isReadBack,
 	MESSAGE_KIND,
 	type Message,
 	type MessageLog,
@@ -51,6 +52,7 @@ import {
 import type { StoreFile } from "../protocol/store-file.ts";
 import { entryId, known, knownAuthor, type MessageData, MessageEntry, Persons, sessionDoc } from "./project-docs.ts";
 import { loadRules } from "./project-rules.ts";
+import { addSaveTodo, closeSaveTodo } from "./save-todo.ts";
 import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
 
 /** The number of entries that one page of a thread read gives. */
@@ -422,13 +424,15 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
  * ask of the parley must be answered or dropped, and its `design_sense` set. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
- * no parley. An ask whose asker is `by` gets no delivery.
+ * no parley. An ask whose asker is `by` gets no delivery. It also adds the todo `Save to the vault` of each answered
+ * ask to the list of its asker, where `root` is the project agent.
  */
 export async function answerAsks(
 	tx: Tx,
 	answers: readonly AnswerInput[],
 	by: string,
 	author: AnswerAuthor,
+	root: ConversationId,
 ): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
@@ -462,6 +466,8 @@ export async function answerAsks(
 	}
 
 	for (const id of readBacks) makeContract(parleys, asks, id, at, by);
+
+	for (const ask of written) await addSaveTodo(tx, root, ask);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by));
 	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
 
@@ -537,7 +543,7 @@ export async function dropAsk(tx: Tx, ref: AskRef, by: string): Promise<AskWrite
 /**
  * Sets `note`, the ID of a note in the vault, on the ask of `ref` for the caller `by`, and gives the ask. Only the asker
  * of the ask records its note. An ask in any state takes a note, also in a parley that is not open, and a second note
- * replaces the first.
+ * replaces the first. The note sets the todo `Save to the vault` of the ask to done, unless the asker dropped it.
  */
 export async function noteAsk(tx: Tx, ref: AskRef, note: string, by: string): Promise<Ask> {
 	const parleys = (await tx.doc(Parleys)).parleys;
@@ -545,6 +551,7 @@ export async function noteAsk(tx: Tx, ref: AskRef, note: string, by: string): Pr
 
 	if (ask.asker !== by) throw new Error(`Ask ${ask.id} was asked by another caller: only its asker records its note`);
 	Object.assign(ask, { note, at: Date.now(), by });
+	await closeSaveTodo(tx, ask);
 
 	return Value.Clone(ask);
 }
@@ -716,9 +723,9 @@ function askBase(ask: Ask): AskBase {
 
 /** The keys that `ask` takes besides `own`: the keys of its options, or `ok` when it is the read-back of a parley. */
 function answerKeys(ask: Ask): string[] {
-	if (ask.options !== undefined) return ask.options.map((option) => option.key);
+	if (isReadBack(ask)) return ["ok"];
 
-	return ask.parley === undefined ? [] : ["ok"];
+	return ask.options?.map((option) => option.key) ?? [];
 }
 
 /** A copy of `option` with only the fields of an option. */

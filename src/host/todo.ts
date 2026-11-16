@@ -12,69 +12,31 @@ import type {
 	DocumentReader,
 	Session,
 	Storage,
-	TaskId,
 	Tx,
 } from "@earendil-works/pi-durable";
-import * as durable from "@earendil-works/pi-durable";
-import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
+import { TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
 import { watchCommits } from "./commit-watch.ts";
+import {
+	addListTodo,
+	type CallerTodoList,
+	CallerTodos,
+	ConversationTodos,
+	draftOf,
+	refuseEmpty,
+	TaskTodos,
+	type TodoOwner,
+} from "./todo-lists.ts";
 
 export * from "../protocol/todo.ts";
 
-/** Whose list: a conversation, a task, or a caller that is not a conversation of the host. */
-export type TodoOwner =
-	| { readonly kind: "conversation"; readonly id: ConversationId }
-	| { readonly kind: "task"; readonly id: TaskId }
-	| { readonly kind: "caller"; readonly caller: string };
-
-/** The list of a conversation. */
-const ConversationTodos = durable.defineDoc<TodoList>({
-	kind: TODO_LIST_KIND,
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	checkpointWhen: () => false,
-	fork: "initial",
-	initial: () => ({ todos: [] }),
-});
-
-/**
- * The list of a task, by task ID. It is a document of the session, not of the task, so it stays after the commit that
- * makes the task terminal.
- */
-const TaskTodos = durable.defineDocFamily<TodoList, null>({
-	kind: TASK_TODO_LIST_KIND,
-	version: 1,
-	scope: "session",
-	checkpointWhen: () => false,
-	family: true,
-	initial: () => ({ todos: [] }),
-});
-
-/** The list of a caller that is not a conversation of the host, by caller. */
-const CallerTodos = durable.defineDocFamily<TodoList, null>({
-	kind: "harness.caller-todos",
-	version: 1,
-	scope: "session",
-	checkpointWhen: () => false,
-	family: true,
-	initial: () => ({ todos: [] }),
-});
+export type { CallerTodoList, TodoOwner } from "./todo-lists.ts";
 
 /** The number of documents that one page of the scan of the lists of the callers gives. */
 const PAGE = 200;
 
-/** The list of a caller, with the caller. */
-export type CallerTodoList = { caller: string; todos: Todo[] };
-
 /** Adds a todo with the state `open` to the list of `owner` in `tx`, with the next ID of the list, and gives it. */
 export async function addTodo(tx: Tx, owner: TodoOwner, text: string): Promise<Todo> {
-	refuseEmpty(text);
-	const list = await draftOf(tx, owner);
-	const todo: Todo = { id: (list.todos.at(-1)?.id ?? 0) + 1, text, state: "open" };
-	list.todos.push({ ...todo });
-
-	return todo;
+	return addListTodo(tx, owner, text);
 }
 
 /**
@@ -96,7 +58,7 @@ export async function setTodo(
 	if (change.text !== undefined) todo.text = change.text;
 
 	// A draft cannot be used after its commit, so the todo is a copy.
-	return { id: todo.id, text: todo.text, state: todo.state };
+	return { ...todo };
 }
 
 /** The list of `owner`, read from `reader`, such as the harness or the runtime of a task. A list never changed is empty. */
@@ -166,23 +128,6 @@ export async function readCallerTodos(
 	);
 }
 
-/**
- * Writes `todos` to the list of the root conversation `root` in `tx`, and the list of each caller of `callerTodos`, also
- * an empty one, into a store whose lists are empty.
- */
-export async function loadTodos(
-	tx: Tx,
-	root: ConversationId,
-	todos: readonly Todo[],
-	callerTodos: readonly CallerTodoList[],
-): Promise<void> {
-	(await draftOf(tx, { kind: "conversation", id: root })).todos.push(...todos.map((todo) => ({ ...todo })));
-
-	for (const list of callerTodos) {
-		(await draftOf(tx, { kind: "caller", caller: list.caller })).todos.push(...list.todos.map((todo) => ({ ...todo })));
-	}
-}
-
 /** Whether `change` can change the list of the conversation `id` or the list of a caller. */
 export function todoListChange(change: CommitChange, id: ConversationId): boolean {
 	return (
@@ -205,21 +150,6 @@ function listAfter(change: CommitChange, id: ConversationId): Readonly<TodoList>
 
 	// SAFETY: only `ConversationTodos` has the kind `TODO_LIST_KIND`, and its value is a `TodoList`.
 	return change.kind === "retire" ? null : (change.value as TodoList);
-}
-
-function refuseEmpty(text: string): void {
-	if (text.trim() === "") throw new Error("The text of a todo is empty");
-}
-
-function draftOf(tx: Tx, owner: TodoOwner) {
-	switch (owner.kind) {
-		case "conversation":
-			return tx.doc(ConversationTodos, owner.id);
-		case "task":
-			return tx.doc(TaskTodos, String(owner.id), null);
-		case "caller":
-			return tx.doc(CallerTodos, owner.caller, null);
-	}
 }
 
 function snapshotOf(reader: Pick<DocumentReader, "snapshot">, owner: TodoOwner, context: Context) {

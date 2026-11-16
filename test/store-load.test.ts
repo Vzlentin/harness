@@ -168,9 +168,19 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			await host.close();
 		}
 
-		const source = readStoreFile("load-source");
+		const hosted = readStoreFile("load-source");
+		const ask = hosted?.asks[0]?.id;
 
-		if (source === undefined) throw new Error("no store.json");
+		if (hosted === undefined || ask === undefined) throw new Error("no store.json");
+		// Each todo names an ask of the file, as the todo `Save to the vault` does, and the load keeps the link.
+		const linked = (todos: StoreFile["todos"]) => todos.map((todo) => ({ ...todo, ask }));
+
+		const source: StoreFile = {
+			...hosted,
+			todos: linked(hosted.todos),
+			callerTodos: hosted.callerTodos.map((list) => ({ ...list, todos: linked(list.todos) })),
+		};
+
 		expect(source.lastRule).toBeGreaterThan(source.rules.at(-1)?.id ?? 0);
 		expect(source.rules.map((rule) => rule.thread)).toEqual([source.threads[0]?.id]);
 		const outs = source.threads.flatMap((thread) => thread.messages.filter((message) => message.direction === "out"));
@@ -229,6 +239,39 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			expect(await send({ type: "person", action: "list" }, "load-target")).toEqual({ persons: source.persons });
 		} finally {
 			await running.close();
+		}
+	});
+
+	it("keeps the link of a loaded todo to its ask, so the note of the ask closes it", async () => {
+		await createProject("link-source");
+		await createProject("link-target");
+		const source = await startHost("link-source");
+
+		try {
+			const asks = [{ title: "Where", kind: "your call" as const, options: OPTIONS, plan: "a" }];
+			await send({ type: "ask", action: "round", caller: "1", asks }, "link-source");
+		} finally {
+			await source.close();
+		}
+
+		const hosted = readStoreFile("link-source");
+		const ask = hosted?.asks[0]?.id;
+
+		if (hosted === undefined || ask === undefined) throw new Error("no store.json");
+		const todo = { id: 1, text: "Save to the vault: Where", state: "open" as const, ask };
+		const path = join(root, "link-source.json");
+		await writeFile(path, JSON.stringify({ ...hosted, todos: [todo] }));
+		expect(await load("link-target", path)).toMatchObject({ code: 0, stderr: "" });
+
+		const target = await startHost("link-target");
+
+		try {
+			await send({ type: "ask", action: "note", caller: "1", id: ask, note: "where" }, "link-target");
+			expect(await send({ type: "todo", action: "list", caller: "1" }, "link-target")).toEqual({
+				todos: [{ ...todo, state: "done" }],
+			});
+		} finally {
+			await target.close();
 		}
 	});
 
@@ -350,6 +393,12 @@ describe("harness store load", { timeout: 60_000 }, () => {
 					],
 				},
 				"callerTodos has the caller session-a twice",
+			],
+			["todo-ask.json", { ...twice, todos: [{ ...todo(1), ask: 4 }] }, "the ask of the todo 1 is no ask of the file"],
+			[
+				"caller-todo-ask.json",
+				{ ...twice, callerTodos: [{ caller: "session-a", todos: [todo(1), { ...todo(2), ask: 4 }] }] },
+				"the ask of the todo 2 of session-a is no ask of the file",
 			],
 		] as const;
 

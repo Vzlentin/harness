@@ -288,6 +288,13 @@ export type Children = {
 		id: string,
 		context: Context,
 	): Promise<Pick<Child, "lineage" | "conversation" | "state" | "input"> | undefined>;
+	/**
+	 * The conversation ID that `id` spells when the library opened that conversation, as `tx` sees it; nothing for a root,
+	 * a thread, or text that is not an ID. It reads no document, because `tx.doc` creates a missing one: the library
+	 * creates each task-owned conversation with its document in one commit, so a conversation with an owner is one of
+	 * its conversations.
+	 */
+	opened(tx: Tx, id: string): Promise<ConversationId | undefined>;
 	/** Where the conversation `id` sits in its tree; nothing for a root, or another conversation the library did not open. */
 	lineage(store: Pick<Store, "snapshot">, id: string, context: Context): Promise<Lineage | undefined>;
 	/**
@@ -790,6 +797,12 @@ export function createChildren(durable: typeof Durable): Children {
 		find,
 		inspect,
 		turn,
+		async opened(tx, id) {
+			const conversation = conversationIdOf(id);
+			const record = conversation === undefined ? undefined : await tx.conversation(conversation);
+
+			return record?.owner === undefined ? undefined : record.id;
+		},
 		async open(place, owner, key, spec, context, setup) {
 			const existing = await find(place, owner, { key }, context);
 

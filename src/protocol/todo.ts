@@ -13,11 +13,15 @@ export function isFinished(status: string): status is "done" | "dropped" {
 	return status === "done" || status === "dropped";
 }
 
-/** A line of intent with a state. Its ID is its place in its list: 1, 2, 3 and so on. */
+/**
+ * A line of intent with a state. Its ID is its place in its list: 1, 2, 3 and so on. `ask` is the ID of the ask whose
+ * answer added it, for the todo `Save to the vault` that the host adds.
+ */
 export const Todo = Type.Object({
 	id: Type.Integer({ minimum: 1 }),
 	text: Type.String({ pattern: "\\S" }),
 	state: TodoState,
+	ask: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 export type Todo = Static<typeof Todo>;

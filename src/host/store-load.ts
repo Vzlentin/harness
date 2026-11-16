@@ -13,7 +13,7 @@ import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from ".
 import { takeLock } from "./lock.ts";
 import { loadLists } from "./project.ts";
 import { readStoreFile } from "./store-file.ts";
-import { loadTodos } from "./todo.ts";
+import { loadTodos } from "./todo-lists.ts";
 
 const context = BACKGROUND_CONTEXT;
 

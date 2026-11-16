@@ -397,7 +397,10 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 		case "answer": {
 			const author = await answerAuthor(request, handler);
 
-			return handler.harness.commit((tx) => answerAsks(tx, request.answers, request.caller, author), context);
+			return handler.harness.commit(
+				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id),
+				context,
+			);
 		}
 
 		case "drop":

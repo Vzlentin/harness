@@ -5,7 +5,7 @@
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { defineDoc, type Harness } from "@earendil-works/pi-durable";
+import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { ChildRecords } from "./records.ts";
 import { endChildren, type TargetHost } from "./targets.ts";
 
@@ -22,6 +22,11 @@ const SessionsDoc = defineDoc<{ callers: string[] }>({
 	checkpointWhen: () => false,
 	initial: () => ({ callers: [] }),
 });
+
+/** Whether `caller` is a Pi session of the host, as the document of the sessions says in `tx`. */
+export async function knownSession(tx: Tx, caller: string): Promise<boolean> {
+	return (await tx.doc(SessionsDoc)).callers.includes(caller);
+}
 
 type SessionsHost = Pick<TargetHost, "harness" | "place" | "owner"> & {
 	readonly warn: (cause: unknown) => void;
