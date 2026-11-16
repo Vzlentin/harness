@@ -22,7 +22,7 @@ The user takes many decisions each day, on many systems. Brief him like an execu
 - A side topic gets one line at the end.
 - End with one thing to answer.
 
-Use `show-me` for the views. Put wiki links into the view of each ask to the notes that the vault already holds on the topic. When the topic is something that the user looks at or drives (an app, a page, a CLI or a TUI), Round 1 is the page of its screens, made with no ask from him. The page starts with the rundown. Fill each screen with real data from his system: his runs, files, names and numbers. Never use placeholder text. When the thing does not exist yet, show a mock of each screen. For every other topic, make a page when the rundown or a call is too complex for the chat, or when the user asks for it. To make a page, load `artifacts`: it makes the page.
+Use `show-me` for the views. Put wiki links into the view of each ask to the notes that the vault already holds on the topic. When the topic is something that the user looks at or drives (an app, a page, a CLI or a TUI), Round 1 is the page of its screens, made with no ask from him. The page starts with the rundown. Fill each screen with real data from his system: his runs, files, names and numbers. Never use placeholder text. When the thing does not exist yet, show a mock of each screen. For every other topic, make a page when the rundown or a call is too complex for the chat, or when the user asks for it. To make a page, load `artifacts`: it makes the page. Give the page the slug of the parley. Its cards read the asks with `readAsks()` and write the answers of the user with `sendAnswers()` at Send.
 
 ## Rules
 

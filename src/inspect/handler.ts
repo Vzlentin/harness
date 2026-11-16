@@ -1,7 +1,8 @@
 /**
  * The routes of the conversation inspect UI: the JSON and Server-Sent Events routes under `/api/inspect/`, on the hosts
- * of the projects, the browser files under `/assets/`, and the pages of `harness page` under `/pages/`. `harness inspect`
- * serves them alone, and another server, such as `workflows web`, can mount them on its own port.
+ * of the projects, with those that read the asks of a parley and write the answers of the user, the browser files under
+ * `/assets/`, and the pages of `harness page` under `/pages/`. `harness inspect` serves them alone, and another server,
+ * such as `workflows web`, can mount them on its own port.
  */
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -12,7 +13,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import { connect, request } from "../client/client.ts";
+import { connect, HostUnreachableError, request } from "../client/client.ts";
 import { Mirror, type MirrorStatus, type MirrorTarget } from "../client/mirror.ts";
 import {
 	inboxOf,
@@ -25,8 +26,9 @@ import {
 } from "../client/view-state.ts";
 import { cliCaller } from "../protocol/env.ts";
 import { childTitle } from "../protocol/labels.ts";
+import { PageAnswer, Slug } from "../protocol/project.ts";
 import { checkProject, MAIN_PROJECT, readProjects } from "../protocol/projects.ts";
-import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
+import { type ChildInfo, errorMessage, type Replies, type Request } from "../protocol/requests.ts";
 import { AGENT_HANDLE, parseTarget, targetRef } from "../protocol/target.ts";
 import { addSend, PAGES, readPage } from "./pages.ts";
 
@@ -96,6 +98,28 @@ const TargetFields = {
 const TargetQuery = Type.Object(TargetFields);
 
 const InputBody = Type.Object({ ...TargetFields, message: Type.String(), followUp: Type.Optional(Type.Boolean()) });
+
+/** The project and the parley of `/api/inspect/asks`. */
+const AsksQuery = Type.Object({ project: TargetFields.project, parley: Slug });
+
+/**
+ * The body of `/api/inspect/answers`: the answers of the user to asks of the parley `parley`. Each answer names its ask
+ * by `n`, its number in the parley, and has the other fields of an answer.
+ */
+const AnswersBody = Type.Object({
+	project: TargetFields.project,
+	parley: Slug,
+	answers: Type.Array(PageAnswer, { minItems: 1 }),
+});
+
+/** The caller of the answers of `/api/inspect/answers`. No agent has it, so each asker gets the answers. */
+const PAGE_CALLER = "page";
+
+/** An error that the request causes, such as a refusal of the host. Its reply is 400. */
+class BadRequest extends Error {}
+
+/** The error when no host of the project runs and the request does not start one. */
+class HostNotRunning extends Error {}
 
 /**
  * The handler of the inspect routes. The routes of `/api/inspect/` and `/pages/` refuse a `Host` header that is not an IP
@@ -170,6 +194,22 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 				() => abortOf(req),
 				(sent) => toHost(sent, start),
 			);
+		case "GET /api/inspect/asks":
+			return answer(
+				res,
+				() => asksOf(url),
+				({ project, parley }) =>
+					refusedAsBad(hostReply({ type: "parley", action: "read", slug: parley }, project, start)),
+			);
+		case "POST /api/inspect/answers":
+			return answer(
+				res,
+				() => answersOf(req),
+				({ project, answers }) =>
+					refusedAsBad(
+						hostReply({ type: "ask", action: "answer", caller: PAGE_CALLER, answers, user: true }, project, start),
+					),
+			);
 		default:
 			notFound(req, res, url);
 	}
@@ -177,7 +217,8 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 
 /**
  * Serves a file of a page of `harness page`. An HTML file whose query has a target gets the script of the Send, which
- * posts to the input route with that target; a query that is not valid gets 400. Every other file goes as its bytes.
+ * posts to the input route with that target, and reads and answers the parley of the slug of the page; a query that is
+ * not valid gets 400. Every other file goes as its bytes.
  */
 async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
 	const file = req.method === "GET" ? await readPage(url.pathname) : undefined;
@@ -201,7 +242,7 @@ async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): P
 
 	if (target === undefined) return;
 	const fields = { project: target.project, ...targetRef(target.target) };
-	res.writeHead(200, headers).end(addSend(file.data.toString("utf8"), fields));
+	res.writeHead(200, headers).end(addSend(file.data.toString("utf8"), fields, file.slug));
 }
 
 /** Whether `host` is an IP address or `localhost`, which no DNS name of another site can be. */
@@ -225,7 +266,8 @@ function addressHost(header: string | undefined): boolean {
 
 /**
  * Replies with the value that `act` gives for what `parse` gives: 400 with the error of `parse`, which the request
- * causes, and 500 with the error of `act`, such as the refusal of the host.
+ * causes, and with a `BadRequest` of `act`, and 500 with another error of `act`, such as the refusal of the host on the
+ * routes of the agent.
  */
 async function answer<T, R>(
 	res: ServerResponse,
@@ -245,7 +287,7 @@ async function answer<T, R>(
 	try {
 		sendJson(res, 200, await act(parsed));
 	} catch (error) {
-		sendJson(res, 500, { error: errorMessage(error) });
+		sendJson(res, error instanceof BadRequest ? 400 : 500, { error: errorMessage(error) });
 	}
 }
 
@@ -380,15 +422,57 @@ async function abortOf(req: IncomingMessage): Promise<HostRequest> {
 	return { project, request: { type: "abort", ...targetRef(target) } };
 }
 
-/** Sends `sent` to its host. It throws when no host runs and `start` is false, and with the refusal of the host. */
+/** Sends `sent` to its host. It throws as `hostReply` does. */
 async function toHost(sent: HostRequest, start: boolean): Promise<{ ok: true }> {
-	const { project } = sent;
-
-	if ((await request(sent.request, { start, project })) === undefined) {
-		throw new Error(`The harness host of ${project} is not running`);
-	}
+	await hostReply(sent.request, sent.project, start);
 
 	return { ok: true };
+}
+
+/** The project and the parley of the query of `url`. Other keys are ignored. */
+function asksOf(url: URL): Static<typeof AsksQuery> {
+	const query = Object.fromEntries(url.searchParams);
+
+	if (!Value.Check(AsksQuery, query)) throw invalid("query", Value.Errors(AsksQuery, query));
+
+	return { project: checkProject(query.project), parley: query.parley };
+}
+
+/** The project of the body of `req`, and its answers, each with the slug of the parley of the body. */
+async function answersOf(req: IncomingMessage) {
+	const { project, parley, answers } = await bodyOf(req, AnswersBody);
+
+	return { project: checkProject(project), answers: answers.map((each) => ({ ...each, slug: parley })) };
+}
+
+/**
+ * The reply of the host of `project` to `sent`. It throws the refusal of the host as an `Error`, a
+ * `HostUnreachableError` when no host answers, and a `HostNotRunning` when no host runs and `start` is false.
+ */
+async function hostReply<T extends Request["type"]>(
+	sent: Extract<Request, { type: T }>,
+	project: string,
+	start: boolean,
+): Promise<Replies[T]> {
+	const reply = await request(sent, { start, project });
+
+	if (reply === undefined) throw new HostNotRunning(`The harness host of ${project} is not running`);
+
+	return reply;
+}
+
+/**
+ * The value of `reply`, with a refusal of the host as a `BadRequest`, so that its reply is 400. A
+ * `HostUnreachableError` and a `HostNotRunning` go as they are.
+ */
+async function refusedAsBad<R>(reply: Promise<R>): Promise<R> {
+	try {
+		return await reply;
+	} catch (error) {
+		if (error instanceof HostUnreachableError || error instanceof HostNotRunning) throw error;
+
+		throw new BadRequest(errorMessage(error), { cause: error });
+	}
 }
 
 /**

@@ -1,6 +1,7 @@
 /**
  * The pages that `harness page` copies to `$XDG_STATE_HOME/harness/pages/<slug>/`: the files of a page folder and their
- * copy, the file of a page path, and the script of the Send that the handler puts in an HTML page.
+ * copy, the file of a page path, and the script of the Send that the handler puts in an HTML page, which also reads the
+ * asks of the parley of the page and writes the answers of the user.
  */
 import { copyFileSync, type Dirent, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -69,8 +70,8 @@ export function writePage(dest: string, folder: string, files: readonly string[]
 	}
 }
 
-/** A file of a page: its bytes, its content type, and whether it is HTML. */
-export type PageFile = { readonly data: Buffer; readonly type: string; readonly html: boolean };
+/** A file of a page: its bytes, its content type, whether it is HTML, and the slug of its page. */
+export type PageFile = { readonly data: Buffer; readonly type: string; readonly html: boolean; readonly slug: string };
 
 /**
  * The file of `pathname`, `/pages/<slug>/<file>`, where an empty file is `index.html`. It is undefined for a path with
@@ -95,73 +96,100 @@ export async function readPage(pathname: string): Promise<PageFile | undefined> 
 	const type = TYPES.get(extname(name).toLowerCase()) ?? OTHER_TYPE;
 
 	try {
-		return { data: await readFile(join(pageDir(slug), name)), type, html: type === TYPES.get(".html") };
+		return { data: await readFile(join(pageDir(slug), name)), type, html: type === TYPES.get(".html"), slug };
 	} catch {
 		return undefined;
 	}
 }
 
 /**
- * `html` with the script of the Send before its first `</head>`, or `html` as it is without one. The script defines
- * `window.sendPrompt(text)`, which posts `{ ...fields, message: text }` to `/api/inspect/input`. During a post, a dim layer
- * covers the page and blocks clicks, and a line at the top shows `sending…`; other calls do nothing. The line then shows
- * `sent ✓` or `not sent: <reason>`. A call with the text of the last success posts nothing and shows `already sent ✓`.
+ * `html` with the script of the Send before its first `</head>`, or `html` as it is without one. The script defines three
+ * calls of the page, for the target `fields` and the parley `parley`, the slug of the page:
+ *
+ * - `window.sendPrompt(text)` posts `{ ...fields, message: text }` to `/api/inspect/input`.
+ * - `window.sendAnswers(answers)` posts `{ project, parley, answers }` to `/api/inspect/answers`, where each answer is
+ *   `{ n, answer, label?, words? }`, and resolves to the write of the host, or to undefined when it is not sent.
+ * - `window.readAsks()` gets `/api/inspect/asks` and resolves to `{ parley, asks }`, or rejects with the error.
+ *
+ * During a post, a dim layer covers the page and blocks clicks, and a line at the top shows `sending…`; other posts do
+ * nothing. The line then shows `sent ✓` or `not sent: <reason>`. A post with the text, or the JSON text of the answers,
+ * of the last success posts nothing, shows `already sent ✓`, and resolves as that success did.
  */
-export function addSend(html: string, fields: Readonly<Record<string, string>>): string {
+export function addSend(html: string, fields: Readonly<Record<string, string>>, parley: string): string {
 	const head = html.search(/<\/head>/i);
 
 	if (head === -1) return html;
 
-	return `${html.slice(0, head)}${sendScript(fields)}${html.slice(head)}`;
+	return `${html.slice(0, head)}${sendScript(fields, parley)}${html.slice(head)}`;
 }
 
-/** The script of the Send. `<` in the fields is escaped, so a field cannot end the script. */
-function sendScript(fields: Readonly<Record<string, string>>): string {
+/** A value as a script literal, with `<` escaped, so that it cannot end the script. */
+function literal(value: Readonly<Record<string, string>> | string): string {
+	return JSON.stringify(value).replaceAll("<", "\\u003c");
+}
+
+/** The script of the Send. */
+function sendScript(fields: Readonly<Record<string, string>>, parley: string): string {
 	return `<script>
 (() => {
-	const fields = ${JSON.stringify(fields).replaceAll("<", "\\u003c")};
-	const post = async (text) => {
+	const fields = ${literal(fields)};
+	const parley = ${literal(parley)};
+	const call = async (path, init) => {
 		try {
-			const response = await fetch("/api/inspect/input", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ ...fields, message: text }),
-			});
+			const response = await fetch(path, init);
 			const body = await response.json().catch(() => ({}));
-			if (!response.ok) return body?.error ?? response.status;
+			return response.ok ? { body } : { reason: body?.error ?? response.status };
 		} catch (error) {
-			return error.message;
+			return { reason: error.message };
 		}
 	};
+	const post = (path, body) =>
+		call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 	let line;
 	let layer;
 	let lastSent;
-	window.sendPrompt = async (text) => {
-		if (layer !== undefined) return;
+	let lastValue;
+	const send = async (key, path, body) => {
+		if (layer !== undefined) return undefined;
 		if (line === undefined) {
 			line = document.createElement("div");
 			line.className = "harness-send";
 			line.style.cssText = "position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:4px 12px;font:16px monospace;background:#222;color:#eee";
 			document.body.append(line);
 		}
-		if (text === lastSent) {
+		if (key === lastSent) {
 			line.textContent = "already sent \\u2713";
-			return;
+			return lastValue;
 		}
 		layer = document.createElement("div");
 		layer.className = "harness-send-layer";
 		layer.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.08);z-index:2147483646";
 		document.body.append(layer);
 		line.textContent = "sending\\u2026";
-		const [reason] = await Promise.all([post(text), new Promise((resolve) => setTimeout(resolve, 400))]);
+		const [result] = await Promise.all([post(path, body), new Promise((resolve) => setTimeout(resolve, 400))]);
 		layer.remove();
 		layer = undefined;
-		if (reason === undefined) {
-			line.textContent = "sent \\u2713";
-			lastSent = text;
-		} else {
-			line.textContent = \`not sent: \${reason}\`;
+		if ("reason" in result) {
+			line.textContent = \`not sent: \${result.reason}\`;
+			return undefined;
 		}
+		line.textContent = "sent \\u2713";
+		lastSent = key;
+		lastValue = result.body;
+		return lastValue;
+	};
+	window.sendPrompt = async (text) => {
+		await send(\`prompt \${text}\`, "/api/inspect/input", { ...fields, message: text });
+	};
+	window.sendAnswers = (answers) => {
+		const body = { project: fields.project, parley, answers };
+		return send(\`answers \${JSON.stringify(answers)}\`, "/api/inspect/answers", body);
+	};
+	window.readAsks = async () => {
+		const query = \`project=\${encodeURIComponent(fields.project)}&parley=\${encodeURIComponent(parley)}\`;
+		const result = await call(\`/api/inspect/asks?\${query}\`);
+		if ("reason" in result) throw new Error(String(result.reason));
+		return result.body;
 	};
 })();
 </script>

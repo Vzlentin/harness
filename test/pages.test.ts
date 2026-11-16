@@ -4,12 +4,31 @@ import { request as httpRequest } from "node:http";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { type InspectServer, startInspectServer } from "../src/inspect/index.ts";
 import { addSend } from "../src/inspect/pages.ts";
 import { pageDir } from "../src/protocol/paths.ts";
-import { answerOf, called, cli, openWatch, root, setUp, spawnAs, startHost, tearDown, until } from "./helpers.ts";
+import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
+import {
+	answer,
+	answerOf,
+	called,
+	cli,
+	framed,
+	listenAnswers,
+	OPTIONS,
+	openWatch,
+	root,
+	round,
+	send,
+	setUp,
+	spawnAs,
+	startHost,
+	tearDown,
+	until,
+} from "./helpers.ts";
 
 const INDEX = `<!doctype html>
 <html lang="en">
@@ -116,7 +135,17 @@ function addedScript(served: string, original: string): string {
 type Element = { className: string; style: { cssText?: string }; textContent: string; remove: () => void };
 
 /** The page of a script that runs in `node:vm`: its `window`, and the elements in its body. */
-type Page = { readonly window: { sendPrompt?: (text: string) => Promise<void> }; readonly body: Element[] };
+type Page = {
+	readonly window: {
+		sendPrompt?: (text: string) => Promise<void>;
+		sendAnswers?: (answers: readonly PageAnswer[]) => Promise<AskWrite | undefined>;
+		readAsks?: () => Promise<ParleyAsks>;
+	};
+	readonly body: Element[];
+};
+
+/** An answer that a page sends: the number of its ask in the parley of the page, and the fields of the answer. */
+type PageAnswer = { readonly n: number; readonly answer: string; readonly label?: string; readonly id?: number };
 
 /** What a page script gets in place of the browser's `fetch` and `setTimeout`. */
 type PageGlobals = {
@@ -194,7 +223,7 @@ function fakePage(): FakePage {
 		},
 	};
 
-	const page = runPage(addedScript(addSend(INDEX, { project: "main", handle: "a1b2c3" }), INDEX), globals);
+	const page = runPage(addedScript(addSend(INDEX, { project: "main", handle: "a1b2c3" }, "fake"), INDEX), globals);
 
 	return { page, posts, timers };
 }
@@ -487,7 +516,118 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 	});
 
 	it("serves the script as ASCII", () => {
-		expect(addSend(INDEX, { project: "main" })).not.toMatch(/[^\t\n -~]/);
+		expect(addSend(INDEX, { project: "main" }, "ascii")).not.toMatch(/[^\t\n -~]/);
+	});
+});
+
+/** The page of the slug `slug`, served with the script of the Send for the project `main`. */
+async function askPage(slug: string): Promise<Page> {
+	const folder = await pageFolder({ "index.html": INDEX });
+	const printed = await cli(["page", folder, "--slug", slug, "a1b2c3", "--port", port]);
+
+	return runPage(addedScript(await (await fetch(printed.stdout.trim())).text(), INDEX));
+}
+
+/** Posts `body`, as it is, to the answers route. */
+function postAnswers(body: string): Promise<Response> {
+	return fetch(new URL("api/inspect/answers", base), {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body,
+	});
+}
+
+/** The parley `slug` and its asks, as the host gives them. */
+async function readParley(slug: string): Promise<ParleyAsks> {
+	return Value.Parse(ParleyAsks, await send({ type: "parley", action: "read", slug }));
+}
+
+describe("the asks of a page", { timeout: 30_000 }, () => {
+	it("reads the asks of the parley of the page", async () => {
+		const { call, readBack } = await framed("page-read");
+		const page = await askPage("page-read");
+
+		expect(await page.window.readAsks?.()).toMatchObject({
+			parley: { slug: "page-read", status: "open" },
+			asks: [
+				{ id: call, state: "open", title: "Where" },
+				{ id: readBack, state: "open" },
+			],
+		});
+
+		const missing = await askPage("page-none");
+		await expect(missing.window.readAsks?.()).rejects.toThrow("page-none");
+	});
+
+	it("writes the answers of the user at Send, and the asker gets them once", async () => {
+		const { call, readBack } = await framed("page-send");
+		const page = await askPage("page-send");
+		const answers = listenAnswers("pi-1");
+
+		try {
+			const sent = await page.window.sendAnswers?.([
+				{ n: 1, answer: "a" },
+				{ n: 2, answer: "ok" },
+			]);
+
+			const write = Value.Parse(AskWrite, sent);
+			expect(write.parleys.map((each) => each.parley.status)).toEqual(["contract"]);
+			expect(write.parleys[0]?.asks).toMatchObject([
+				{ id: call, state: "answered", answer: "a", by: "page", author: { kind: "user" } },
+				{ id: readBack, state: "answered", answer: "ok", by: "page", author: { kind: "user" } },
+			]);
+			expect(lines(page)).toEqual(["sent \u2713"]);
+			expect(layers(page)).toBe(0);
+
+			await until(() => answers.deliveries.length === 1);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(answers.deliveries).toMatchObject([{ source: "parley", parley: "page-send", asks: [call, readBack] }]);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
+	it("refuses bad answers with 400 and changes nothing", async () => {
+		const frame = { title: "Bad answers", goal: "Refuse them.", design_sense: "One writer." };
+
+		const first = { title: "First", kind: "your call" as const, options: OPTIONS, plan: "a" };
+		const second = { title: "Second", kind: "your call" as const, options: OPTIONS, plan: "a" };
+		const readBack = { title: "These are the terms" };
+
+		await round("pi-bad", { slug: "page-bad", ...frame }, [first, second, readBack]);
+		await send({ type: "ask", action: "drop", caller: "pi-bad", slug: "page-bad", n: 1 });
+		const signed = await round("pi-bad", { slug: "page-signed", ...frame }, [first, readBack]);
+		const [signedCall, signedReadBack] = (signed.parleys[0]?.asks ?? []).map((ask) => ask.id);
+		await answer([
+			{ id: signedCall ?? 0, answer: "a" },
+			{ id: signedReadBack ?? 0, answer: "ok" },
+		]);
+
+		const before = [await readParley("page-bad"), await readParley("page-signed")];
+
+		const bodies = [
+			{ parley: "page-bad", answers: [{ n: 9, answer: "a" }] },
+			{ parley: "page-bad", answers: [{ n: 2, answer: "z" }] },
+			{ parley: "page-bad", answers: [{ n: 1, answer: "a" }] },
+			{ parley: "page-signed", answers: [{ n: 1, answer: "b" }] },
+			{ parley: "page-bad", answers: [{ n: 2, answer: "a", id: signedCall }] },
+			{ parley: "page-bad", answers: [{ n: 2, answer: "a", slug: "page-signed" }] },
+		].map((body) => JSON.stringify({ project: "main", ...body }));
+
+		for (const body of [...bodies, "{"]) {
+			const reply = await postAnswers(body);
+			expect({ body, status: reply.status }).toEqual({ body, status: 400 });
+			expect(await reply.json()).toEqual({ error: expect.any(String) });
+		}
+
+		expect([await readParley("page-bad"), await readParley("page-signed")]).toEqual(before);
+	});
+
+	it("refuses a Host header that is not an address with 403 on both routes", async () => {
+		const read = await rawRequest("/api/inspect/asks?project=main&parley=page-read", { host: "evil.example" });
+		expect(read.status).toBe(403);
+		const write = await rawRequest("/api/inspect/answers", { host: "evil.example", method: "POST" });
+		expect(write.status).toBe(403);
 	});
 });
 
