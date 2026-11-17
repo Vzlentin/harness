@@ -18,7 +18,6 @@ import {
 	type HarnessSettings,
 	type Storage,
 } from "@earendil-works/pi-durable";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -49,6 +48,7 @@ import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { takeLock } from "./lock.ts";
+import { HostMcp } from "./mcp.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
@@ -141,7 +141,8 @@ export async function runHost(options: {
 	const agentDir = getAgentDir();
 
 	// The settings and the packages of the project directory, as a Pi session there with the saved trust has them.
-	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted: savedTrust(projectCwd, PI_TRUST) });
+	const projectTrusted = savedTrust(projectCwd, PI_TRUST);
+	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
 	// The degraded states of the host, which `watch-project` gives; each source also writes its warning to `host.log`.
@@ -203,6 +204,8 @@ export async function runHost(options: {
 	// The compressions of the memory of the project agent, which run in the background.
 	const compressor = new Compressor({ settings, models, warn });
 	const memory: HostMemory = { compressor, dir: () => memoryDir(project, projectCwd) };
+	// The MCP servers of the host, which connect once the harness is open.
+	const mcp = new HostMcp({ registry, sandbox, agentDir, cwd: projectCwd, trusted: projectTrusted, models, warn });
 
 	const selected = [
 		childContext(resources),
@@ -213,7 +216,7 @@ export async function runHost(options: {
 		projectToolsExtension(durable, { Type }, scope),
 		gateExtension(send),
 		bashTimeoutExtension(bashTimeoutSeconds),
-		createCodemodeExtension({ sandbox }),
+		...mcp.extensions,
 		...entries.extensions,
 	];
 
@@ -254,6 +257,8 @@ export async function runHost(options: {
 		lock.close();
 		throw error;
 	}
+
+	mcp.start();
 
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
@@ -374,6 +379,7 @@ export async function runHost(options: {
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
+		await mcp.close();
 		lock.close();
 		throw cause;
 	});
@@ -417,6 +423,7 @@ export async function runHost(options: {
 				await storeFileClosed;
 				await compressorClosed;
 				await harness.close(context);
+				await mcp.close();
 
 				await envs.cleanup(context);
 			} finally {
