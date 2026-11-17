@@ -1,9 +1,10 @@
 /**
  * The store of the project: the persons that the user talks with, the threads of messages with them, the tool calls
  * that the gate held, and the parleys and their asks. The rules are in `project-rules.ts`. Each list is one document of
- * the session, and each thread is an ownerless conversation whose entries are its messages. The states of the messages
- * out are in the outbox, a document of the session, because an entry cannot change. The requests of the host change
- * them with these functions, each in its own commit.
+ * the session, and each thread is an ownerless conversation whose entries are its messages, and the edits and deletes
+ * of its messages, which a read applies in order. The states of the messages out are in the outbox, a document of the
+ * session, because an entry cannot change. The requests of the host change them with these functions, each in its own
+ * commit.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
@@ -25,8 +26,12 @@ import {
 	type HeldInput,
 	type HeldList,
 	isReadBack,
+	MESSAGE_DELETE_KIND,
+	MESSAGE_EDIT_KIND,
 	MESSAGE_KIND,
 	type Message,
+	type MessageDelete,
+	type MessageEdit,
 	type MessageLog,
 	type MessageMarkInput,
 	type MessageState,
@@ -45,18 +50,28 @@ import {
 	RULES_KIND,
 	type Thread,
 	type ThreadAdd,
+	type ThreadJoin,
 	type ThreadList,
 	type ThreadMessages,
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
-import { entryId, known, knownAuthor, type MessageData, MessageEntry, Persons, sessionDoc } from "./project-docs.ts";
-import { loadRules } from "./project-rules.ts";
+import {
+	foldMessage,
+	known,
+	knownAuthor,
+	knownMessage,
+	MessageDeleteEntry,
+	type MessageData,
+	MessageEditEntry,
+	MessageEntry,
+	PAGE,
+	Persons,
+	sessionDoc,
+} from "./project-docs.ts";
+import { loadRules, releaseSource } from "./project-rules.ts";
 import { addSaveTodo, closeSaveTodo } from "./save-todo.ts";
 import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
-
-/** The number of entries that one page of a thread read gives. */
-const PAGE = 200;
 
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
@@ -73,6 +88,9 @@ export type StoredMessage = MessageData & { id: number; thread: number };
  */
 export type OutState = { id: number; thread: number; state: MessageState; written: number; at: number; by: string };
 
+/** The kinds of the entries of a thread: a message, and an edit or a delete of a message. */
+const MESSAGE_KINDS: ReadonlySet<string> = new Set([MESSAGE_KIND, MESSAGE_EDIT_KIND, MESSAGE_DELETE_KIND]);
+
 /** The kinds of the documents of the project. A message is an entry, not a document; its state out is in the outbox. */
 const PROJECT_DOCS: ReadonlySet<string> = new Set([
 	RULES_KIND,
@@ -83,7 +101,7 @@ const PROJECT_DOCS: ReadonlySet<string> = new Set([
 export function projectChange(change: CommitChange): boolean {
 	switch (change.type) {
 		case "entry":
-			return change.value.kind === MESSAGE_KIND;
+			return MESSAGE_KINDS.has(change.value.kind);
 		case "document":
 			return PROJECT_DOCS.has(change.record.kind);
 		default:
@@ -112,13 +130,25 @@ export async function addThread(tx: Tx, input: ThreadAdd): Promise<Thread> {
 	return thread;
 }
 
+/** Adds the person `input.person` to the thread `input.id`, and gives the thread. A person of the thread fails. */
+export async function joinThread(tx: Tx, input: ThreadJoin): Promise<Thread> {
+	known((await tx.doc(Persons)).persons, input.person, "person");
+	const thread = known((await tx.doc(Threads)).threads, input.id, "thread");
+
+	if (thread.persons.includes(input.person)) throw new Error(`Person ${input.person} is already in thread ${input.id}`);
+	thread.persons.push(input.person);
+
+	return copyThread(thread);
+}
+
 /**
  * Adds a message to the thread `input.thread`, with the state `received` for a message in and `draft` for a message out,
- * logged by the caller `by`, and gives it. `at` defaults to now. The `last` of the thread becomes `at` when `at` is later.
- * A message in from a person of the thread is a reply to each message out of the thread that waits and is not later:
- * a draft becomes `sent`, and a sent message `answered`.
+ * or `sent` for a message out with `input.state` `sent`, logged by the caller `by`, and gives it. `at` defaults to now.
+ * The `last` of the thread becomes `at` when `at` is later. A message in from a person of the thread is a reply to each
+ * message out of the thread that waits and is not later: a draft becomes `sent`, and a sent message `answered`.
  */
 export async function logMessage(tx: Tx, input: MessageLog, by: string): Promise<Message> {
+	if (input.state === "sent" && input.direction === "in") throw new Error("Only a message out can be logged as sent");
 	const thread = known((await tx.doc(Threads)).threads, input.thread, "thread");
 	await knownAuthor(tx, input.from);
 	const at = input.at ?? Date.now();
@@ -127,11 +157,76 @@ export async function logMessage(tx: Tx, input: MessageLog, by: string): Promise
 	const entry = await tx.appendEntry(MessageEntry, conversationId(input.thread), { data });
 	thread.last = Math.max(thread.last ?? at, at);
 
-	if (input.direction === "out")
-		outbox.messages.push({ id: entry.id, thread: input.thread, state: "draft", written: at, at, by });
-	else if (input.from !== "user" && thread.persons.includes(input.from)) reply(outbox.messages, input.thread, at, by);
+	if (input.direction === "out") {
+		const state = input.state ?? "draft";
+		outbox.messages.push({ id: entry.id, thread: input.thread, state, written: at, at, by });
+	} else if (input.from !== "user" && thread.persons.includes(input.from)) reply(outbox.messages, input.thread, at, by);
 
 	return joinMessage({ id: entry.id, thread: input.thread, ...data }, outStates(outbox.messages));
+}
+
+/**
+ * Changes the text of the message `input.message`, and its time and author when they are given, for the caller `by`,
+ * who becomes its `by`, and gives it. The message keeps its ID. Its direction is `out` for `user` and `in` for a
+ * person, who must be a person of the thread. A message that keeps its direction keeps its state, and a message out
+ * gets `at` as its time written. A message out that becomes a message in leaves the outbox, and a message in that
+ * becomes a message out gets the state `draft`, as `logMessage` gives it. The edit moves no other message. The `last`
+ * of the thread becomes the latest time of its messages.
+ */
+export async function editMessage(tx: Tx, input: MessageEdit, by: string): Promise<Message> {
+	const { message: id } = input;
+	const found = await knownMessage(tx, id);
+	const thread = known((await tx.doc(Threads)).threads, found.thread, "thread");
+	const from = input.from ?? found.data.from;
+
+	if (input.from !== undefined && from !== "user" && !thread.persons.includes(from))
+		throw new Error(`Person ${from} is not in thread ${thread.id}`);
+	const at = input.at ?? found.data.at;
+	const data: MessageData = { from, direction: from === "user" ? "out" : "in", at, text: input.text, by };
+	const outbox = (await tx.doc(Outbox)).messages;
+	const out = outbox.find((row) => row.id === id);
+
+	if (out !== undefined && data.direction === "in") outbox.splice(outbox.indexOf(out), 1);
+	else if (out !== undefined) out.written = at;
+	else if (data.direction === "out") {
+		const next = outbox.findIndex((row) => row.id > id);
+		const row: OutState = { id, thread: thread.id, state: "draft", written: at, at, by };
+		outbox.splice(next === -1 ? outbox.length : next, 0, row);
+	}
+
+	foldMessage(found.messages, await tx.appendEntry(MessageEditEntry, found.thread, { data: { message: id, ...data } }));
+	setLast(thread, found.messages);
+
+	return joinMessage({ id, thread: thread.id, ...data }, outStates(outbox));
+}
+
+/**
+ * Removes the message `input.message` for the caller `by`, with its row of the outbox, and gives it as it was. A rule
+ * that is not retired and has it as its source fails the delete, and a retired rule with it as its source loses its
+ * source. The `last` of the thread becomes the latest time of the messages that remain, and goes when none remains.
+ */
+export async function deleteMessage(tx: Tx, input: MessageDelete, by: string): Promise<Message> {
+	const { message: id } = input;
+	const found = await knownMessage(tx, id);
+	const thread = known((await tx.doc(Threads)).threads, found.thread, "thread");
+	await releaseSource(tx, id);
+	const outbox = (await tx.doc(Outbox)).messages;
+	const message = joinMessage({ id, thread: thread.id, ...found.data }, outStates(outbox));
+	const out = outbox.findIndex((row) => row.id === id);
+
+	if (out !== -1) outbox.splice(out, 1);
+	foldMessage(found.messages, await tx.appendEntry(MessageDeleteEntry, found.thread, { data: { message: id, by } }));
+	setLast(thread, found.messages);
+
+	return message;
+}
+
+/** Sets the `last` of `thread` to the latest time of `messages`, or removes it when there is no message. */
+function setLast(thread: Thread, messages: ReadonlyMap<number, MessageData>): void {
+	const times = [...messages.values()].map((message) => message.at);
+
+	if (times.length === 0) delete thread.last;
+	else thread.last = Math.max(...times);
 }
 
 /** Moves each message out of the thread `thread` that was written at `at` or before with a reply by the caller `by`. */
@@ -151,10 +246,8 @@ function reply(messages: OutState[], thread: number, at: number, by: string): vo
  */
 export async function markMessage(tx: Tx, input: MessageMarkInput, by: string): Promise<Message> {
 	const { message: id } = input;
-	const entry = await tx.entry(MessageEntry, entryId(id));
-
-	if (entry === undefined) throw new Error(`Unknown message: ${id}`);
-	const out = (await tx.doc(Outbox)).messages.find((found) => found.id === id);
+	const found = await knownMessage(tx, id);
+	const out = (await tx.doc(Outbox)).messages.find((row) => row.id === id);
 
 	if (out === undefined) throw new Error(`Message ${id} is a message in: only a message out has a mark`);
 	const state = messageTransition(out.state, input.state);
@@ -162,7 +255,7 @@ export async function markMessage(tx: Tx, input: MessageMarkInput, by: string): 
 	if (state === undefined) throw new Error(`Message ${id} is ${out.state}: it cannot become ${input.state}`);
 	Object.assign(out, { state, at: Date.now(), by });
 
-	return joinMessage({ id, thread: out.thread, ...entry.data }, outStates([out]));
+	return joinMessage({ id, thread: out.thread, ...found.data }, outStates([out]));
 }
 
 /**
@@ -293,7 +386,7 @@ export async function readMessages(
 	return stored.map((message) => joinMessage(message, states));
 }
 
-/** The messages of the thread `id`, oldest first, with no state. */
+/** The messages of the thread `id`, in ID order, with their edits and deletes applied, and with no state. */
 export async function readStored(
 	harness: Pick<Harness, "conversation">,
 	id: number,
@@ -302,20 +395,17 @@ export async function readStored(
 	const conversation = await harness.conversation(conversationId(id), context);
 
 	if (conversation === undefined) throw new Error(`Unknown thread: ${id}`);
-	const messages: StoredMessage[] = [];
+	const messages = new Map<number, MessageData>();
 	let cursor: Cursor | undefined;
 
 	do {
 		const page = await conversation.entries({ order: "ascending" }, PAGE, cursor, context);
 
-		for (const entry of page.items) {
-			if (MessageEntry.is(entry)) messages.push({ id: entry.id, thread: id, ...entry.data });
-		}
-
+		for (const entry of page.items) foldMessage(messages, entry);
 		cursor = page.next;
 	} while (cursor !== undefined);
 
-	return messages;
+	return [...messages].map(([message, data]) => ({ id: message, thread: id, ...data }));
 }
 
 /** The state of each message of `outbox`, by message ID. */

@@ -1,9 +1,10 @@
 /**
  * The rules of the project: one document of the session. An agent adds and changes an open rule, the user changes a
- * rule in any status, and the source of a rule is a message of a thread.
+ * rule in any status, and the source of a rule is a message of a thread. A delete of a message fails while a rule that
+ * is not retired has it as its source, and removes it as the source of a retired rule.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { ConversationId, DocumentReader, Storage, Tx } from "@earendil-works/pi-durable";
+import type { DocumentReader, Storage, Tx } from "@earendil-works/pi-durable";
 import {
 	type Rule,
 	type RuleFilter,
@@ -12,7 +13,7 @@ import {
 	type RuleUserChange,
 	RULES_KIND,
 } from "../protocol/project.ts";
-import { entryId, known, knownAuthor, MessageEntry, sessionDoc } from "./project-docs.ts";
+import { entryId, known, knownAuthor, knownMessage, sessionDoc } from "./project-docs.ts";
 
 /**
  * The rules, with `last`, the highest ID that a rule had, so that the ID of a deleted rule is never given again. A
@@ -30,7 +31,7 @@ export async function setRule(tx: Tx, change: RuleSet, by: string): Promise<Rule
 		throw new Error("A change of a rule cannot replace a rule: set replaces on a new rule");
 	}
 
-	const thread = await knownSource(tx, change.source);
+	const { thread } = await knownMessage(tx, change.source);
 	await knownAuthor(tx, change.saidBy);
 	const list = await tx.doc(Rules);
 	const at = Date.now();
@@ -221,13 +222,21 @@ function nextRuleId(list: RuleList & { last?: number }): number {
 	return id;
 }
 
-/** The thread of the message `id`. */
-async function knownSource(tx: Tx, id: number): Promise<ConversationId> {
-	const entry = await tx.entry(MessageEntry, entryId(id));
+/**
+ * Lets a delete remove the message `id`: a rule that is not retired and has it as its source fails the delete, and a
+ * retired rule with it as its source loses its source and its thread.
+ */
+export async function releaseSource(tx: Tx, id: number): Promise<void> {
+	const list = await tx.doc(Rules);
+	const named = list.rules.filter((rule) => rule.source === id);
+	const live = named.find((rule) => rule.status !== "retired");
 
-	if (entry === undefined) throw new Error(`Unknown message: ${id}`);
+	if (live !== undefined) throw new Error(`Message ${id} is the source of rule ${live.id}`);
 
-	return entry.conversationId;
+	for (const rule of named) {
+		delete rule.source;
+		delete rule.thread;
+	}
 }
 
 /** The value in `ids` of the old ID `id` of a `name`. */

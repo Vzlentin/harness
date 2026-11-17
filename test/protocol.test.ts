@@ -35,8 +35,8 @@ describe("isValidRunName", () => {
 });
 
 describe("the memory request", () => {
-	it("takes one line for each action of the memory tool, and the snapshot, in protocol 34", () => {
-		expect(PROTOCOL_VERSION).toBe(34);
+	it("takes one line for each action of the memory tool, and the snapshot, in protocol 35", () => {
+		expect(PROTOCOL_VERSION).toBe(35);
 
 		for (const line of [
 			{ type: "memory", action: "note", text: "The user drinks tea." },

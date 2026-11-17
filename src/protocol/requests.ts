@@ -13,6 +13,8 @@ import {
 	type HeldAction,
 	LocalId,
 	type Message,
+	MessageDelete,
+	MessageEdit,
 	MessageLog,
 	MessageMarkInput,
 	NoteId,
@@ -35,6 +37,7 @@ import {
 	Slug,
 	Thread,
 	ThreadAdd,
+	ThreadJoin,
 	type ThreadList,
 	type ThreadMessages,
 	withAskRef,
@@ -48,7 +51,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 34;
+export const PROTOCOL_VERSION = 35;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -343,9 +346,12 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("list") }),
 	/** Replies with the thread `id` and its messages, oldest first. */
 	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("read"), id: Thread.properties.id }),
+	/** Adds the person `person` to the thread `id`, and replies with the thread. No tool sends it. */
+	Type.Object({ type: Type.Literal("thread"), action: Type.Literal("join"), ...ThreadJoin.properties }),
 	/**
-	 * Adds a message to a thread, and replies with it. The host sets its state from its direction. A message in from a
-	 * person of the thread moves each earlier message out that waits one step: a draft to `sent`, a sent one to `answered`.
+	 * Adds a message to a thread, and replies with it. The host sets its state from its direction, or `sent` for a
+	 * message out with `state: "sent"`. A message in from a person of the thread moves each earlier message out that
+	 * waits one step: a draft to `sent`, a sent one to `answered`.
 	 */
 	Type.Object({
 		type: Type.Literal("message"),
@@ -359,6 +365,23 @@ export const RequestLine = Type.Union([
 		action: Type.Literal("mark"),
 		caller: Type.String(),
 		...MessageMarkInput.properties,
+	}),
+	/**
+	 * Changes the text, the time and the author of the message `message` for the caller, who becomes its `by`, and
+	 * replies with it. Its ID stays the same. No tool sends it.
+	 */
+	Type.Object({
+		type: Type.Literal("message"),
+		action: Type.Literal("edit"),
+		caller: Type.String(),
+		...MessageEdit.properties,
+	}),
+	/** Removes the message `message`, and replies with it as it was. No tool sends it. */
+	Type.Object({
+		type: Type.Literal("message"),
+		action: Type.Literal("delete"),
+		caller: Type.String(),
+		...MessageDelete.properties,
 	}),
 	/**
 	 * Replies with the digest of `caller`, the messages out that wait and its held actions, when it changed since the
@@ -532,7 +555,7 @@ export type Replies = {
 	readonly "classify-todos": ClassifyReply;
 	/** The person of `add`, or the persons of `list`. */
 	readonly person: Person | PersonList;
-	/** The thread of `add`, the threads of `list`, or the thread and its messages of `read`. */
+	/** The thread of `add` and `join`, the threads of `list`, or the thread and its messages of `read`. */
 	readonly thread: Thread | ThreadList | ThreadMessages;
 	readonly message: Message;
 	readonly digest: DigestReply;

@@ -242,6 +242,80 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		}
 	});
 
+	it("writes the edits and deletes of messages into store.json, which loads", async () => {
+		await createProject("edit-source");
+		await createProject("edit-target");
+		const host = await startHost("edit-source");
+		let draft: Message;
+		let rule: Rule;
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, "edit-source"));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, "edit-source"),
+			);
+
+			const log = async (from: number | "user", direction: "in" | "out", at: number, text: string) =>
+				Value.Parse(
+					Message,
+					await send(
+						{ type: "message", action: "log", caller: "cli", thread: thread.id, from, direction, at, text },
+						"edit-source",
+					),
+				);
+
+			const written = await log("user", "out", 1_000, "Which types?");
+			// An earlier message in moves no draft.
+			const asked = await log(sam.id, "in", 500, "Only retail.");
+			const edit = { type: "message", action: "edit", caller: "cli", message: written.id } as const;
+			draft = Value.Parse(Message, await send({ ...edit, text: "Which sale types?", at: 3_000 }, "edit-source"));
+
+			const set = {
+				type: "rule",
+				action: "set",
+				caller: "cli",
+				saidBy: sam.id,
+				source: asked.id,
+				name: "retail",
+				kind: "domain",
+				value: "Only retail.",
+			} as const;
+
+			const added = Value.Parse(Rule, await send(set, "edit-source"));
+			rule = Value.Parse(
+				Rule,
+				await send({ type: "rule", action: "retire", caller: "user", id: added.id }, "edit-source"),
+			);
+			await send({ type: "message", action: "delete", caller: "cli", message: asked.id }, "edit-source");
+		} finally {
+			await host.close();
+		}
+
+		const source = readStoreFile("edit-source");
+
+		if (source === undefined) throw new Error("no store.json");
+		const { source: _source, thread: _thread, ...unsourced } = rule;
+		const { state, by, thread: _of, ...message } = draft;
+		expect(source.rules).toEqual([unsourced]);
+
+		expect(source.threads).toEqual([
+			{
+				id: draft.thread,
+				topic: "Scope",
+				persons: [1],
+				last: 3_000,
+				messages: [{ ...message, thread: draft.thread, by, state, changed: { at: 1_000, by: "cli" } }],
+			},
+		]);
+
+		const path = join(root, "edit-source.json");
+		await writeFile(path, JSON.stringify(source));
+		expect(await load("edit-target", path)).toMatchObject({ code: 0, stderr: "" });
+		expect(idsOf(await hostedFile("edit-target"), source)).toEqual(source);
+	});
+
 	it("keeps the link of a loaded todo to its ask, so the note of the ask closes it", async () => {
 		await createProject("link-source");
 		await createProject("link-target");

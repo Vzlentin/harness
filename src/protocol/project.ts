@@ -446,16 +446,43 @@ export const ThreadAdd = Type.Object({ topic: Thread.properties.topic, persons: 
 
 export type ThreadAdd = Static<typeof ThreadAdd>;
 
-/** The input of a new message. The host sets its state from its direction, and `at` defaults to now. */
+/**
+ * The input of a new message. The host sets its state from its direction, and `at` defaults to now. `state: "sent"`
+ * logs a message out as sent, with no draft.
+ */
 export const MessageLog = Type.Object({
 	thread: StoreId,
 	from: Author,
 	direction: MessageDirection,
 	at: Type.Optional(Time),
 	text: Text,
+	state: Type.Optional(Type.Literal("sent")),
 });
 
 export type MessageLog = Static<typeof MessageLog>;
+
+/**
+ * The input of an edit of the message `message`: its new text, and its new time and author when they are given. The
+ * author sets the direction: `out` for `user`, `in` for a person of the thread.
+ */
+export const MessageEdit = Type.Object({
+	message: StoreId,
+	text: Text,
+	at: Type.Optional(Time),
+	from: Type.Optional(Author),
+});
+
+export type MessageEdit = Static<typeof MessageEdit>;
+
+/** The input of a delete of the message `message`. */
+export const MessageDelete = Type.Object({ message: StoreId });
+
+export type MessageDelete = Static<typeof MessageDelete>;
+
+/** The input of a join of the person `person` to the thread `id`. */
+export const ThreadJoin = Type.Object({ id: StoreId, person: LocalId });
+
+export type ThreadJoin = Static<typeof ThreadJoin>;
 
 /** The input of a mark of the message out `message` with `state`. */
 export const MessageMarkInput = Type.Object({ message: StoreId, state: MessageMark });
@@ -546,6 +573,12 @@ export const OUTBOX_KIND = "harness.outbox";
 
 /** The kind of the entry of a message in the conversation of its thread. */
 export const MESSAGE_KIND = "harness.message";
+
+/** The kind of the entry of an edit of a message, in the conversation of its thread. */
+export const MESSAGE_EDIT_KIND = "harness.message.edit";
+
+/** The kind of the entry of a delete of a message, in the conversation of its thread. */
+export const MESSAGE_DELETE_KIND = "harness.message.delete";
 
 /** The kind of the entry of a digest in the conversation of a hosted agent. */
 export const DIGEST_KIND = "harness.digest";

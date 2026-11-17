@@ -490,6 +490,59 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		}
 	});
 
+	it("gives the thread of a join, of an edit of a draft and of a delete of a draft", async () => {
+		const project = "watched-edit";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+			const rufin = Value.Parse(Person, await send({ type: "person", action: "add", name: "Rufin" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			watch = await watchProject(project);
+			const { events } = watch;
+
+			const joined = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "join", id: thread.id, person: rufin.id }, project),
+			);
+
+			expect(joined).toEqual({ ...thread, persons: [sam.id, rufin.id] });
+			await until(() => events.length === 1);
+			expect(events[0]).toEqual(event({ threads: [{ ...joined, waits: [] }] }));
+
+			const log = { type: "message", action: "log", caller: "cli", thread: thread.id, from: "user" } as const;
+			const draft = Value.Parse(Message, await send({ ...log, direction: "out", at: 1_000, text: "45." }, project));
+			await until(() => events.length === 2);
+
+			const edited = Value.Parse(
+				Message,
+				await send(
+					{ type: "message", action: "edit", caller: "cli", message: draft.id, text: "45 and 54.", at: 2_000 },
+					project,
+				),
+			);
+
+			await until(() => events.length === 3);
+			expect(events[2]).toEqual(event({ threads: [{ ...joined, last: 2_000, waits: [edited] }] }));
+
+			await send({ type: "message", action: "delete", caller: "cli", message: draft.id }, project);
+			await until(() => events.length === 4);
+			expect(events[3]).toEqual(event({ threads: [{ ...joined, waits: [] }] }));
+			// Each commit gives one event.
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(events).toHaveLength(4);
+		} finally {
+			watch?.socket.destroy();
+			await host.close();
+		}
+	});
+
 	it("gives a new parley, a changed parley and their asks", async () => {
 		const project = "watched-parley";
 		const host = await projectHost(project);

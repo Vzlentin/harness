@@ -33,9 +33,12 @@ import {
 	addThread,
 	answerAsks,
 	approveHeld,
+	deleteMessage,
 	dropAsk,
 	dropHeld,
+	editMessage,
 	endParley,
+	joinThread,
 	logMessage,
 	markMessage,
 	noteAsk,
@@ -350,6 +353,8 @@ function thread(request: Extract<Request, { type: "thread" }>, handler: Handler)
 			return readThreads(handler.harness, context);
 		case "read":
 			return readThread(handler.harness, request.id, context);
+		case "join":
+			return handler.harness.commit((tx) => joinThread(tx, request), context);
 	}
 }
 
@@ -359,6 +364,10 @@ function message(request: Extract<Request, { type: "message" }>, handler: Handle
 			return handler.harness.commit((tx) => logMessage(tx, request, request.caller), context);
 		case "mark":
 			return handler.harness.commit((tx) => markMessage(tx, request, request.caller), context);
+		case "edit":
+			return handler.harness.commit((tx) => editMessage(tx, request, request.caller), context);
+		case "delete":
+			return handler.harness.commit((tx) => deleteMessage(tx, request, request.caller), context);
 	}
 }
 

@@ -1,10 +1,21 @@
 /**
- * The parts of the store of the project that its modules share: the documents of the session, the entry of a message,
- * the persons, and the lookup of an object by its ID.
+ * The parts of the store of the project that its modules share: the documents of the session, the entries of a message
+ * and of its edits and deletes, the fold that applies them, the persons, and the lookup of an object by its ID.
  */
-import type { EntryId, JsonObject, Tx } from "@earendil-works/pi-durable";
+import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
-import { type Author, MESSAGE_KIND, type Message, type PersonList, PERSONS_KIND } from "../protocol/project.ts";
+import {
+	type Author,
+	MESSAGE_DELETE_KIND,
+	MESSAGE_EDIT_KIND,
+	MESSAGE_KIND,
+	type Message,
+	type PersonList,
+	PERSONS_KIND,
+} from "../protocol/project.ts";
+
+/** The number of entries that one page of a scan of a thread gives. */
+export const PAGE = 200;
 
 /**
  * The data of the entry of a message. The entry has no model message: no model reads a thread. Its state is in the
@@ -13,6 +24,63 @@ import { type Author, MESSAGE_KIND, type Message, type PersonList, PERSONS_KIND 
 export type MessageData = Omit<Message, "id" | "thread" | "state">;
 
 export const MessageEntry = durable.defineEntry<MessageData>(MESSAGE_KIND);
+
+/**
+ * The entry of an edit of the message `message`, in the conversation of its thread: the new data of the message. An
+ * entry cannot change, so an edit is a later entry, and the message keeps its ID.
+ */
+export const MessageEditEntry = durable.defineEntry<MessageData & { message: number }>(MESSAGE_EDIT_KIND);
+
+/** The entry of a delete of the message `message` by the caller `by`, in the conversation of its thread. */
+export const MessageDeleteEntry = durable.defineEntry<{ message: number; by: string }>(MESSAGE_DELETE_KIND);
+
+/**
+ * Applies `entry`, an entry of a thread in ID order, to `messages`, the data of each message by ID: a message entry adds
+ * a message, an edit replaces the data of its message, and a delete removes its message. An edit or a delete of a
+ * message that is not there, and an entry of another kind, change nothing. The map keeps the messages in ID order.
+ */
+export function foldMessage(messages: Map<number, MessageData>, entry: EntryRecord): void {
+	if (MessageEntry.is(entry)) messages.set(entry.id, entry.data);
+	else if (MessageEditEntry.is(entry)) {
+		const { message, ...data } = entry.data;
+
+		if (messages.has(message)) messages.set(message, data);
+	} else if (MessageDeleteEntry.is(entry)) messages.delete(entry.data.message);
+}
+
+/** The message `id` as its edits leave it, with the ID of its thread and the data of each message of the thread. */
+export type FoundMessage = { thread: ConversationId; data: MessageData; messages: Map<number, MessageData> };
+
+/**
+ * The message `id` in `tx`, with the edits and deletes of its thread applied. No message with this ID, and a message
+ * that a delete removed, fail with `Unknown message: <id>`.
+ */
+export async function knownMessage(tx: Tx, id: number): Promise<FoundMessage> {
+	const entry = await tx.entry(MessageEntry, entryId(id));
+
+	if (entry === undefined) throw new Error(`Unknown message: ${id}`);
+	const messages = await scanMessages(tx, entry.conversationId);
+	const data = messages.get(id);
+
+	if (data === undefined) throw new Error(`Unknown message: ${id}`);
+
+	return { thread: entry.conversationId, data, messages };
+}
+
+/** The data of each message of the thread `thread` in `tx`, by ID in ID order. */
+async function scanMessages(tx: Tx, thread: ConversationId): Promise<Map<number, MessageData>> {
+	const messages = new Map<number, MessageData>();
+	let cursor: Cursor | undefined;
+
+	do {
+		const page = await tx.scanEntries({ conversationId: thread, order: "ascending" }, PAGE, cursor);
+
+		for (const entry of page.items) foldMessage(messages, entry);
+		cursor = page.next;
+	} while (cursor !== undefined);
+
+	return messages;
+}
 
 export const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 

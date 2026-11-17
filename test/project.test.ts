@@ -639,6 +639,158 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("edits and deletes a message, logs a message out as sent, and adds a person to a thread, also after a restart", async () => {
+		const project = "edits";
+		const dir = await mkdtemp(join(root, `${project}-`));
+		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
+		let edits = await runHost({ project, cwd: dir, models });
+
+		try {
+			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
+			const rufin = Value.Parse(Person, await send({ type: "person", action: "add", name: "Rufin" }, project));
+
+			const thread = Value.Parse(
+				Thread,
+				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
+			);
+
+			const joined = { ...thread, persons: [sam.id, rufin.id] };
+			expect(await send({ type: "thread", action: "join", id: thread.id, person: rufin.id }, project)).toEqual(joined);
+
+			const draft = await logAt(project, thread.id, "user", 2_000, "Types 45 and 54.");
+			const asked = await logAt(project, thread.id, sam.id, 1_000, "Which types?");
+
+			const sentLine = {
+				type: "message",
+				action: "log",
+				caller: "cli",
+				thread: thread.id,
+				from: "user",
+				direction: "out",
+				at: 3_000,
+				text: "Type 56 too.",
+				state: "sent",
+			} as const;
+
+			const sent = Value.Parse(Message, await send(sentLine, project));
+			expect(sent).toMatchObject({ direction: "out", state: "sent", at: 3_000 });
+
+			const edit = { type: "message", action: "edit", caller: "editor" } as const;
+
+			// An edit keeps the ID and the state, and an earlier time lowers the last time of the thread.
+			const earlier = await send({ ...edit, message: sent.id, text: "Type 56 as well.", at: 1_500 }, project);
+			expect(earlier).toEqual({ ...sent, text: "Type 56 as well.", at: 1_500, by: "editor" });
+
+			const read = async () => ({
+				thread: await send({ type: "thread", action: "read", id: thread.id }, project),
+				rules: await send({ type: "rule", action: "list" }, project),
+			});
+
+			expect((await read()).thread).toEqual({
+				thread: { ...joined, last: draft.at },
+				messages: [draft, asked, earlier],
+			});
+
+			// A message out that gets a person as its author becomes a message in, and a message in that gets the user a draft.
+			const turnedIn = await send({ ...edit, message: draft.id, text: draft.text, from: rufin.id }, project);
+			expect(turnedIn).toEqual({ ...draft, from: rufin.id, direction: "in", state: "received", by: "editor" });
+			const turnedOut = await send({ ...edit, message: asked.id, text: "Which types, Sam?", from: "user" }, project);
+
+			expect(turnedOut).toEqual({
+				...asked,
+				from: "user",
+				direction: "out",
+				state: "draft",
+				text: "Which types, Sam?",
+				by: "editor",
+			});
+
+			const rule = Value.Parse(
+				Rule,
+				await send(
+					{
+						type: "rule",
+						action: "set",
+						caller: "cli",
+						name: "scope",
+						kind: "domain",
+						value: "Types 45 and 54.",
+						saidBy: rufin.id,
+						source: turnedIn.id,
+					},
+					project,
+				),
+			);
+
+			const before = await read();
+			const remove = { type: "message", action: "delete", caller: "editor" } as const;
+
+			const failures: readonly (readonly [() => Promise<Replies["message" | "thread"]>, string])[] = [
+				[() => send({ ...edit, message: 999_999, text: "x" }, project), "Unknown message: 999999"],
+				[
+					() => send({ ...edit, message: sent.id, text: "x", from: 99 }, project),
+					`Person 99 is not in thread ${thread.id}`,
+				],
+				[() => send({ ...remove, message: 999_999 }, project), "Unknown message: 999999"],
+				[
+					() => send({ ...remove, message: turnedIn.id }, project),
+					`Message ${turnedIn.id} is the source of rule ${rule.id}`,
+				],
+				[
+					() => send({ ...sentLine, from: sam.id, direction: "in" }, project),
+					"Only a message out can be logged as sent",
+				],
+				[
+					() => send<"message">(JSON.parse(JSON.stringify({ ...sentLine, state: "draft" })), project),
+					"Invalid message request: state is not valid",
+				],
+				[
+					() => send({ type: "thread", action: "join", id: thread.id, person: rufin.id }, project),
+					`Person ${rufin.id} is already in thread ${thread.id}`,
+				],
+				[
+					() => send({ type: "thread", action: "join", id: 999_999, person: sam.id }, project),
+					"Unknown thread: 999999",
+				],
+				[() => send({ type: "thread", action: "join", id: 999_999, person: 99 }, project), "Unknown person: 99"],
+			];
+
+			for (const [failure, error] of failures) await expect(failure()).rejects.toThrow(error);
+			expect(await read()).toEqual(before);
+
+			// A retired rule loses the source that a delete removes, and keeps its time and its caller.
+			const retired = await send({ type: "rule", action: "retire", caller: "user", id: rule.id }, project);
+			const { source: _source, thread: _thread, ...unsourced } = Value.Parse(Rule, retired);
+			expect(await send({ ...remove, message: turnedIn.id }, project)).toEqual(turnedIn);
+			expect(await send({ ...remove, message: earlier.id }, project)).toEqual(earlier);
+
+			const after = await read();
+
+			expect(after).toEqual({
+				thread: { thread: { ...joined, last: asked.at }, messages: [turnedOut] },
+				rules: { rules: [unsourced] },
+			});
+
+			await edits?.close();
+			edits = await runHost({ project, cwd: dir, models });
+			expect(await read()).toEqual(after);
+
+			const gone = [
+				() => send({ type: "message", action: "mark", caller: "cli", message: earlier.id, state: "dropped" }, project),
+				() => send({ ...edit, message: earlier.id, text: "x" }, project),
+				() => send({ ...remove, message: earlier.id }, project),
+			];
+
+			for (const failure of gone) await expect(failure()).rejects.toThrow(`Unknown message: ${earlier.id}`);
+
+			// The thread of no message has no last time.
+			expect(await send({ ...remove, message: turnedOut.id }, project)).toEqual(turnedOut);
+			expect((await read()).thread).toEqual({ thread: joined, messages: [] });
+		} finally {
+			await edits?.close();
+		}
+	});
+
 	it("moves a message out from draft to sent to answered, or to dropped, and back from sent to draft", () => {
 		const events: readonly MessageEvent[] = ["sent", "draft", "dropped", "reply"];
 
