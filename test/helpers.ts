@@ -810,6 +810,7 @@ export async function setUp(): Promise<void> {
 		"HC_TERMINAL_ID",
 		"HARNESS_PROJECT",
 		"MEMORY_DIR",
+		"VAULT",
 		// Node warns on stderr when both are set, and the tests compare stderr.
 		"FORCE_COLOR",
 		"NO_COLOR",

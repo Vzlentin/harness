@@ -70,7 +70,7 @@ import {
 	sessionDoc,
 } from "./project-docs.ts";
 import { loadRules, releaseSource } from "./project-rules.ts";
-import { addSaveTodo, closeSaveTodo } from "./save-todo.ts";
+import { addSaveTodos, closeSaveTodo } from "./save-todo.ts";
 import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
 
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
@@ -514,8 +514,8 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
  * ask of the parley must be answered or dropped, and its `design_sense` set. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
- * no parley. An ask whose asker is `by` gets no delivery. It also adds the todo `Save to the vault` of each answered
- * ask to the list of its asker, where `root` is the project agent.
+ * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
+ * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent.
  */
 export async function answerAsks(
 	tx: Tx,
@@ -557,7 +557,7 @@ export async function answerAsks(
 
 	for (const id of readBacks) makeContract(parleys, asks, id, at, by);
 
-	for (const ask of written) await addSaveTodo(tx, root, ask);
+	await addSaveTodos(tx, root, written);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by));
 	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
 

@@ -1,3 +1,5 @@
+import { symlink } from "node:fs/promises";
+import { join } from "node:path";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
@@ -10,6 +12,7 @@ import {
 	listenAnswers,
 	OPTIONS,
 	readStoreFile,
+	root,
 	round,
 	send,
 	setUp,
@@ -63,6 +66,8 @@ async function knownSession(caller: string): Promise<() => void> {
 
 beforeAll(async () => {
 	await setUp();
+	// The host adds the todo only with a vault: the home of the test is a folder that exists.
+	process.env.VAULT = process.env.HOME;
 	host = await startHost();
 });
 
@@ -92,6 +97,41 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		// After the todo is done, a new answer adds none.
 		await answer([{ id: asked, answer: "a" }]);
 		expect(await todosOf(child)).toEqual([{ ...added, state: "done" }]);
+	});
+
+	it("is not added when VAULT is not set, names no folder, or names a path that stat cannot read", async () => {
+		const close = await knownSession("pi-no-vault");
+		const vault = process.env.VAULT;
+
+		try {
+			delete process.env.VAULT;
+			const unset = await ask("pi-no-vault", "No vault");
+			await answer([{ id: unset, answer: "a" }]);
+			expect(await todosOf("pi-no-vault")).toEqual([]);
+
+			process.env.VAULT = `${vault}/missing`;
+			const missing = await ask("pi-no-vault", "Missing vault");
+			await answer([{ id: missing, answer: "a" }]);
+			expect(await todosOf("pi-no-vault")).toEqual([]);
+
+			// A symlink to itself makes stat fail with ELOOP: the answer is written, with no todo.
+			const loop = join(root, "vault-loop");
+			await symlink(loop, loop);
+			process.env.VAULT = loop;
+			const looped = await ask("pi-no-vault", "Looped vault");
+			const written = await answer([{ id: looped, answer: "a" }]);
+			expect(written.asks).toMatchObject([{ id: looped, state: "answered", answer: "a" }]);
+			expect(await todosOf("pi-no-vault")).toEqual([]);
+
+			// The same session gets the todo once the vault is there.
+			process.env.VAULT = vault;
+			const found = await ask("pi-no-vault", "A vault");
+			await answer([{ id: found, answer: "a" }]);
+			expect(await todosOf("pi-no-vault")).toMatchObject([{ text: "Save to the vault: A vault", ask: found }]);
+		} finally {
+			process.env.VAULT = vault;
+			close();
+		}
 	});
 
 	it("goes to the list of the project agent, and a dropped todo stays dropped at the note", async () => {

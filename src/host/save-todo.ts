@@ -1,8 +1,9 @@
 /**
- * The todo `Save to the vault` of an answered ask: the answer adds it to the list of the asker, and the note of the ask
- * closes it. The todo names its ask in its field `ask`, and each ask has at most one todo, in the list that its link
- * names.
+ * The todo `Save to the vault` of an answered ask: the answer adds it to the list of the asker when the host has a
+ * vault at that answer, and the note of the ask closes it. The todo names its ask in its field `ask`, and each ask has
+ * at most one todo, in the list that its link names.
  */
+import { statSync } from "node:fs";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import { type Ask, isReadBack } from "../protocol/project.ts";
 import { knownSession } from "./sessions.ts";
@@ -11,18 +12,23 @@ import { addListTodo, draftOf, linkOwner, type TodoOwner } from "./todo-lists.ts
 import { isFinished } from "./todo.ts";
 
 /**
- * Adds the todo `Save to the vault: <first line of the title>` for the answered ask `ask` to the list of its asker in
- * `tx`, where `root` is the project agent. It adds nothing for the read-back of a parley, an ask that has a note, an
- * asker with no list, or an ask that already has its todo, in any state.
+ * Adds the todo `Save to the vault: <first line of the title>` for each answered ask of `asks` to the list of its asker
+ * in `tx`, where `root` is the project agent. It reads the vault once for all of `asks`, and adds nothing when the host
+ * has no vault. With a vault, it adds nothing for the read-back of a parley, an ask that has a note, an asker with no
+ * list, or an ask that already has its todo, in any state.
  */
-export async function addSaveTodo(tx: Tx, root: ConversationId, ask: Ask): Promise<void> {
-	if (isReadBack(ask) || ask.note !== undefined) return;
+export async function addSaveTodos(tx: Tx, root: ConversationId, asks: readonly Ask[]): Promise<void> {
+	if (!hasVault()) return;
 
-	if ((await linkOwner(tx, ask.id)) !== undefined) return;
-	const owner = await askerList(tx, root, ask.asker);
+	for (const ask of asks) {
+		if (isReadBack(ask) || ask.note !== undefined) continue;
 
-	if (owner === undefined) return;
-	await addListTodo(tx, owner, `Save to the vault: ${ask.title.split(/\r?\n/)[0]}`, ask.id);
+		if ((await linkOwner(tx, ask.id)) !== undefined) continue;
+		const owner = await askerList(tx, root, ask.asker);
+
+		if (owner === undefined) continue;
+		await addListTodo(tx, owner, `Save to the vault: ${ask.title.split(/\r?\n/)[0]}`, ask.id);
+	}
 }
 
 /**
@@ -36,6 +42,22 @@ export async function closeSaveTodo(tx: Tx, ask: Ask): Promise<void> {
 	const todo = (await draftOf(tx, owner)).todos.find((found) => found.ask === ask.id);
 
 	if (todo !== undefined && !isFinished(todo.state)) todo.state = "done";
+}
+
+/**
+ * Whether the host has a vault: `VAULT` of its environment is set and names a folder that exists. A path that `stat`
+ * cannot read, such as a symlink loop, is no vault, so it does not fail the answer.
+ */
+function hasVault(): boolean {
+	const vault = process.env.VAULT;
+
+	if (vault === undefined || vault === "") return false;
+
+	try {
+		return statSync(vault).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /**
