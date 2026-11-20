@@ -549,7 +549,8 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("watch-project") }),
 	/**
 	 * Asks the classifier of Pi's settings about the todos `ids` that are open, default every open todo, of the list
-	 * `list`, default the list of the project. It stores nothing.
+	 * `list`. Without `list`, it asks about the open work items, with `ids` as item IDs and the title of each item as its
+	 * text. It stores nothing.
 	 */
 	Type.Object({
 		type: Type.Literal("classify-todos"),

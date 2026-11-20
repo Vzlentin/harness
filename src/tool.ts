@@ -11,7 +11,7 @@ import { CUT_LINE, MAX_ANSWER } from "./protocol/answer-cut.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import { MAX_QUERY, QUERY_CUT_LINE } from "./protocol/query.ts";
 import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
-import { AGENT_HANDLE, type ListTarget, type TargetRef } from "./protocol/target.ts";
+import type { ListTarget, TargetRef } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
 /** The signal of a call that its adapter cannot abort. */
@@ -392,8 +392,7 @@ Use it for each task of 3 steps or more: add one todo for each step before you s
 - add: add a todo with \`text\`. It starts open, with the next ID of the list.
 - set: set the \`state\` of the todo \`id\`, and its \`text\` when you give one.
 - list: the todos, in ID order.
-Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.
-Without \`list\`, the list is your own. \`list: "project"\` is the list of the project, from any place.`;
+Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.`;
 
 /** The parameters and the output schema of the todo tool, built with the caller's TypeBox `Type`, as in `toolSchemas`. */
 export function todoToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
@@ -404,9 +403,6 @@ export function todoToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		text: Type.Optional(Type.String({ description: "add: the text of the todo; set: its new text" })),
 		id: Type.Optional(Type.Integer({ minimum: 1, description: "set: the ID of the todo" })),
 		state: Type.Optional(Type.Enum(TODO_STATES, { description: `set: ${oneOf(TODO_STATES)}` })),
-		list: Type.Optional(
-			Type.Literal("project", { description: "add, set, list: project for the list of the project; default your own" }),
-		),
 	});
 
 	const todo = Type.Object({
@@ -430,14 +426,9 @@ export type TodoToolArgs = Static<TodoSchemas["parameters"]>;
 /** The result of a call of the todo tool: the output of `harness todo`, and the host's reply. */
 export type TodoToolResult = { readonly text: string; readonly data: Static<TodoSchemas["output"]> };
 
-/** The list of a call of the todo tool: the list of the project agent for `list: "project"`, else the caller's own. */
-export function todoToolTarget(args: TodoToolArgs): ListTarget {
-	return args.list === "project" ? { handle: AGENT_HANDLE } : {};
-}
-
-/** Runs one call of the todo tool on the list of `target`. */
+/** Runs one call of the todo tool on the list of `target`: `{}` is the caller's own list. */
 export async function runTodoTool(
-	args: Omit<TodoToolArgs, "list">,
+	args: TodoToolArgs,
 	scope: Pick<ToolScope, "caller" | "send" | "signal">,
 	target: ListTarget,
 ): Promise<TodoToolResult> {
@@ -518,7 +509,7 @@ export function todoTool(
 
 			const caller = await scope.caller(api, context);
 			const signal = context.abortSignal;
-			const { text, data } = await runTodoTool(args, { caller, send: scope.send, signal }, todoToolTarget(args));
+			const { text, data } = await runTodoTool(args, { caller, send: scope.send, signal }, {});
 
 			return { output: [{ type: "text", text }], structuredOutput: data };
 		},

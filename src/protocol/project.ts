@@ -3,7 +3,7 @@ import { SLUG } from "./paths.ts";
 import { isFinished } from "./todo.ts";
 
 /**
- * The name of the durable extension with the tools of the store of the project: `thread`, `rule` and `parley`. A
+ * The name of the durable extension with the tools of the store of the project: `thread`, `rule`, `parley` and `item`. A
  * client of `children.open` leaves these tools out when its `setup` adds this name to the `remove` of the extensions
  * of the child's `AgentDoc`.
  */

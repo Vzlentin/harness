@@ -1,13 +1,27 @@
 import type { JsonValue } from "@earendil-works/chord/json";
 /**
- * The tools of the store of the project, `thread`, `rule` and `parley`: their descriptions, their schemas and their
- * runners, which the host and the Pi extension register.
+ * The tools of the store of the project, `thread`, `rule`, `parley` and `item`: their descriptions, their schemas and
+ * their runners, which the host and the Pi extension register.
  */
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import type * as TypeBox from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
+import {
+	EDGE_KINDS,
+	Edge,
+	edgeLine,
+	ITEM_MARKS,
+	ITEM_STAGES,
+	ITEM_STATES,
+	ItemList,
+	itemLine,
+	itemText,
+	NEEDS_YOU_MARK,
+	Ref,
+	StagedItem,
+} from "./protocol/item.ts";
 import {
 	Ask,
 	ASK_KINDS,
@@ -39,6 +53,7 @@ import {
 	threadLine,
 	ThreadMessages,
 } from "./protocol/project.ts";
+import type { Request } from "./protocol/requests.ts";
 import { type DurableScope, listText, NO_ABORT, oneOf, required, type ToolScope } from "./tool.ts";
 
 export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages between the user and the persons of the project.
@@ -72,6 +87,15 @@ The user answers a parley with a line such as \`[<slug>] 1a 3:"own words" 4b:"a 
 - \`?<n>\` writes nothing: explain n first.
 - \`ok\` is \`{ ask: n, answer: <plan> }\` for each open my call n that the line does not name, and \`{ ask: n, answer: ok }\` for the open read-back n.
 A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`.`;
+
+export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An item is a piece of work: a title, a text that says what to build, and a state, ${oneOf(ITEM_STATES)}. Its edges link it to the parleys that shape it, the agents and runs that serve it, and the commits that landed it.
+- add: add an open item with \`title\`, and \`text\` when you give it.
+- set: change the \`title\`, the \`text\` or the \`state\` of the item \`id\`.
+- list: the items in the state \`state\`, default open, in ID order.
+- read: the item \`id\`, its text and its edges.
+- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`agent:<conversation>\`, \`run:<run ID>\`, \`parley:<slug>\` or \`commit:<sha>\`.
+The host works out the stage of each item: ${oneOf(ITEM_STAGES)}.
+Each item prints as \`<mark> <id> <stage> <title>\`: ${ITEM_STATES.map((state) => `${ITEM_MARKS[state]} ${state}`).join(", ")}, or \`${NEEDS_YOU_MARK}\` when the item needs the user. Each edge prints as \`<from> <kind> <to>\`.`;
 
 /**
  * The parameters and the output schemas of the tools of the store of the project, built with the caller's TypeBox
@@ -212,7 +236,33 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		]),
 	};
 
-	return { thread, rule, parley };
+	const item = {
+		parameters: Type.Object({
+			action: Type.Union(
+				[Type.Literal("add"), Type.Literal("set"), Type.Literal("list"), Type.Literal("read"), Type.Literal("link")],
+				{ description: "What to do" },
+			),
+			id: id("set, read: the ID of the item"),
+			title: text("add, set: the title of the item, one line"),
+			text: Type.Optional(Type.String({ description: "add, set: what to build, in Markdown" })),
+			state: Type.Optional(
+				Type.Enum(ITEM_STATES, { description: `set: ${oneOf(ITEM_STATES)}; list: only the items in this state` }),
+			),
+			from: text("link: the end the edge comes from, such as parley:<slug>"),
+			kind: Type.Optional(Type.Enum(EDGE_KINDS, { description: `link: ${oneOf(EDGE_KINDS)}` })),
+			to: text("link: the end the edge goes to, such as item:<id>"),
+		}),
+		output: Type.Union([
+			Type.Object({
+				action: Type.Union([Type.Literal("add"), Type.Literal("set"), Type.Literal("read")]),
+				value: StagedItem,
+			}),
+			Type.Object({ action: Type.Literal("list"), value: ItemList }),
+			Type.Object({ action: Type.Literal("link"), value: Edge }),
+		]),
+	};
+
+	return { thread, rule, parley, item };
 }
 
 type ProjectSchemas = ReturnType<typeof projectToolSchemas>;
@@ -233,14 +283,15 @@ export type ProjectTool<P extends TSchema, O extends TSchema> = {
 /** Registers one tool of the store of the project, whatever its schemas, and gives what the adapter keeps of it. */
 export type ProjectToolAdapter<R> = <P extends TSchema, O extends TSchema>(tool: ProjectTool<P, O>) => R;
 
-/** The tools of the store of the project, `thread`, `rule` and `parley`, each given to `adapt`. */
+/** The tools of the store of the project, `thread`, `rule`, `parley` and `item`, each given to `adapt`. */
 export function projectTools<R>(typebox: Pick<typeof TypeBox, "Type">, adapt: ProjectToolAdapter<R>): R[] {
-	const { thread, rule, parley } = projectToolSchemas(typebox);
+	const { thread, rule, parley, item } = projectToolSchemas(typebox);
 
 	return [
 		adapt({ name: "thread", label: "Thread", description: THREAD_TOOL_DESCRIPTION, ...thread, run: runThreadTool }),
 		adapt({ name: "rule", label: "Rule", description: RULE_TOOL_DESCRIPTION, ...rule, run: runRuleTool }),
 		adapt({ name: "parley", label: "Parley", description: PARLEY_TOOL_DESCRIPTION, ...parley, run: runParleyTool }),
+		adapt({ name: "item", label: "Item", description: ITEM_TOOL_DESCRIPTION, ...item, run: runItemTool }),
 	];
 }
 
@@ -543,6 +594,79 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 				listText(parleys.parleys, parleyLine, "No parleys") + asks.map((ask) => `${askLine(ask)}\n`).join("");
 
 			return { text, data: { action, value: { parleys: parleys.parleys, asks } } };
+		}
+
+		default:
+			throw new Error(`Unknown action: ${String(action)}`);
+	}
+}
+
+export type ItemArgs = Static<ProjectSchemas["item"]["parameters"]>;
+
+/** Runs one call of the `item` tool, for the tool and `harness item`. */
+export async function runItemTool(args: ItemArgs, scope: ProjectScope) {
+	const { action } = args;
+	const signal = scope.signal ?? NO_ABORT;
+	const caller = scope.caller;
+
+	switch (action) {
+		case "add": {
+			const add = { type: "item", action, caller, title: required(args.title, "title", action) } as const;
+			const request = args.text === undefined ? add : { ...add, text: args.text };
+			const item = replyOf(StagedItem, await scope.send(request, signal), "item");
+
+			return { text: `${itemLine(item)}\n`, data: { action, value: item } };
+		}
+
+		case "set": {
+			let request: Extract<Request, { type: "item"; action: "set" }> = {
+				type: "item",
+				action,
+				caller,
+				id: required(args.id, "id", action),
+			};
+
+			if (args.title !== undefined) request = { ...request, title: args.title };
+
+			if (args.text !== undefined) request = { ...request, text: args.text };
+
+			if (args.state !== undefined) request = { ...request, state: args.state };
+			const item = replyOf(StagedItem, await scope.send(request, signal), "item");
+
+			return { text: `${itemLine(item)}\n`, data: { action, value: item } };
+		}
+
+		case "list": {
+			const list =
+				args.state === undefined
+					? ({ type: "item", action } as const)
+					: ({ type: "item", action, state: args.state } as const);
+
+			const reply = replyOf(ItemList, await scope.send(list, signal), "list of items");
+
+			return { text: listText(reply.items, itemLine, "No items"), data: { action, value: reply } };
+		}
+
+		case "read": {
+			const request = { type: "item", action, id: required(args.id, "id", action) } as const;
+			const item = replyOf(StagedItem, await scope.send(request, signal), "item");
+
+			return { text: itemText(item), data: { action, value: item } };
+		}
+
+		case "link": {
+			const from = required(args.from, "from", action);
+			const to = required(args.to, "to", action);
+			const kind = required(args.kind, "kind", action);
+			// The host checks the references too: this check fails before any request.
+			const invalid = [from, to].find((ref): boolean => !Value.Check(Ref, ref));
+
+			if (invalid !== undefined) throw new Error(`Invalid item reference: ${invalid}`);
+			const request = { type: "item", action, caller, from, kind, to } as const;
+
+			const edge = replyOf(Edge, await scope.send(request, signal), "edge");
+
+			return { text: `${edgeLine(edge)}\n`, data: { action, value: edge } };
 		}
 
 		default:

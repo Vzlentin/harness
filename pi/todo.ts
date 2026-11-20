@@ -71,7 +71,7 @@ export function registerTodo(
 		executionMode: "sequential",
 		async execute(_toolCallId, args, signal, _onUpdate, ctx) {
 			const scope = { caller: ctx.sessionManager.getSessionId(), send: tool.sendToHost, signal };
-			const { text, data } = await tool.runTodoTool(args, scope, tool.todoToolTarget(args));
+			const { text, data } = await tool.runTodoTool(args, scope, {});
 			await todos.refresh();
 
 			return { content: [{ type: "text", text }], details: undefined, structuredContent: data };

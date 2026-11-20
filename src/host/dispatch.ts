@@ -25,7 +25,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
-import { readItem, readItems } from "./item-docs.ts";
+import { allItems, readItem, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
 import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
@@ -497,8 +497,9 @@ async function held(request: Extract<Request, { type: "held" }>, handler: Handle
 }
 
 /**
- * The answers of the classifier about the open todos of the list of `request`, default the list of the project. The
- * classifier is found first, so a client without a credential gets that error for any list.
+ * The answers of the classifier about the open todos of the list of `request`, or without `list` about the open work
+ * items, each with its title as its text. The classifier is found first, so a client without a credential gets that
+ * error for any list.
  */
 async function classify(
 	request: Extract<Request, { type: "classify-todos" }>,
@@ -506,10 +507,14 @@ async function classify(
 ): Promise<Replies["classify-todos"]> {
 	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier", handler.degraded);
 
-	const owner: TodoOwner =
-		request.list === undefined ? { kind: "conversation", id: handler.root.id } : await listOwner(request.list, handler);
-
-	const { todos } = await readTodos(handler.harness, owner, context);
+	const todos =
+		request.list === undefined
+			? (await allItems(handler.harness, handler.storage, context)).map(({ id, title, state }) => ({
+					id,
+					text: title,
+					state,
+				}))
+			: (await readTodos(handler.harness, await listOwner(request.list, handler), context)).todos;
 
 	return { answers: await classifyTodos(handler.place.models, model, todos, request.ids, handler.signal) };
 }

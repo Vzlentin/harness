@@ -97,6 +97,7 @@ describe("projects", { timeout: 30_000 }, () => {
 			[["create", "page", "--cwd", dirA], "A project cannot have the name page"],
 			[["create", "tree", "--cwd", dirA], "A project cannot have the name tree"],
 			[["create", "parley", "--cwd", dirA], "A project cannot have the name parley"],
+			[["create", "item", "--cwd", dirA], "A project cannot have the name item"],
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];
 

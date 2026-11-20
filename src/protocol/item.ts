@@ -1,7 +1,7 @@
 /**
  * The work items of the store of the project: the references, the edges, the items and the counter of their IDs, the
- * stages of an item and the item as a reply gives it, the inputs of the `item` request, and the kinds of their
- * documents.
+ * stages of an item and the item as a reply gives it, the inputs of the `item` request, the text of an item and of an
+ * edge, and the kinds of their documents.
  */
 import { type Static, Type } from "typebox";
 import { SLUG } from "./paths.ts";
@@ -104,6 +104,31 @@ export type EdgeInput = Static<typeof EdgeInput>;
 export const ItemList = Type.Object({ items: Type.Array(StagedItem) });
 
 export type ItemList = Static<typeof ItemList>;
+
+/** The mark of an item that needs the user. */
+export const NEEDS_YOU_MARK = "?";
+
+/** The mark of each state of an item, when the item does not need the user. */
+export const ITEM_MARKS = { open: "○", done: "✓", dropped: "✗" } as const satisfies Record<ItemState, string>;
+
+/** The line of `item`: `<mark> <id> <stage> <title>`, where the mark is `NEEDS_YOU_MARK` when the item needs you. */
+export function itemLine(item: StagedItem): string {
+	const mark = item.needsYou ? NEEDS_YOU_MARK : ITEM_MARKS[item.state];
+
+	return `${mark} ${item.id} ${item.stage} ${item.title}`;
+}
+
+/** The line of `edge`: `<from> <kind> <to>`. */
+export function edgeLine(edge: EdgeInput): string {
+	return `${edge.from} ${edge.kind} ${edge.to}`;
+}
+
+/** The text of a shown item: its line, its text when it has one, then the line of each edge, in the order of writes. */
+export function itemText(item: StagedItem): string {
+	const text = item.text === undefined || item.text === "" ? "" : `${item.text}\n`;
+
+	return `${itemLine(item)}\n${text}${item.edges.map((edge) => `${edgeLine(edge)}\n`).join("")}`;
+}
 
 /** The kind of the family of the documents of the items, one for each item, keyed by its ID. */
 export const ITEM_KIND = "harness.item";

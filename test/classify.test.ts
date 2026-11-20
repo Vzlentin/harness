@@ -90,6 +90,20 @@ async function send<T extends Request["type"]>(line: Extract<Request, { type: T 
 	return reply;
 }
 
+/** Adds the open item `title`, and gives its ID. */
+async function addItem(title: string): Promise<number> {
+	const item = await send({ type: "item", action: "add", caller: "cli", title });
+
+	if (!("id" in item)) throw new Error("no item");
+
+	return item.id;
+}
+
+/** Sets the state of the item `id` to `state`. */
+async function setItem(id: number, state: "done" | "dropped"): Promise<void> {
+	await send({ type: "item", action: "set", caller: "cli", id, state });
+}
+
 /** Adds the todo `text` to the list `list`, and gives its ID. */
 async function add(list: ListRef, text: string): Promise<number> {
 	const todo = await send({ type: "todo", caller: "cli", action: "add", ...list, text });
@@ -128,13 +142,14 @@ beforeAll(async () => {
 	);
 
 	host = await startHost();
-	const project = { handle: AGENT_HANDLE };
 
-	for (const text of ["Write the spec", "Decide the release name", "Archive librlm", "Write the spec"]) {
-		await add(project, text);
+	for (const title of ["Write the spec", "Decide the release name", "Archive librlm", "Write the spec"]) {
+		await addItem(title);
 	}
 
-	await send({ type: "todo", caller: "cli", action: "set", ...project, id: 3, state: "done" });
+	await setItem(3, "done");
+	// The private list of the project agent is not asked about without a list.
+	await add({ handle: AGENT_HANDLE }, "Decide the agent todo");
 });
 
 afterAll(async () => {
@@ -149,7 +164,7 @@ beforeEach(async () => {
 });
 
 describe("classify-todos", { timeout: 30_000 }, () => {
-	it("gives one answer for each open todo of the project list, from one call for each", async () => {
+	it("gives one answer for each open work item, with its title as its text, from one call for each", async () => {
 		const answers = [
 			{ id: 1, needsYou: false },
 			{ id: 2, needsYou: true },
@@ -244,10 +259,21 @@ describe("classify-todos", { timeout: 30_000 }, () => {
 	});
 
 	it("fails with the error of the classifier", async () => {
-		const id = await add({ handle: AGENT_HANDLE }, "Fail the classifier");
+		const id = await addItem("Fail the classifier");
 		await expect(send({ type: "classify-todos", ids: [id] })).rejects.toThrow(
 			"The classifier typesafe/jev-latest failed: overloaded",
 		);
-		await send({ type: "todo", caller: "cli", action: "set", handle: AGENT_HANDLE, id, state: "dropped" });
+		await setItem(id, "dropped");
+	});
+
+	it("prints No open items for a sort without a target when no item is open", async () => {
+		const open = await send({ type: "item", action: "list" });
+
+		if (!("items" in open)) throw new Error("no items");
+
+		for (const item of open.items) await setItem(item.id, "dropped");
+		expect(await classifyTodos()).toEqual({ answers: [] });
+		expect(await cli(["todo", "sort"])).toEqual({ code: 0, stdout: "No open items\n", stderr: "" });
+		expect(asked).toEqual([]);
 	});
 });

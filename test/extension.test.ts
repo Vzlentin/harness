@@ -963,7 +963,7 @@ describe("the Pi extension", () => {
 		expect(existsSync(dirname(restarted))).toBe(false);
 	});
 
-	it("gives the todo tool of the host, on the list of the session and on the list of the project", async () => {
+	it("gives the todo tool of the host, on the list of the session only", async () => {
 		host = await startHost();
 		const registered = await load();
 		const todo = registered.tools.get("todo");
@@ -975,19 +975,18 @@ describe("the Pi extension", () => {
 			outputSchema: output,
 			executionMode: "sequential",
 		});
+		expect(Object.keys(parameters.properties)).toEqual(["action", "text", "id", "state"]);
 		expect(await todo?.call({ action: "add", text: "Write the plan" })).toBe("○ 1 Write the plan\n");
-		expect(await todo?.call({ action: "add", text: "Ship it", list: "project" })).toBe("○ 1 Ship it\n");
 		expect(await todo?.call({ action: "set", id: 1, state: "doing" })).toBe("◉ 1 Write the plan\n");
 		expect(todo?.structured).toEqual([
 			{ action: "add", value: { id: 1, text: "Write the plan", state: "open" } },
-			{ action: "add", value: { id: 1, text: "Ship it", state: "open" } },
 			{ action: "set", value: { id: 1, text: "Write the plan", state: "doing" } },
 		]);
 
 		const own = await request({ type: "todo", caller: "session", action: "list" }, { start: false });
 		expect(own).toEqual({ todos: [{ id: 1, text: "Write the plan", state: "doing" }] });
 		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
-		expect(project).toEqual({ todos: [{ id: 1, text: "Ship it", state: "open" }] });
+		expect(project).toEqual({ todos: [] });
 	});
 
 	it("adds a session todo with /todo, from its arguments or an input, refreshes the widget, and refuses in a mirror session", async () => {
@@ -1044,7 +1043,7 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 
-	it("gives the thread, rule and parley tools of the host, on the store of the project", async () => {
+	it("gives the thread, rule, parley and item tools of the host, on the store of the project", async () => {
 		host = await startHost();
 		const registered = await load();
 
@@ -1057,7 +1056,7 @@ describe("the Pi extension", () => {
 		}));
 
 		for (const { name, ...tool } of expected) expect(registered.tools.get(name)).toMatchObject(tool);
-		expect(expected.map((tool) => tool.name)).toEqual(["thread", "rule", "parley"]);
+		expect(expected.map((tool) => tool.name)).toEqual(["thread", "rule", "parley", "item"]);
 		expect(registered.tools.has("term")).toBe(false);
 		expect(registered.tools.has("part")).toBe(false);
 
@@ -1130,6 +1129,39 @@ describe("the Pi extension", () => {
 		expect(await request({ type: "ask", action: "read", id: loneId }, { start: false })).toMatchObject({
 			note: "alone",
 		});
+		// The item tool gives the text of each action, and its reply as the structured result.
+		const items = tools.get("item");
+		const added = await items?.call({ action: "add", title: "Ship Pi", text: "All of it." });
+		const id = Number(added?.split(" ")[1]);
+		expect(added).toBe(`○ ${id} inbox Ship Pi\n`);
+		expect(await items?.call({ action: "set", id, title: "Ship the Pi side" })).toBe(
+			`○ ${id} inbox Ship the Pi side\n`,
+		);
+		const run = "run:20261120T172928-841433af";
+		expect(await items?.call({ action: "link", from: run, kind: "serves", to: `item:${id}` })).toBe(
+			`${run} serves item:${id}\n`,
+		);
+		expect(await items?.call({ action: "read", id })).toBe(
+			`○ ${id} inbox Ship the Pi side\nAll of it.\n${run} serves item:${id}\n`,
+		);
+		expect(await items?.call({ action: "list" })).toContain(`○ ${id} inbox Ship the Pi side\n`);
+		expect(await items?.call({ action: "set", id, state: "dropped" })).toBe(`✗ ${id} dropped Ship the Pi side\n`);
+		expect(await items?.call({ action: "list", state: "dropped" })).toBe(`✗ ${id} dropped Ship the Pi side\n`);
+		expect(
+			items?.structured.map((result) => Value.Parse(Type.Object({ action: Type.String() }), result).action),
+		).toEqual(["add", "set", "link", "read", "list", "set", "list"]);
+		expect(items?.structured[2]).toEqual({
+			action: "link",
+			value: { from: run, kind: "serves", to: `item:${id}`, at: expect.any(Number), by: "session" },
+		});
+		expect(items?.structured.at(-1)).toMatchObject({
+			action: "list",
+			value: { items: [{ id, state: "dropped", stage: "dropped", needsYou: false, by: "session" }] },
+		});
+		await expect(items?.call({ action: "link", from: "nope", kind: "serves", to: `item:${id}` })).rejects.toThrow(
+			"Invalid item reference: nope",
+		);
+
 		// The answers of the parley tool are the answers of the agent of the session.
 		await tools.get("parley")?.call({ action: "answer", slug: "pi", answers: [{ ask: 1, answer: "a" }] });
 		expect(await request({ type: "ask", action: "read", slug: "pi", n: 1 }, { start: false })).toMatchObject({

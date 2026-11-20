@@ -314,9 +314,50 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(cellResults.get(prompt)).toEqual([`${id} · Tag it? · own · Yes\nThe tag \`v1\`\n`]);
 	});
 
+	it("adds, sets, lists, reads and links work items with the item tool, for a child", async () => {
+		const parley = { slug: "items-tool", title: "Items", goal: "Shape it." };
+		await send({ type: "ask", action: "round", caller: "khan", parley, asks: [{ title: "Which?" }] });
+		const before = await send({ type: "item", action: "list" });
+
+		if (!("items" in before)) throw new Error("no items");
+		const id = Math.max(0, ...before.items.map((item) => item.id)) + 1;
+		const prompt = "Task:\nKeep the items";
+
+		scripts.set(prompt, [
+			{ name: "item", arguments: { action: "add", title: "Shape the board", text: "Columns first." } },
+			{ name: "item", arguments: { action: "link", from: "parley:items-tool", kind: "shapes", to: `item:${id}` } },
+			{ name: "item", arguments: { action: "set", id, title: "Shape the item board" } },
+			{ name: "item", arguments: { action: "read", id } },
+			{ name: "item", arguments: { action: "list", state: "dropped" } },
+			{ name: "item", arguments: { action: "set", id, state: "dropped" } },
+			{ name: "item", arguments: { action: "link", from: "parley:items-tool", kind: "landed", to: `item:${id}` } },
+		]);
+
+		const handle = handleOf(await cli(["spawn", "--prompt", "Keep the items"]));
+		await cli(["wait", handle]);
+
+		expect(cellResults.get(prompt)).toEqual([
+			`○ ${id} inbox Shape the board\n`,
+			`parley:items-tool shapes item:${id}\n`,
+			`? ${id} shaping Shape the item board\n`,
+			`? ${id} shaping Shape the item board\nColumns first.\nparley:items-tool shapes item:${id}\n`,
+			"No items\n",
+			`? ${id} dropped Shape the item board\n`,
+			expect.stringContaining(`An edge landed cannot go from parley:items-tool to item:${id}`),
+		]);
+		// The host keeps the conversation of the child as the caller of each write.
+		expect(await send({ type: "item", action: "read", id })).toMatchObject({
+			state: "dropped",
+			edges: [{ from: "parley:items-tool", kind: "shapes", by: expect.stringMatching(/^\d+$/) }],
+			by: expect.stringMatching(/^\d+$/),
+		});
+	});
+
 	it("gives the tools to the project agent and to a child at the depth limit", async () => {
 		await agentTurn("Agent project tools");
-		expect(requests.get("Agent project tools")?.tools).toEqual(expect.arrayContaining(["thread", "rule", "parley"]));
+		expect(requests.get("Agent project tools")?.tools).toEqual(
+			expect.arrayContaining(["thread", "rule", "parley", "item"]),
+		);
 		expect(requests.get("Agent project tools")?.tools).not.toEqual(expect.arrayContaining(["term"]));
 		expect(requests.get("Agent project tools")?.tools).not.toEqual(expect.arrayContaining(["part"]));
 		await setSettings({ agentDepthLimit: 1 });
@@ -326,7 +367,9 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 			const handle = handleOf(await cli(["spawn", "--prompt", "Leaf threads"]));
 
 			expect((await cli(["wait", handle])).stdout).toMatch(/Scope with Sam \(\d+\)/);
-			expect(requests.get("Task:\nLeaf threads")?.tools).toEqual(expect.arrayContaining(["thread", "rule", "parley"]));
+			expect(requests.get("Task:\nLeaf threads")?.tools).toEqual(
+				expect.arrayContaining(["thread", "rule", "parley", "item"]),
+			);
 			expect(requests.get("Task:\nLeaf threads")?.tools).not.toEqual(expect.arrayContaining(["term"]));
 			expect(requests.get("Task:\nLeaf threads")?.tools).not.toEqual(expect.arrayContaining(["part"]));
 		} finally {

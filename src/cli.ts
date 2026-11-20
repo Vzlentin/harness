@@ -12,7 +12,7 @@ import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
-import { sendAskNote, sendRuleChange, sendRuleList } from "./project-tool.ts";
+import { type ItemArgs, runItemTool, sendAskNote, sendRuleChange, sendRuleList } from "./project-tool.ts";
 import {
 	cliCaller,
 	HARNESS_PROJECT,
@@ -21,6 +21,7 @@ import {
 	PI_REASONING_LEVEL,
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
+import { EdgeKind, ItemState } from "./protocol/item.ts";
 import { pageDir } from "./protocol/paths.ts";
 import {
 	LocalId,
@@ -42,7 +43,7 @@ import {
 	readProjects,
 } from "./protocol/projects.ts";
 import { type ChildInfo, errorMessage, isThinkingLevel } from "./protocol/requests.ts";
-import { AGENT_HANDLE, type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
+import { type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
 import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
@@ -200,7 +201,7 @@ function listArgs(args: string[]): ToolArgs {
  * A call of the todo tool from the arguments of `todo`, or the `sort` of a list, with the list of its target option.
  */
 type TodoCall = {
-	readonly args: Omit<TodoToolArgs, "list"> | { readonly action: "sort" };
+	readonly args: TodoToolArgs | { readonly action: "sort" };
 	readonly target: ListTarget;
 };
 
@@ -224,9 +225,6 @@ function todoArgs(args: string[]): TodoCall {
 			case "--task":
 				target = onlyTarget(target, { key: valueAfter(args, i, arg) });
 				i++;
-				break;
-			case "--project-list":
-				target = onlyTarget(target, { handle: AGENT_HANDLE });
 				break;
 			case "--text":
 				if (text !== undefined) usage();
@@ -301,8 +299,8 @@ async function todoCommand(args: string[], project: string | undefined): Promise
 }
 
 /**
- * Prints the answers of the classifier about the open todos of the list `target`, default the list of the project: one
- * line for each todo, or `No open todos`.
+ * Prints the answers of the classifier about the open todos of the list `target`, or without a target about the open
+ * work items: one line for each, or `No open todos` or `No open items`.
  */
 async function sortCommand(target: ListTarget, project: string | undefined): Promise<void> {
 	const list = listRef(target);
@@ -311,10 +309,9 @@ async function sortCommand(target: ListTarget, project: string | undefined): Pro
 		list === undefined ? ({ type: "classify-todos" } as const) : ({ type: "classify-todos", list } as const);
 
 	const { answers } = await request(classify, { start: true, project });
+	const none = list === undefined ? "No open items\n" : "No open todos\n";
 
-	process.stdout.write(
-		answers.length === 0 ? "No open todos\n" : answers.map((answer) => `${answerLine(answer)}\n`).join(""),
-	);
+	process.stdout.write(answers.length === 0 ? none : answers.map((answer) => `${answerLine(answer)}\n`).join(""));
 }
 
 /** The list of `target` as `classify-todos` takes it; nothing for `{}`. */
@@ -372,12 +369,11 @@ async function noteCommand(args: string[], project: string | undefined): Promise
 	process.stdout.write(text);
 }
 
-/** The options of `rule` after its action, by name, and the words that are not options. */
-type RuleOptions = { readonly words: readonly string[]; readonly options: ReadonlyMap<string, string> };
+/** The options of a command after its action, by name, and the words that are not options. */
+type CommandOptions = { readonly words: readonly string[]; readonly options: ReadonlyMap<string, string> };
 
-const RULE_OPTIONS: ReadonlySet<string> = new Set(["--name", "--kind", "--value", "--status"]);
-
-function ruleOptions(args: string[]): RuleOptions {
+/** The options of `command` in `args`, each one of `known` at most once, and the words that are not options. */
+function commandOptions(command: string, known: readonly string[], args: string[]): CommandOptions {
 	const words: string[] = [];
 	const options = new Map<string, string>();
 
@@ -389,7 +385,7 @@ function ruleOptions(args: string[]): RuleOptions {
 			continue;
 		}
 
-		if (!RULE_OPTIONS.has(arg) || options.has(arg)) fail(`Unknown rule argument: ${arg}`);
+		if (!known.includes(arg) || options.has(arg)) fail(`Unknown ${command} argument: ${arg}`);
 		options.set(arg, valueAfter(args, i, arg));
 		i++;
 	}
@@ -398,7 +394,7 @@ function ruleOptions(args: string[]): RuleOptions {
 }
 
 /** Prints the usage when `options` has an option that is not one of `allowed`. */
-function onlyOptions(options: RuleOptions["options"], allowed: readonly string[]): void {
+function onlyOptions(options: CommandOptions["options"], allowed: readonly string[]): void {
 	if ([...options.keys()].some((option) => !allowed.includes(option))) usage();
 }
 
@@ -428,7 +424,7 @@ function ruleStatus(value: string | undefined): RuleStatus | undefined {
  */
 function ruleArgs(args: string[]): RuleUserChange | { readonly action: "list"; readonly filter: RuleFilter } {
 	const [action = "list", ...after] = args;
-	const { words: rest, options } = ruleOptions(after);
+	const { words: rest, options } = commandOptions("rule", ["--name", "--kind", "--value", "--status"], after);
 
 	switch (action) {
 		case "list": {
@@ -482,6 +478,91 @@ async function ruleCommand(args: string[], project: string | undefined): Promise
 	const scope = cliScope(project);
 
 	const { text } = call.action === "list" ? await sendRuleList(call.filter, scope) : await sendRuleChange(call, scope);
+
+	process.stdout.write(text);
+}
+
+function itemState(value: string): ItemState {
+	if (!Value.Check(ItemState, value)) fail(`Invalid item state: ${value}`);
+
+	return value;
+}
+
+function edgeKind(value: string): EdgeKind {
+	if (!Value.Check(EdgeKind, value)) fail(`Invalid edge kind: ${value}`);
+
+	return value;
+}
+
+/**
+ * The call of the `item` tool from the arguments of `item`. The action is the first argument, `list` when there is
+ * none, and the options come after it.
+ */
+function itemArgs(args: string[]): ItemArgs {
+	const [action = "list", ...after] = args;
+	const { words: rest, options } = commandOptions("item", ["--state", "--title", "--text"], after);
+	const text = options.get("--text");
+
+	switch (action) {
+		case "list": {
+			onlyOptions(options, ["--state"]);
+
+			if (rest.length !== 0) usage();
+			const state = options.get("--state");
+
+			return state === undefined ? { action } : { action, state: itemState(state) };
+		}
+
+		case "add": {
+			onlyOptions(options, ["--text"]);
+
+			if (rest.length === 0) usage();
+			const add = { action, title: rest.join(" ") } as const;
+
+			return text === undefined ? add : { ...add, text };
+		}
+
+		case "set": {
+			onlyOptions(options, ["--title", "--text"]);
+			const [id, state, ...extra] = rest;
+
+			if (id === undefined || extra.length !== 0 || (state === undefined && options.size === 0)) usage();
+			let call: ItemArgs = { action, id: itemId(id) };
+			const title = options.get("--title");
+
+			if (state !== undefined) call = { ...call, state: itemState(state) };
+
+			if (title !== undefined) call = { ...call, title };
+
+			return text === undefined ? call : { ...call, text };
+		}
+
+		case "show": {
+			onlyOptions(options, []);
+			const [id] = rest;
+
+			if (rest.length !== 1 || id === undefined) usage();
+
+			return { action: "read", id: itemId(id) };
+		}
+
+		case "link": {
+			onlyOptions(options, []);
+			const [from, kind, to] = rest;
+
+			if (rest.length !== 3 || from === undefined || kind === undefined || to === undefined) usage();
+
+			return { action, from, kind: edgeKind(kind), to };
+		}
+
+		default:
+			usage();
+	}
+}
+
+/** Runs `item` as a call of the `item` tool, and prints its output. */
+async function itemCommand(args: string[], project: string | undefined): Promise<void> {
+	const { text } = await runItemTool(itemArgs(args), cliScope(project));
 
 	process.stdout.write(text);
 }
@@ -844,9 +925,19 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		todo: {
 			usage: [
 				"  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]",
-				"    [--handle <handle> | --conversation <id> | --task <key> | --project-list]",
+				"    [--handle <handle> | --conversation <id> | --task <key>]",
 			],
 			run: todoCommand,
+		},
+		item: {
+			usage: [
+				"  harness item [list [--state <state>]]",
+				"  harness item add <title> [--text <text>]",
+				"  harness item set <id> [<state>] [--title <title>] [--text <text>]",
+				"  harness item show <id>",
+				"  harness item link <from> <kind> <to>",
+			],
+			run: itemCommand,
 		},
 		attach: {
 			usage: ["  harness attach (<handle> | --conversation <id>) [--side]"],

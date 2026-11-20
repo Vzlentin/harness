@@ -29,8 +29,8 @@ afterAll(async () => {
 });
 
 describe("harness todo", { timeout: 30_000 }, () => {
-	it("adds, sets and lists the todos of the project", async () => {
-		const project = ["--project-list"];
+	it("adds, sets and lists the todos of the project agent", async () => {
+		const project = ["--handle", "agent"];
 		expect(await todo(["add", "Move", "the", "config", ...project])).toBe("○ 1 Move the config\n");
 		expect(await todo(["add", "Archive librlm", ...project])).toBe("○ 2 Archive librlm\n");
 		expect(await todo([...project, "add", "Drop the old flag"])).toBe("○ 3 Drop the old flag\n");
@@ -44,18 +44,17 @@ describe("harness todo", { timeout: 30_000 }, () => {
 		const lines = "◉ 1 Move the config\n✓ 2 Archive librlm and pi-rlm\n✗ 3 Drop the old flag\n○ 4 Write the spec\n";
 		expect(await todo(["list", ...project])).toBe(lines);
 		expect(await todo(project)).toBe(lines);
-		expect(await todo(["list", "--handle", "agent"])).toBe(lines);
 	});
 
-	it("keeps the list of each caller apart from the list of the project", async () => {
+	it("keeps the list of each caller apart from the list of the project agent", async () => {
 		const session = { PI_SESSION_ID: "session-1" };
-		const projectList = await todo(["list", "--project-list"]);
+		const projectList = await todo(["list", "--handle", "agent"]);
 		expect(await todo(["list"])).toBe("No todos\n");
 		expect(await todo(["add", "Mine"])).toBe("○ 1 Mine\n");
 		expect(await todo(["add", "Theirs"], session)).toBe("○ 1 Theirs\n");
 		expect(await todo(["list"])).toBe("○ 1 Mine\n");
 		expect(await todo([], session)).toBe("○ 1 Theirs\n");
-		expect(await todo(["list", "--project-list"], session)).toBe(projectList);
+		expect(await todo(["list", "--handle", "agent"], session)).toBe(projectList);
 	});
 
 	it("reaches the list of a child with --handle", async () => {
@@ -83,6 +82,7 @@ describe("harness todo", { timeout: 30_000 }, () => {
 			[["add", " "], "The text of a todo is empty\n"],
 			[["set", "1", "done", "--text", " "], "The text of a todo is empty\n"],
 			[["list", "--verbose"], "Unknown todo argument: --verbose\n"],
+			[["add", "x", "--project-list"], "Unknown todo argument: --project-list\n"],
 			[["list", "--handle"], "--handle requires a value\n"],
 			[["add", "x", "--handle", "abcdef"], "Unknown subagent: abcdef\n"],
 			[["add", "x", "--conversation", "999999"], "Unknown conversation: 999999\n"],
@@ -101,7 +101,6 @@ describe("harness todo", { timeout: 30_000 }, () => {
 			["list", "extra"],
 			["move"],
 			["add", "x", "--text", "y"],
-			["--handle", "agent", "--project-list"],
 			["list", "--task", "a", "--conversation", "2"],
 		];
 

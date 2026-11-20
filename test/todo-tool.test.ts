@@ -105,15 +105,21 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("changes the list of the project with list project, and not the list of the child", async () => {
-		scripts.set("Task:\nProject todo", [
-			{ name: "todo", arguments: { action: "add", text: "For the project", list: "project" } },
-		]);
-		const handle = handleOf(await cli(["spawn", "--prompt", "Project todo"]));
+	it("has no list parameter, and a todo call of the project agent changes its own list", async () => {
+		const before = await listOf(AGENT_HANDLE);
 
-		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nTool said: ○ 1 For the project\n`);
-		expect(await listOf(AGENT_HANDLE)).toEqual({ todos: [{ id: 1, text: "For the project", state: "open" }] });
-		expect(await listOf(handle)).toEqual({ todos: [] });
+		if (!("todos" in before)) throw new Error("no list");
+		scripts.set("Agent own todo", [{ name: "todo", arguments: { action: "add", text: "For the agent" } }]);
+		await agentTurn("Agent own todo");
+
+		const id = before.todos.length + 1;
+		expect(cellResults.get("Agent own todo")).toEqual([`○ ${id} For the agent\n`]);
+		expect(await listOf(AGENT_HANDLE)).toEqual({
+			todos: [...before.todos, { id, text: "For the agent", state: "open" }],
+		});
+		const declared = requests.get("Agent own todo")?.declarations.find((tool) => tool.name === "todo");
+		expect(declared?.parameters).toHaveProperty("properties.action");
+		expect(declared?.parameters).not.toHaveProperty("properties.list");
 	});
 
 	it("gives the project agent the tool", async () => {

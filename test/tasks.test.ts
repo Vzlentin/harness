@@ -154,7 +154,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 	});
 
 	it("leaves the store tools out of a library child whose setup removes the project extension, but not the rules", async () => {
-		const store = ["thread", "rule", "parley"];
+		const store = ["thread", "rule", "parley", "item"];
 		const rule = { type: "rule", action: "create", caller: "cli", name: "fixture", kind: "domain" } as const;
 		const created = await request({ ...rule, value: "The fixture asks." }, { start: false });
 

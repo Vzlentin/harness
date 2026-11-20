@@ -1,7 +1,7 @@
 {
 	"name": "@vzlentin/pi-agents",
 	"version": "0.6.2",
-	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget, the todo tool, the todo widget, the thread, rule and parley tools, the /rules command, the gate on tool calls, /vc, the visual copy that marks a copied draft sent, the /harness mirror sessions, the tools bridge in the IPython kernels and the subagent skill",
+	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget, the todo tool, the todo widget, the thread, rule, parley and item tools, the /rules command, the gate on tool calls, /vc, the visual copy that marks a copied draft sent, the /harness mirror sessions, the tools bridge in the IPython kernels and the subagent skill",
 	"keywords": [
 		"pi-package"
 	],

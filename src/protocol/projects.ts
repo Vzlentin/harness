@@ -22,6 +22,7 @@ const COMMANDS = [
 	"parley",
 	"rule",
 	"todo",
+	"item",
 	"attach",
 	"host",
 	"create",
