@@ -12,6 +12,7 @@ import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import { resolveModel } from "../children/model.ts";
 import { Json } from "../protocol/requests.ts";
 import type { Degraded } from "./degraded.ts";
@@ -77,14 +78,16 @@ const SeenV1 = Type.Object({
 
 /**
  * What the project agent has seen. Undefined until its first input. The migration from version 1 drops its workflows
- * facts, `lastTaskId` and `pending`, and starts each catch-up hook with nothing seen.
+ * facts, `lastTaskId` and `pending`, and starts each catch-up hook with nothing seen. Each catch-up changes it for as
+ * long as the store lives, and it holds the data of each hook and a planned entry, so it stores a base after
+ * `MAX_DELTAS` deltas, not at each change.
  */
 const Seen = defineDoc<SeenState>({
 	kind: "harness.seen",
 	version: 2,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	fork: "initial",
 	initial: () => ({ ...NOTHING_SEEN, hooks: {} }),
 	migrate: (value) => {

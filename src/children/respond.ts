@@ -10,6 +10,7 @@ import type { ConversationId, Extension, HookApi, JsonObject, SubmissionId, Tx }
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { errorMessage, Json } from "../protocol/requests.ts";
+import { afterMaxDeltas } from "./checkpoint.ts";
 
 /**
  * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
@@ -61,13 +62,15 @@ export type Answers = {
 };
 
 export function createAnswers(durable: typeof Durable): Answers {
+	// Each ask of the conversation changes the document, and each schema ask adds its answer, so the document stores a
+	// base after `MAX_DELTAS` deltas, not at each change.
 	const AnswerDoc = durable.defineDoc<AnswerState>({
 		kind: "harness.answer-schema",
 		version: 1,
 		scope: "conversation",
 		history: "latest",
 		fork: "current",
-		checkpointWhen: () => false,
+		checkpointWhen: afterMaxDeltas,
 		initial: () => ({ answers: {} }),
 	});
 

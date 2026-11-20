@@ -4,20 +4,24 @@
  */
 import { isAbsolute, resolve } from "node:path";
 import type * as Durable from "@earendil-works/pi-durable";
+import { afterMaxDeltas } from "./checkpoint.ts";
 
 /** File contents by path: a string replaces the file, null removes it. */
 export type Overlay = { readonly [path: string]: string | null };
 
 type OverlayState = { files: Overlay };
 
-/** The overlay of a conversation, by absolute path. A conversation opened without one has no doc: readers get undefined. */
+/**
+ * The overlay of a conversation, by absolute path. A conversation opened without one has no doc: readers get undefined.
+ * The value holds the contents of files, so the document stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 export function overlayDoc(durable: Pick<typeof Durable, "defineDoc">) {
 	return durable.defineDoc<OverlayState>({
 		kind: "harness.overlay",
 		version: 1,
 		scope: "conversation",
 		history: "latest",
-		checkpointWhen: () => false,
+		checkpointWhen: afterMaxDeltas,
 		fork: "current",
 		initial: () => ({ files: {} }),
 	});

@@ -4,6 +4,7 @@
  */
 import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import {
 	type Author,
 	MESSAGE_DELETE_KIND,
@@ -84,9 +85,12 @@ async function scanMessages(tx: Tx, thread: ConversationId): Promise<Map<number,
 
 export const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 
-/** A document of the session of the kind `kind`, which starts as `initial()`. */
+/**
+ * A document of the session of the kind `kind`, which starts as `initial()`. It is a list of the store, which lives as
+ * long as the store and can grow with each item, so it stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {
-	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: () => false, initial });
+	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: afterMaxDeltas, initial });
 }
 
 /** The item `id` of `items`. An ID of no item fails with `Unknown <name>: <id>`. */

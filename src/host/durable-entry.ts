@@ -12,11 +12,12 @@ import { sendToHost, subagentTool } from "../tool.ts";
  * so conversations of two stores do not share children.
  */
 export default function subagentEntry({ durable }: { readonly durable: typeof Durable }) {
+	// The value is one ID that one commit writes, so each change stores a base.
 	const Store = durable.defineDoc<{ id: string }>({
 		kind: "pi-subagent.store",
 		version: 1,
 		scope: "session",
-		checkpointWhen: () => false,
+		checkpointWhen: () => true,
 		initial: () => ({ id: "" }),
 	});
 

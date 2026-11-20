@@ -42,13 +42,16 @@ export type TargetHost = {
 	readonly agent: () => Promise<Conversation>;
 };
 
-/** The request ID of the project agent's newest input, which its `error` state comes from. */
+/**
+ * The request ID of the project agent's newest input, which its `error` state comes from. Each input changes it for as
+ * long as the store lives, and its value is one ID, so each change stores a base.
+ */
 export const AgentState = defineDoc<{ lastRequest: string | null }>({
 	kind: "harness.agent",
 	version: 1,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: () => true,
 	fork: "initial",
 	initial: () => ({ lastRequest: null }),
 });
