@@ -6,6 +6,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
 import type { UserDelivery } from "../protocol/requests.ts";
+import { boundedReplay } from "./checkpoint.ts";
 
 /** One answer that waits for its asker, with its delivery, written in the commit of the answers. */
 export type UserAnswer = { id: number; asker: string; delivery: UserDelivery };
@@ -20,7 +21,7 @@ const UserAnswers = defineDoc<Queue>({
 	kind: "harness.user-answers",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	initial: () => ({ next: 1, deliveries: [] }),
 });
 

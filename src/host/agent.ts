@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveModel } from "../children/model.ts";
 import { Json } from "../protocol/requests.ts";
+import { boundedReplay } from "./checkpoint.ts";
 import type { Degraded } from "./degraded.ts";
 import type { CatchUpHook, CatchUpPart } from "./entries.ts";
 import type { Found } from "./targets.ts";
@@ -84,7 +85,7 @@ const Seen = defineDoc<SeenState>({
 	version: 2,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	fork: "initial",
 	initial: () => ({ ...NOTHING_SEEN, hooks: {} }),
 	migrate: (value) => {

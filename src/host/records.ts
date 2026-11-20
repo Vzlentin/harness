@@ -12,6 +12,7 @@ import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
 import type { Served } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
+import { boundedReplay } from "./checkpoint.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -98,7 +99,7 @@ export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
 	version: 5,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);

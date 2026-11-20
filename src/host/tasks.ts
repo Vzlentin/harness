@@ -7,6 +7,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import type { Request, TaskInfo } from "../protocol/requests.ts";
+import { boundedReplay } from "./checkpoint.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -18,7 +19,7 @@ export const StartedTasks = durable.defineDoc<StartedTaskIds>({
 	kind: "harness.tasks",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	initial: () => ({ tasks: {} }),
 });
 

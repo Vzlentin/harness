@@ -13,6 +13,7 @@ import {
 	type PersonList,
 	PERSONS_KIND,
 } from "../protocol/project.ts";
+import { boundedReplay } from "./checkpoint.ts";
 
 /** The number of entries that one page of a scan of a thread gives. */
 export const PAGE = 200;
@@ -86,7 +87,7 @@ export const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: []
 
 /** A document of the session of the kind `kind`, which starts as `initial()`. */
 export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {
-	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: () => false, initial });
+	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: boundedReplay, initial });
 }
 
 /** The item `id` of `items`. An ID of no item fails with `Unknown <name>: <id>`. */

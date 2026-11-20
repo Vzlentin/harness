@@ -6,6 +6,7 @@
 import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList } from "../protocol/todo.ts";
+import { boundedReplay } from "./checkpoint.ts";
 
 /** Whose list: a conversation, a task, or a caller that is not a conversation of the host. */
 export type TodoOwner =
@@ -22,7 +23,7 @@ export const ConversationTodos = durable.defineDoc<TodoList>({
 	version: 1,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	fork: "initial",
 	initial: () => ({ todos: [] }),
 });
@@ -35,7 +36,7 @@ export const TaskTodos = durable.defineDocFamily<TodoList, null>({
 	kind: TASK_TODO_LIST_KIND,
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	family: true,
 	initial: () => ({ todos: [] }),
 });
@@ -45,7 +46,7 @@ export const CallerTodos = durable.defineDocFamily<TodoList, null>({
 	kind: "harness.caller-todos",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	family: true,
 	initial: () => ({ todos: [] }),
 });
@@ -61,7 +62,7 @@ const Links = durable.defineDoc<{ links: Link[] }>({
 	kind: "harness.save-todos",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	initial: () => ({ links: [] }),
 });
 

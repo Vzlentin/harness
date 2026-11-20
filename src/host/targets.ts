@@ -18,6 +18,7 @@ import {
 import { CLI_CALLER } from "../protocol/env.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
+import { boundedReplay } from "./checkpoint.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -48,7 +49,7 @@ export const AgentState = defineDoc<{ lastRequest: string | null }>({
 	version: 1,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: boundedReplay,
 	fork: "initial",
 	initial: () => ({ lastRequest: null }),
 });
