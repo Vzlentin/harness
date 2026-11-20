@@ -18,7 +18,6 @@ import {
 	type AskOption,
 	type AskRef,
 	type AskRound,
-	ASKS_KIND,
 	askTransition,
 	type AskWrite,
 	HELD_KIND,
@@ -56,6 +55,7 @@ import {
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
 import {
+	Asks,
 	foldMessage,
 	known,
 	knownAuthor,
@@ -76,7 +76,6 @@ import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-an
 
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
-const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
 const Outbox = sessionDoc<{ messages: OutState[] }>(OUTBOX_KIND, () => ({ messages: [] }));
 
 /** A message with no state: the data of its entry, its ID and its thread. */

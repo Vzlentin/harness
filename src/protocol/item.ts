@@ -1,6 +1,7 @@
 /**
  * The work items of the store of the project: the references, the edges, the items and the counter of their IDs, the
- * inputs of the `item` request, and the kinds of their documents.
+ * stages of an item and the item as a reply gives it, the inputs of the `item` request, and the kinds of their
+ * documents.
  */
 import { type Static, Type } from "typebox";
 import { SLUG } from "./paths.ts";
@@ -55,6 +56,25 @@ export const WorkItem = Type.Object({
 
 export type WorkItem = Static<typeof WorkItem>;
 
+/**
+ * The stages of an item, the columns of the board: `inbox` waits for work, `shaping` has an open parley, `ready` has a
+ * contract, `building` has a live agent or run, and `done` and `dropped` are its states. The host works the stage out
+ * at each read, and never stores it.
+ */
+export const ITEM_STAGES = ["inbox", "shaping", "ready", "building", "done", "dropped"] as const;
+
+export const ItemStage = Type.Enum(ITEM_STAGES);
+
+export type ItemStage = Static<typeof ItemStage>;
+
+/**
+ * An item as a reply gives it: the stored item, its stage, and `needsYou`, true when one of its parleys, agents or runs
+ * waits for the user.
+ */
+export const StagedItem = Type.Object({ ...WorkItem.properties, stage: ItemStage, needsYou: Type.Boolean() });
+
+export type StagedItem = Static<typeof StagedItem>;
+
 /** The counter of the IDs of items. `last` only grows. */
 export const ItemCounter = Type.Object({ last: Type.Integer({ minimum: 0 }) });
 
@@ -80,8 +100,8 @@ export const EdgeInput = Type.Object({ from: Ref, kind: EdgeKind, to: Ref });
 
 export type EdgeInput = Static<typeof EdgeInput>;
 
-/** Items, in ID order. */
-export const ItemList = Type.Object({ items: Type.Array(WorkItem) });
+/** Items with their stages, in ID order. */
+export const ItemList = Type.Object({ items: Type.Array(StagedItem) });
 
 export type ItemList = Static<typeof ItemList>;
 

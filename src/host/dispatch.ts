@@ -25,6 +25,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
+import { stageItem, stageItems } from "./item-stage.ts";
 import { addItem, linkItem, readItem, readItems, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import { changeRule, readRules, setRule } from "./project-rules.ts";
@@ -439,20 +440,28 @@ function parley(request: Extract<Request, { type: "parley" }>, handler: Handler)
 	}
 }
 
-function item(request: Extract<Request, { type: "item" }>, handler: Handler): Promise<Replies["item"]> {
+/**
+ * Each item of a reply has its stage, which the host works out after the commit: a commit callback cannot read the
+ * states of the agents, which their own commits give.
+ */
+async function item(request: Extract<Request, { type: "item" }>, handler: Handler): Promise<Replies["item"]> {
 	switch (request.action) {
 		case "add":
-			return handler.harness.commit((tx) => addItem(tx, request, request.caller), context);
+			return stageItem(handler, await handler.harness.commit((tx) => addItem(tx, request, request.caller), context));
 		case "set":
-			return handler.harness.commit((tx) => setItem(tx, request, request.caller), context);
-		case "list":
-			return readItems(handler.harness, handler.storage, request.state ?? "open", context);
+			return stageItem(handler, await handler.harness.commit((tx) => setItem(tx, request, request.caller), context));
+		case "list": {
+			const items = await readItems(handler.harness, handler.storage, request.state ?? "open", context);
+
+			return { items: await stageItems(handler, items) };
+		}
+
 		case "read":
-			return readItem(handler.harness, request.id, context);
+			return stageItem(handler, await readItem(handler.harness, request.id, context));
 		case "link":
 			return handler.harness.commit((tx) => linkItem(tx, request, request.caller), context);
 		case "unlink":
-			return handler.harness.commit((tx) => unlinkItem(tx, request), context);
+			return stageItem(handler, await handler.harness.commit((tx) => unlinkItem(tx, request), context));
 	}
 }
 

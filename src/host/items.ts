@@ -1,10 +1,12 @@
 /**
  * The work items of the store of the project: one document of the session for each item, keyed by its ID, which each
  * write stores whole, and the counter of their IDs. The `item` request of the host reads them and changes them with
- * these functions, each change in its own commit.
+ * these functions, each change in its own commit. It also gives the other ends of the edges of an item, and whether a
+ * run is live: the stage of an item reads both, and a live run refuses a change of its item to `done`.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { DocumentReader, Storage, Tx } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord/json";
+import type { DocumentReader, Storage, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
@@ -15,14 +17,18 @@ import {
 	type ItemAdd,
 	ITEM_COUNTER_KIND,
 	type ItemCounter,
-	type ItemList,
 	type ItemSet,
 	type ItemState,
 	type WorkItem,
 } from "../protocol/item.ts";
+import type { Ask } from "../protocol/project.ts";
 import { familyKeys } from "./doc-family.ts";
-import { knownParley, Parleys } from "./project-docs.ts";
+import { Asks, knownParley, Parleys } from "./project-docs.ts";
 import { library } from "./targets.ts";
+import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
+
+/** The number `n` of the `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: an integer from 1. */
+const TASK_NUMBER = /^[1-9]\d*$/;
 
 /** The items, one document for each, keyed by its ID. An item is small, so each write stores a whole base. */
 const Items = durable.defineDocFamily<WorkItem, WorkItem>({
@@ -56,9 +62,14 @@ export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkI
 	return item;
 }
 
-/** Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item. */
+/**
+ * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item. A change to
+ * `done` fails while a run that serves the item is live.
+ */
 export async function setItem(tx: Tx, change: ItemSet, by: string): Promise<WorkItem> {
 	const item = await itemDraft(tx, change.id);
+
+	if (change.state === "done") await refuseLiveRun(tx, item);
 
 	if (change.title !== undefined) item.title = change.title;
 
@@ -129,13 +140,87 @@ export async function readItems(
 	storage: Pick<Storage, "scanDocuments">,
 	state: ItemState,
 	context: Context,
-): Promise<ItemList> {
+): Promise<WorkItem[]> {
 	const keys = await familyKeys(storage, Items, context);
 	const items = await Promise.all(keys.map((key) => reader.snapshot(Items, key, context)));
 
-	return {
-		items: items.flatMap((item) => (item?.state === state ? [Value.Clone(item)] : [])).sort((a, b) => a.id - b.id),
-	};
+	return items.flatMap((item) => (item?.state === state ? [Value.Clone(item)] : [])).sort((a, b) => a.id - b.id);
+}
+
+/** The other ends of the `serves` and `shapes` edges of an item, without their kinds, in the order of the edges. */
+export type ItemEnds = {
+	/** The IDs of the conversations of the agents that serve the item. */
+	readonly agents: readonly string[];
+	/** The IDs of the runs that serve the item. */
+	readonly runs: readonly string[];
+	/** The slugs of the parleys that shape the item. */
+	readonly parleys: readonly string[];
+};
+
+/** The other ends of the `serves` and `shapes` edges of `item`. */
+export function itemEnds(item: WorkItem): ItemEnds {
+	const agents: string[] = [];
+	const runs: string[] = [];
+	const parleys: string[] = [];
+
+	for (const edge of item.edges) {
+		const { kind, value } = refParts(edge.from);
+
+		if (kind === "agent") agents.push(value);
+		else if (kind === "run") runs.push(value);
+		else if (kind === "parley") parleys.push(value);
+	}
+
+	return { agents, runs, parleys };
+}
+
+/** The asker of the asks of the run `runId`, as workflows writes them. */
+export function runAsker(runId: string): string {
+	return `workflows:${runId}`;
+}
+
+/**
+ * Whether the run `runId` is live: an ask of `asks` with the asker `runAsker(runId)` is open, as while the run waits for
+ * an input of the user, or a task that `start` created with a key `wf:<runId>#<n>` of `started` is not terminal, which
+ * is a run state `pending` or `running` in the tree. `task` reads a task, and gives nothing for an unknown ID.
+ */
+export async function runLive(
+	runId: string,
+	started: StartedTaskIds,
+	asks: readonly Ask[],
+	task: (id: TaskId<JsonValue>) => Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>,
+): Promise<boolean> {
+	const asker = runAsker(runId);
+
+	if (asks.some((ask) => ask.state === "open" && ask.asker === asker)) return true;
+	const prefix = `wf:${runId}#`;
+
+	for (const [key, id] of Object.entries(started.tasks)) {
+		if (!key.startsWith(prefix) || !TASK_NUMBER.test(key.slice(prefix.length))) continue;
+		const record = await task(id);
+
+		if (record !== undefined && record.state.status !== "terminal") return true;
+	}
+
+	return false;
+}
+
+/**
+ * Fails when a run that serves `item` is live in `tx`, and names the first one in the order of the edges. An item with
+ * no run reads nothing, because `tx.doc` creates a document that is missing.
+ */
+async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
+	const { runs } = itemEnds(item);
+
+	if (runs.length === 0) return;
+	const started = await tx.doc(StartedTasks);
+	const { asks } = await tx.doc(Asks);
+
+	for (const run of runs) {
+		if (await runLive(run, started, asks, (id) => tx.task(id))) {
+			throw new Error(`Item ${item.id} cannot be done: run ${run} serves it and is live`);
+		}
+	}
 }
 
 /**

@@ -1,7 +1,7 @@
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
-import { Edge, type EdgeKind, ItemList, type ItemState, WorkItem } from "../src/protocol/item.ts";
+import { Edge, type EdgeKind, ItemList, type ItemState, StagedItem } from "../src/protocol/item.ts";
 import { Person, Thread } from "../src/protocol/project.ts";
 import type { Request } from "../src/protocol/requests.ts";
 import { framed, send, setUp, spawnWithId, startHost, tearDown } from "./helpers.ts";
@@ -22,12 +22,12 @@ const RUN = "run:20261120T143929-e08adff4";
 
 const COMMIT = `commit:${"3fa9c1e".padEnd(40, "0")}`;
 
-async function add(title: string): Promise<WorkItem> {
-	return Value.Parse(WorkItem, await send({ type: "item", action: "add", caller: "cli", title }));
+async function add(title: string): Promise<StagedItem> {
+	return Value.Parse(StagedItem, await send({ type: "item", action: "add", caller: "cli", title }));
 }
 
-async function read(id: number): Promise<WorkItem> {
-	return Value.Parse(WorkItem, await send({ type: "item", action: "read", id }));
+async function read(id: number): Promise<StagedItem> {
+	return Value.Parse(StagedItem, await send({ type: "item", action: "read", id }));
 }
 
 /** The IDs of the items in the state `state`, or of the items that a list without a state gives. */
@@ -42,8 +42,8 @@ async function link(from: string, kind: EdgeKind, to: string, caller = "cli"): P
 	return Value.Parse(Edge, await send({ type: "item", action: "link", caller, from, kind, to }));
 }
 
-async function unlink(from: string, kind: EdgeKind, to: string): Promise<WorkItem> {
-	return Value.Parse(WorkItem, await send({ type: "item", action: "unlink", caller: "cli", from, kind, to }));
+async function unlink(from: string, kind: EdgeKind, to: string): Promise<StagedItem> {
+	return Value.Parse(StagedItem, await send({ type: "item", action: "unlink", caller: "cli", from, kind, to }));
 }
 
 describe("the work items of the store", { timeout: 30_000 }, () => {
@@ -59,22 +59,34 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 
 	it("adds an open item with the next ID and no edge, and changes only the fields that a set gives", async () => {
 		const added = Value.Parse(
-			WorkItem,
+			StagedItem,
 			await send({ type: "item", action: "add", caller: "cli", title: "Move the config", text: "Into *vite*." }),
 		);
 
 		const at = expect.any(Number);
-		const first = { id: 1, title: "Move the config", text: "Into *vite*.", state: "open", edges: [], at, by: "cli" };
+
+		const first = {
+			id: 1,
+			title: "Move the config",
+			text: "Into *vite*.",
+			state: "open",
+			edges: [],
+			at,
+			by: "cli",
+			stage: "inbox",
+			needsYou: false,
+		};
+
 		expect(added).toEqual(first);
 		expect(await read(1)).toEqual(added);
 		expect((await add("Second")).id).toBe(2);
 
 		const done = await send({ type: "item", action: "set", caller: "cli2", id: 1, state: "done" });
-		expect(done).toEqual({ ...first, state: "done", by: "cli2" });
+		expect(done).toEqual({ ...first, state: "done", by: "cli2", stage: "done" });
 		expect(await read(1)).toEqual(done);
 
 		const renamed = await send({ type: "item", action: "set", caller: "cli3", id: 1, title: "Moved", text: "" });
-		expect(renamed).toEqual({ ...first, title: "Moved", text: "", state: "done", by: "cli3" });
+		expect(renamed).toEqual({ ...first, title: "Moved", text: "", state: "done", by: "cli3", stage: "done" });
 		expect(await list()).toEqual([2]);
 		expect(await list("done")).toEqual([1]);
 		expect(await list("dropped")).toEqual([]);
@@ -160,7 +172,7 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 
 		const child = await spawnWithId("item-session");
 		const edge = await link(`agent:${child.id}`, "serves", to);
-		expect(await read(item.id)).toEqual({ ...item, edges: [edge] });
+		expect(await read(item.id)).toEqual({ ...item, edges: [edge], stage: "building" });
 	});
 
 	it("links a parley that the store has, and refuses an unknown one", async () => {
@@ -170,7 +182,7 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 
 		await framed("item-shaper");
 		const edge = await link("parley:item-shaper", "shapes", to);
-		expect(await read(item.id)).toEqual({ ...item, edges: [edge] });
+		expect(await read(item.id)).toEqual({ ...item, edges: [edge], stage: "shaping", needsYou: true });
 	});
 
 	it("refuses a serves or shapes edge to an item that is not open, and takes a landed edge", async () => {

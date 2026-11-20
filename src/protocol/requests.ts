@@ -3,7 +3,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { type GateReply, ToolArguments, TYPED_KIND } from "./gate.ts";
-import { type Edge, EdgeInput, ItemAdd, type ItemList, ItemSet, ItemState, type WorkItem } from "./item.ts";
+import { type Edge, EdgeInput, ItemAdd, type ItemList, ItemSet, ItemState, type StagedItem } from "./item.ts";
 import {
 	AnswerInputs,
 	type Ask,
@@ -485,7 +485,10 @@ export const RequestLine = Type.Union([
 		caller: Type.String(),
 		...ItemAdd.properties,
 	}),
-	/** Changes the fields that it gives of the item `id`, and replies with it. */
+	/**
+	 * Changes the fields that it gives of the item `id`, and replies with it. A change to `done` fails while a run that
+	 * serves the item is live.
+	 */
 	Type.Object({
 		type: Type.Literal("item"),
 		action: Type.Literal("set"),
@@ -605,8 +608,8 @@ export type Replies = {
 	readonly ask: AskWrite | Ask | AskList;
 	/** The parley and its asks of `take` and `read`, the parley of `end`, or the parleys of `list`. */
 	readonly parley: ParleyAsks | Parley | ParleyList;
-	/** The item of `add`, `set`, `read` and `unlink`, the items of `list`, or the edge of `link`. */
-	readonly item: WorkItem | ItemList | Edge;
+	/** The item of `add`, `set`, `read` and `unlink`, the items of `list`, each with its stage, or the edge of `link`. */
+	readonly item: StagedItem | ItemList | Edge;
 };
 
 /**
