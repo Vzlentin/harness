@@ -5,17 +5,10 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { WatchHandle } from "@earendil-works/chord/watch";
-import type {
-	CommitChange,
-	ConversationId,
-	Cursor,
-	DocumentReader,
-	Session,
-	Storage,
-	Tx,
-} from "@earendil-works/pi-durable";
+import type { CommitChange, ConversationId, DocumentReader, Session, Storage, Tx } from "@earendil-works/pi-durable";
 import { TODO_LIST_KIND, type Todo, type TodoList, type TodoState } from "../protocol/todo.ts";
 import { watchCommits } from "./commit-watch.ts";
+import { familyKeys } from "./doc-family.ts";
 import {
 	addListTodo,
 	type CallerTodoList,
@@ -30,9 +23,6 @@ import {
 export * from "../protocol/todo.ts";
 
 export type { CallerTodoList, TodoOwner } from "./todo-lists.ts";
-
-/** The number of documents that one page of the scan of the lists of the callers gives. */
-const PAGE = 200;
 
 /** Adds a todo with the state `open` to the list of `owner` in `tx`, with the next ID of the list, and gives it. */
 export async function addTodo(tx: Tx, owner: TodoOwner, text: string): Promise<Todo> {
@@ -100,25 +90,7 @@ export async function readCallerTodos(
 	storage: Pick<Storage, "scanDocuments">,
 	context: Context,
 ): Promise<CallerTodoList[]> {
-	const { definition } = CallerTodos;
-	const callers: string[] = [];
-	let cursor: Cursor | undefined;
-
-	do {
-		const page = await storage.scanDocuments(
-			{ scope: { kind: definition.scope }, at: "current", kind: definition.kind },
-			PAGE,
-			cursor,
-			context,
-		);
-
-		for (const record of page.items) {
-			if (record.key === undefined) throw new Error(`A list of todos of a caller has no key: ${record.id}`);
-			callers.push(record.key);
-		}
-
-		cursor = page.next;
-	} while (cursor !== undefined);
+	const callers = await familyKeys(storage, CallerTodos, context);
 
 	return Promise.all(
 		callers.sort().map(async (caller) => ({

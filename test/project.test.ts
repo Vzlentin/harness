@@ -6,6 +6,7 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { WorkItem } from "../src/protocol/item.ts";
 import {
 	DigestReply,
 	MESSAGE_STATES,
@@ -624,10 +625,17 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				await send({ type: "thread", action: "add", topic: "Poll", persons: [1] }, "idle-store"),
 			);
 
+			const item = Value.Parse(
+				WorkItem,
+				await send({ type: "item", action: "add", caller: "cli", title: "Poll the items" }, "idle-store"),
+			);
+
 			const polling = (async () => {
 				while (!closed) {
 					await send({ type: "rule", action: "list" }, "idle-store").catch(() => undefined);
 					await send({ type: "thread", action: "read", id: thread.id }, "idle-store").catch(() => undefined);
+					await send({ type: "item", action: "list" }, "idle-store").catch(() => undefined);
+					await send({ type: "item", action: "read", id: item.id }, "idle-store").catch(() => undefined);
 					await new Promise((resolve) => setTimeout(resolve, 50));
 				}
 			})();

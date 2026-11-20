@@ -1,6 +1,7 @@
 /**
  * The parts of the store of the project that its modules share: the documents of the session, the entries of a message
- * and of its edits and deletes, the fold that applies them, the persons, and the lookup of an object by its ID.
+ * and of its edits and deletes, the fold that applies them, the persons, the parleys, the lookup of an object by its ID,
+ * and the lookup of a parley by its slug.
  */
 import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
@@ -10,6 +11,9 @@ import {
 	MESSAGE_EDIT_KIND,
 	MESSAGE_KIND,
 	type Message,
+	type Parley,
+	type ParleyList,
+	PARLEYS_KIND,
 	type PersonList,
 	PERSONS_KIND,
 } from "../protocol/project.ts";
@@ -85,6 +89,8 @@ async function scanMessages(tx: Tx, thread: ConversationId): Promise<Map<number,
 
 export const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 
+export const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
+
 /** A document of the session of the kind `kind`, which starts as `initial()`. */
 export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {
 	return durable.defineDoc<T>({ kind, version: 1, scope: "session", checkpointWhen: boundedReplay, initial });
@@ -97,6 +103,15 @@ export function known<T extends { readonly id: number }>(items: readonly T[], id
 	if (item === undefined) throw new Error(`Unknown ${name}: ${id}`);
 
 	return item;
+}
+
+/** The parley `slug` of `parleys`. A slug of no parley fails with `Unknown parley: <slug>`. */
+export function knownParley(parleys: readonly Parley[], slug: string): Parley {
+	const parley = parleys.find((found) => found.slug === slug);
+
+	if (parley === undefined) throw new Error(`Unknown parley: ${slug}`);
+
+	return parley;
 }
 
 /** Fails when `author` is a person that the store does not have. */

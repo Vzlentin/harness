@@ -25,16 +25,16 @@ export const LocalId = Type.Integer({ minimum: 1 });
 const StoreId = Type.Integer({ minimum: 1 });
 
 /** A text with at least one character that is not white space. */
-const Text = Type.String({ pattern: "\\S" });
+export const Text = Type.String({ pattern: "\\S" });
 
 /** The ID of a note in the vault: the `id` of its front matter, kept as it is given. */
 export const NoteId = Text;
 
 /** A time in epoch milliseconds. */
-const Time = Type.Integer({ minimum: 0 });
+export const Time = Type.Integer({ minimum: 0 });
 
 /** The caller of the request that wrote an object last: the conversation ID of a hosted agent, or a Pi session ID. */
-const Caller = Type.String();
+export const Caller = Type.String();
 
 /** Who said or wrote something: the ID of a person, or `user`. */
 export const Author = Type.Union([LocalId, Type.Literal("user")]);

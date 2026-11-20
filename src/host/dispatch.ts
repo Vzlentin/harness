@@ -25,6 +25,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
+import { addItem, linkItem, readItem, readItems, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import { changeRule, readRules, setRule } from "./project-rules.ts";
 import { serveProjectWatch } from "./project-watch.ts";
@@ -120,10 +121,10 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly push: Push;
 		readonly sessions: Sessions;
 		/**
-		 * The storage of the harness: its entry lookup gives the thread of the source of an older rule, and its reads of
-		 * tasks and conversations give the tree.
+		 * The storage of the harness: its entry lookup gives the thread of the source of an older rule, its reads of tasks
+		 * and conversations give the tree, and its scan of documents gives the items.
 		 */
-		readonly storage: Pick<Storage, "entry" | "task" | "scanTasks" | "scanConversations">;
+		readonly storage: Pick<Storage, "entry" | "task" | "scanTasks" | "scanConversations" | "scanDocuments">;
 	};
 
 export type Handler = Base &
@@ -198,6 +199,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return ask(request, handler);
 		case "parley":
 			return parley(request, handler);
+		case "item":
+			return item(request, handler);
 		case "tree":
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
@@ -433,6 +436,23 @@ function parley(request: Extract<Request, { type: "parley" }>, handler: Handler)
 			return readParley(handler.harness, request.slug, context);
 		case "list":
 			return readParleys(handler.harness, context);
+	}
+}
+
+function item(request: Extract<Request, { type: "item" }>, handler: Handler): Promise<Replies["item"]> {
+	switch (request.action) {
+		case "add":
+			return handler.harness.commit((tx) => addItem(tx, request, request.caller), context);
+		case "set":
+			return handler.harness.commit((tx) => setItem(tx, request, request.caller), context);
+		case "list":
+			return readItems(handler.harness, handler.storage, request.state ?? "open", context);
+		case "read":
+			return readItem(handler.harness, request.id, context);
+		case "link":
+			return handler.harness.commit((tx) => linkItem(tx, request, request.caller), context);
+		case "unlink":
+			return handler.harness.commit((tx) => unlinkItem(tx, request), context);
 	}
 }
 

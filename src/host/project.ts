@@ -42,7 +42,6 @@ import {
 	type ParleyEnd,
 	type ParleyFrame,
 	type ParleyList,
-	PARLEYS_KIND,
 	parleyText,
 	type Person,
 	type PersonAdd,
@@ -61,11 +60,13 @@ import {
 	known,
 	knownAuthor,
 	knownMessage,
+	knownParley,
 	MessageDeleteEntry,
 	type MessageData,
 	MessageEditEntry,
 	MessageEntry,
 	PAGE,
+	Parleys,
 	Persons,
 	sessionDoc,
 } from "./project-docs.ts";
@@ -75,7 +76,6 @@ import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-an
 
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
-const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
 const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
 const Outbox = sessionDoc<{ messages: OutState[] }>(OUTBOX_KIND, () => ({ messages: [] }));
 
@@ -778,14 +778,6 @@ function resolveAsk<T extends Ask>(parleys: readonly Parley[], asks: readonly T[
 	if (ask === undefined) throw new Error(`Parley ${parley.slug} has no ask ${ref.n}`);
 
 	return ask;
-}
-
-function knownParley(parleys: readonly Parley[], slug: string): Parley {
-	const parley = parleys.find((found) => found.slug === slug);
-
-	if (parley === undefined) throw new Error(`Unknown parley: ${slug}`);
-
-	return parley;
 }
 
 /** The highest number of the asks of the parley `id`, or 0 when it has none. */

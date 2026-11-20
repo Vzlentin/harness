@@ -3,6 +3,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { type GateReply, ToolArguments, TYPED_KIND } from "./gate.ts";
+import { type Edge, EdgeInput, ItemAdd, type ItemList, ItemSet, ItemState, type WorkItem } from "./item.ts";
 import {
 	AnswerInputs,
 	type Ask,
@@ -51,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 35;
+export const PROTOCOL_VERSION = 36;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -477,6 +478,41 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("read"), slug: Slug }),
 	/** Replies with the parleys, in ID order. */
 	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("list") }),
+	/** Adds an open item with the next ID of the counter and no edge, and replies with it. */
+	Type.Object({
+		type: Type.Literal("item"),
+		action: Type.Literal("add"),
+		caller: Type.String(),
+		...ItemAdd.properties,
+	}),
+	/** Changes the fields that it gives of the item `id`, and replies with it. */
+	Type.Object({
+		type: Type.Literal("item"),
+		action: Type.Literal("set"),
+		caller: Type.String(),
+		...ItemSet.properties,
+	}),
+	/** Replies with the items in the state `state`, default `open`, in ID order. */
+	Type.Object({ type: Type.Literal("item"), action: Type.Literal("list"), state: Type.Optional(ItemState) }),
+	/** Replies with the item `id` and its edges. */
+	Type.Object({ type: Type.Literal("item"), action: Type.Literal("read"), id: LocalId }),
+	/**
+	 * Checks the edge and writes it into the document of its item, and replies with it. An edge with the same `from`,
+	 * `kind` and `to` as an edge of the item is not written again: the reply is the stored edge.
+	 */
+	Type.Object({
+		type: Type.Literal("item"),
+		action: Type.Literal("link"),
+		caller: Type.String(),
+		...EdgeInput.properties,
+	}),
+	/** Removes an edge that was written by mistake, and replies with its item. */
+	Type.Object({
+		type: Type.Literal("item"),
+		action: Type.Literal("unlink"),
+		caller: Type.String(),
+		...EdgeInput.properties,
+	}),
 	/**
 	 * Checks the call of the tool `tool` with `arguments` by the agent `caller` against the decided conduct rules of the
 	 * project, with `messages`, the last messages of the user in the conversation of the caller, oldest first. It replies
@@ -569,6 +605,8 @@ export type Replies = {
 	readonly ask: AskWrite | Ask | AskList;
 	/** The parley and its asks of `take` and `read`, the parley of `end`, or the parleys of `list`. */
 	readonly parley: ParleyAsks | Parley | ParleyList;
+	/** The item of `add`, `set`, `read` and `unlink`, the items of `list`, or the edge of `link`. */
+	readonly item: WorkItem | ItemList | Edge;
 };
 
 /**

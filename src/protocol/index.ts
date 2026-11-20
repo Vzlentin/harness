@@ -3,6 +3,8 @@ export * from "./env.ts";
 
 export * from "./gate.ts";
 
+export * from "./item.ts";
+
 export * from "./labels.ts";
 
 export * from "./lines.ts";
