@@ -412,7 +412,7 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 			const author = await answerAuthor(request, handler);
 
 			return handler.harness.commit(
-				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items.ids()),
+				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items),
 				context,
 			);
 		}
@@ -460,7 +460,7 @@ async function item(request: Extract<Request, { type: "item" }>, handler: Handle
 		case "read":
 			return stageItem(handler, await readItem(handler.harness, request.id, context));
 		case "link":
-			return handler.harness.commit((tx) => linkItem(tx, request, request.caller), context);
+			return handler.harness.commit((tx) => linkItem(tx, request, request.caller, handler.items), context);
 		case "unlink":
 			return stageItem(handler, await handler.harness.commit((tx) => unlinkItem(tx, request), context));
 	}

@@ -93,7 +93,7 @@ export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An ite
 - set: change the \`title\`, the \`text\` or the \`state\` of the item \`id\`.
 - list: the items in the state \`state\`, default open, in ID order.
 - read: the item \`id\`, its text and its edges.
-- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`agent:<conversation>\`, \`run:<run ID>\`, \`parley:<slug>\` or \`commit:<sha>\`.
+- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`run:<run ID>\`, \`parley:<slug>\` or \`commit:<sha>\`. A run serves one item. An agent serves the item of its spawn: spawn it with \`serves: { item: <id> }\`.
 The host works out the stage of each item: ${oneOf(ITEM_STAGES)}.
 Each item prints as \`<mark> <id> <stage> <title>\`: ${ITEM_STATES.map((state) => `${ITEM_MARKS[state]} ${state}`).join(", ")}, or \`${NEEDS_YOU_MARK}\` when the item needs the user. Each edge prints as \`<from> <kind> <to>\`.`;
 

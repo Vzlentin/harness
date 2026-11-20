@@ -21,8 +21,8 @@ import {
 } from "../protocol/item.ts";
 import type { Ask, Parley } from "../protocol/project.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
+import type { ItemIndex } from "./item-index.ts";
 import { Asks, knownParley, Parleys } from "./project-docs.ts";
-import { library } from "./targets.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
@@ -74,12 +74,30 @@ export async function setItem(tx: Tx, change: ItemSet, by: string): Promise<Work
 }
 
 /**
+ * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it, as the request
+ * `item link` does. On top of the checks of `writeEdge`, only the spawn of an agent writes its `serves` edge, and a run
+ * serves one item at most: `items` gives the items of the run.
+ */
+export async function linkItem(tx: Tx, input: EdgeInput, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<Edge> {
+	if (input.kind === "serves") {
+		const { id, other } = endsOf(input);
+		const item = await itemDraft(tx, id);
+		const fresh = !item.edges.some((edge) => sameEdge(edge, input));
+
+		// A stored edge is the reply, and a closed item fails in `writeEdge` with its state: both come before the refusal.
+		if (fresh && item.state === "open") refuseServe(other, items);
+	}
+
+	return writeEdge(tx, input, by);
+}
+
+/**
  * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it. The kind fixes
  * the ends, the item must exist, and an edge with the same ends and kind is not written again: its stored edge is the
- * reply. A `serves` or `shapes` edge needs an open item, and an agent or a parley at its other end. A run or a commit
- * end is checked for its form only.
+ * reply. A `serves` or `shapes` edge needs an open item, and a parley at the other end of a `shapes` edge. A run or a
+ * commit end is checked for its form only.
  */
-export async function linkItem(tx: Tx, input: EdgeInput, by: string): Promise<Edge> {
+export async function writeEdge(tx: Tx, input: EdgeInput, by: string): Promise<Edge> {
 	const { id, other } = endsOf(input);
 	const item = await itemDraft(tx, id);
 	const stored = item.edges.find((edge) => sameEdge(edge, input));
@@ -110,22 +128,20 @@ export async function serveItem(tx: Tx, id: number, conversationId: Conversation
 }
 
 /**
- * Gives the contract `parley` an item in `tx` for the caller `by`: when no item has the edge `parley:<slug> shapes`, it
- * adds an item with the title of the parley and writes that edge. A commit cannot scan the items, so it reads each item
- * of `ids`, the IDs of the stored items: a read writes nothing.
+ * Gives the contract `parley` an item in `tx` for the caller `by`: when `items` gives no item with the edge
+ * `parley:<slug> shapes`, it adds an item with the title of the parley and writes that edge.
  */
 export async function itemForContract(
 	tx: Tx,
 	parley: Readonly<Parley>,
 	by: string,
-	ids: readonly number[],
+	items: Pick<ItemIndex, "itemsOf">,
 ): Promise<void> {
-	for (const id of ids) {
-		if (itemEnds(await itemDraft(tx, id)).parleys.includes(parley.slug)) return;
-	}
+	const end = `parley:${parley.slug}`;
 
+	if (items.itemsOf(end).length > 0) return;
 	const item = await addItem(tx, { title: parley.title }, by);
-	await linkItem(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${item.id}` }, by);
+	await writeEdge(tx, { from: end, kind: "shapes", to: `item:${item.id}` }, by);
 }
 
 /** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */
@@ -197,14 +213,10 @@ async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
 const MISSING_AT = -1;
 
 /**
- * The draft of the item `id` in `tx`. An ID above `last` of the counter, and an ID up to `last` with no item, such as
- * the ID of a todo that the move to items did not move, fail with `Unknown item: <id>`. Only `addItem`, `loadItems`
- * and the move of the todos at the first start create the counter.
+ * The draft of the item `id` in `tx`. An ID with no item, such as an ID that no `item add` gave or the ID of a todo
+ * that the move to items did not move, fails with `Unknown item: <id>`.
  */
 async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
-	const { last } = await tx.doc(ItemCounterDoc);
-
-	if (id > last) throw new Error(`Unknown item: ${id}`);
 	// `tx.doc` creates a missing item from this seed, and the throw fails the commit, so the seed is never stored.
 	const seed: WorkItem = { id, title: "-", state: "open", edges: [], at: MISSING_AT, by: "" };
 	const item = await tx.doc(Items, String(id), seed);
@@ -224,17 +236,26 @@ function endsOf(edge: EdgeInput): EdgeItem {
 }
 
 /**
- * Fails when `ref`, the end of an edge that is not its item, is an agent or a parley that the store does not have. An
- * agent is a conversation that the children library opened. A run or a commit is not checked.
+ * Fails when `ref`, the end of an edge that is not its item, is a parley that the store does not have. A run or a
+ * commit is not checked.
  */
 async function knownEnd(tx: Tx, ref: string): Promise<void> {
 	const { kind, value } = refParts(ref);
 
-	if (kind === "agent" && (await library.opened(tx, value)) === undefined) {
-		throw new Error(`Unknown conversation: ${value}`);
-	}
-
 	if (kind === "parley") knownParley((await tx.doc(Parleys)).parleys, value);
+}
+
+/**
+ * Fails when `from`, the end of a new `serves` edge of `item link`, cannot write it: an agent, whose spawn writes its
+ * only `serves` edge, or a run that `items` gives an item for.
+ */
+function refuseServe(from: string, items: Pick<ItemIndex, "itemsOf">): void {
+	const { kind, value } = refParts(from);
+
+	if (kind === "agent") throw new Error("Only the spawn of an agent writes its edge serves");
+	const served = items.itemsOf(from)[0];
+
+	if (served !== undefined) throw new Error(`Run ${value} already serves item ${served}`);
 }
 
 /** Whether `edge` has the ends and the kind of `input`. */

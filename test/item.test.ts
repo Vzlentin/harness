@@ -2,7 +2,6 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { Edge, type EdgeKind, ItemList, type ItemState, StagedItem } from "../src/protocol/item.ts";
-import { Person, Thread } from "../src/protocol/project.ts";
 import type { Request } from "../src/protocol/requests.ts";
 import { framed, send, setUp, spawnWithId, startHost, tearDown } from "./helpers.ts";
 
@@ -162,17 +161,41 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("links an agent that the children library opened, and refuses an unknown one", async () => {
+	it("refuses a serves edge from an agent: only the spawn of the agent writes it", async () => {
 		const item = await add("Agent");
-		const to = `item:${item.id}`;
-		const person = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }));
-		const thread = Value.Parse(Thread, await send({ type: "thread", action: "add", topic: "T", persons: [person.id] }));
-		await expect(link("agent:999999", "serves", to)).rejects.toThrow("Unknown conversation: 999999");
-		await expect(link(`agent:${thread.id}`, "serves", to)).rejects.toThrow(`Unknown conversation: ${thread.id}`);
+		const other = await add("Other");
+		const refused = "Only the spawn of an agent writes its edge serves";
 
-		const child = await spawnWithId("item-session");
-		const edge = await link(`agent:${child.id}`, "serves", to);
-		expect(await read(item.id)).toEqual({ ...item, edges: [edge], stage: "building" });
+		const idle = await spawnWithId("item-session");
+		await expect(link(`agent:${idle.id}`, "serves", `item:${item.id}`)).rejects.toThrow(refused);
+		await expect(link("agent:999999", "serves", `item:${item.id}`)).rejects.toThrow(refused);
+
+		const child = await spawnWithId("item-server", { serves: { item: item.id } });
+		const [edge] = (await read(item.id)).edges;
+		expect(edge).toMatchObject({ from: `agent:${child.id}`, kind: "serves", to: `item:${item.id}` });
+		await expect(link(`agent:${child.id}`, "serves", `item:${other.id}`)).rejects.toThrow(refused);
+
+		// The spawn wrote the edge: a link of the same edge gives it.
+		expect(await link(`agent:${child.id}`, "serves", `item:${item.id}`)).toEqual(edge);
+		expect((await read(item.id)).stage).toBe("building");
+		expect(await read(other.id)).toEqual(other);
+	});
+
+	it("refuses a second item for a run, and takes one after the unlink of the first", async () => {
+		const run = "run:20261120T143929-0000000c";
+		const first = await add("First of the run");
+		const second = await add("Second of the run");
+		await link(run, "serves", `item:${first.id}`);
+
+		await expect(link(run, "serves", `item:${second.id}`)).rejects.toThrow(
+			`Run 20261120T143929-0000000c already serves item ${first.id}`,
+		);
+
+		expect(await read(second.id)).toEqual(second);
+
+		await unlink(run, "serves", `item:${first.id}`);
+		const moved = await link(run, "serves", `item:${second.id}`);
+		expect((await read(second.id)).edges).toEqual([moved]);
 	});
 
 	it("links a parley that the store has, and refuses an unknown one", async () => {
@@ -188,7 +211,8 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 	it("refuses a serves or shapes edge to an item that is not open, and takes a landed edge", async () => {
 		const item = await add("Closed");
 		const to = `item:${item.id}`;
-		const served = await link(RUN, "serves", to);
+		const run = "run:20261120T143929-0000000d";
+		const served = await link(run, "serves", to);
 		await framed("closed-shaper");
 		await send({ type: "item", action: "set", caller: "cli", id: item.id, state: "done" });
 
@@ -201,11 +225,11 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 		);
 
 		// The edge that a resumed run sends again is still the stored one.
-		expect(await link(RUN, "serves", to)).toEqual(served);
+		expect(await link(run, "serves", to)).toEqual(served);
 		const landed = await link(to, "landed", COMMIT);
 
 		await send({ type: "item", action: "set", caller: "cli", id: item.id, state: "dropped" });
-		await expect(link(RUN.replace("e08adff4", "e08adff5"), "serves", to)).rejects.toThrow(
+		await expect(link("run:20261120T143929-0000000e", "serves", to)).rejects.toThrow(
 			`Item ${item.id} is dropped: an edge serves cannot go to it`,
 		);
 
@@ -215,16 +239,17 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 	it("removes an edge, and refuses an edge that the item does not have", async () => {
 		const item = await add("Unlink");
 		const to = `item:${item.id}`;
-		await link(RUN, "serves", to);
+		const run = "run:20261120T143929-0000000f";
+		await link(run, "serves", to);
 		const landed = await link(to, "landed", COMMIT);
 
-		expect(await unlink(RUN, "serves", to)).toEqual({ ...item, edges: [landed] });
+		expect(await unlink(run, "serves", to)).toEqual({ ...item, edges: [landed] });
 		expect(await read(item.id)).toEqual({ ...item, edges: [landed] });
 
-		await expect(unlink(RUN, "serves", to)).rejects.toThrow(`Item ${item.id} has no edge ${RUN} serves ${to}`);
+		await expect(unlink(run, "serves", to)).rejects.toThrow(`Item ${item.id} has no edge ${run} serves ${to}`);
 
 		// A link after the unlink writes the edge again, after the edges that stayed.
-		const again = await link(RUN, "serves", to);
+		const again = await link(run, "serves", to);
 		expect((await read(item.id)).edges).toEqual([landed, again]);
 	});
 

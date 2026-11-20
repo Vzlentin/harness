@@ -1,6 +1,6 @@
 /**
- * The index of the ends of the work items: the IDs of all the items, the IDs of the items whose `serves` edges name
- * each `agent:` and `run:` end, and the run of each started task. The host builds it once from the items and keeps it current with the commits.
+ * The index of the ends of the work items: the IDs of the items whose edges come from each `agent:`, `run:` and
+ * `parley:` end, and the run of each started task. The host builds it once from the items and keeps it current with the commits.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
@@ -23,11 +23,11 @@ const context = BACKGROUND_CONTEXT;
 type StoredDocumentChange = Extract<DocumentCommitChange, { readonly type: "document" }>;
 
 /**
- * The items of each `agent:` and `run:` end. Its observer of the commits attaches before the other observers of the
+ * The items of each `agent:`, `run:` and `parley:` end. Its observer of the commits attaches before the other observers of the
  * host, so they see it current with each commit: pi-durable calls the observers in the order that they attached.
  */
 export class ItemIndex {
-	/** The ends of each item, by item ID: `agent:<conversationId>` and `run:<runId>`. */
+	/** The ends of each item, by item ID: `agent:<conversationId>`, `run:<runId>` and `parley:<slug>`. */
 	readonly #ends = new Map<number, readonly string[]>();
 	/** The IDs of the items of each end. */
 	readonly #items = new Map<string, Set<number>>();
@@ -81,18 +81,16 @@ export class ItemIndex {
 		this.#observation?.detach();
 	}
 
-	/** The ID of the item that the child of the conversation `conversationId` serves: the lowest when several do. */
+	/**
+	 * The ID of the item that the child of the conversation `conversationId` serves. Only the spawn of the child writes
+	 * its `serves` edge, so one item at most has it.
+	 */
 	childItem(conversationId: ConversationId): number | undefined {
-		return this.served(`agent:${conversationId}`)[0];
+		return this.itemsOf(`agent:${conversationId}`)[0];
 	}
 
-	/** The IDs of all the items, in ID order. */
-	ids(): number[] {
-		return [...this.#ends.keys()].sort((a, b) => a - b);
-	}
-
-	/** The IDs of the items whose `serves` edges name `end`, an `agent:` or a `run:` reference, in ID order. */
-	served(end: string): number[] {
+	/** The IDs of the items whose edges come from `end`, an `agent:`, a `run:` or a `parley:` reference, in ID order. */
+	itemsOf(end: string): number[] {
 		return [...(this.#items.get(end) ?? [])].sort((a, b) => a - b);
 	}
 
@@ -104,11 +102,11 @@ export class ItemIndex {
 		if (change.type === "task") {
 			const run = this.#runs.get(change.value.id);
 
-			return run === undefined ? [] : this.served(`run:${run}`);
+			return run === undefined ? [] : this.itemsOf(`run:${run}`);
 		}
 
 		if (change.type === "document" && change.record.kind === CHILD_DOC_KIND && change.conversationId !== undefined) {
-			return this.served(`agent:${change.conversationId}`);
+			return this.itemsOf(`agent:${change.conversationId}`);
 		}
 
 		return [];
@@ -148,7 +146,7 @@ export class ItemIndex {
 	/** Records the ends of `item` in place of those it had. */
 	#set(item: Readonly<WorkItem>): void {
 		this.#remove(item.id);
-		const ends = item.edges.flatMap((edge) => (edge.kind === "serves" ? [edge.from] : []));
+		const ends = item.edges.flatMap((edge) => (edge.from.startsWith("item:") ? [] : [edge.from]));
 		this.#ends.set(item.id, ends);
 
 		for (const end of ends) {

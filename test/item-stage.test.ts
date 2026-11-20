@@ -91,8 +91,7 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 
 		expect(await markOf(item.id)).toEqual({ stage: "ready", needsYou: false });
 
-		const child = await spawnWithId("stage-session");
-		await link(`agent:${child.id}`, "serves", `item:${item.id}`);
+		const child = await spawnWithId("stage-session", { serves: { item: item.id } });
 		expect(await markOf(item.id)).toEqual({ stage: "building", needsYou: false });
 
 		const listed = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
@@ -105,8 +104,7 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 
 	it("gives done and dropped from the state, whatever the edges", async () => {
 		const item = await add("Closed");
-		const child = await spawnWithId("closed-session");
-		await link(`agent:${child.id}`, "serves", `item:${item.id}`);
+		await spawnWithId("closed-session", { serves: { item: item.id } });
 		expect(await markOf(item.id)).toEqual({ stage: "building", needsYou: false });
 
 		// A live agent does not hold back done: the agent can close its own item.
@@ -119,10 +117,11 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 
 	it("keeps an item in building while its run is live or waits for an input, and refuses done until then", async () => {
 		const runId = "20261121T090000-a0000001";
+		const otherRun = "20261121T090000-a0000002";
 		const item = await add("Run");
 		const dropped = await add("Dropped while the run is live");
 		await link(`run:${runId}`, "serves", `item:${item.id}`);
-		await link(`run:${runId}`, "serves", `item:${dropped.id}`);
+		await link(`run:${otherRun}`, "serves", `item:${dropped.id}`);
 		// The host keeps no run by ID: a run with no task and no ask is not live.
 		expect(await markOf(item.id)).toEqual({ stage: "inbox", needsYou: false });
 
@@ -132,7 +131,10 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 		const refused = `Item ${item.id} cannot be done: run ${runId} serves it and is live`;
 		await expect(set(item.id, "done")).rejects.toThrow(refused);
 		expect(await markOf(item.id)).toEqual({ stage: "building", needsYou: false });
+		const otherAsk = await askOf(`workflows:${otherRun}`, "Which base");
+		expect(await markOf(dropped.id)).toEqual({ stage: "building", needsYou: true });
 		expect(await set(dropped.id, "dropped")).toMatchObject({ stage: "dropped" });
+		await send({ type: "ask", action: "drop", caller: "cli", id: otherAsk });
 
 		gate.resolve();
 		expect(await send({ type: "wait-task", key: `wf:${runId}#1` })).toMatchObject({ status: "terminal" });
@@ -157,9 +159,8 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 
 	it("needs the user for an open ask or a held action of an agent that serves the item", async () => {
 		const item = await add("Agent asks");
-		const child = await spawnWithId("asking-session");
+		const child = await spawnWithId("asking-session", { serves: { item: item.id } });
 		const other = await spawnWithId("other-session");
-		await link(`agent:${child.id}`, "serves", `item:${item.id}`);
 
 		const elsewhere = await askOf(other.id, "Not about this item");
 		expect(await markOf(item.id)).toEqual({ stage: "building", needsYou: false });
