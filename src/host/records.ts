@@ -8,6 +8,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
 import type { Served } from "../protocol/requests.ts";
@@ -92,13 +93,15 @@ const ChildrenV3 = Type.Object({
  * of an older version serve their spawner. Version 4 has no kind of a child; version 3 marked the children of a kernel
  * with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their IDs in `sent` and those
  * without `notify` in `quiet`. Version 2 leaves each child's last request to the children library; a store with
- * version 1 has children that the library does not know.
+ * version 1 has children that the library does not know. Each spawn, request and answer changes the document for as
+ * long as the store lives, and it has a record for each child, so it stores a base after `MAX_DELTAS` deltas, not at
+ * each change.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
 	version: 5,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);

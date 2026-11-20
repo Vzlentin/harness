@@ -351,13 +351,15 @@ export function endAfter(change: CommitChange, id: ConversationId): boolean | un
 }
 
 export function createChildren(durable: typeof Durable): Children {
+	// Each request to a child changes its document, and a closed child keeps it. The value is small, so each change
+	// stores a base, and the store keeps one revision for each child.
 	const ChildDoc = durable.defineDoc<ChildDocState>({
 		kind: CHILD_DOC_KIND,
 		version: 1,
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
-		checkpointWhen: () => false,
+		checkpointWhen: () => true,
 		initial: () => ({
 			key: "",
 			root: "",
@@ -373,12 +375,15 @@ export function createChildren(durable: typeof Durable): Children {
 
 	const OverlayDoc = overlayDoc(durable);
 
-	/** The conversation of each key; null before it exists. */
+	/**
+	 * The conversation of each key; null before it exists. The store keeps one document for each key, and its value is
+	 * one ID, so each change stores a base.
+	 */
 	const Keys = durable.defineDocFamily<{ conversation: ConversationId | null }, null>({
 		kind: "pi-subagent.key",
 		version: 1,
 		scope: "session",
-		checkpointWhen: () => false,
+		checkpointWhen: () => true,
 		family: true,
 		initial: () => ({ conversation: null }),
 	});

@@ -14,12 +14,16 @@ const context = BACKGROUND_CONTEXT;
 /** How long a session may have no open `answers` socket before it ends. */
 export const SESSION_END_MS = 30_000;
 
-/** The callers that opened an `answers` request and whose end did not run yet. */
+/**
+ * The callers that opened an `answers` request and whose end did not run yet. Each start and each end of a session
+ * changes it for as long as the store lives. It holds only the sessions that did not end, so it is small, and each
+ * change stores a base.
+ */
 const SessionsDoc = defineDoc<{ callers: string[] }>({
 	kind: "subagent.sessions",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: () => true,
 	initial: () => ({ callers: [] }),
 });
 

@@ -5,6 +5,7 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import type { UserDelivery } from "../protocol/requests.ts";
 
 /** One answer that waits for its asker, with its delivery, written in the commit of the answers. */
@@ -16,11 +17,15 @@ export type UserAnswerInput = Omit<UserAnswer, "id">;
 /** The queue, and the ID of the next answer: it never goes down, so the ID of a delivery is never used again. */
 type Queue = { next: number; deliveries: UserAnswer[] };
 
+/**
+ * The document of the queue. Each answer changes it twice, for as long as the store lives, and an answer whose asker
+ * does not take it stays in it, so it stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 const UserAnswers = defineDoc<Queue>({
 	kind: "harness.user-answers",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	initial: () => ({ next: 1, deliveries: [] }),
 });
 

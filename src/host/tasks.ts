@@ -6,6 +6,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import type { Request, TaskInfo } from "../protocol/requests.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -13,12 +14,15 @@ const context = BACKGROUND_CONTEXT;
 /** The task ID of each `start` key. A key is never removed. */
 export type StartedTaskIds = { tasks: Record<string, TaskId<JsonValue>> };
 
-/** The tasks that `start` created, by client key. Clients that read the store file find the task of a key here. */
+/**
+ * The tasks that `start` created, by client key. Clients that read the store file find the task of a key here. The map
+ * only grows, so the document stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 export const StartedTasks = durable.defineDoc<StartedTaskIds>({
 	kind: "harness.tasks",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	initial: () => ({ tasks: {} }),
 });
 

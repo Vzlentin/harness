@@ -5,6 +5,7 @@
  */
 import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { afterMaxDeltas } from "../children/checkpoint.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList } from "../protocol/todo.ts";
 
 /** Whose list: a conversation, a task, or a caller that is not a conversation of the host. */
@@ -16,36 +17,43 @@ export type TodoOwner =
 /** The list of a caller, with the caller. */
 export type CallerTodoList = { caller: string; todos: Todo[] };
 
-/** The list of a conversation. */
+/**
+ * The list of a conversation. The list of the root conversation lives as long as the store and keeps each todo, so
+ * the document stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 export const ConversationTodos = durable.defineDoc<TodoList>({
 	kind: TODO_LIST_KIND,
 	version: 1,
 	scope: "conversation",
 	history: "latest",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	fork: "initial",
 	initial: () => ({ todos: [] }),
 });
 
 /**
  * The list of a task, by task ID. It is a document of the session, not of the task, so it stays after the commit that
- * makes the task terminal.
+ * makes the task terminal. No commit changes it after that, and the store keeps one list for each task that had a
+ * todo, so each change stores a base: the list of one task is small, and the store keeps one revision of it.
  */
 export const TaskTodos = durable.defineDocFamily<TodoList, null>({
 	kind: TASK_TODO_LIST_KIND,
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: () => true,
 	family: true,
 	initial: () => ({ todos: [] }),
 });
 
-/** The list of a caller that is not a conversation of the host, by caller. */
+/**
+ * The list of a caller that is not a conversation of the host, by caller. A caller such as a Pi session can keep its
+ * list for as long as the store lives, so the document stores a base after `MAX_DELTAS` deltas, not at each change.
+ */
 export const CallerTodos = durable.defineDocFamily<TodoList, null>({
 	kind: "harness.caller-todos",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	family: true,
 	initial: () => ({ todos: [] }),
 });
@@ -55,13 +63,14 @@ type Link = { ask: number; owner: TodoOwner };
 
 /**
  * The links of the asks that have a todo. A read of a list in a commit creates a missing list, so this document says
- * which list to read.
+ * which list to read. It gets a link for each ask that has a todo, so it stores a base after `MAX_DELTAS` deltas, not at
+ * each change.
  */
 const Links = durable.defineDoc<{ links: Link[] }>({
 	kind: "harness.save-todos",
 	version: 1,
 	scope: "session",
-	checkpointWhen: () => false,
+	checkpointWhen: afterMaxDeltas,
 	initial: () => ({ links: [] }),
 });
 
