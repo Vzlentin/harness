@@ -1,13 +1,19 @@
 /**
- * The watch of the store of a project: the persons, rules, threads with their waits, held actions, parleys and asks,
- * then an event with the objects that changed and the IDs of those that went, after the commits that change them.
+ * The watch of the store of a project: the persons, rules, threads with their waits, held actions, parleys, asks and
+ * open work items with their stages, then an event with the objects that changed and the IDs of those that went, after
+ * the commits that change them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { isWaiting, type ProjectEvent, type ProjectState, type ProjectThread } from "../protocol/project.ts";
+import type { StagedItem, WorkItem } from "../protocol/item.ts";
+import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
+import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
 import type { Degraded } from "./degraded.ts";
+import { changedItemId, readItem, readItems } from "./item-docs.ts";
+import type { ItemIndex } from "./item-index.ts";
+import { type StageHost, stageItems } from "./item-stage.ts";
 import { readRules } from "./project-rules.ts";
 import {
 	joinMessage,
@@ -27,17 +33,26 @@ import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-export type ProjectHost = {
+/** The kinds of the documents whose changes can change the stage or `needsYou` of any item. */
+const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND, HELD_KIND]);
+
+export type ProjectHost = StageHost & {
 	readonly harness: Harness;
-	/** The storage of `harness`, whose entry lookup gives the thread of the source of an older rule. */
-	readonly storage: Pick<Storage, "entry">;
+	/**
+	 * The storage of `harness`, whose entry lookup gives the thread of the source of an older rule, and whose scan of
+	 * documents lists the items.
+	 */
+	readonly storage: Pick<Storage, "entry" | "scanDocuments">;
 	readonly degraded: Degraded;
+	/** The index of the ends of the items, which names the items of a node of the tree. */
+	readonly items: Pick<ItemIndex, "nodeItems">;
 };
 
 /**
  * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
  * the reply is written, and after it each commit that changes a person, a rule, a thread, a message, a held action,
- * a parley or an ask starts a pass, and so does each change of the degraded states of the host: the host reads the
+ * a parley, an ask, an item, or a node of the tree at an end of an item starts a pass, and so does each change of the
+ * degraded states of the host: the host reads the
  * objects again and sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that
  * went and every degraded state, only when one of its lists is not empty or the degraded states changed. The passes run
  * one at a time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the
@@ -65,6 +80,7 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 		held: changed(before.held, after.held, all),
 		parleys: changed(before.parleys, after.parleys, all),
 		asks: changed(before.asks, after.asks, all),
+		items: changed(before.items, after.items, all),
 		removed: {
 			persons: removed(before.persons, after.persons),
 			rules: removed(before.rules, after.rules),
@@ -72,6 +88,8 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 			held: removed(before.held, after.held),
 			parleys: removed(before.parleys, after.parleys),
 			asks: removed(before.asks, after.asks),
+			// No request retires an item: an item that leaves `open` comes once with its state, and then no more.
+			items: [],
 		},
 		degraded: after.degraded,
 	};
@@ -83,6 +101,7 @@ export function projectEvent(before: ProjectState, after: ProjectState, all: boo
 		event.held,
 		event.parleys,
 		event.asks,
+		event.items,
 		...Object.values(event.removed),
 	];
 
@@ -98,6 +117,17 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	#fresh = new Set<number>();
 	/** The messages out of each thread, by thread ID, as the last read read them, with no state. */
 	#out = new Map<number, StoredMessage[]>();
+	/** The open items with their stages, by ID, as the last read gave them; nothing before the first read. */
+	#staged: Map<number, StagedItem> | undefined;
+	/** The IDs of the items that a commit changed since the last read, which the next read reads again. */
+	#freshItems = new Set<number>();
+	/** The IDs of the items at the ends of the nodes that changed since the last read, whose stages it works out again. */
+	#nodeItems = new Set<number>();
+	/**
+	 * Whether a parley, an ask or a held action changed since the last read, so it works out every stage again. The first
+	 * read works out every stage.
+	 */
+	#allStages = true;
 
 	constructor(host: ProjectHost) {
 		this.#host = host;
@@ -110,6 +140,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	async read(): Promise<ProjectState> {
 		const fresh = this.#fresh;
 		this.#fresh = new Set();
+		const items = this.#readItems();
 
 		const [persons, rules, threads, held, parleys, asks] = await Promise.all([
 			readPersons(this.#host.harness, context),
@@ -151,6 +182,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			...held,
 			...parleys,
 			...asks,
+			items: await items,
 			degraded: this.#host.degraded.list(),
 		};
 	}
@@ -161,13 +193,73 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		return event === undefined ? [] : [event];
 	}
 
-	/** Whether `change` can change an object of the project. It records the threads that get a message. */
+	/**
+	 * Whether `change` can change an object of the project. It records the threads that get a message, the items that
+	 * change, and the items whose stages can change.
+	 */
 	changes(change: CommitChange): boolean {
-		if (!projectChange(change)) return false;
+		const nodes = this.#host.items.nodeItems(change);
+
+		for (const id of nodes) this.#nodeItems.add(id);
+
+		const item = changedItemId(change);
+
+		if (item !== undefined) {
+			this.#freshItems.add(item);
+
+			return true;
+		}
+
+		if (!projectChange(change)) return nodes.length > 0;
 
 		if (change.type === "entry") this.#fresh.add(change.value.conversationId);
 
+		if (change.type === "document" && STAGE_DOCS.has(change.record.kind)) this.#allStages = true;
+
 		return true;
+	}
+
+	/**
+	 * The open items with their stages, in ID order, and the items that left `open` since the last read, once. The first
+	 * read lists the open items. A later read reads again the items that a commit changed, and works out the stages of
+	 * those items, of the items of the nodes that changed, or of every open item after a change of a parley, an ask or a
+	 * held action.
+	 */
+	async #readItems(): Promise<StagedItem[]> {
+		const fresh = this.#freshItems;
+		const nodes = this.#nodeItems;
+		const all = this.#allStages;
+		this.#freshItems = new Set();
+		this.#nodeItems = new Set();
+		this.#allStages = false;
+		const map = this.#staged ?? new Map<number, StagedItem>();
+
+		const read =
+			this.#staged === undefined
+				? await readItems(this.#host.harness, this.#host.storage, "open", context)
+				: await Promise.all([...fresh].map((id) => readItem(this.#host.harness, id, context)));
+
+		this.#staged = map;
+		const open: WorkItem[] = [];
+		const left: WorkItem[] = [];
+
+		for (const item of read) {
+			if (item.state === "open") open.push(item);
+			else if (map.delete(item.id)) left.push(item);
+		}
+
+		const readIds = new Set(open.map((item) => item.id));
+		const cached = [...map.values()].filter((item) => !readIds.has(item.id) && (all || nodes.has(item.id)));
+		const again = [...open, ...cached, ...left];
+		const staged = again.length === 0 ? [] : await stageItems(this.#host, again);
+		const leftStaged: StagedItem[] = [];
+
+		for (const item of staged) {
+			if (item.state === "open") map.set(item.id, item);
+			else leftStaged.push(item);
+		}
+
+		return [...map.values(), ...leftStaged].sort((a, b) => a.id - b.id);
 	}
 
 	/** Requests a pass at each change of the degraded states. */

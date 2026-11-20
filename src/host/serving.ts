@@ -10,7 +10,7 @@ import { ITEM_KIND } from "../protocol/item.ts";
 import { type Parley, PARLEYS_KIND } from "../protocol/project.ts";
 import type { ServesInput } from "../protocol/requests.ts";
 import { isFinished, TODO_LIST_KIND } from "../protocol/todo.ts";
-import { type ChildItem, childItems } from "./item-docs.ts";
+import { readItem } from "./item-docs.ts";
 import { CommitPasses } from "./passes.ts";
 import { readParley, readParleys } from "./project.ts";
 import {
@@ -27,7 +27,7 @@ import { readTodos, type TodoOwner } from "./todo.ts";
 const context = BACKGROUND_CONTEXT;
 
 /** What the rule uses of the host. */
-export type ServingHost = Pick<TargetHost, "harness" | "place" | "owner" | "storage"> & {
+export type ServingHost = Pick<TargetHost, "harness" | "place" | "owner" | "items"> & {
 	readonly warn: (cause: unknown) => void;
 };
 
@@ -60,12 +60,6 @@ export async function servesOf(
 	return { kind: "item" };
 }
 
-/** What a sweep reads once: the parleys, and the item that each child the sweep checks serves. */
-type Served = {
-	readonly parleys: readonly Parley[];
-	readonly item: ChildItem;
-};
-
 /**
  * Ends each child whose served thing ended, once its own list has no open and no doing todo: it aborts the child alone,
  * whose children follow the rule for themselves, and marks its requests read, as a `stop` does. The rule ends a child
@@ -89,28 +83,20 @@ export class Serving {
 
 	/** Ends the children whose served thing ended, oldest first: a child sees the end of its spawner in the same pass. */
 	async #sweep(): Promise<void> {
-		const { harness, storage } = this.#host;
+		const { harness } = this.#host;
 		const entries = recordsByAge(await harness.snapshot(ChildRecords, context));
 
 		const unchecked = entries.filter(([, record]) => record.servedEnd === undefined);
 
 		if (unchecked.length === 0) return;
 
-		const served: Served = {
-			parleys: (await readParleys(harness, context)).parleys,
-			item: await childItems(
-				harness,
-				storage,
-				unchecked.map(([, record]) => record),
-				context,
-			),
-		};
+		const { parleys } = await readParleys(harness, context);
 
 		for (const [handle, record] of unchecked) {
 			if (this.#passes.stopped) return;
 
 			try {
-				if (!(await this.#ended(record, entries, served))) continue;
+				if (!(await this.#ended(record, entries, parleys))) continue;
 
 				if (await childEnded(this.#host, record)) {
 					await markServedPassed(harness, handle);
@@ -131,9 +117,10 @@ export class Serving {
 	/**
 	 * Whether what `record` serves ended. A spawner ends only when it is a child of this host and ended; the project
 	 * agent, a Pi session, `cli` and a conversation of a task never end by the rule. An item is the item whose `serves`
-	 * edge names the child: a child that no edge names does not end by the rule.
+	 * edge names the child, from the index of the ends of the items: a child that no edge names does not end by the rule.
+	 * `parleys` are the parleys of the store.
 	 */
-	async #ended(record: ChildRecord, entries: readonly Entry[], served: Served): Promise<boolean> {
+	async #ended(record: ChildRecord, entries: readonly Entry[], parleys: readonly Parley[]): Promise<boolean> {
 		const { serves } = record;
 
 		switch (serves.kind) {
@@ -145,15 +132,15 @@ export class Serving {
 
 			case "parley":
 			case "contract": {
-				const status = served.parleys.find(({ slug }) => slug === serves.slug)?.status;
+				const status = parleys.find(({ slug }) => slug === serves.slug)?.status;
 
 				return status !== undefined && (serves.kind === "parley" ? status !== "open" : isFinished(status));
 			}
 
 			case "item": {
-				const state = served.item(record)?.state;
+				const id = this.#host.items.childItem(record.conversationId);
 
-				return state !== undefined && state !== "open";
+				return id !== undefined && (await readItem(this.#host.harness, id, context)).state !== "open";
 			}
 		}
 	}

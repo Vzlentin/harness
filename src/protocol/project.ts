@@ -22,7 +22,7 @@ export const MEMORY_SECTION = "memory";
 export const LocalId = Type.Integer({ minimum: 1 });
 
 /** The ID of a thread, which is the ID of its conversation, or of a message, which is the ID of its entry. */
-const StoreId = Type.Integer({ minimum: 1 });
+export const StoreId = Type.Integer({ minimum: 1 });
 
 /** A text with at least one character that is not white space. */
 export const Text = Type.String({ pattern: "\\S" });
@@ -680,41 +680,6 @@ export type DegradedKind = Static<typeof DegradedKind>;
 export const DegradedState = Type.Object({ kind: DegradedKind, line: Text, since: Time });
 
 export type DegradedState = Static<typeof DegradedState>;
-
-/**
- * The reply of `watch-project`: every person, rule, thread with its waits, held action, parley and ask, in ID order,
- * and the degraded states of the host, oldest first.
- */
-export const ProjectState = Type.Object({
-	persons: Type.Array(Person),
-	rules: Type.Array(Rule),
-	threads: Type.Array(ProjectThread),
-	held: Type.Array(HeldAction),
-	parleys: Type.Array(Parley),
-	asks: Type.Array(Ask),
-	degraded: Type.Array(DegradedState),
-});
-
-export type ProjectState = Static<typeof ProjectState>;
-
-/**
- * An event of `watch-project` after its reply: the objects of each kind that are new or changed, and in `removed` the
- * IDs of each kind of the objects that went. Every list is there, empty when nothing of its kind changed. `degraded`
- * is the whole list of the degraded states of the host.
- */
-export const ProjectEvent = Type.Object({
-	...ProjectState.properties,
-	removed: Type.Object({
-		persons: Type.Array(LocalId),
-		rules: Type.Array(LocalId),
-		threads: Type.Array(StoreId),
-		held: Type.Array(LocalId),
-		parleys: Type.Array(LocalId),
-		asks: Type.Array(LocalId),
-	}),
-});
-
-export type ProjectEvent = Static<typeof ProjectEvent>;
 
 /** The names of the persons, by ID. */
 export type PersonNames = ReadonlyMap<number, string>;

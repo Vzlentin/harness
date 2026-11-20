@@ -15,8 +15,8 @@ import { Asks, knownParley, Parleys } from "./project-docs.ts";
 import { library } from "./targets.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
 
-/** The number `n` of the `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: an integer from 1. */
-const TASK_NUMBER = /^[1-9]\d*$/;
+/** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
+const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;
 
 /** Adds an open item with no edge for the caller `by`, with the ID after `last` of the counter, and gives it. */
 export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkItem> {
@@ -134,16 +134,20 @@ export async function runLive(
 	const asker = runAsker(runId);
 
 	if (asks.some((ask) => ask.state === "open" && ask.asker === asker)) return true;
-	const prefix = `wf:${runId}#`;
 
 	for (const [key, id] of Object.entries(started.tasks)) {
-		if (!key.startsWith(prefix) || !TASK_NUMBER.test(key.slice(prefix.length))) continue;
+		if (taskRun(key) !== runId) continue;
 		const record = await task(id);
 
 		if (record !== undefined && record.state.status !== "terminal") return true;
 	}
 
 	return false;
+}
+
+/** The run ID of the task whose `start` key is `key`, `wf:<runId>#<n>`, and nothing for a key of another form. */
+export function taskRun(key: string): string | undefined {
+	return RUN_TASK_KEY.exec(key)?.[1];
 }
 
 /**

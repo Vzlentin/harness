@@ -1,15 +1,13 @@
 /**
  * The documents of the work items: one document of the session for each item, keyed by its ID, and the counter of
- * their IDs. It reads the items, the other ends of the edges of an item, and the item that a child serves, which the
- * `serves` edge of the item names.
+ * their IDs. It reads the items, and the other ends of the edges of an item.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { DocumentReader, Storage } from "@earendil-works/pi-durable";
+import type { CommitChange, DocumentReader, Storage } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { ITEM_COUNTER_KIND, ITEM_KIND, type ItemCounter, type ItemState, type WorkItem } from "../protocol/item.ts";
 import { familyKeys } from "./doc-family.ts";
-import type { ChildRecord } from "./records.ts";
 
 /** The items, one document for each, keyed by its ID. An item is small, so each write stores a whole base. */
 export const Items = durable.defineDocFamily<WorkItem, WorkItem>({
@@ -20,6 +18,14 @@ export const Items = durable.defineDocFamily<WorkItem, WorkItem>({
 	initial: (seed) => seed,
 	checkpointWhen: () => true,
 });
+
+/** The ID of the item whose document `change` changes or retires, and nothing for another change. */
+export function changedItemId(change: CommitChange): number | undefined {
+	if (change.type !== "document" || change.record.kind !== ITEM_KIND || change.record.key === undefined)
+		return undefined;
+
+	return Number(change.record.key);
+}
 
 /** The counter of the IDs of items. */
 export const ItemCounterDoc = durable.defineDoc<ItemCounter>({
@@ -56,35 +62,6 @@ export async function readItems(
 	const items = await allItems(reader, storage, context);
 
 	return items.flatMap((item) => (item.state === state ? [Value.Clone(item)] : []));
-}
-
-/**
- * The item that the child of a record serves: the item whose `serves` edge names the child, and the item with the
- * lowest ID when several do. It gives nothing for a record that does not serve an item, and for a child that no edge
- * names.
- */
-export type ChildItem = (record: Readonly<ChildRecord>) => Readonly<WorkItem> | undefined;
-
-/**
- * The item that the child of each record of `records` serves. When no record of `records` serves an item, there is
- * nothing to look up, and it reads no item.
- */
-export async function childItems(
-	reader: Pick<DocumentReader, "snapshot">,
-	storage: Pick<Storage, "scanDocuments">,
-	records: readonly Readonly<ChildRecord>[],
-	context: Context,
-): Promise<ChildItem> {
-	if (!records.some((record) => record.serves.kind === "item")) return () => undefined;
-	const served = new Map<string, Readonly<WorkItem>>();
-
-	for (const item of await allItems(reader, storage, context)) {
-		for (const agent of itemEnds(item).agents) {
-			if (!served.has(agent)) served.set(agent, item);
-		}
-	}
-
-	return (record) => (record.serves.kind === "item" ? served.get(String(record.conversationId)) : undefined);
 }
 
 /** The other ends of the `serves` and `shapes` edges of an item, without their kinds, in the order of the edges. */
@@ -125,7 +102,7 @@ export function refParts(ref: string): RefParts {
 }
 
 /** Every item, in ID order, as the session has it. `storage`, the storage of `reader`, lists them. */
-async function allItems(
+export async function allItems(
 	reader: Pick<DocumentReader, "snapshot">,
 	storage: Pick<Storage, "scanDocuments">,
 	context: Context,

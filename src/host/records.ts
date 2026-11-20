@@ -13,7 +13,7 @@ import { cutAnswer } from "../protocol/answer-cut.ts";
 import type { Served } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import { boundedReplay } from "./checkpoint.ts";
-import type { ChildItem } from "./item-docs.ts";
+import type { ItemIndex } from "./item-index.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -238,14 +238,14 @@ export async function markServedPassed(harness: Harness, handle: string): Promis
 }
 
 /**
- * What the child of `record` serves, as its info and its node give it. For a record that serves an item, `item` gives
+ * What the child of `record` serves, as its info and its node give it. For a record that serves an item, `items` gives
  * the item of the child, and a child that no `serves` edge names serves nothing.
  */
-export function childServed(record: Readonly<ChildRecord>, item: ChildItem): Served | undefined {
+export function childServed(record: Readonly<ChildRecord>, items: Pick<ItemIndex, "childItem">): Served | undefined {
 	if (record.serves.kind !== "item") return record.serves;
-	const served = item(record);
+	const id = items.childItem(record.conversationId);
 
-	return served === undefined ? undefined : { kind: "item", id: served.id };
+	return id === undefined ? undefined : { kind: "item", id };
 }
 
 /** The `[handle, record]` entries of `state`, oldest child first. */

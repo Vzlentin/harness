@@ -12,20 +12,11 @@ import { sessionDoc } from "../src/host/project-docs.ts";
 import { projectEvent } from "../src/host/project-watch.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
+import { StagedItem } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import {
-	Ask,
-	AskWrite,
-	type HeldAction,
-	Message,
-	Person,
-	ProjectEvent,
-	ProjectState,
-	Rule,
-	RULES_KIND,
-	Thread,
-} from "../src/protocol/project.ts";
+import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
+import { Ask, AskWrite, type HeldAction, Message, Person, Rule, RULES_KIND, Thread } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, models, openDurableHost, readStoreFile, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
@@ -44,6 +35,7 @@ const NONE: ProjectEvent["removed"] = {
 	held: [],
 	parleys: [],
 	asks: [],
+	items: [],
 };
 
 /** An event with the objects of `changes`, no other object, and no removed ID. */
@@ -55,6 +47,7 @@ function event(changes: Partial<ProjectEvent>): ProjectEvent {
 		held: [],
 		parleys: [],
 		asks: [],
+		items: [],
 		removed: NONE,
 		degraded: [],
 		...changes,
@@ -108,6 +101,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				items: [],
 				degraded: [],
 			});
 
@@ -220,6 +214,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				items: [],
 				degraded: [],
 			});
 		} finally {
@@ -308,6 +303,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				held: [],
 				parleys: [],
 				asks: [],
+				items: [],
 				degraded: [],
 			});
 			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules: [rule] });
@@ -648,9 +644,15 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				await send({ type: "thread", action: "add", topic: "Large", persons: [sam.id] }, project),
 			);
 
+			const item = Value.Parse(
+				StagedItem,
+				await send({ type: "item", action: "add", caller: "cli", title: "Large work" }, project),
+			);
+
 			watch = await watchProject(project);
 			const { events, socket } = watch;
 			const large = "x".repeat(1_000_000);
+			expect(watch.state.items).toEqual([{ ...item, stage: "inbox", needsYou: false }]);
 
 			// The client reads nothing, so the host waits for the socket to drain after the event of the large draft.
 			socket.pause();
@@ -676,6 +678,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			const all = await watchProject(project);
 			all.socket.destroy();
 			expect(events.slice(index() + 1)).toEqual([{ ...all.state, removed: NONE }]);
+			expect(all.state.items.map(({ id }) => id)).toEqual([item.id]);
 		} finally {
 			watch?.socket.destroy();
 			await host.close();
@@ -776,6 +779,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			held: [push, merge],
 			parleys: [],
 			asks: [],
+			items: [],
 			degraded: [],
 		};
 
@@ -786,6 +790,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 			held: [approved],
 			parleys: [],
 			asks: [],
+			items: [],
 			degraded: [],
 		};
 
@@ -803,7 +808,17 @@ describe("watch-project", { timeout: 60_000 }, () => {
 	});
 
 	it("gives an event when only the degraded states change, with every degraded state, and none when they are equal", () => {
-		const empty: ProjectState = { persons: [], rules: [], threads: [], held: [], parleys: [], asks: [], degraded: [] };
+		const empty: ProjectState = {
+			persons: [],
+			rules: [],
+			threads: [],
+			held: [],
+			parleys: [],
+			asks: [],
+			items: [],
+			degraded: [],
+		};
+
 		const failed = { kind: "digest-failed", line: "digest: Write failed", since: 1_000 } as const;
 		const skipped = { kind: "entry-skipped", line: "The entry x has no module", since: 500 } as const;
 

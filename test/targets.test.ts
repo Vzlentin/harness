@@ -6,6 +6,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Owner, Place } from "../src/children/library.ts";
 import { Degraded } from "../src/host/degraded.ts";
+import { ItemIndex } from "../src/host/item-index.ts";
 import { Push } from "../src/host/push.ts";
 import { type ChildRecord, ChildRecords, markRead } from "../src/host/records.ts";
 import { library, target } from "../src/host/targets.ts";
@@ -15,6 +16,7 @@ const faux = { provider: "faux", model: "faux-1" } as const;
 
 let storage: Storage;
 let harness: Harness;
+let items: ItemIndex;
 let place: Place;
 let owner: Extract<Owner, { kind: "detached" }>;
 
@@ -25,12 +27,14 @@ beforeAll(async () => {
 	registry.install(library.answerExtension);
 	storage = await openNodeSqliteStorage(join(root, "targets.sqlite"));
 	harness = await Harness.open(storage, { models, registry }, context);
+	items = await ItemIndex.open(harness, storage);
 	harness.resume();
 	place = { store: harness, models, registry: registry.snapshot() };
 	owner = { kind: "detached", root: await harness.root(context) };
 });
 
 afterAll(async () => {
+	items.close();
 	await harness.close(context);
 	await tearDown();
 });
@@ -73,7 +77,7 @@ describe("read marks", () => {
 
 describe("info", () => {
 	it("refuses a conversation without a working directory or without a model", async () => {
-		const host = { harness, place, owner, project: "main", agent: async () => owner.root, storage };
+		const host = { harness, place, owner, project: "main", agent: async () => owner.root, items };
 		const child = await library.open(place, owner, "t:no-cwd", { root: "test", ...faux }, context);
 		const found = await target(host, { kind: "conversation", id: String(child.id) });
 		await expect(found.info()).rejects.toThrow(`The conversation ${child.id} has no working directory`);
@@ -104,7 +108,7 @@ describe("push", () => {
 			root: owner.root,
 			project: "main",
 			agent: async () => owner.root,
-			storage,
+			items,
 			warn: () => {},
 			degraded: new Degraded(() => undefined),
 		});

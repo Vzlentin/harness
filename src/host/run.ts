@@ -46,6 +46,7 @@ import { type Base, handleRequest } from "./dispatch.ts";
 import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
+import { ItemIndex } from "./item-index.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
@@ -273,9 +274,12 @@ export async function runHost(options: {
 	const root = await harness.root(context);
 
 	const owner = { kind: "detached", root } as const;
-	const push = new Push({ harness, place, owner, root, project, agent, storage, warn, degraded });
+	// The index of the ends of the items observes the commits first, so the observers and the passes after it read it
+	// current with each commit.
+	const items = await ItemIndex.open(harness, storage);
+	const push = new Push({ harness, place, owner, root, project, agent, items, warn, degraded });
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
-	const serving = new Serving({ harness, place, owner, storage, warn });
+	const serving = new Serving({ harness, place, owner, items, warn });
 
 	base = {
 		harness,
@@ -289,6 +293,7 @@ export async function runHost(options: {
 		push,
 		sessions,
 		storage,
+		items,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		warn,
@@ -381,6 +386,7 @@ export async function runHost(options: {
 		await push.close();
 		await sessions.close();
 		await serving.close();
+		items.close();
 		await storeFile.close();
 		awake.close();
 		await bridge.close();
@@ -428,6 +434,7 @@ export async function runHost(options: {
 				await pushClosed;
 				await sessionsClosed;
 				await servingClosed;
+				items.close();
 				await storeFileClosed;
 				await compressorClosed;
 				await harness.close(context);

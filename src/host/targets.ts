@@ -4,13 +4,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
-import {
-	type Conversation,
-	type ConversationId,
-	defineDoc,
-	type Harness,
-	type Storage,
-} from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
 import {
 	type Child,
 	createChildren,
@@ -25,7 +19,7 @@ import { CLI_CALLER } from "../protocol/env.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
 import { boundedReplay } from "./checkpoint.ts";
-import { childItems } from "./item-docs.ts";
+import type { ItemIndex } from "./item-index.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
@@ -49,8 +43,8 @@ export type TargetHost = {
 	readonly project: string;
 	/** The project agent: the root conversation, with a model and the project directory from its first use. */
 	readonly agent: () => Promise<Conversation>;
-	/** The storage of the harness, whose scan of documents lists the items, for what a child serves. */
-	readonly storage: Pick<Storage, "scanDocuments">;
+	/** The index of the ends of the items, which gives the item that a child serves. */
+	readonly items: ItemIndex;
 };
 
 /** The request ID of the project agent's newest input, which its `error` state comes from. */
@@ -338,7 +332,7 @@ export async function heldByServing(
  * item whose `serves` edge names it, and no `serves` when no edge names it.
  */
 export async function childInfo(
-	handler: Pick<TargetHost, "harness" | "place" | "owner" | "storage">,
+	handler: Pick<TargetHost, "harness" | "place" | "owner" | "items">,
 	handle: string,
 	record?: ChildRecord,
 ): Promise<ChildInfo> {
@@ -352,7 +346,7 @@ export async function childInfo(
 	const info =
 		record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 
-	const serves = childServed(record, await childItems(handler.harness, handler.storage, [record], context));
+	const serves = childServed(record, handler.items);
 
 	return serves === undefined ? info : { ...info, serves };
 }

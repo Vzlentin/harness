@@ -4,6 +4,7 @@ import type { ConversationView, TaskId, TaskOutcome, TaskState } from "@earendil
 import { type Static, Type } from "typebox";
 import { type GateReply, ToolArguments, TYPED_KIND } from "./gate.ts";
 import { type Edge, EdgeInput, ItemAdd, type ItemList, ItemSet, ItemState, type StagedItem } from "./item.ts";
+import type { ProjectState } from "./project-watch.ts";
 import {
 	AnswerInputs,
 	type Ask,
@@ -25,7 +26,6 @@ import {
 	type Person,
 	PersonAdd,
 	type PersonList,
-	type ProjectState,
 	type Rule,
 	RuleCreate,
 	RuleEdit,
