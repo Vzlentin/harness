@@ -25,8 +25,9 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
+import { readItem, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
-import { addItem, linkItem, readItem, readItems, setItem, unlinkItem } from "./items.ts";
+import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import { changeRule, readRules, setRule } from "./project-rules.ts";
 import { serveProjectWatch } from "./project-watch.ts";
@@ -583,7 +584,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		for (let attempt = 0; handle === undefined; attempt += 1) {
 			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			// The record is written in the commit that creates the child.
+			// The record, and the `serves` edge of an item, are written in the commit that creates the child.
 			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
 				await addRecord(tx, request.requestId, {
 					caller: request.caller,
@@ -591,6 +592,10 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 					name: request.name,
 					serves,
 				});
+
+				if (request.serves !== undefined && "item" in request.serves) {
+					await serveItem(tx, request.serves.item, id, request.caller);
+				}
 			});
 
 			handle = await spawnedHandle(harness, request.requestId);

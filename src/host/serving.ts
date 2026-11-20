@@ -1,14 +1,16 @@
 /**
  * The rule that an agent lives as long as what it serves. A child serves the agent that spawned it, a parley, a
- * contract or a todo of the list of the project. When that thing ends, the host ends the child, once its own list has
- * no open and no doing todo.
+ * contract or a work item, whose `serves` edge names the child. When that thing ends, the host ends the child, once its
+ * own list has no open and no doing todo.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { CommitChange, Conversation } from "@earendil-works/pi-durable";
+import type { CommitChange } from "@earendil-works/pi-durable";
 import { CHILD_DOC_KIND } from "../children/library.ts";
+import { ITEM_KIND } from "../protocol/item.ts";
 import { type Parley, PARLEYS_KIND } from "../protocol/project.ts";
 import type { ServesInput } from "../protocol/requests.ts";
-import { isFinished, TODO_LIST_KIND, type Todo } from "../protocol/todo.ts";
+import { isFinished, TODO_LIST_KIND } from "../protocol/todo.ts";
+import { type ChildItem, childItems } from "./item-docs.ts";
 import { CommitPasses } from "./passes.ts";
 import { readParley, readParleys } from "./project.ts";
 import {
@@ -25,20 +27,19 @@ import { readTodos, type TodoOwner } from "./todo.ts";
 const context = BACKGROUND_CONTEXT;
 
 /** What the rule uses of the host. */
-export type ServingHost = Pick<TargetHost, "harness" | "place" | "owner"> & {
-	/** The root conversation, whose list is the list of the project. */
-	readonly root: Conversation;
+export type ServingHost = Pick<TargetHost, "harness" | "place" | "owner" | "storage"> & {
 	readonly warn: (cause: unknown) => void;
 };
 
 type Entry = readonly [handle: string, record: ChildRecord];
 
 /**
- * What a spawn with `input` serves: its spawner without `input`; an open parley, or a contract, by slug; or a todo of
- * the list of the project by ID. An unknown parley or todo, and one that ended, are refused.
+ * What a spawn with `input` serves: its spawner without `input`; an open parley, or a contract, by slug; or an item by
+ * ID. An unknown parley, and one that ended, are refused. The spawn writes the `serves` edge of the item in the commit
+ * that creates the child, and that commit refuses an unknown item and one that is not open.
  */
 export async function servesOf(
-	host: Pick<ServingHost, "harness" | "root">,
+	host: Pick<ServingHost, "harness">,
 	input: ServesInput | undefined,
 ): Promise<ChildServes> {
 	if (input === undefined) return { kind: "spawner" };
@@ -56,17 +57,14 @@ export async function servesOf(
 		}
 	}
 
-	const todo = (await readTodos(host.harness, projectList(host), context)).todos.find(({ id }) => id === input.todo);
-
-	if (todo === undefined) throw new Error(`Unknown todo: ${input.todo}`);
-
-	if (isFinished(todo.state)) throw new Error(`Todo ${todo.id} is ${todo.state}: an agent cannot serve it`);
-
-	return { kind: "todo", id: todo.id };
+	return { kind: "item" };
 }
 
-/** What a sweep reads once: the parleys, and the list of the project. */
-type Served = { readonly parleys: readonly Parley[]; readonly projectTodos: readonly Todo[] };
+/** What a sweep reads once: the parleys, and the item that each child the sweep checks serves. */
+type Served = {
+	readonly parleys: readonly Parley[];
+	readonly item: ChildItem;
+};
 
 /**
  * Ends each child whose served thing ended, once its own list has no open and no doing todo: it aborts the child alone,
@@ -91,20 +89,25 @@ export class Serving {
 
 	/** Ends the children whose served thing ended, oldest first: a child sees the end of its spawner in the same pass. */
 	async #sweep(): Promise<void> {
-		const { harness } = this.#host;
+		const { harness, storage } = this.#host;
 		const entries = recordsByAge(await harness.snapshot(ChildRecords, context));
 
-		if (entries.length === 0) return;
+		const unchecked = entries.filter(([, record]) => record.servedEnd === undefined);
+
+		if (unchecked.length === 0) return;
 
 		const served: Served = {
 			parleys: (await readParleys(harness, context)).parleys,
-			projectTodos: (await readTodos(harness, projectList(this.#host), context)).todos,
+			item: await childItems(
+				harness,
+				storage,
+				unchecked.map(([, record]) => record),
+				context,
+			),
 		};
 
-		for (const [handle, record] of entries) {
+		for (const [handle, record] of unchecked) {
 			if (this.#passes.stopped) return;
-
-			if (record.servedEnd !== undefined) continue;
 
 			try {
 				if (!(await this.#ended(record, entries, served))) continue;
@@ -127,7 +130,8 @@ export class Serving {
 
 	/**
 	 * Whether what `record` serves ended. A spawner ends only when it is a child of this host and ended; the project
-	 * agent, a Pi session, `cli` and a conversation of a task never end by the rule.
+	 * agent, a Pi session, `cli` and a conversation of a task never end by the rule. An item is the item whose `serves`
+	 * edge names the child: a child that no edge names does not end by the rule.
 	 */
 	async #ended(record: ChildRecord, entries: readonly Entry[], served: Served): Promise<boolean> {
 		const { serves } = record;
@@ -146,26 +150,23 @@ export class Serving {
 				return status !== undefined && (serves.kind === "parley" ? status !== "open" : isFinished(status));
 			}
 
-			case "todo": {
-				const state = served.projectTodos.find(({ id }) => id === serves.id)?.state;
+			case "item": {
+				const state = served.item(record)?.state;
 
-				return state !== undefined && isFinished(state);
+				return state !== undefined && state !== "open";
 			}
 		}
 	}
 }
 
-/** The list of the project: the list of the root conversation. */
-function projectList(host: Pick<ServingHost, "root">): TodoOwner {
-	return { kind: "conversation", id: host.root.id };
-}
-
 /**
  * Whether `change` can end a served thing or change a list of todos: the records of the children, the end of a child,
- * the parleys, and the list of a conversation.
+ * the parleys, the items, and the list of a conversation.
  */
 function endsServed(change: CommitChange): boolean {
 	if (change.type !== "document") return false;
 
-	return [ChildRecords.definition.kind, CHILD_DOC_KIND, PARLEYS_KIND, TODO_LIST_KIND].includes(change.record.kind);
+	return [ChildRecords.definition.kind, CHILD_DOC_KIND, PARLEYS_KIND, ITEM_KIND, TODO_LIST_KIND].includes(
+		change.record.kind,
+	);
 }

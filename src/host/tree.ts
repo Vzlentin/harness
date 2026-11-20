@@ -18,7 +18,8 @@ import type {
 } from "@earendil-works/pi-durable";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import type { RunState, TreeNode } from "../protocol/tree.ts";
-import { callerHandle, type ChildRecord, ChildRecords, recordsByAge } from "./records.ts";
+import { childItems } from "./item-docs.ts";
+import { callerHandle, type ChildRecord, ChildRecords, childServed, recordsByAge } from "./records.ts";
 import { agentTurn, childOf, heldState, library, type TargetHost } from "./targets.ts";
 import { entryKinds, StartedTasks, type TaskHost } from "./tasks.ts";
 import { readTodos, type TodoOwner } from "./todo.ts";
@@ -43,8 +44,11 @@ type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 /** What the tree reads of the host. */
 export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "project"> &
 	Pick<TaskHost, "root" | "startable"> & {
-		/** The reads of the tasks and the conversations of the tree, without a write transaction. */
-		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations">;
+		/**
+		 * The reads of the tasks and the conversations of the tree, and of the items that the children serve, without a
+		 * write transaction.
+		 */
+		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations" | "scanDocuments">;
 	};
 
 /** A node, and the store ID of its conversation or its task, which orders it among its siblings. */
@@ -71,6 +75,13 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 	const runs = await scanRuns(host.storage, root.id, kinds, started, recent);
 	const records = await harness.snapshot(ChildRecords, context);
 	const entries = recordsByAge(records);
+
+	const item = await childItems(
+		harness,
+		host.storage,
+		entries.map(([, record]) => record),
+		context,
+	);
 
 	/** The node ID of the task `id`: its key for a started task, else its ID. */
 	const runId = (id: TaskId) => `task:${started.get(id) ?? id}`;
@@ -135,12 +146,13 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			name: record.name ?? handle,
 			state,
 			todos: await todosOf(host, { kind: "conversation", id: record.conversationId }),
-			serves: record.serves,
 		};
 
+		const serves = childServed(record, item);
+		const served = serves === undefined ? node : { ...node, serves };
 		const parent = await callerNode(host, entries, record.caller);
 
-		return { order: record.conversationId, node: parent === undefined ? node : { ...node, parent } };
+		return { order: record.conversationId, node: parent === undefined ? served : { ...served, parent } };
 	};
 
 	const placed = await Promise.all([

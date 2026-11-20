@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
-import { type ConversationId, Harness } from "@earendil-works/pi-durable";
+import { type ConversationId, Harness, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Owner, Place } from "../src/children/library.ts";
@@ -13,6 +13,7 @@ import { models, root, setUp, tearDown } from "./helpers.ts";
 
 const faux = { provider: "faux", model: "faux-1" } as const;
 
+let storage: Storage;
 let harness: Harness;
 let place: Place;
 let owner: Extract<Owner, { kind: "detached" }>;
@@ -22,11 +23,8 @@ beforeAll(async () => {
 	const registry = durable.createRegistry();
 	registry.install(library.extension);
 	registry.install(library.answerExtension);
-	harness = await Harness.open(
-		await openNodeSqliteStorage(join(root, "targets.sqlite")),
-		{ models, registry },
-		context,
-	);
+	storage = await openNodeSqliteStorage(join(root, "targets.sqlite"));
+	harness = await Harness.open(storage, { models, registry }, context);
 	harness.resume();
 	place = { store: harness, models, registry: registry.snapshot() };
 	owner = { kind: "detached", root: await harness.root(context) };
@@ -75,7 +73,7 @@ describe("read marks", () => {
 
 describe("info", () => {
 	it("refuses a conversation without a working directory or without a model", async () => {
-		const host = { harness, place, owner, project: "main", agent: async () => owner.root };
+		const host = { harness, place, owner, project: "main", agent: async () => owner.root, storage };
 		const child = await library.open(place, owner, "t:no-cwd", { root: "test", ...faux }, context);
 		const found = await target(host, { kind: "conversation", id: String(child.id) });
 		await expect(found.info()).rejects.toThrow(`The conversation ${child.id} has no working directory`);
@@ -106,6 +104,7 @@ describe("push", () => {
 			root: owner.root,
 			project: "main",
 			agent: async () => owner.root,
+			storage,
 			warn: () => {},
 			degraded: new Degraded(() => undefined),
 		});

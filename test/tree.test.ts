@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
+import { StagedItem } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
@@ -430,6 +431,43 @@ describe("tree", { timeout: 60_000 }, () => {
 		} finally {
 			gate.resolve();
 			gates.delete(prompt);
+			watch?.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("gives the item of a child in its node, and sends the node without it to a watch after an unlink", async () => {
+		const project = "item-node";
+		const host = await projectHost(project);
+		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
+
+		try {
+			const added = await send({ type: "item", action: "add", caller: "cli", title: "Node item" }, project);
+			const { id } = Value.Parse(StagedItem, added);
+			const child = await spawnAs(AGENT_CALLER, "Item child", { notify: false, project, serves: { item: id } });
+			await answerOf(child.handle, project);
+			watch = await openTreeWatch(project);
+			const { events } = watch;
+			expect(watch.nodes.find((node) => node.id === child.handle)).toMatchObject({ serves: { kind: "item", id } });
+
+			const [edge] = Value.Parse(StagedItem, await send({ type: "item", action: "read", id }, project)).edges;
+
+			if (edge === undefined) throw new Error("no edge");
+			const { from, kind, to } = edge;
+			await send({ type: "item", action: "unlink", caller: "cli", from, kind, to }, project);
+			await until(() => events.length > 0);
+
+			const node = {
+				id: child.handle,
+				parent: AGENT_HANDLE,
+				kind: "agent",
+				name: child.handle,
+				state: "idle",
+				todos: [],
+			};
+
+			expect(events).toEqual([{ nodes: [node] }]);
+		} finally {
 			watch?.socket.destroy();
 			await host.close();
 		}

@@ -97,24 +97,24 @@ export const CHILD_STATES = ["busy", "idle", "error", "ended"] as const;
 
 export type ChildState = (typeof CHILD_STATES)[number];
 
-/** What a `spawn` names that the child serves: a parley by slug, or a todo of the list of the project by ID. */
+/** What a `spawn` names that the child serves: a parley by slug, or a work item by ID. */
 export const ServesInput = Type.Union([
 	Type.Object({ parley: Slug }, { additionalProperties: false }),
-	Type.Object({ todo: Todo.properties.id }, { additionalProperties: false }),
+	Type.Object({ item: LocalId }, { additionalProperties: false }),
 ]);
 
 export type ServesInput = Static<typeof ServesInput>;
 
 /**
  * What an agent serves, whose end ends the agent: the agent that spawned it, an open parley until it is no longer open,
- * a contract until it is done or dropped, or a todo of the list of the project until it is done or dropped. The project
- * agent serves the project, which never ends.
+ * a contract until it is done or dropped, or a work item until it is done or dropped. The project agent serves the
+ * project, which never ends.
  */
 export const Served = Type.Union([
 	Type.Object({ kind: Type.Literal("spawner") }),
 	Type.Object({ kind: Type.Literal("parley"), slug: Slug }),
 	Type.Object({ kind: Type.Literal("contract"), slug: Slug }),
-	Type.Object({ kind: Type.Literal("todo"), id: Todo.properties.id }),
+	Type.Object({ kind: Type.Literal("item"), id: LocalId }),
 	Type.Object({ kind: Type.Literal("project") }),
 ]);
 

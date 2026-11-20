@@ -273,9 +273,9 @@ export async function runHost(options: {
 	const root = await harness.root(context);
 
 	const owner = { kind: "detached", root } as const;
-	const push = new Push({ harness, place, owner, root, project, agent, warn, degraded });
+	const push = new Push({ harness, place, owner, root, project, agent, storage, warn, degraded });
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
-	const serving = new Serving({ harness, place, owner, root, warn });
+	const serving = new Serving({ harness, place, owner, storage, warn });
 
 	base = {
 		harness,

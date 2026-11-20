@@ -1,53 +1,21 @@
 /**
- * The work items of the store of the project: one document of the session for each item, keyed by its ID, which each
- * write stores whole, and the counter of their IDs. The `item` request of the host reads them and changes them with
- * these functions, each change in its own commit. It also gives the other ends of the edges of an item, and whether a
- * run is live: the stage of an item reads both, and a live run refuses a change of its item to `done`.
+ * The changes of the work items of the store of the project, each in the commit that a caller gives: the `item`
+ * request changes them with these functions, each change in its own commit, and a spawn writes the `serves` edge of
+ * its child in the commit that creates the child. It also gives whether a run is live: the stage of an item reads it,
+ * and a live run refuses a change of its item to `done`.
  */
-import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
-import type { DocumentReader, Storage, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
-import * as durable from "@earendil-works/pi-durable";
+import type { ConversationId, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import {
-	type Edge,
-	type EdgeInput,
-	type EdgeKind,
-	ITEM_KIND,
-	type ItemAdd,
-	ITEM_COUNTER_KIND,
-	type ItemCounter,
-	type ItemSet,
-	type ItemState,
-	type WorkItem,
-} from "../protocol/item.ts";
+import type { Edge, EdgeInput, EdgeKind, ItemAdd, ItemSet, WorkItem } from "../protocol/item.ts";
 import type { Ask } from "../protocol/project.ts";
-import { familyKeys } from "./doc-family.ts";
+import { ItemCounterDoc, itemEnds, Items, refParts } from "./item-docs.ts";
 import { Asks, knownParley, Parleys } from "./project-docs.ts";
 import { library } from "./targets.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
 
 /** The number `n` of the `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: an integer from 1. */
 const TASK_NUMBER = /^[1-9]\d*$/;
-
-/** The items, one document for each, keyed by its ID. An item is small, so each write stores a whole base. */
-const Items = durable.defineDocFamily<WorkItem, WorkItem>({
-	kind: ITEM_KIND,
-	version: 1,
-	scope: "session",
-	family: true,
-	initial: (seed) => seed,
-	checkpointWhen: () => true,
-});
-
-/** The counter of the IDs of items. */
-const ItemCounterDoc = durable.defineDoc<ItemCounter>({
-	kind: ITEM_COUNTER_KIND,
-	version: 1,
-	scope: "session",
-	initial: () => ({ last: 0 }),
-	checkpointWhen: () => true,
-});
 
 /** Adds an open item with no edge for the caller `by`, with the ID after `last` of the counter, and gives it. */
 export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkItem> {
@@ -106,6 +74,18 @@ export async function linkItem(tx: Tx, input: EdgeInput, by: string): Promise<Ed
 	return edge;
 }
 
+/**
+ * Writes the edge `agent:<conversationId> serves item:<id>` into the item `id` for the caller `by`, in `tx`, the commit
+ * that creates the child of the conversation `conversationId`. The item must be open. It reads only documents, which a
+ * commit can read after its writes of tables, such as the creation of the child.
+ */
+export async function serveItem(tx: Tx, id: number, conversationId: ConversationId, by: string): Promise<void> {
+	const item = await itemDraft(tx, id);
+
+	if (item.state !== "open") throw new Error(`Item ${id} is ${item.state}: an agent cannot serve it`);
+	item.edges.push({ from: `agent:${conversationId}`, kind: "serves", to: `item:${id}`, at: Date.now(), by });
+}
+
 /** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */
 export async function unlinkItem(tx: Tx, input: EdgeInput): Promise<WorkItem> {
 	const { id } = endsOf(input);
@@ -116,62 +96,6 @@ export async function unlinkItem(tx: Tx, input: EdgeInput): Promise<WorkItem> {
 	item.edges.splice(index, 1);
 
 	return Value.Clone(item);
-}
-
-/** The item `id`, in any state, with its edges. */
-export async function readItem(
-	reader: Pick<DocumentReader, "snapshot">,
-	id: number,
-	context: Context,
-): Promise<WorkItem> {
-	const item = await reader.snapshot(Items, String(id), context);
-
-	if (item === undefined) throw new Error(`Unknown item: ${id}`);
-
-	return Value.Clone(item);
-}
-
-/**
- * The items in the state `state`, in ID order. `storage`, the storage of `reader`, lists the items, because the session
- * gives no list of the members of a family.
- */
-export async function readItems(
-	reader: Pick<DocumentReader, "snapshot">,
-	storage: Pick<Storage, "scanDocuments">,
-	state: ItemState,
-	context: Context,
-): Promise<WorkItem[]> {
-	const keys = await familyKeys(storage, Items, context);
-	const items = await Promise.all(keys.map((key) => reader.snapshot(Items, key, context)));
-
-	return items.flatMap((item) => (item?.state === state ? [Value.Clone(item)] : [])).sort((a, b) => a.id - b.id);
-}
-
-/** The other ends of the `serves` and `shapes` edges of an item, without their kinds, in the order of the edges. */
-export type ItemEnds = {
-	/** The IDs of the conversations of the agents that serve the item. */
-	readonly agents: readonly string[];
-	/** The IDs of the runs that serve the item. */
-	readonly runs: readonly string[];
-	/** The slugs of the parleys that shape the item. */
-	readonly parleys: readonly string[];
-};
-
-/** The other ends of the `serves` and `shapes` edges of `item`. */
-export function itemEnds(item: WorkItem): ItemEnds {
-	const agents: string[] = [];
-	const runs: string[] = [];
-	const parleys: string[] = [];
-
-	for (const edge of item.edges) {
-		const { kind, value } = refParts(edge.from);
-
-		if (kind === "agent") agents.push(value);
-		else if (kind === "run") runs.push(value);
-		else if (kind === "parley") parleys.push(value);
-	}
-
-	return { agents, runs, parleys };
 }
 
 /** The asker of the asks of the run `runId`, as workflows writes them. */
@@ -240,9 +164,6 @@ async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
 /** The kinds of references that the ends of an edge take: one of `from`, and `to`. */
 type EdgeEnds = { readonly from: readonly string[]; readonly to: string };
 
-/** A reference `<kind>:<value>`, cut at its first colon. */
-type RefParts = { readonly kind: string; readonly value: string };
-
 /** The kinds of references that the ends of an edge of `kind` take. */
 function edgeEnds(kind: EdgeKind): EdgeEnds {
 	switch (kind) {
@@ -283,13 +204,6 @@ async function knownEnd(tx: Tx, ref: string): Promise<void> {
 	}
 
 	if (kind === "parley") knownParley((await tx.doc(Parleys)).parleys, value);
-}
-
-/** The kind and the value of the reference `ref`, `<kind>:<value>`. */
-function refParts(ref: string): RefParts {
-	const colon = ref.indexOf(":");
-
-	return { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
 }
 
 /** Whether `edge` has the ends and the kind of `input`. */

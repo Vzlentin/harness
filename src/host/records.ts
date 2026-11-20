@@ -1,6 +1,6 @@
 /**
- * The `ChildRecords` of the host, one per child, with their read marks: which requests a `wait` or a push gives the
- * answers of, their text, and whether a child holds its caller.
+ * The `ChildRecords` of the host, one per child, with what each child serves and their read marks: which requests a
+ * `wait` or a push gives the answers of, their text, and whether a child holds its caller.
  */
 import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
@@ -13,6 +13,7 @@ import { cutAnswer } from "../protocol/answer-cut.ts";
 import type { Served } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import { boundedReplay } from "./checkpoint.ts";
+import type { ChildItem } from "./item-docs.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -38,8 +39,11 @@ export type ChildRecord = {
 	servedEnd?: "ended" | "passed";
 };
 
-/** What a child serves: what an agent serves, except the project. */
-export type ChildServes = Exclude<Served, { readonly kind: "project" }>;
+/**
+ * What a child serves, as its record keeps it: what an agent serves, except the project, and an item with no ID. The
+ * `serves` edge of the item holds the ID.
+ */
+export type ChildServes = Exclude<Served, { readonly kind: "project" | "item" }> | { kind: "item" };
 
 /** A record of version 4, which has no `serves`. */
 type RecordV4 = Omit<ChildRecord, "serves" | "servedEnd">;
@@ -231,6 +235,17 @@ export async function markServedPassed(harness: Harness, handle: string): Promis
 
 		if (record !== undefined) record.servedEnd ??= "passed";
 	}, context);
+}
+
+/**
+ * What the child of `record` serves, as its info and its node give it. For a record that serves an item, `item` gives
+ * the item of the child, and a child that no `serves` edge names serves nothing.
+ */
+export function childServed(record: Readonly<ChildRecord>, item: ChildItem): Served | undefined {
+	if (record.serves.kind !== "item") return record.serves;
+	const served = item(record);
+
+	return served === undefined ? undefined : { kind: "item", id: served.id };
 }
 
 /** The `[handle, record]` entries of `state`, oldest child first. */
