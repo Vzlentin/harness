@@ -6,6 +6,7 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
+import { StagedItem } from "../src/protocol/item.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { AskWrite, Message, Person, Rule, Thread } from "../src/protocol/project.ts";
 import { STORE_FILE_VERSION } from "../src/protocol/store-file.ts";
@@ -42,6 +43,8 @@ describe("store.json", { timeout: 30_000 }, () => {
 				asks: [],
 				todos: [],
 				callerTodos: [],
+				items: [],
+				lastItem: 0,
 			});
 
 			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
@@ -126,7 +129,17 @@ describe("store.json", { timeout: 30_000 }, () => {
 				await send({ type: "todo", action: "add", caller: "session-a", text: "Test" }, project),
 			);
 
+			const {
+				stage: _stage,
+				needsYou: _needsYou,
+				...item
+			} = Value.Parse(StagedItem, await send({ type: "item", action: "add", caller: "cli", title: "Ship" }, project));
+
+			const landed = { from: `item:${item.id}`, kind: "landed", to: `commit:${"a".repeat(40)}` } as const;
+			await send({ type: "item", action: "link", caller: "cli", ...landed }, project);
+
 			await until(() => readStoreFile(project)?.callerTodos.length === 2);
+			await until(() => readStoreFile(project)?.items[0]?.edges.length === 1);
 			const file = readStoreFile(project);
 			const text = readFileSync(statePaths(project).store, "utf8");
 
@@ -142,6 +155,8 @@ describe("store.json", { timeout: 30_000 }, () => {
 					"asks",
 					"todos",
 					"callerTodos",
+					"items",
+					"lastItem",
 				].sort(),
 			);
 
@@ -162,6 +177,8 @@ describe("store.json", { timeout: 30_000 }, () => {
 					{ caller: "session-a", todos: [otherTodo] },
 					{ caller: "session-b", todos: [sessionTodo] },
 				],
+				items: [{ ...item, edges: [{ ...landed, at: expect.any(Number), by: "cli" }] }],
+				lastItem: item.id,
 			});
 		} finally {
 			await host.close();

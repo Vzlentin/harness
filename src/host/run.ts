@@ -47,6 +47,7 @@ import { loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { ItemIndex } from "./item-index.ts";
+import { migrateTodos } from "./item-migration.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
@@ -274,6 +275,8 @@ export async function runHost(options: {
 	const root = await harness.root(context);
 
 	const owner = { kind: "detached", root } as const;
+	// The first start moves the todos of the project to items, before any reader of the items or the records.
+	await migrateTodos(harness, root.id);
 	// The index of the ends of the items observes the commits first, so the observers and the passes after it read it
 	// current with each commit.
 	const items = await ItemIndex.open(harness, storage);

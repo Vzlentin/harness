@@ -198,7 +198,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		expect(await load("load-new", path)).toEqual({
 			code: 0,
 			stdout:
-				"persons: 2\nthreads: 2\nmessages: 5\nrules: 1\nheld: 1\nparleys: 1\nasks: 2\noutbox: 4\ntodos: 1\ncallerTodos: 1\n",
+				"persons: 2\nthreads: 2\nmessages: 5\nrules: 1\nheld: 1\nparleys: 1\nasks: 2\noutbox: 4\ntodos: 1\ncallerTodos: 1\nitems: 0\n",
 			stderr: "",
 		});
 
@@ -349,10 +349,66 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		}
 	});
 
+	it("loads a file of version 1 with its open todos moved to items, and a file of version 2 with its items", async () => {
+		await createProject("load-v1");
+		await createProject("load-v2");
+		const { version: _version, items: _items, lastItem: _lastItem, ...lists } = Value.Create(StoreFile);
+
+		const todos = [
+			{ id: 1, text: "Plan", state: "open" },
+			{ id: 2, text: "Old", state: "done" },
+			{ id: 3, text: "Ship", state: "doing" },
+		] as const;
+
+		const v1 = join(root, "load-v1.json");
+		await writeFile(v1, JSON.stringify({ ...lists, version: 1, todos }));
+		const loaded = await load("load-v1", v1);
+		expect(loaded).toMatchObject({ code: 0, stderr: "" });
+		expect(loaded.stdout).toContain("todos: 3\ncallerTodos: 0\nitems: 2\n");
+		const moved = await hostedFile("load-v1");
+		const migrated = { state: "open", edges: [], at: expect.any(Number), by: "migration" };
+
+		expect(moved).toMatchObject({
+			version: 2,
+			todos: [
+				{ id: 1, text: "moved to item 1: Plan", state: "dropped" },
+				{ id: 2, text: "Old", state: "done" },
+				{ id: 3, text: "moved to item 3: Ship", state: "dropped" },
+			],
+			items: [
+				{ id: 1, title: "Plan", ...migrated },
+				{ id: 3, title: "Ship", ...migrated },
+			],
+			lastItem: 3,
+		});
+
+		// A file of version 2: its open todo stays a todo, and the counter takes the highest ID of the items.
+		const edge = { from: "agent:7", kind: "serves", to: "item:2", at: 5, by: "cli" } as const;
+		const items = [{ id: 2, title: "Two", state: "open", edges: [edge], at: 5, by: "cli" }] as const;
+		const kept = [{ id: 1, text: "Private", state: "open" }] as const;
+		const v2 = join(root, "load-v2.json");
+		await writeFile(v2, JSON.stringify({ ...lists, version: 2, todos: kept, items, lastItem: 1 }));
+		expect(await load("load-v2", v2)).toMatchObject({ code: 0, stderr: "" });
+		expect(await hostedFile("load-v2")).toMatchObject({ todos: kept, items, lastItem: 2 });
+
+		const host = await startHost("load-v2");
+
+		try {
+			expect(await send({ type: "item", action: "add", caller: "cli", title: "Next" }, "load-v2")).toMatchObject({
+				id: 3,
+			});
+			expect(await send({ type: "todo", action: "list", caller: "cli", handle: AGENT_HANDLE }, "load-v2")).toEqual({
+				todos: kept,
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
 	it("refuses a file that is not a store file before it opens the store", async () => {
 		await createProject("load-refused");
 		const store = join(statePaths("load-refused").dir, "durable.sqlite");
-		const base = { ...Value.Create(StoreFile), version: 1 };
+		const base = Value.Create(StoreFile);
 
 		const changed = { at: 1, by: "cli" };
 		const fields = { id: 9, thread: 3, from: "user", state: "draft", at: 1, text: "Hi", by: "cli" };
@@ -363,8 +419,8 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			["not-json.json", "{", "not-json.json is not a store file: "],
 			[
 				"version.json",
-				JSON.stringify({ ...base, version: 2 }),
-				"has the version 2: harness store load reads only the version 1",
+				JSON.stringify({ ...base, version: 3 }),
+				"has the version 3: harness store load reads only the versions 1 and 2",
 			],
 			["schema.json", JSON.stringify({ ...base, persons: [{ id: 1 }] }), "is not a store file: /persons/0"],
 			[
@@ -421,6 +477,17 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		}
 
 		const todo = (id: number) => ({ id, text: "Plan", state: "open" });
+		const edge = { from: "agent:7", kind: "serves", to: "item:2", at: 1, by: "cli" };
+
+		const item = (id: number, edges: readonly object[]) => ({
+			id,
+			title: "Ship",
+			state: "open",
+			edges,
+			at: 1,
+			by: "cli",
+		});
+
 		const twice = { ...base, threads: [thread] };
 
 		const exact = [
@@ -473,6 +540,17 @@ describe("harness store load", { timeout: 60_000 }, () => {
 				"caller-todo-ask.json",
 				{ ...twice, callerTodos: [{ caller: "session-a", todos: [todo(1), { ...todo(2), ask: 4 }] }] },
 				"the ask of the todo 2 of session-a is no ask of the file",
+			],
+			["same-item.json", { ...twice, items: [item(2, []), item(2, [])], lastItem: 2 }, "the items have the ID 2 twice"],
+			[
+				"other-item.json",
+				{ ...twice, items: [item(2, [{ ...edge, to: "item:3" }])], lastItem: 3 },
+				"the edge agent:7 serves item:3 is not an edge of the item 2",
+			],
+			[
+				"edge-ends.json",
+				{ ...twice, items: [item(2, [{ ...edge, kind: "landed" }])], lastItem: 2 },
+				"the edge agent:7 landed item:2 is not an edge of the item 2",
 			],
 		] as const;
 

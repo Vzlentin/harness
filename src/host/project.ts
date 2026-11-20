@@ -520,7 +520,7 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * two answers of one ask fail. Each answer replaces the answer of its ask, with its label and its words, as one unit. The answer `ok` to the read-back of
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
  * ask of the parley must be answered or dropped, and its `design_sense` set. A contract that shapes no item gets a new
- * item with its title and the edge `shapes`. The same commit queues the answers for
+ * item with its title and the edge `shapes`: `itemIds` are the IDs of the stored items. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
  * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent.
@@ -531,6 +531,7 @@ export async function answerAsks(
 	by: string,
 	author: AnswerAuthor,
 	root: ConversationId,
+	itemIds: readonly number[],
 ): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
@@ -563,7 +564,7 @@ export async function answerAsks(
 		if (parley !== undefined && input.answer === "ok") readBacks.add(parley.id);
 	}
 
-	for (const id of readBacks) await itemForContract(tx, makeContract(parleys, asks, id, at, by), by);
+	for (const id of readBacks) await itemForContract(tx, makeContract(parleys, asks, id, at, by), by, itemIds);
 
 	await addSaveTodos(tx, root, written);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by));

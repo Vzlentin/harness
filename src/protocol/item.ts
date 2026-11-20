@@ -1,6 +1,6 @@
 /**
  * The work items of the store of the project: the references, the edges, the items and the counter of their IDs, the
- * stages of an item and the item as a reply gives it, the inputs of the `item` request, the text of an item and of an
+ * stages of an item and the item as a reply gives it, the ends of an edge and the parts of a reference, the inputs of the `item` request, the text of an item and of an
  * edge, and the kinds of their documents.
  */
 import { type Static, Type } from "typebox";
@@ -128,6 +128,48 @@ export function itemText(item: StagedItem): string {
 	const text = item.text === undefined || item.text === "" ? "" : `${item.text}\n`;
 
 	return `${itemLine(item)}\n${text}${item.edges.map((edge) => `${edgeLine(edge)}\n`).join("")}`;
+}
+
+/** The kinds of references that the ends of an edge take: one of `from`, and `to`. */
+type EdgeEnds = { readonly from: readonly string[]; readonly to: string };
+
+/** The kinds of references that the ends of an edge of `kind` take. */
+function edgeEnds(kind: EdgeKind): EdgeEnds {
+	switch (kind) {
+		case "serves":
+			return { from: ["agent", "run"], to: "item" };
+		case "shapes":
+			return { from: ["parley"], to: "item" };
+		case "landed":
+			return { from: ["item"], to: "commit" };
+	}
+}
+
+/** The item end of an edge, by its ID, and the reference at its other end. */
+export type EdgeItem = { readonly id: number; readonly other: string };
+
+/**
+ * The ID of the item at one end of `edge`, and the reference at its other end. `serves` goes from an agent or a run to
+ * an item, `shapes` from a parley to an item, and `landed` from an item to a commit: other ends give nothing.
+ */
+export function edgeItem(edge: EdgeInput): EdgeItem | undefined {
+	const ends = edgeEnds(edge.kind);
+	const from = refParts(edge.from);
+	const to = refParts(edge.to);
+
+	if (!ends.from.includes(from.kind) || to.kind !== ends.to) return undefined;
+
+	return ends.to === "item" ? { id: Number(to.value), other: edge.from } : { id: Number(from.value), other: edge.to };
+}
+
+/** A reference `<kind>:<value>`, cut at its first colon. */
+export type RefParts = { readonly kind: string; readonly value: string };
+
+/** The kind and the value of the reference `ref`, `<kind>:<value>`. */
+export function refParts(ref: string): RefParts {
+	const colon = ref.indexOf(":");
+
+	return { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
 }
 
 /** The kind of the family of the documents of the items, one for each item, keyed by its ID. */

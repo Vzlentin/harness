@@ -1,12 +1,14 @@
 /**
- * `store.json`: the host writes the lists of the store of the project to it at its start and after each commit that
- * changes one, so a program can read them with no host and no store.
+ * `store.json`: the host writes the lists and the items of the store of the project to it at its start and after each
+ * commit that changes one, so a program can read them with no host and no store.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { type FileMessage, STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
+import { allItems, ItemCounterDoc, itemChange } from "./item-docs.ts";
 import { CommitPasses } from "./passes.ts";
 import { readLastRuleId, readRules } from "./project-rules.ts";
 import {
@@ -29,8 +31,8 @@ const context = BACKGROUND_CONTEXT;
 export type StoreFileHost = {
 	readonly harness: Harness;
 	/**
-	 * The storage of `harness`, whose scan lists the callers that have a list of todos, and whose entry lookup gives the
-	 * thread of the source of an older rule.
+	 * The storage of `harness`, whose scan lists the items and the callers that have a list of todos, and whose entry
+	 * lookup gives the thread of the source of an older rule.
 	 */
 	readonly storage: Pick<Storage, "scanDocuments" | "entry">;
 	/** The root conversation, whose list is the list of the project. */
@@ -47,7 +49,7 @@ export type StoreFileHost = {
 export function storeFilePasses(host: StoreFileHost): CommitPasses {
 	return new CommitPasses(
 		host.harness,
-		(change) => projectChange(change) || todoListChange(change, host.root.id),
+		(change) => projectChange(change) || todoListChange(change, host.root.id) || itemChange(change),
 		() =>
 			readStoreFile(host.harness, host.storage, host.root.id)
 				.then((file) => writeJsonFile(host.path, file))
@@ -57,8 +59,8 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 
 /**
  * Every list of the file, as the store of `harness` has them now, with the list of the project from the root
- * conversation `root`. `storage`, the storage of `harness`, lists the callers that have a list of todos, and gives the
- * thread of the source of an older rule.
+ * conversation `root`. `storage`, the storage of `harness`, lists the items and the callers that have a list of todos,
+ * and gives the thread of the source of an older rule. A store with no counter of the IDs of items has `lastItem` 0.
  */
 export async function readStoreFile(
 	harness: Harness,
@@ -83,6 +85,8 @@ export async function readStoreFile(
 	const outbox = new Map((await readOutbox(harness, context)).map((out) => [out.id, out]));
 	const todos = await readTodos(harness, { kind: "conversation", id: root }, context);
 	const callerTodos = await readCallerTodos(harness, storage, context);
+	const items = await allItems(harness, storage, context);
+	const counter = await harness.snapshot(ItemCounterDoc, context);
 
 	return {
 		version: STORE_FILE_VERSION,
@@ -98,6 +102,8 @@ export async function readStoreFile(
 		asks: asks.asks,
 		todos: todos.todos,
 		callerTodos,
+		items: items.map((item) => Value.Clone(item)),
+		lastItem: counter?.last ?? 0,
 	};
 }
 

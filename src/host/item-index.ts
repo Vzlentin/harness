@@ -1,6 +1,6 @@
 /**
- * The index of the ends of the work items: the IDs of the items whose `serves` edges name each `agent:` and `run:` end,
- * and the run of each started task. The host builds it once from the items and keeps it current with the commits.
+ * The index of the ends of the work items: the IDs of all the items, the IDs of the items whose `serves` edges name
+ * each `agent:` and `run:` end, and the run of each started task. The host builds it once from the items and keeps it current with the commits.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
@@ -84,6 +84,11 @@ export class ItemIndex {
 	/** The ID of the item that the child of the conversation `conversationId` serves: the lowest when several do. */
 	childItem(conversationId: ConversationId): number | undefined {
 		return this.served(`agent:${conversationId}`)[0];
+	}
+
+	/** The IDs of all the items, in ID order. */
+	ids(): number[] {
+		return [...this.#ends.keys()].sort((a, b) => a - b);
 	}
 
 	/** The IDs of the items whose `serves` edges name `end`, an `agent:` or a `run:` reference, in ID order. */

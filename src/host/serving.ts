@@ -1,7 +1,7 @@
 /**
  * The rule that an agent lives as long as what it serves. A child serves the agent that spawned it, a parley, a
- * contract or a work item, whose `serves` edge names the child. When that thing ends, the host ends the child, once its
- * own list has no open and no doing todo.
+ * contract or a work item, whose `serves` edge names the child. When that thing ends, or the end of the child is due,
+ * the host ends the child, once its own list has no open and no doing todo.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange } from "@earendil-works/pi-durable";
@@ -86,7 +86,7 @@ export class Serving {
 		const { harness } = this.#host;
 		const entries = recordsByAge(await harness.snapshot(ChildRecords, context));
 
-		const unchecked = entries.filter(([, record]) => record.servedEnd === undefined);
+		const unchecked = entries.filter(([, record]) => record.servedEnd === undefined || record.servedEnd === "due");
 
 		if (unchecked.length === 0) return;
 
@@ -118,9 +118,10 @@ export class Serving {
 	 * Whether what `record` serves ended. A spawner ends only when it is a child of this host and ended; the project
 	 * agent, a Pi session, `cli` and a conversation of a task never end by the rule. An item is the item whose `serves`
 	 * edge names the child, from the index of the ends of the items: a child that no edge names does not end by the rule.
-	 * `parleys` are the parleys of the store.
+	 * `parleys` are the parleys of the store. A record whose end is `due` ended.
 	 */
 	async #ended(record: ChildRecord, entries: readonly Entry[], parleys: readonly Parley[]): Promise<boolean> {
+		if (record.servedEnd === "due") return true;
 		const { serves } = record;
 
 		switch (serves.kind) {

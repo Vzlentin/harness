@@ -2,15 +2,25 @@
  * The changes of the work items of the store of the project, each in the commit that a caller gives: the `item`
  * request changes them with these functions, each change in its own commit, and a spawn writes the `serves` edge of
  * its child in the commit that creates the child. A round of asks writes the `shapes` edge of its parley, and the commit
- * that makes a parley a contract gives it an item when it shapes none. It also gives whether a run is live: the stage of an item reads it,
+ * that makes a parley a contract gives it an item when it shapes none. A load of a store file writes its items, with their
+ * edges and the counter. It also gives whether a run is live: the stage of an item reads it,
  * and a live run refuses a change of its item to `done`.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { ConversationId, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import type { Edge, EdgeInput, EdgeKind, ItemAdd, ItemSet, WorkItem } from "../protocol/item.ts";
+import {
+	type Edge,
+	type EdgeInput,
+	type EdgeItem,
+	edgeItem,
+	type ItemAdd,
+	type ItemSet,
+	refParts,
+	type WorkItem,
+} from "../protocol/item.ts";
 import type { Ask, Parley } from "../protocol/project.ts";
-import { ItemCounterDoc, itemEnds, Items, refParts } from "./item-docs.ts";
+import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import { Asks, knownParley, Parleys } from "./project-docs.ts";
 import { library } from "./targets.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
@@ -29,6 +39,18 @@ export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkI
 	await tx.doc(Items, String(item.id), item);
 
 	return item;
+}
+
+/**
+ * Writes `items`, each with its edges, into a store that has no item, in `tx`. `last` of the counter becomes the highest
+ * of `last`, the `last` of the store, and the highest ID of `items`, so a new item never takes the ID of a stored one.
+ */
+export async function loadItems(tx: Tx, items: readonly WorkItem[], last: number): Promise<void> {
+	const counter = await tx.doc(ItemCounterDoc);
+	counter.last = Math.max(counter.last, last, ...items.map((item) => item.id));
+
+	// Each new document starts as a copy of its seed.
+	for (const item of items) await tx.doc(Items, String(item.id), item);
 }
 
 /**
@@ -89,13 +111,16 @@ export async function serveItem(tx: Tx, id: number, conversationId: Conversation
 
 /**
  * Gives the contract `parley` an item in `tx` for the caller `by`: when no item has the edge `parley:<slug> shapes`, it
- * adds an item with the title of the parley and writes that edge. A commit cannot scan the items, so it reads each ID
- * up to `last` of the counter: a read writes nothing.
+ * adds an item with the title of the parley and writes that edge. A commit cannot scan the items, so it reads each item
+ * of `ids`, the IDs of the stored items: a read writes nothing.
  */
-export async function itemForContract(tx: Tx, parley: Readonly<Parley>, by: string): Promise<void> {
-	const { last } = await tx.doc(ItemCounterDoc);
-
-	for (let id = 1; id <= last; id += 1) {
+export async function itemForContract(
+	tx: Tx,
+	parley: Readonly<Parley>,
+	by: string,
+	ids: readonly number[],
+): Promise<void> {
+	for (const id of ids) {
 		if (itemEnds(await itemDraft(tx, id)).parleys.includes(parley.slug)) return;
 	}
 
@@ -168,49 +193,34 @@ async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
 	}
 }
 
+/** The `at` of the seed of a missing item, which no stored item has. */
+const MISSING_AT = -1;
+
 /**
- * The draft of the item `id` in `tx`. An ID above `last` of the counter fails with `Unknown item: <id>`, also while no
- * item exists, so only `addItem` creates the counter.
+ * The draft of the item `id` in `tx`. An ID above `last` of the counter, and an ID up to `last` with no item, such as
+ * the ID of a todo that the move to items did not move, fail with `Unknown item: <id>`. Only `addItem`, `loadItems`
+ * and the move of the todos at the first start create the counter.
  */
 async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
 	const { last } = await tx.doc(ItemCounterDoc);
 
 	if (id > last) throw new Error(`Unknown item: ${id}`);
-	// `addItem` creates the document of each ID up to `last`, so `tx.doc` loads it and never stores this seed.
-	const seed: WorkItem = { id, title: "-", state: "open", edges: [], at: 0, by: "" };
+	// `tx.doc` creates a missing item from this seed, and the throw fails the commit, so the seed is never stored.
+	const seed: WorkItem = { id, title: "-", state: "open", edges: [], at: MISSING_AT, by: "" };
+	const item = await tx.doc(Items, String(id), seed);
 
-	return tx.doc(Items, String(id), seed);
+	if (item.at === MISSING_AT) throw new Error(`Unknown item: ${id}`);
+
+	return item;
 }
 
-/** The kinds of references that the ends of an edge take: one of `from`, and `to`. */
-type EdgeEnds = { readonly from: readonly string[]; readonly to: string };
+/** The ID of the item at one end of `edge`, and the reference at its other end. Ends that its kind does not take fail. */
+function endsOf(edge: EdgeInput): EdgeItem {
+	const ends = edgeItem(edge);
 
-/** The kinds of references that the ends of an edge of `kind` take. */
-function edgeEnds(kind: EdgeKind): EdgeEnds {
-	switch (kind) {
-		case "serves":
-			return { from: ["agent", "run"], to: "item" };
-		case "shapes":
-			return { from: ["parley"], to: "item" };
-		case "landed":
-			return { from: ["item"], to: "commit" };
-	}
-}
+	if (ends === undefined) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to ${edge.to}`);
 
-/**
- * The ID of the item at one end of `edge`, and the reference at its other end. `serves` goes from an agent or a run to
- * an item, `shapes` from a parley to an item, and `landed` from an item to a commit: other ends fail.
- */
-function endsOf(edge: EdgeInput): { readonly id: number; readonly other: string } {
-	const ends = edgeEnds(edge.kind);
-	const from = refParts(edge.from);
-	const to = refParts(edge.to);
-
-	if (!ends.from.includes(from.kind) || to.kind !== ends.to) {
-		throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to ${edge.to}`);
-	}
-
-	return ends.to === "item" ? { id: Number(to.value), other: edge.from } : { id: Number(from.value), other: edge.to };
+	return ends;
 }
 
 /**

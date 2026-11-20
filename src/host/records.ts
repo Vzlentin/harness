@@ -34,9 +34,10 @@ export type ChildRecord = {
 	/**
 	 * Whether the end of what the child serves was applied to it: `ended` when the rule ended it, `passed` when the
 	 * child was already ended, by a `stop` or the end of its session. The rule ends a child once, so a resumed child
-	 * stays.
+	 * stays. `due` is an end to apply: the move of the todos to items gives it to a child of a todo that was done or
+	 * dropped, so the rule ends the child once its own list is clear.
 	 */
-	servedEnd?: "ended" | "passed";
+	servedEnd?: "ended" | "passed" | "due";
 };
 
 /**
@@ -44,6 +45,9 @@ export type ChildRecord = {
  * `serves` edge of the item holds the ID.
  */
 export type ChildServes = Exclude<Served, { readonly kind: "project" | "item" }> | { kind: "item" };
+
+/** What a record of version 5 served before the work items: the todo `id` of the list of the project. */
+export const OldTodoServes = Type.Object({ kind: Type.Literal("todo"), id: Type.Integer() });
 
 /** A record of version 4, which has no `serves`. */
 type RecordV4 = Omit<ChildRecord, "serves" | "servedEnd">;
@@ -93,7 +97,9 @@ const ChildrenV3 = Type.Object({
 });
 
 /**
- * The children by handle, and the handle of each spawn request ID. Version 5 has what each child serves; the children
+ * The children by handle, and the handle of each spawn request ID. Version 6 has no child that serves a todo: the move
+ * of the todos to items at the first start of a host rewrites the records of version 5 that serve one (`OldTodoServes`).
+ * Version 5 has what each child serves; the children
  * of an older version serve their spawner. Version 4 has no kind of a child; version 3 marked the children of a kernel
  * with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their IDs in `sent` and those
  * without `notify` in `quiet`. Version 2 leaves each child's last request to the children library; a store with
@@ -101,12 +107,18 @@ const ChildrenV3 = Type.Object({
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
-	version: 5,
+	version: 6,
 	scope: "session",
 	checkpointWhen: boundedReplay,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
+
+		if (fromVersion === 5) {
+			// SAFETY: a value of version 5 has the shape of version 6, except a `serves` of `OldTodoServes`, which the move
+			// of the todos to items rewrites at the first start of the host, before it serves a request.
+			return value as ChildrenState;
+		}
 
 		if (fromVersion === 2) return migrateV4(migrateV2(Value.Parse(ChildrenV2, value)));
 
@@ -226,14 +238,14 @@ export async function markAllRead(
 }
 
 /**
- * Marks the record of `handle` as passed by the end of what it serves (`servedEnd` is `passed`): the child was already
- * ended, so the rule does not end it again, and its deliveries do not wait.
+ * Marks the record of `handle` as passed by the end of what it serves (`servedEnd` is `passed`), unless the rule ended
+ * it: the child was already ended, so the rule does not end it again, and its deliveries do not wait.
  */
 export async function markServedPassed(harness: Harness, handle: string): Promise<void> {
 	await harness.commit(async (tx) => {
 		const record = (await tx.doc(ChildRecords)).children[handle];
 
-		if (record !== undefined) record.servedEnd ??= "passed";
+		if (record !== undefined && record.servedEnd !== "ended") record.servedEnd = "passed";
 	}, context);
 }
 

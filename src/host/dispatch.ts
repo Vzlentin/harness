@@ -412,7 +412,7 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 			const author = await answerAuthor(request, handler);
 
 			return handler.harness.commit(
-				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id),
+				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items.ids()),
 				context,
 			);
 		}

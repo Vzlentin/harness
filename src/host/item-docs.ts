@@ -6,7 +6,14 @@ import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, DocumentReader, Storage } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { ITEM_COUNTER_KIND, ITEM_KIND, type ItemCounter, type ItemState, type WorkItem } from "../protocol/item.ts";
+import {
+	ITEM_COUNTER_KIND,
+	ITEM_KIND,
+	type ItemCounter,
+	type ItemState,
+	refParts,
+	type WorkItem,
+} from "../protocol/item.ts";
 import { familyKeys } from "./doc-family.ts";
 
 /** The items, one document for each, keyed by its ID. An item is small, so each write stores a whole base. */
@@ -25,6 +32,11 @@ export function changedItemId(change: CommitChange): number | undefined {
 		return undefined;
 
 	return Number(change.record.key);
+}
+
+/** Whether `change` changes or retires the document of an item or the counter of their IDs. */
+export function itemChange(change: CommitChange): boolean {
+	return change.type === "document" && (change.record.kind === ITEM_KIND || change.record.kind === ITEM_COUNTER_KIND);
 }
 
 /** The counter of the IDs of items. */
@@ -89,16 +101,6 @@ export function itemEnds(item: Readonly<WorkItem>): ItemEnds {
 	}
 
 	return { agents, runs, parleys };
-}
-
-/** A reference `<kind>:<value>`, cut at its first colon. */
-type RefParts = { readonly kind: string; readonly value: string };
-
-/** The kind and the value of the reference `ref`, `<kind>:<value>`. */
-export function refParts(ref: string): RefParts {
-	const colon = ref.indexOf(":");
-
-	return { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
 }
 
 /** Every item, in ID order, as the session has it. `storage`, the storage of `reader`, lists them. */

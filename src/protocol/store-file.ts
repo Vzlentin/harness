@@ -1,15 +1,18 @@
 /**
  * `store.json`: the lists of the store of a project, which the host writes whole after each commit that changes one.
+ * A file of version 1 has no items: its parse moves its open todos to items.
  */
 import { readFileSync } from "node:fs";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { moveTodos } from "./item-move.ts";
+import { edgeItem, edgeLine, WorkItem } from "./item.ts";
 import { Ask, HeldAction, Message, Parley, Person, Rule, Thread } from "./project.ts";
 import { errorMessage } from "./requests.ts";
 import { Todo } from "./todo.ts";
 
 /** The version of the shape of `store.json`. */
-export const STORE_FILE_VERSION = 1;
+export const STORE_FILE_VERSION = 2;
 
 /** The last change of the state of a message out: its time, and the caller of the change. */
 export const StateChange = Type.Object({ at: Message.properties.at, by: Message.properties.by });
@@ -26,12 +29,12 @@ export const FileMessage = Type.Union([
 export type FileMessage = Static<typeof FileMessage>;
 
 /**
- * The lists of the store: the persons, the threads with their messages, oldest first, the rules and the highest ID that
- * a rule had, the held actions, the parleys, the asks, the todos of the project agent, and the todos of each caller
- * that is not a conversation of the host, in caller order. The state of each message out is in its message.
+ * The lists of a store file of version 1: the persons, the threads with their messages, oldest first, the rules and the
+ * highest ID that a rule had, the held actions, the parleys, the asks, the todos of the project agent, and the todos of
+ * each caller that is not a conversation of the host, in caller order. The state of each message out is in its message.
  */
-export const StoreFile = Type.Object({
-	version: Type.Literal(STORE_FILE_VERSION),
+export const StoreFileV1 = Type.Object({
+	version: Type.Literal(1),
 	persons: Type.Array(Person),
 	threads: Type.Array(Type.Object({ ...Thread.properties, messages: Type.Array(FileMessage) })),
 	rules: Type.Array(Rule),
@@ -41,6 +44,14 @@ export const StoreFile = Type.Object({
 	asks: Type.Array(Ask),
 	todos: Type.Array(Todo),
 	callerTodos: Type.Array(Type.Object({ caller: Type.String(), todos: Type.Array(Todo) })),
+});
+
+/** The lists of the store: those of version 1, the items, each with its edges, and the highest ID that an item had. */
+export const StoreFile = Type.Object({
+	...StoreFileV1.properties,
+	version: Type.Literal(STORE_FILE_VERSION),
+	items: Type.Array(WorkItem),
+	lastItem: Type.Integer({ minimum: 0 }),
 });
 
 export type StoreFile = Static<typeof StoreFile>;
@@ -59,15 +70,17 @@ export type StoreCounts = {
 	todos: number;
 	/** The todos of all the callers. */
 	callerTodos: number;
+	items: number;
 };
 
 const Versioned = Type.Object({ version: Type.Unknown() });
 
 /**
- * The store file at `path`. It fails with one line when the file is not JSON, has another version, does not match the
- * schema, has an ID twice in one list (the messages of all threads are one list), has a caller twice in `callerTodos`,
- * or has a reference that does not resolve: a message that is not in the thread that it names, or a rule whose source
- * is no message of the file.
+ * The store file at `path`, as a file of version 2. It fails with one line when the file is not JSON, has another
+ * version than 1 and 2, does not match the schema, has an ID twice in one list (the messages of all threads are one
+ * list), has a caller twice in `callerTodos`, or has a reference that does not resolve: a message that is not in the
+ * thread that it names, a rule whose source is no message of the file, or an edge that is not an edge of its item. A
+ * file of version 1 gets the items of its open todos, with the rule of the move of the first start of a host.
  */
 export function parseStoreFile(path: string): StoreFile {
 	let value: unknown;
@@ -78,25 +91,36 @@ export function parseStoreFile(path: string): StoreFile {
 		throw new Error(`${path} is not a store file: ${errorMessage(error)}`, { cause: error });
 	}
 
-	if (Value.Check(Versioned, value) && value.version !== STORE_FILE_VERSION) {
+	if (Value.Check(Versioned, value) && value.version !== 1 && value.version !== STORE_FILE_VERSION) {
 		throw new Error(
-			`${path} has the version ${JSON.stringify(value.version)}: harness store load reads only the version ${STORE_FILE_VERSION}`,
+			`${path} has the version ${JSON.stringify(value.version)}: harness store load reads only the versions 1 and ${STORE_FILE_VERSION}`,
 		);
 	}
 
-	if (!Value.Check(StoreFile, value)) {
-		const [error] = Value.Errors(StoreFile, value);
+	const schema = Value.Check(Versioned, value) && value.version === 1 ? StoreFileV1 : StoreFile;
+
+	if (!Value.Check(schema, value)) {
+		const [error] = Value.Errors(schema, value);
 
 		throw new Error(
 			`${path} is not a store file: ${[error?.instancePath, error?.message].filter((part) => part).join(" ")}`,
 		);
 	}
 
-	const broken = brokenReference(value);
+	const file = value.version === 1 ? fromVersion1(value) : value;
+
+	const broken = brokenReference(file);
 
 	if (broken !== undefined) throw new Error(`${path} is not a store file: ${broken}`);
 
-	return value;
+	return file;
+}
+
+/** `file`, a store file of version 1, as a file of version 2: its open todos moved to items. */
+function fromVersion1(file: Static<typeof StoreFileV1>): StoreFile {
+	const { todos, items, last } = moveTodos(file.todos, Date.now());
+
+	return { ...file, version: STORE_FILE_VERSION, todos, items, lastItem: last };
 }
 
 /** The first value of `values` that is there twice, or undefined when each one is there once. */
@@ -124,6 +148,7 @@ function duplicateId(file: StoreFile): string | undefined {
 		["parleys", ids(file.parleys)],
 		["asks", ids(file.asks)],
 		["todos", ids(file.todos)],
+		["items", ids(file.items)],
 		...file.callerTodos.map((list): [string, readonly number[]] => [`todos of ${list.caller}`, ids(list.todos)]),
 	];
 
@@ -157,7 +182,18 @@ function brokenReference(file: StoreFile): string | undefined {
 
 	if (rule !== undefined) return `the source of the rule ${rule.id} is no message of the file`;
 
-	return unknownAsk(file);
+	return unknownAsk(file) ?? foreignEdge(file);
+}
+
+/** The first edge of an item of `file` that is not an edge of that item, as a reason, or undefined when there is none. */
+function foreignEdge(file: StoreFile): string | undefined {
+	for (const item of file.items) {
+		const edge = item.edges.find((found) => edgeItem(found)?.id !== item.id);
+
+		if (edge !== undefined) return `the edge ${edgeLine(edge)} is not an edge of the item ${item.id}`;
+	}
+
+	return undefined;
 }
 
 /** The first todo of `file` whose `ask` is no ask of the file, as a reason, or undefined when there is none. */
@@ -194,5 +230,6 @@ export function storeCounts(file: StoreFile): StoreCounts {
 		),
 		todos: file.todos.length,
 		callerTodos: file.callerTodos.reduce((sum, list) => sum + list.todos.length, 0),
+		items: file.items.length,
 	};
 }

@@ -1,5 +1,6 @@
 /**
- * `harness store load <file>`: writes the lists of a store file into the empty store of a project, while no host runs.
+ * `harness store load <file>`: writes the lists and the items of a store file into the empty store of a project, while
+ * no host runs.
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { statePaths } from "../protocol/paths.ts";
 import { STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from "../protocol/store-file.ts";
+import { loadItems } from "./items.ts";
 import { takeLock } from "./lock.ts";
 import { loadLists } from "./project.ts";
 import { readStoreFile } from "./store-file.ts";
@@ -52,11 +54,15 @@ export async function loadStore(project: string, path: string): Promise<StoreCou
 	}
 }
 
-/** Writes `file` in one commit: the commit that creates the root conversation when the store has none. */
+/**
+ * Writes `file` in one commit: the commit that creates the root conversation when the store has none. The commit always
+ * writes the counter of the IDs of items, so the next start of a host does not move the loaded todos to items.
+ */
 async function writeFile(harness: Harness, file: StoreFile): Promise<void> {
 	const write = async (tx: Tx) => {
 		await loadLists(tx, file);
 		await loadTodos(tx, ROOT_CONVERSATION_ID, file.todos, file.callerTodos);
+		await loadItems(tx, file.items, file.lastItem);
 	};
 
 	if ((await harness.conversation(ROOT_CONVERSATION_ID, context)) === undefined) {

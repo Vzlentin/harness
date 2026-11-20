@@ -1807,9 +1807,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 6);
+		const stateDir = await childrenStore("new-state", 7);
 		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 6 than 5");
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 7 than 6");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
