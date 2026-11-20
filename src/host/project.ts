@@ -4,7 +4,7 @@
  * the session, and each thread is an ownerless conversation whose entries are its messages, and the edits and deletes
  * of its messages, which a read applies in order. The states of the messages out are in the outbox, a document of the
  * session, because an entry cannot change. The requests of the host change them with these functions, each in its own
- * commit.
+ * commit. A round and a contract also write the `shapes` edge of their parley to a work item.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
@@ -54,6 +54,7 @@ import {
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
+import { itemForContract, linkItem } from "./items.ts";
 import {
 	Asks,
 	foldMessage,
@@ -471,13 +472,20 @@ type AskBase = Omit<Extract<Ask, { readonly state: "open" }>, "state">;
 /**
  * Writes the round `round` with the caller `by` as the asker of its asks, and gives the write: the parley with all of
  * its asks, or the new asks when they have no parley. With `round.parley`, a new slug makes an open parley, which needs a title and a goal, and a known slug must be
- * an open parley, whose fields the frame replaces. The asks of a parley take the next numbers of that parley.
+ * an open parley, whose fields the frame replaces. With `round.item`, the round also writes the edge
+ * `parley:<slug> shapes item:<item>` with the checks of `item link`. The asks of a parley take the next numbers of that
+ * parley.
  */
 export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
 	const at = Date.now();
 	const parley = round.parley === undefined ? undefined : frameParley(parleys, round.parley, at, by);
+
+	if (parley !== undefined && round.item !== undefined) {
+		await linkItem(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${round.item}` }, by);
+	}
+
 	let n = parley === undefined ? 0 : lastNumber(asks, parley.id);
 	const written: Ask[] = [];
 
@@ -511,7 +519,8 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * with all of its asks, and the answered asks with no parley. Each answer names its ask by ID, or by its number in a parley, and
  * two answers of one ask fail. Each answer replaces the answer of its ask, with its label and its words, as one unit. The answer `ok` to the read-back of
  * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
- * ask of the parley must be answered or dropped, and its `design_sense` set. The same commit queues the answers for
+ * ask of the parley must be answered or dropped, and its `design_sense` set. A contract that shapes no item gets a new
+ * item with its title and the edge `shapes`. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
  * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent.
@@ -554,7 +563,7 @@ export async function answerAsks(
 		if (parley !== undefined && input.answer === "ok") readBacks.add(parley.id);
 	}
 
-	for (const id of readBacks) makeContract(parleys, asks, id, at, by);
+	for (const id of readBacks) await itemForContract(tx, makeContract(parleys, asks, id, at, by), by);
 
 	await addSaveTodos(tx, root, written);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by));
@@ -743,8 +752,11 @@ function frameParley(parleys: Parley[], frame: ParleyFrame, at: number, by: stri
 	return Value.Clone(parley);
 }
 
-/** Makes the parley `id` a contract at `at` for the caller `by`. It needs `design_sense`, and no open ask. */
-function makeContract(parleys: Parley[], asks: readonly Ask[], id: number, at: number, by: string): void {
+/**
+ * Makes the parley `id` a contract at `at` for the caller `by`, and gives the contract. It needs `design_sense`, and no
+ * open ask.
+ */
+function makeContract(parleys: Parley[], asks: readonly Ask[], id: number, at: number, by: string): Parley {
 	const parley = openParley(known(parleys, id, "parley"));
 	const { design_sense } = parley;
 
@@ -758,7 +770,10 @@ function makeContract(parleys: Parley[], asks: readonly Ask[], id: number, at: n
 		throw new Error(`Parley ${parley.slug} cannot be a contract: ask ${open.parley.n} is open`);
 	}
 
-	parleys[parleys.indexOf(parley)] = { ...parley, status: "contract", design_sense, at, by };
+	const contract: Parley = { ...parley, status: "contract", design_sense, at, by };
+	parleys[parleys.indexOf(parley)] = contract;
+
+	return contract;
 }
 
 /** `parley` when it is open. A parley in another status fails: its asks do not change. */

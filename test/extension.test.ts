@@ -1100,6 +1100,17 @@ describe("the Pi extension", () => {
 			action: "note",
 			value: { note: "20261115-pi", asker: "session", by: "session", parley: { n: 1 } },
 		});
+		// A round with item writes the edge shapes from its parley; item needs slug.
+		const item = await request({ type: "item", action: "add", caller: "cli", title: "Pi" }, { start: false });
+
+		if (item === undefined || !("id" in item)) throw new Error("no item");
+		await tools.get("parley")?.call({ action: "round", slug: "pi", item: item.id, asks: [{ title: "More" }] });
+		expect(await request({ type: "item", action: "read", id: item.id }, { start: false })).toMatchObject({
+			edges: [{ from: "parley:pi", kind: "shapes", to: `item:${item.id}`, by: "session" }],
+		});
+		await expect(
+			tools.get("parley")?.call({ action: "round", item: item.id, asks: [{ title: "Lost" }] }),
+		).rejects.toThrow("round requires slug");
 		const lone = await tools.get("parley")?.call({ action: "round", asks: [{ title: "Alone" }] });
 		const loneId = Number(lone?.split(" ")[0]);
 		expect(await tools.get("parley")?.call({ action: "note", ask: loneId, note: "alone" })).toBe(

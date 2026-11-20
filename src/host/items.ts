@@ -1,14 +1,15 @@
 /**
  * The changes of the work items of the store of the project, each in the commit that a caller gives: the `item`
  * request changes them with these functions, each change in its own commit, and a spawn writes the `serves` edge of
- * its child in the commit that creates the child. It also gives whether a run is live: the stage of an item reads it,
+ * its child in the commit that creates the child. A round of asks writes the `shapes` edge of its parley, and the commit
+ * that makes a parley a contract gives it an item when it shapes none. It also gives whether a run is live: the stage of an item reads it,
  * and a live run refuses a change of its item to `done`.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { ConversationId, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { Edge, EdgeInput, EdgeKind, ItemAdd, ItemSet, WorkItem } from "../protocol/item.ts";
-import type { Ask } from "../protocol/project.ts";
+import type { Ask, Parley } from "../protocol/project.ts";
 import { ItemCounterDoc, itemEnds, Items, refParts } from "./item-docs.ts";
 import { Asks, knownParley, Parleys } from "./project-docs.ts";
 import { library } from "./targets.ts";
@@ -84,6 +85,22 @@ export async function serveItem(tx: Tx, id: number, conversationId: Conversation
 
 	if (item.state !== "open") throw new Error(`Item ${id} is ${item.state}: an agent cannot serve it`);
 	item.edges.push({ from: `agent:${conversationId}`, kind: "serves", to: `item:${id}`, at: Date.now(), by });
+}
+
+/**
+ * Gives the contract `parley` an item in `tx` for the caller `by`: when no item has the edge `parley:<slug> shapes`, it
+ * adds an item with the title of the parley and writes that edge. A commit cannot scan the items, so it reads each ID
+ * up to `last` of the counter: a read writes nothing.
+ */
+export async function itemForContract(tx: Tx, parley: Readonly<Parley>, by: string): Promise<void> {
+	const { last } = await tx.doc(ItemCounterDoc);
+
+	for (let id = 1; id <= last; id += 1) {
+		if (itemEnds(await itemDraft(tx, id)).parleys.includes(parley.slug)) return;
+	}
+
+	const item = await addItem(tx, { title: parley.title }, by);
+	await linkItem(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${item.id}` }, by);
 }
 
 /** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */

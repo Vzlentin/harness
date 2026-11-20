@@ -57,7 +57,7 @@ Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> 
 
 export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone or in a parley: a group of asks with a slug, a title, a goal, evidence and a design sense.
 Before you ask, read the vault on the topic. Write the view of each ask with show-me, with wiki links to the notes that the vault already holds. When the user answers an ask and \`VAULT\` names a folder that exists, you get the todo \`Save to the vault: <title>\`. Ask your next question first, and do the todo while the user decides: write the view and the decision into the vault, with an update of a note that exists when you can. Give the note an \`id\` in its front matter, and record that ID with \`note\` (or \`harness parley note\`): this closes the todo. When nothing is worth a note, set the todo to dropped with the \`todo\` tool, and say why in one line.
-- round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley.
+- round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley. With \`item\` and \`slug\`, the parley shapes the open work item \`item\`.
 - answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract.
 - drop: drop the open ask \`ask\`.
 - note: record \`note\`, the ID of the note in the vault that explains the ask \`ask\`, in any state. Only the asker of the ask records its note, and a second note replaces the first.
@@ -156,6 +156,7 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				Type.Array(Type.String({ pattern: "\\S" }), { description: "round: the evidence of the parley" }),
 			),
 			design_sense: text("round: the design sense of the parley, which its contract needs"),
+			item: id("round: the ID of the work item that the parley shapes"),
 			asks: Type.Optional(
 				Type.Array(
 					Type.Object({
@@ -425,10 +426,10 @@ function writeText(write: AskWrite): string {
 
 /** The frame of the parley of a round: its slug and the fields that the call gives. */
 function roundFrame(args: ParleyArgs): ParleyFrame | undefined {
-	const { slug, title, goal, evidence, design_sense } = args;
+	const { slug, title, goal, evidence, design_sense, item } = args;
 
 	if (slug === undefined) {
-		if ([title, goal, evidence, design_sense].some((field) => field !== undefined))
+		if ([title, goal, evidence, design_sense, item].some((field) => field !== undefined))
 			throw new Error("round requires slug");
 
 		return undefined;
@@ -467,7 +468,8 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 			if (args.asks === undefined) throw new Error(`${action} requires asks`);
 			const frame = roundFrame(args);
 			const round = { type: "ask", action, caller, asks: args.asks } as const;
-			const request = frame === undefined ? round : { ...round, parley: frame };
+			const item = args.item === undefined ? {} : { item: args.item };
+			const request = frame === undefined ? round : { ...round, parley: frame, ...item };
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
 
 			return { text: writeText(reply), data: { action, value: reply } };

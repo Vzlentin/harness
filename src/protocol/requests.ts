@@ -8,7 +8,6 @@ import {
 	AnswerInputs,
 	type Ask,
 	type AskList,
-	AskRound,
 	type AskWrite,
 	type DigestReply,
 	type HeldAction,
@@ -42,6 +41,7 @@ import {
 	type ThreadList,
 	type ThreadMessages,
 	withAskRef,
+	withRoundFrame,
 } from "./project.ts";
 import { ListRef, withListTarget, withTarget } from "./target.ts";
 import { type ClassifyReply, Todo, type TodoList, TodoState } from "./todo.ts";
@@ -430,14 +430,10 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("rule"), caller: Type.String(), ...RuleCreate.properties }),
 	/**
 	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
-	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open.
+	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open. With `item`, which
+	 * needs `parley`, the round also writes the edge `parley:<slug> shapes item:<item>`, with the checks of `item link`.
 	 */
-	Type.Object({
-		type: Type.Literal("ask"),
-		action: Type.Literal("round"),
-		caller: Type.String(),
-		...AskRound.properties,
-	}),
+	...withRoundFrame({ type: Type.Literal("ask"), action: Type.Literal("round"), caller: Type.String() }),
 	/**
 	 * Writes the answers of asks in one write, and replies with the write. Each answer names its ask by `id`, or by `slug`
 	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract. `user` marks answers that the user gave;

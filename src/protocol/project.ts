@@ -428,11 +428,26 @@ export const Parley = Type.Union([
 
 export type Parley = Static<typeof Parley>;
 
-/** The input of a round: the frame of its parley, when it has one, and one or more asks. */
-export const AskRound = Type.Object({
-	parley: Type.Optional(ParleyFrame),
-	asks: Type.Array(AskInput, { minItems: 1 }),
-});
+/**
+ * The two objects with `fields` and a round on the wire: one with `parley`, the frame of its parley, and `item`, the ID
+ * of the item that the parley shapes, when it has one, and one with neither. Each has one or more asks. The second
+ * refuses `parley` and `item`, so `item` needs `parley`.
+ */
+export function withRoundFrame<F extends TProperties>(fields: F) {
+	const absent = Type.Optional(Type.Never());
+	const asks = Type.Array(AskInput, { minItems: 1 });
+	const framed = Type.Object({ ...fields, parley: ParleyFrame, item: Type.Optional(LocalId), asks });
+	const bare = Type.Object({ ...fields, asks, parley: absent, item: absent });
+	const branches: [typeof framed, typeof bare] = [framed, bare];
+
+	return branches;
+}
+
+/**
+ * The input of a round: the frame of its parley and the item that the parley shapes, when it has them, and one or more
+ * asks.
+ */
+export const AskRound = Type.Union(withRoundFrame({}));
 
 export type AskRound = Static<typeof AskRound>;
 
