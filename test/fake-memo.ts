@@ -27,7 +27,10 @@ const fail = (message) => {
 const file = path.join(dir, "state.json");
 if (!fs.existsSync(file)) fail("No memory at " + dir + ".");
 const state = { notes: [], pending: [], summaries: {}, limit: 280, noteLimit: 280, parts: 1, cannotWake: false, ...JSON.parse(fs.readFileSync(file, "utf8")) };
-const save = () => fs.writeFileSync(file, JSON.stringify(state));
+const save = () => {
+	fs.writeFileSync(file + ".tmp", JSON.stringify(state));
+	fs.renameSync(file + ".tmp", file);
+};
 const check = (text, limit) => {
 	const line = (text ?? "").trim();
 	if (line === "") fail("Empty. A memory is one line of text.");
