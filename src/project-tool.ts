@@ -90,12 +90,12 @@ The user answers a parley with a line such as \`[<slug>] 1a 3:"own words" 4b:"a 
 - \`ok\` is \`{ ask: n, answer: <plan> }\` for each open my call n that the line does not name, and \`{ ask: n, answer: ok }\` for the open read-back n.
 A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Under an open ask, each option prints as \`  <key> · <label> · gains: … · costs: …\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`. After an answer come your open todos of its asks, such as \`○ 3 Save to the vault: <title>\`.`;
 
-export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An item is a piece of work: a title, a text that says what to build, and a state, ${oneOf(ITEM_STATES)}. Its edges link it to the parleys that shape it, the agents and runs that serve it, and the commits that landed it.
+export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An item is a piece of work: a title, a text that says what to build, and a state, ${oneOf(ITEM_STATES)}. Its edges link it to the parleys that shape it, the agents and runs that serve it, the commits that landed it, and the items that it needs.
 - add: add an open item with \`title\`, and \`text\` when you give it.
 - set: change the \`title\`, the \`text\` or the \`state\` of the item \`id\`.
 - list: the items in the state \`state\`, default open, in ID order.
-- read: the item \`id\`, its text and its edges.
-- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`run:<run ID>\`, \`parley:<slug>\` or \`commit:<sha>\`. A run serves one item. An agent serves the item of its spawn: spawn it with \`serves: { item: <id> }\`.
+- read: the item \`id\`, its text and its edges, with the \`needs\` edges of the items that need it.
+- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`run:<run ID>\`, \`parley:<slug>\`, \`commit:<sha>\`, or \`item:<id>\` for \`needs\`: \`item:<a> needs item:<b>\` says that a waits for b. An open item can need another item, but not itself, and the needs edges make no cycle. A run serves one item. An agent serves the item of its spawn: spawn it with \`serves: { item: <id> }\`.
 The host works out the stage of each item: ${oneOf(ITEM_STAGES)}.
 Each item prints as \`<mark> <id> <stage> <title>\`: ${ITEM_STATES.map((state) => `${ITEM_MARKS[state]} ${state}`).join(", ")}, or \`${NEEDS_YOU_MARK}\` when the item needs the user. Each edge prints as \`<from> <kind> <to>\`.`;
 

@@ -43,6 +43,8 @@ describe("harness item", { timeout: 30_000 }, () => {
 		expect(await item(["list"])).toBe("○ 1 inbox Move the config file\n");
 		expect(await item(["list", "--state", "dropped"])).toBe("✗ 2 dropped Drop the flag\n");
 		expect(await item(["show", "2"])).toBe("✗ 2 dropped Drop the flag\nNot needed.\n");
+		expect(await item(["link", "item:1", "needs", "item:2"])).toBe("item:1 needs item:2\n");
+		expect(await item(["show", "2"])).toBe("✗ 2 dropped Drop the flag\nNot needed.\nitem:1 needs item:2\n");
 	});
 
 	it("refuses bad arguments before any request, and prints the usage for other words", async () => {
@@ -88,7 +90,10 @@ describe("harness item", { timeout: 30_000 }, () => {
 		}
 
 		expect(await item(["show", "1"])).toBe(
-			`○ 1 inbox Move the config file\nInto vite.config.ts.\n${RUN} serves item:1\n`,
+			`○ 1 inbox Move the config file\nInto vite.config.ts.\n${RUN} serves item:1\nitem:1 needs item:2\n`,
 		);
+
+		const closed = await cli(["item", "link", "item:2", "needs", "item:1"]);
+		expect(closed).toMatchObject({ code: 1, stderr: "Item 2 is dropped: an edge needs cannot go from it\n" });
 	});
 });

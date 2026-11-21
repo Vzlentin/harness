@@ -25,7 +25,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
-import { allItems, readItem, readItems } from "./item-docs.ts";
+import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
 import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
@@ -458,7 +458,7 @@ async function item(request: Extract<Request, { type: "item" }>, handler: Handle
 		}
 
 		case "read":
-			return stageItem(handler, await readItem(handler.harness, request.id, context));
+			return stageItem(handler, await readItemBothWays(handler.harness, handler.storage, request.id, context));
 		case "link":
 			return handler.harness.commit((tx) => linkItem(tx, request, request.caller, handler.items), context);
 		case "unlink":

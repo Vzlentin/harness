@@ -21,7 +21,7 @@ export const Ref = Type.Union([
 export type Ref = Static<typeof Ref>;
 
 /** The kinds of an edge. */
-export const EDGE_KINDS = ["serves", "shapes", "landed"] as const;
+export const EDGE_KINDS = ["serves", "shapes", "landed", "needs"] as const;
 
 export const EdgeKind = Type.Enum(EDGE_KINDS);
 
@@ -142,6 +142,8 @@ function edgeEnds(kind: EdgeKind): EdgeEnds {
 			return { from: ["parley"], to: "item" };
 		case "landed":
 			return { from: ["item"], to: "commit" };
+		case "needs":
+			return { from: ["item"], to: "item" };
 	}
 }
 
@@ -149,8 +151,9 @@ function edgeEnds(kind: EdgeKind): EdgeEnds {
 export type EdgeItem = { readonly id: number; readonly other: string };
 
 /**
- * The ID of the item at one end of `edge`, and the reference at its other end. `serves` goes from an agent or a run to
- * an item, `shapes` from a parley to an item, and `landed` from an item to a commit: other ends give nothing.
+ * The ID of the item that stores `edge`, and the reference at its other end. `serves` goes from an agent or a run to
+ * an item, `shapes` from a parley to an item, `landed` from an item to a commit, and `needs` from an item to an item:
+ * other ends give nothing. An edge from an item is stored on its `from` item, and another edge on its `to` item.
  */
 export function edgeItem(edge: EdgeInput): EdgeItem | undefined {
 	const ends = edgeEnds(edge.kind);
@@ -159,7 +162,7 @@ export function edgeItem(edge: EdgeInput): EdgeItem | undefined {
 
 	if (!ends.from.includes(from.kind) || to.kind !== ends.to) return undefined;
 
-	return ends.to === "item" ? { id: Number(to.value), other: edge.from } : { id: Number(from.value), other: edge.to };
+	return from.kind === "item" ? { id: Number(from.value), other: edge.to } : { id: Number(to.value), other: edge.from };
 }
 
 /** A reference `<kind>:<value>`, cut at its first colon. */

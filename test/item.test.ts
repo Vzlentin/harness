@@ -136,6 +136,9 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 			[to, "landed", to],
 			[RUN, "landed", COMMIT],
 			["parley:a-b", "landed", COMMIT],
+			[RUN, "needs", to],
+			[to, "needs", COMMIT],
+			["parley:a-b", "needs", to],
 		];
 
 		for (const [from, kind, end] of wrong) {
@@ -251,6 +254,78 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 		// A link after the unlink writes the edge again, after the edges that stayed.
 		const again = await link(run, "serves", to);
 		expect((await read(item.id)).edges).toEqual([landed, again]);
+	});
+
+	it("writes a needs edge on the item that needs, and a read of either item shows it", async () => {
+		const a = await add("Needs");
+		const b = await add("Needed");
+		const c = await add("Needs too");
+		const [from, to, third] = [`item:${a.id}`, `item:${b.id}`, `item:${c.id}`] as const;
+
+		const edge = await link(from, "needs", to);
+		expect(edge).toEqual({ from, kind: "needs", to, at: expect.any(Number), by: "cli" });
+		expect(await link(from, "needs", to, "cli2")).toEqual(edge);
+		const landed = await link(to, "landed", COMMIT);
+		const other = await link(third, "needs", to);
+
+		expect(await read(a.id)).toEqual({ ...a, edges: [edge] });
+		// The edges of the item come first, then the needs edges that go to it, in the ID order of their items.
+		expect(await read(b.id)).toEqual({ ...b, edges: [landed, edge, other] });
+		expect(await read(c.id)).toEqual({ ...c, edges: [other] });
+
+		// The other replies give the stored edges only.
+		const listed = Value.Parse(ItemList, await send({ type: "item", action: "list" })).items;
+		expect(listed.find((item) => item.id === b.id)?.edges).toEqual([landed]);
+
+		const set = Value.Parse(
+			StagedItem,
+			await send({ type: "item", action: "set", caller: "cli", id: b.id, text: "x" }),
+		);
+
+		expect(set.edges).toEqual([landed]);
+		expect(set.stage).toBe("inbox");
+
+		expect(await unlink(from, "needs", to)).toEqual({ ...a, edges: [] });
+		expect((await read(b.id)).edges).toEqual([landed, other]);
+		await expect(unlink(from, "needs", to)).rejects.toThrow(`Item ${a.id} has no edge ${from} needs ${to}`);
+	});
+
+	it("refuses a needs edge to itself, from an unknown or closed item, to an unknown item, and a cycle", async () => {
+		const a = await add("First need");
+		const b = await add("Second need");
+		const c = await add("Third need");
+		const [first, second, third] = [`item:${a.id}`, `item:${b.id}`, `item:${c.id}`] as const;
+
+		await expect(link(first, "needs", first)).rejects.toThrow(`An edge needs cannot go from ${first} to itself`);
+		await expect(unlink(first, "needs", first)).rejects.toThrow(`An edge needs cannot go from ${first} to itself`);
+		await expect(link("item:999", "needs", first)).rejects.toThrow("Unknown item: 999");
+		await expect(link(first, "needs", "item:999")).rejects.toThrow("Unknown item: 999");
+
+		const ab = await link(first, "needs", second);
+		const bc = await link(second, "needs", third);
+
+		const refused = (from: string, to: string) =>
+			`Item ${to.slice(5)} already needs item ${from.slice(5)}: an edge needs cannot make a cycle`;
+
+		await expect(link(second, "needs", first)).rejects.toThrow(refused(second, first));
+		await expect(link(third, "needs", first)).rejects.toThrow(refused(third, first));
+
+		// A refused link changes no item: each keeps its edges, its `at` and its `by`.
+		expect(await read(a.id)).toEqual({ ...a, edges: [ab] });
+		expect(await read(b.id)).toEqual({ ...b, edges: [bc, ab] });
+		expect(await read(c.id)).toEqual({ ...c, edges: [bc] });
+
+		// A closed item can be needed, but cannot need.
+		await send({ type: "item", action: "set", caller: "cli", id: c.id, state: "done" });
+		const done = await link(first, "needs", third);
+		expect(done).toMatchObject({ from: first, kind: "needs", to: third });
+		await expect(link(third, "needs", second)).rejects.toThrow(`Item ${c.id} is done: an edge needs cannot go from it`);
+		// A stored edge is still the reply.
+		await send({ type: "item", action: "set", caller: "cli", id: a.id, state: "dropped" });
+		expect(await link(first, "needs", second)).toEqual(ab);
+		await expect(link(first, "needs", `item:${(await add("Late")).id}`)).rejects.toThrow(
+			`Item ${a.id} is dropped: an edge needs cannot go from it`,
+		);
 	});
 
 	it("refuses a request whose fields are not valid", async () => {

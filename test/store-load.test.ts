@@ -384,19 +384,26 @@ describe("harness store load", { timeout: 60_000 }, () => {
 
 		// A file of version 2: its open todo stays a todo, and the counter takes the highest ID of the items.
 		const edge = { from: "agent:7", kind: "serves", to: "item:2", at: 5, by: "cli" } as const;
-		const items = [{ id: 2, title: "Two", state: "open", edges: [edge], at: 5, by: "cli" }] as const;
+		const needs = { from: "item:3", kind: "needs", to: "item:2", at: 6, by: "cli" } as const;
+
+		const items = [
+			{ id: 2, title: "Two", state: "open", edges: [edge], at: 5, by: "cli" },
+			{ id: 3, title: "Three", state: "open", edges: [needs], at: 6, by: "cli" },
+		] as const;
+
 		const kept = [{ id: 1, text: "Private", state: "open" }] as const;
 		const v2 = join(root, "load-v2.json");
 		await writeFile(v2, JSON.stringify({ ...lists, version: 2, todos: kept, items, lastItem: 1 }));
 		expect(await load("load-v2", v2)).toMatchObject({ code: 0, stderr: "" });
-		expect(await hostedFile("load-v2")).toMatchObject({ todos: kept, items, lastItem: 2 });
+		expect(await hostedFile("load-v2")).toMatchObject({ todos: kept, items, lastItem: 3 });
 
 		const host = await startHost("load-v2");
 
 		try {
 			expect(await send({ type: "item", action: "add", caller: "cli", title: "Next" }, "load-v2")).toMatchObject({
-				id: 3,
+				id: 4,
 			});
+			expect(await send({ type: "item", action: "read", id: 2 }, "load-v2")).toMatchObject({ edges: [edge, needs] });
 			expect(await send({ type: "todo", action: "list", caller: "cli", handle: AGENT_HANDLE }, "load-v2")).toEqual({
 				todos: kept,
 			});
@@ -551,6 +558,11 @@ describe("harness store load", { timeout: 60_000 }, () => {
 				"edge-ends.json",
 				{ ...twice, items: [item(2, [{ ...edge, kind: "landed" }])], lastItem: 2 },
 				"the edge agent:7 landed item:2 is not an edge of the item 2",
+			],
+			[
+				"needs-on-to.json",
+				{ ...twice, items: [item(2, [{ ...edge, from: "item:1", kind: "needs" }])], lastItem: 2 },
+				"the edge item:1 needs item:2 is not an edge of the item 2",
 			],
 		] as const;
 

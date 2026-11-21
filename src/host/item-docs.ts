@@ -1,6 +1,6 @@
 /**
  * The documents of the work items: one document of the session for each item, keyed by its ID, and the counter of
- * their IDs. It reads the items, and the other ends of the edges of an item.
+ * their IDs. It reads the items, the `needs` edges that go to an item, and the other ends of the edges of an item.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, DocumentReader, Storage } from "@earendil-works/pi-durable";
@@ -59,6 +59,26 @@ export async function readItem(
 	if (item === undefined) throw new Error(`Unknown item: ${id}`);
 
 	return Value.Clone(item);
+}
+
+/**
+ * The item `id`, in any state, with its edges and then the `needs` edges that go to it from other items, in the ID order
+ * of those items. Only the item that needs another stores the edge.
+ */
+export async function readItemBothWays(
+	reader: Pick<DocumentReader, "snapshot">,
+	storage: Pick<Storage, "scanDocuments">,
+	id: number,
+	context: Context,
+): Promise<WorkItem> {
+	const item = await readItem(reader, id, context);
+	const to = `item:${id}`;
+
+	for (const other of await allItems(reader, storage, context)) {
+		for (const edge of other.edges) if (edge.kind === "needs" && edge.to === to) item.edges.push(Value.Clone(edge));
+	}
+
+	return item;
 }
 
 /**

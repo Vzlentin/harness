@@ -93,9 +93,10 @@ export async function linkItem(tx: Tx, input: EdgeInput, by: string, items: Pick
 
 /**
  * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it. The kind fixes
- * the ends, the item must exist, and an edge with the same ends and kind is not written again: its stored edge is the
- * reply. A `serves` or `shapes` edge needs an open item, and a parley at the other end of a `shapes` edge. A run or a
- * commit end is checked for its form only.
+ * the ends, a `needs` edge does not go from an item to itself, the item must exist, and an edge with the same ends and
+ * kind is not written again: its stored edge is the reply. A `serves`, `shapes` or `needs` edge needs an open item, a
+ * parley at the other end of a `shapes` edge, and an item at the other end of a `needs` edge, which must not make a
+ * cycle of `needs` edges: `knownEnd` checks the other end. A run or a commit end is checked for its form only.
  */
 export async function writeEdge(tx: Tx, input: EdgeInput, by: string): Promise<Edge> {
 	const { id, other } = endsOf(input);
@@ -105,10 +106,11 @@ export async function writeEdge(tx: Tx, input: EdgeInput, by: string): Promise<E
 	if (stored !== undefined) return Value.Clone(stored);
 
 	if (input.kind !== "landed" && item.state !== "open") {
-		throw new Error(`Item ${id} is ${item.state}: an edge ${input.kind} cannot go to it`);
+		const way = input.from === `item:${id}` ? "go from" : "go to";
+		throw new Error(`Item ${id} is ${item.state}: an edge ${input.kind} cannot ${way} it`);
 	}
 
-	await knownEnd(tx, other);
+	await knownEnd(tx, id, other);
 	const edge: Edge = { from: input.from, kind: input.kind, to: input.to, at: Date.now(), by };
 	item.edges.push({ ...edge });
 
@@ -226,23 +228,53 @@ async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
 	return item;
 }
 
-/** The ID of the item at one end of `edge`, and the reference at its other end. Ends that its kind does not take fail. */
+/**
+ * The ID of the item that stores `edge`, and the reference at its other end. Ends that its kind does not take fail, and
+ * so does an edge from an item to itself.
+ */
 function endsOf(edge: EdgeInput): EdgeItem {
 	const ends = edgeItem(edge);
 
 	if (ends === undefined) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to ${edge.to}`);
 
+	if (edge.from === edge.to) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to itself`);
+
 	return ends;
 }
 
 /**
- * Fails when `ref`, the end of an edge that is not its item, is a parley that the store does not have. A run or a
- * commit is not checked.
+ * Fails when `ref`, the end of an edge that the item `id` stores and that is not that item, is a parley that the store
+ * does not have, or an item that the store does not have or that needs the item `id`, so that the edge would make a
+ * cycle of `needs` edges. A run or a commit is not checked.
  */
-async function knownEnd(tx: Tx, ref: string): Promise<void> {
+async function knownEnd(tx: Tx, id: number, ref: string): Promise<void> {
 	const { kind, value } = refParts(ref);
 
 	if (kind === "parley") knownParley((await tx.doc(Parleys)).parleys, value);
+	else if (kind === "item") await refuseCycle(tx, id, Number(value));
+}
+
+/**
+ * Fails when the item `to` needs the item `from`, through its `needs` edges and those of the items it needs, so that the
+ * edge `item:<from> needs item:<to>` would make a cycle. The walk only reads the items, so the commit writes none of them.
+ */
+async function refuseCycle(tx: Tx, from: number, to: number): Promise<void> {
+	const seen = new Set([to]);
+	const next = [to];
+
+	for (let id = next.pop(); id !== undefined; id = next.pop()) {
+		for (const edge of (await itemDraft(tx, id)).edges) {
+			if (edge.kind !== "needs") continue;
+			const needed = Number(refParts(edge.to).value);
+
+			if (needed === from) throw new Error(`Item ${to} already needs item ${from}: an edge needs cannot make a cycle`);
+
+			if (!seen.has(needed)) {
+				seen.add(needed);
+				next.push(needed);
+			}
+		}
+	}
 }
 
 /**
