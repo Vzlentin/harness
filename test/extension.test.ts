@@ -709,6 +709,7 @@ describe("the Pi extension", () => {
 		const registered = await load();
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
+		expect(registered.tools.get("item")?.description).toContain("board: +2, closed 3, 10 needs 8");
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
 	});
 
@@ -1192,12 +1193,15 @@ describe("the Pi extension", () => {
 		});
 
 		// Before a turn, the session gets its digest when it changed, and a mark of the draft changes it.
+		expect(await agentStartMessage(registered)).toMatchObject({
+			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
+		});
 		expect(await agentStartMessage(registered)).toBeUndefined();
 		await tools.get("thread")?.call({ action: "draft", thread: thread.id, text: "Hi Sam" });
 		const draft = Value.Parse(Type.Object({ value: Message }), tools.get("thread")?.structured.at(-1)).value;
 		expect(await agentStartMessage(registered)).toEqual({
 			customType: "harness-digest",
-			content: "waiting on: Sam (Pi, draft not sent)\nheld: none",
+			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: Sam (Pi, draft not sent)\nheld: none",
 			display: true,
 		});
 		expect(await agentStartMessage(registered)).toBeUndefined();
@@ -1207,7 +1211,9 @@ describe("the Pi extension", () => {
 		await expect(tools.get("thread")?.call({ action: "mark", message: draft.id })).rejects.toThrow(
 			"mark requires state",
 		);
-		expect(await agentStartMessage(registered)).toMatchObject({ content: "waiting on: none\nheld: none" });
+		expect(await agentStartMessage(registered)).toMatchObject({
+			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
+		});
 	});
 
 	it("lists the rules with /rules, open first, and makes the change that the user picks, or with no UI only prints them", async () => {

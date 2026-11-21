@@ -911,18 +911,21 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			const after = Date.now();
 			// The time of the mark is between `before` and `after`, which can be in two minutes.
 			const sent = (at: number) => `Sam (own-brand C+P, sent ${utcMinute(at)})`;
-			const both = (at: number) => `waiting on: ${sent(at)} · Benoit (double loyalty, draft not sent)\nheld: none`;
+
+			const both = (at: number) =>
+				`board of digest: 0 open\nwaiting on: ${sent(at)} · Benoit (double loyalty, draft not sent)\nheld: none`;
+
 			expect([before, after].map(both)).toContain(await digestOf(project, "pi-1"));
 			expect(await digestOf(project, "pi-1")).toBeUndefined();
 
 			await send({ ...mark, message: toBenoit.id, state: "dropped" }, project);
-			const samOnly = (at: number) => `waiting on: ${sent(at)}\nheld: none`;
+			const samOnly = (at: number) => `board of digest: 0 open\nwaiting on: ${sent(at)}\nheld: none`;
 			expect([before, after].map(samOnly)).toContain(await digestOf(project, "pi-1"));
 			// Each caller has its own last digest.
 			expect([before, after].map(samOnly)).toContain(await digestOf(project, "pi-2"));
 
 			await logAt(project, brand.id, sam.id, 2_000, "Thanks.");
-			expect(await digestOf(project, "pi-1")).toBe("waiting on: none\nheld: none");
+			expect(await digestOf(project, "pi-1")).toBe("board of digest: 0 open\nwaiting on: none\nheld: none");
 			expect(await digestOf(project, "pi-1")).toBeUndefined();
 			expect(await digestOf(project, "pi-3")).toBeUndefined();
 		} finally {
@@ -943,7 +946,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 			);
 
 			const draft = await logAt(project, thread.id, "user", 1_000, "The scope.");
-			const waiting = "waiting on: Sam (Scope, draft not sent)\nheld: none";
+			const waiting = "board of digest-child: 0 open\nwaiting on: Sam (Scope, draft not sent)\nheld: none";
 			const child = await spawnAs("digest-test", "Digest one", { notify: false, project });
 			await answerOf(child.handle, project);
 			expect(contexts.get("Digest one")).toEqual([waiting, "Digest one"]);
@@ -968,7 +971,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				waiting,
 				"Digest one",
 				"Digest two",
-				"waiting on: none\nheld: none",
+				"board of digest-child: 0 open\nwaiting on: none\nheld: none",
 				"Digest three",
 			]);
 		} finally {

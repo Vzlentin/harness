@@ -573,7 +573,7 @@ describe("gate", { timeout: 60_000 }, () => {
 			const digest = async (caller: string) =>
 				Value.Parse(DigestReply, await send({ type: "digest", caller }, project)).text;
 
-			expect(await digest("khan")).toBe(`waiting on: none\nheld: 1 bash: ${held.reason}`);
+			expect(await digest("khan")).toBe(`board of gate-held: 0 open\nwaiting on: none\nheld: 1 bash: ${held.reason}`);
 			expect(await digest("other")).toBeUndefined();
 			await until(() => watch.events.some((event) => event.held.length > 0));
 			expect(watch.events.at(-1)).toMatchObject({ held: [held], rules: [], removed: { held: [] } });
@@ -605,7 +605,9 @@ describe("gate", { timeout: 60_000 }, () => {
 
 			// Only the actions in the state held are there: action 1 is approved, and action 2 is of another agent.
 			const failed = "The classifier openrouter/typesafe/jev-1.14 failed: overloaded";
-			expect(await digest("khan")).toBe(`waiting on: none\nheld: 3 bash: ${failed} · 4 bash: ${held.reason}`);
+			expect(await digest("khan")).toBe(
+				`board of gate-held: 0 open\nwaiting on: none\nheld: 3 bash: ${failed} · 4 bash: ${held.reason}`,
+			);
 			const dropped = await send({ type: "held", action: "drop", caller: "user", id: 2 }, project);
 			expect(dropped).toMatchObject({ id: 2, state: "dropped", by: "user" });
 			expect(await gate("other", "call-2", merge, project)).toEqual({ runs: false, held: dropped });

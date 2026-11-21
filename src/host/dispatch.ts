@@ -378,7 +378,7 @@ function message(request: Extract<Request, { type: "message" }>, handler: Handle
 
 /** The digest of `caller` when it changed since its last one, recorded as given. */
 async function digest(caller: string, handler: Handler): Promise<Replies["digest"]> {
-	const next = await nextDigest(handler.harness, caller);
+	const next = await nextDigest(handler, caller);
 
 	if (next === undefined) return {};
 	await recordDigest(handler.harness, caller, next);
