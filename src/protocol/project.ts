@@ -1,4 +1,4 @@
-import { type Static, type TProperties, Type } from "typebox";
+import { type Static, type TProperties, type TSchema, Type } from "typebox";
 import { SLUG } from "./paths.ts";
 import { isFinished } from "./todo.ts";
 
@@ -432,23 +432,31 @@ export const Parley = Type.Union([
 export type Parley = Static<typeof Parley>;
 
 /**
- * The two objects with `fields` and a round on the wire: one with `parley`, the frame of its parley, and `item`, the ID
- * of the item that the parley shapes, when it has one, and one with neither. Each has one or more asks. The second
- * refuses `parley` and `item`, so `item` needs `parley`.
+ * The three objects with `fields` and a round on the wire: one with `parley`, the frame of its parley, `item`, the ID
+ * of the item that the parley shapes, when it has one, and one or more asks; one with neither and one or more asks; and
+ * one with `parley`, `item` when it has one, and no asks. The second refuses `parley` and `item`, so `item` needs
+ * `parley`. The round with no asks comes last, so a request that fails names the field of the other two first: a bare
+ * round with no asks fails on its asks, not on a missing `parley`.
  */
 export function withRoundFrame<F extends TProperties>(fields: F) {
 	const absent = Type.Optional(Type.Never());
 	const asks = Type.Array(AskInput, { minItems: 1 });
-	const framed = Type.Object({ ...fields, parley: ParleyFrame, item: Type.Optional(LocalId), asks });
+
+	const withFrame = <A extends TSchema>(frameAsks: A) =>
+		Type.Object({ ...fields, parley: ParleyFrame, item: Type.Optional(LocalId), asks: frameAsks });
+
+	const framed = withFrame(asks);
 	const bare = Type.Object({ ...fields, asks, parley: absent, item: absent });
-	const branches: [typeof framed, typeof bare] = [framed, bare];
+	const reframed = withFrame(Type.Array(AskInput, { maxItems: 0 }));
+
+	const branches: [typeof framed, typeof bare, typeof reframed] = [framed, bare, reframed];
 
 	return branches;
 }
 
 /**
- * The input of a round: the frame of its parley and the item that the parley shapes, when it has them, and one or more
- * asks.
+ * The input of a round: the frame of its parley and the item that the parley shapes, when it has them, and its asks:
+ * zero or more with a frame, one or more without.
  */
 export const AskRound = Type.Union(withRoundFrame({}));
 
@@ -635,11 +643,21 @@ export const ParleyAsks = Type.Object({ parley: Parley, asks: Type.Array(Ask) })
 
 export type ParleyAsks = Static<typeof ParleyAsks>;
 
+/** A work item that a write of asks added, as its ID and its title. */
+export const AddedItem = Type.Object({ id: LocalId, title: Text });
+
+export type AddedItem = Static<typeof AddedItem>;
+
 /**
  * The reply of a write of asks, from the commit of the write: each parley that it changed or whose asks it changed,
- * with all of its asks, in ID order, and the asks with no parley that it added or changed, in ID order.
+ * with all of its asks, in ID order, and the asks with no parley that it added or changed, in ID order. `items` are the
+ * work items that the write added, in ID order, and only a write that added items has it.
  */
-export const AskWrite = Type.Object({ parleys: Type.Array(ParleyAsks), asks: Type.Array(Ask) });
+export const AskWrite = Type.Object({
+	parleys: Type.Array(ParleyAsks),
+	asks: Type.Array(Ask),
+	items: Type.Optional(Type.Array(AddedItem)),
+});
 
 export type AskWrite = Static<typeof AskWrite>;
 
@@ -836,9 +854,16 @@ function optionLines(ask: Ask): string[] {
 	});
 }
 
-/** The text of a parley: its line, the line of each of its asks with the options of each open ask, and its answer line. */
+/**
+ * The text of a parley: its line, the line of each of its asks with the options of each open ask and the words of the
+ * user under each answered ask, and its answer line.
+ */
 export function parleyText(reply: ParleyAsks): string {
-	const asks = reply.asks.flatMap((ask) => [askLine(ask), ...optionLines(ask)]);
+	const asks = reply.asks.flatMap((ask) => [
+		askLine(ask),
+		...optionLines(ask),
+		...(ask.state === "answered" ? (ask.words ?? []) : []),
+	]);
 
 	return [parleyLine(reply.parley), ...asks, parleyAnswerLine(reply.parley, reply.asks)]
 		.map((line) => `${line}\n`)

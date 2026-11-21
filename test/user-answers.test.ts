@@ -186,6 +186,27 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("gives the words of the user under each answered ask of a parley", async () => {
+		const answers = listen("pi-words");
+
+		try {
+			const [call] = await round(
+				"pi-words",
+				[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
+				{ slug: "words-plan", ...FRAME },
+			);
+
+			await answer([{ id: call ?? 0, answer: "b", words: ["keep it in git", "and log it"] }]);
+			await untilCount(answers.deliveries, 1);
+
+			expect(answers.deliveries[0]?.text).toContain(
+				"1 · Where · your call · b · In files\nkeep it in git\nand log it\n2 · ",
+			);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
 	it("does not go to an asker that answered its own ask", async () => {
 		const answers = listen("pi-self");
 

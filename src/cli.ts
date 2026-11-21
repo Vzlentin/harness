@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { request } from "./client/client.ts";
+import { exitText, request, startDetached } from "./client/client.ts";
 import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
@@ -22,7 +23,7 @@ import {
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
 import { EdgeKind, ItemState } from "./protocol/item.ts";
-import { pageDir } from "./protocol/paths.ts";
+import { inspectPaths, pageDir } from "./protocol/paths.ts";
 import {
 	LocalId,
 	ParleyAsks,
@@ -47,6 +48,9 @@ import { type ListRef, type ListTarget, parseTarget, type Target, targetRef } fr
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
 import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
+
+/** How long `harness page` waits for the inspect server that it starts. */
+const INSPECT_START_MS = 10_000;
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -826,8 +830,9 @@ function pageArgs(args: string[]): PageArgs {
 
 /**
  * Copies the page in `<folder>` to the pages of the inspect routes, and prints its link on each address, with the target
- * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the project agent. It
- * starts no server: a line notes an address where none listens.
+ * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the project agent. When
+ * no address listens, it starts `harness inspect` in the background on the same addresses, and prints its PID and its
+ * log on stderr. When only some addresses listen, it starts nothing, and a line notes each address where none listens.
  */
 async function pageCommand(args: string[], project: string | undefined): Promise<void> {
 	const { folder, slug, ref, port = DEFAULT_PORT, host, tailscale } = pageArgs(args);
@@ -837,12 +842,49 @@ async function pageCommand(args: string[], project: string | undefined): Promise
 	const target: MirrorTarget = { project: name, target: ref ?? (await callerTarget(name)) };
 	const hosts = await resolveBindHosts({ host, tailscale });
 	writePage(dest, folder, files);
-	const open = await Promise.all(hosts.map((address) => listens(address, port)));
+	const seen = await listening(hosts, port);
+	const bind = [...(host === undefined ? [] : ["--host", host]), ...(tailscale ? ["--tailscale"] : [])];
+
+	const open = seen.includes(true)
+		? seen
+		: await startInspect(["inspect", "--port", String(port), ...bind], hosts, port);
 
 	for (const [index, address] of hosts.entries()) {
 		const note = open[index] === true ? "" : "  (no server listens: harness inspect serves the pages)";
 		process.stdout.write(`${pageLink(address, port, slug, target)}${note}\n`);
 	}
+}
+
+/** For each of `hosts`, whether a server listens on it at `port`. */
+async function listening(hosts: readonly string[], port: number): Promise<boolean[]> {
+	return Promise.all(hosts.map((address) => listens(address, port)));
+}
+
+/**
+ * Starts `harness inspect` with `args` in the background, waits up to `INSPECT_START_MS` until it listens on each of
+ * `hosts` at `port`, and gives the listen state that it saw last. It prints the PID and the log of the server on
+ * stderr, and fails when the server exits or does not listen in time.
+ */
+async function startInspect(args: readonly string[], hosts: readonly string[], port: number): Promise<boolean[]> {
+	const { dir, log } = inspectPaths();
+	const started = startDetached(args, dir, log);
+	const deadline = Date.now() + INSPECT_START_MS;
+	let open = await listening(hosts, port);
+
+	while (open.includes(false)) {
+		if (started.exited !== undefined) fail(`harness inspect did not start: ${exitText(started.exited)}; see ${log}`);
+
+		if (Date.now() > deadline) {
+			fail(`harness inspect did not start: no server listens after ${INSPECT_START_MS / 1000} s; see ${log}`);
+		}
+
+		await sleep(100);
+		open = await listening(hosts, port);
+	}
+
+	process.stderr.write(`harness inspect runs as pid ${started.pid}; log ${log}\n`);
+
+	return open;
 }
 
 /**

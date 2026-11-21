@@ -74,8 +74,8 @@ Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> 
 
 export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone or in a parley: a group of asks with a slug, a title, a goal, evidence and a design sense.
 Before you ask, read the vault on the topic. Write the view of each ask with show-me, with wiki links to the notes that the vault already holds. When the user answers an ask and \`VAULT\` names a folder that exists, you get the todo \`Save to the vault: <title>\`. Ask your next question first, and do the todo while the user decides: write the view and the decision into the vault, with an update of a note that exists when you can. Give the note an \`id\` in its front matter, and record that ID with \`note\` (or \`harness parley note\`): this closes the todo. When nothing is worth a note, set the todo to dropped with the \`todo\` tool, and say why in one line.
-- round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley. With \`item\` and \`slug\`, the parley shapes the open work item \`item\`.
-- answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract.
+- round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley. With \`slug\` of an open parley, \`asks\` can be left out when the round changes one of these fields. With \`item\` and \`slug\`, the parley shapes the open work item \`item\`.
+- answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract, and adds a work item with the title of the parley when the contract shapes no item: the text gives it as \`+ item <id> <title>\`.
 - drop: drop the open ask \`ask\`.
 - note: record \`note\`, the ID of the note in the vault that explains the ask \`ask\`, in any state. Only the asker of the ask records its note, and a second note replaces the first.
 - take: become the asker of the open asks of the parley \`slug\`, open or a contract. It gives the answers that waited for the asker.
@@ -91,7 +91,7 @@ The user answers a parley with a line such as \`[<slug>] 1a 3:"own words" 4b:"a 
 A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Under an open ask, each option prints as \`  <key> · <label> · gains: … · costs: …\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`. After an answer come your open todos of its asks, such as \`○ 3 Save to the vault: <title>\`.`;
 
 export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An item is a piece of work: a title, a text that says what to build, and a state, ${oneOf(ITEM_STATES)}. Its edges link it to the parleys that shape it, the agents and runs that serve it, the commits that landed it, and the items that it needs.
-The agent that talks with the user keeps the board true: it adds, rewords, closes, drops and links items from what the chat shows, and ends its answer with one line of the change to the board, such as \`board: +2, closed 3, 10 needs 8\`. A message to a person stays a thread draft, not an item.
+The agent that talks with the user keeps the board true: it adds, rewords, closes, drops and links items from what the chat shows. A message to a person stays a thread draft, not an item.
 - add: add an open item with \`title\`, and \`text\` when you give it.
 - set: change the \`title\`, the \`text\` or the \`state\` of the item \`id\`.
 - list: the items in the state \`state\`, default open, in ID order.
@@ -532,9 +532,9 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 
 	switch (action) {
 		case "round": {
-			if (args.asks === undefined) throw new Error(`${action} requires asks`);
+			if (args.asks === undefined && slug === undefined) throw new Error(`${action} requires asks`);
 			const frame = roundFrame(args);
-			const round = { type: "ask", action, caller, asks: args.asks } as const;
+			const round = { type: "ask", action, caller, asks: args.asks ?? [] } as const;
 			const item = args.item === undefined ? {} : { item: args.item };
 			const request = frame === undefined ? round : { ...round, parley: frame, ...item };
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
@@ -548,8 +548,9 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 			const request = { type: "ask", action, caller, answers } as const;
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
 			const todos = await saveTodoText(reply, scope);
+			const items = (reply.items ?? []).map((item) => `+ item ${item.id} ${item.title}\n`).join("");
 
-			return { text: writeText(reply) + todos, data: { action, value: reply } };
+			return { text: writeText(reply) + items + todos, data: { action, value: reply } };
 		}
 
 		case "drop": {

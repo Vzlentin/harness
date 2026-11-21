@@ -294,6 +294,19 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("changes the frame of an open parley with a round that has no asks", async () => {
+		await framed("reframed");
+		const before = await readParley("reframed");
+		const evidence = ["The store has one writer."];
+		const written = await round("pi-2", { slug: "reframed", evidence }, []);
+
+		expect(written.asks).toEqual([]);
+		expect(written.parleys).toEqual([
+			{ parley: { ...before.parley, evidence, at: expect.any(Number), by: "pi-2" }, asks: before.asks },
+		]);
+		expect(await readParley("reframed")).toEqual(written.parleys[0]);
+	});
+
 	it("refuses a write that breaks a check with a clear error, and changes nothing", async () => {
 		const { call, readBack } = await framed("checked");
 		const lone = (await round("khan", undefined, [{ title: "Merge?", options: OPTIONS }])).asks[0]?.id ?? 0;
@@ -404,6 +417,30 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			[
 				{ type: "parley", action: "end", caller: "pi-1", slug: "checked", status: "done" },
 				"Parley checked is open: only a contract ends",
+			],
+			[
+				{
+					type: "ask",
+					action: "round",
+					caller: "pi-1",
+					parley: { slug: "checked", title: "Where asks live", design_sense: "One writer." },
+					asks: [],
+				},
+				"A round with no asks must change the title, goal, evidence or design sense of the open parley checked",
+			],
+			[
+				{
+					type: "ask",
+					action: "round",
+					caller: "pi-1",
+					parley: { slug: "fresh", title: "Fresh", goal: "Pick." },
+					asks: [],
+				},
+				"A round with no asks must change the title, goal, evidence or design sense of the open parley fresh",
+			],
+			[
+				{ type: "ask", action: "round", caller: "pi-1", parley: { slug: "checked" }, item: 1, asks: [] },
+				"A round with no asks must change the title, goal, evidence or design sense of the open parley checked",
 			],
 		];
 

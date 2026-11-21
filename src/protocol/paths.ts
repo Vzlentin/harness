@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The CLI of this install, which the host start and the hc terminals of `openChildTab` and `openConversationPane` run
+ * The CLI of this install, which the detached starts of the host and of inspect, and the hc terminals of `openChildTab` and `openConversationPane` run
  * with this Node: `cli.js` next to the built modules, or `cli.ts` in a checkout, which Node runs with type stripping.
  */
 export function cliPath(): string {
@@ -24,6 +24,15 @@ export function statePaths(project: string): StatePaths {
 	const dir = join(stateRoot(), project);
 
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log"), store: join(dir, "store.json") };
+}
+
+export type InspectPaths = { dir: string; log: string };
+
+/** The folder and the log of an inspect server that `harness page` starts: the state folder and its `inspect.log`. */
+export function inspectPaths(): InspectPaths {
+	const dir = stateRoot();
+
+	return { dir, log: join(dir, "inspect.log") };
 }
 
 /** The folder of the page `slug`, which the inspect routes serve. It throws for a slug that is not valid. */

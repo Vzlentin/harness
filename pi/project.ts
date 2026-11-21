@@ -50,7 +50,7 @@ export function registerProject(
 
 			if (reply?.text === undefined) return undefined;
 
-			return { message: { customType: "harness-digest", content: reply.text, display: true } };
+			return { message: { customType: "harness-digest", content: reply.text, display: false } };
 		} catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(`harness: no digest: ${protocol.errorMessage(error)}`, "warning");
 

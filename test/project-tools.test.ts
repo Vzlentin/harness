@@ -219,7 +219,7 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		expect(results[2]).toContain("Ask 1 takes a, b or own");
 
 		expect(results[3]).toBe(
-			"where · contract · Where asks live\n1 · Where · your call · b · In files\n2 · These are the terms · ok\nharness parley show where\n",
+			"where · contract · Where asks live\n1 · Where · your call · b · In files\n2 · These are the terms · ok\nharness parley show where\n+ item 1 Where asks live\n",
 		);
 		expect(results[4]).toContain("round requires slug");
 		expect(results.slice(5, 7)).toEqual(["3 · Push now? · open\n", "3 · Push now? · open\n"]);
@@ -307,7 +307,7 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 			open,
 			`${answered}[flow] ok\n${todos}`,
 			`${answered}3 · These are the terms · open\n[flow] ok\n`,
-			`${contract}harness parley show flow\n${todos}`,
+			`${contract}harness parley show flow\n+ item 2 Flow\n${todos}`,
 		]);
 	});
 

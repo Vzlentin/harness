@@ -713,7 +713,10 @@ describe("the Pi extension", () => {
 		const registered = await load();
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
-		expect(registered.tools.get("item")?.description).toContain("board: +2, closed 3, 10 needs 8");
+		expect(registered.tools.get("item")?.description).not.toContain("board:");
+		expect(registered.tools.get("parley")?.description).toContain(
+			"adds a work item with the title of the parley when the contract shapes no item: the text gives it as `+ item <id> <title>`.",
+		);
 
 		expect(registered.tools.get("parley")?.description).toContain(
 			"It takes only a contract that shapes no open item: the change of the last open item of a contract to done or dropped ends the contract.",
@@ -1210,7 +1213,7 @@ describe("the Pi extension", () => {
 		expect(await agentStartMessage(registered)).toEqual({
 			customType: "harness-digest",
 			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: Sam (Pi, draft not sent)\nheld: none",
-			display: true,
+			display: false,
 		});
 		expect(await agentStartMessage(registered)).toBeUndefined();
 		expect(await tools.get("thread")?.call({ action: "mark", message: draft.id, state: "dropped" })).toMatch(

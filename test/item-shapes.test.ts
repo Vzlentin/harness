@@ -107,7 +107,8 @@ describe("the shapes edge of a round and of a contract", { timeout: 30_000 }, ()
 	it("gives a contract that shapes no item a new item, with the title of the parley and the edge", async () => {
 		const count = (await items()).length;
 		const { call, readBack } = await framed("contract-new-item");
-		await answer([
+
+		const written = await answer([
 			{ id: call, answer: "a" },
 			{ id: readBack, answer: "ok" },
 		]);
@@ -123,6 +124,7 @@ describe("the shapes edge of a round and of a contract", { timeout: 30_000 }, ()
 			stage: "ready",
 		});
 		expect(created?.text).toBeUndefined();
+		expect(written.items).toEqual([{ id: created?.id, title: "Where asks live" }]);
 	});
 
 	it("adds no item for a contract that shapes one, and the shaped item becomes ready", async () => {
@@ -138,11 +140,12 @@ describe("the shapes edge of a round and of a contract", { timeout: 30_000 }, ()
 		});
 		const count = (await items()).length;
 
-		await answer([
+		const written = await answer([
 			{ id: call, answer: "a" },
 			{ id: readBack, answer: "ok" },
 		]);
 
+		expect(written.items).toBeUndefined();
 		expect(await items()).toHaveLength(count);
 		expect(await read(item.id)).toMatchObject({ stage: "ready" });
 	});

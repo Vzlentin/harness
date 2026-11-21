@@ -20,7 +20,7 @@ import {
 	refParts,
 	type WorkItem,
 } from "../protocol/item.ts";
-import type { Ask, Parley } from "../protocol/project.ts";
+import type { AddedItem, Ask, Parley } from "../protocol/project.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { Asks, endContract, knownParley, Parleys } from "./project-docs.ts";
@@ -158,19 +158,22 @@ export async function serveItem(tx: Tx, id: number, conversationId: Conversation
 
 /**
  * Gives the contract `parley` an item in `tx` for the caller `by`: when `items` gives no item with the edge
- * `parley:<slug> shapes`, it adds an item with the title of the parley and writes that edge.
+ * `parley:<slug> shapes`, it adds an item with the title of the parley, writes that edge, and gives the item. Else it
+ * gives nothing.
  */
 export async function itemForContract(
 	tx: Tx,
 	parley: Readonly<Parley>,
 	by: string,
 	items: Pick<ItemIndex, "itemsOf">,
-): Promise<void> {
+): Promise<AddedItem | undefined> {
 	const end = `parley:${parley.slug}`;
 
-	if (items.itemsOf(end).length > 0) return;
+	if (items.itemsOf(end).length > 0) return undefined;
 	const item = await addItem(tx, { title: parley.title }, by);
 	await writeEdge(tx, { from: end, kind: "shapes", to: `item:${item.id}` }, by);
+
+	return { id: item.id, title: item.title };
 }
 
 /** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */

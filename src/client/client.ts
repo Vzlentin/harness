@@ -300,7 +300,8 @@ async function startAndConnect(
 	signal: AbortSignal | undefined,
 ): Promise<Socket> {
 	const deadline = Date.now() + START_TIMEOUT_MS;
-	let host = startHost(project, paths.dir, paths.log);
+	const hostArgs = ["--project", project, "host"];
+	let host = startDetached(hostArgs, paths.dir, paths.log);
 
 	for (;;) {
 		signal?.throwIfAborted();
@@ -314,7 +315,7 @@ async function startAndConnect(
 		}
 
 		if (exited !== undefined && Date.now() - host.startedAt >= RESTART_INTERVAL_MS) {
-			host = startHost(project, paths.dir, paths.log);
+			host = startDetached(hostArgs, paths.dir, paths.log);
 		}
 
 		if (Date.now() > deadline) {
@@ -330,47 +331,51 @@ async function startAndConnect(
 	}
 }
 
-/** A host process that `startHost` started. */
-type StartedHost = {
+/** A process that `startDetached` started. */
+export type StartedProcess = {
 	readonly pid: number | undefined;
 	readonly startedAt: number;
 	/** How the process ended, or undefined while it runs. */
-	exited: HostExit | undefined;
+	exited: ProcessExit | undefined;
 };
 
-/** The end of a started host: its exit code or signal, or the error that kept it from running. */
-type HostExit = { readonly code: number | null; readonly signal: NodeJS.Signals | null } | { readonly error: string };
+/** The end of a started process: its exit code or signal, or the error that kept it from running. */
+type ProcessExit =
+	| { readonly code: number | null; readonly signal: NodeJS.Signals | null }
+	| { readonly error: string };
 
-function exitText(exited: HostExit): string {
+export function exitText(exited: ProcessExit): string {
 	if ("error" in exited) return `error ${exited.error}`;
 
 	return exited.code === null ? `signal ${exited.signal}` : `code ${exited.code}`;
 }
 
-function startHost(project: string, dir: string, log: string): StartedHost {
+/**
+ * Starts the CLI of this install with `args` and this Node, detached, in the folder `dir`, which it creates, with its
+ * output appended to `log`.
+ */
+export function startDetached(args: readonly string[], dir: string, log: string): StartedProcess {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const output = openSync(log, "a", 0o600);
 
 	try {
-		const cli = cliPath();
-
-		const child = spawn(process.execPath, [cli, "--project", project, "host"], {
+		const child = spawn(process.execPath, [cliPath(), ...args], {
 			cwd: dir,
 			detached: true,
 			stdio: ["ignore", output, output],
 		});
 
 		child.unref();
-		const host: StartedHost = { pid: child.pid, startedAt: Date.now(), exited: undefined };
+		const started: StartedProcess = { pid: child.pid, startedAt: Date.now(), exited: undefined };
 
 		child.once("exit", (code, signal) => {
-			host.exited = { code, signal };
+			started.exited = { code, signal };
 		});
 		child.once("error", (error) => {
-			host.exited = { error: error.message };
+			started.exited = { error: error.message };
 		});
 
-		return host;
+		return started;
 	} finally {
 		closeSync(output);
 	}

@@ -56,7 +56,7 @@ harness send <handle> "Focus on error handling"
 harness query <handle> "Which files did it change?"  # ask a model about its transcript
 harness attach <handle>     # open it in Pi
 harness inspect <handle>    # open it in a browser, at the URL that it prints
-harness page <folder> --slug <slug>  # put a page on harness inspect; its Send posts to you, or answers the asks of parley <slug>
+harness page <folder> --slug <slug>  # serve a page with harness inspect, which it starts when none runs; its Send posts to you, or answers the asks of parley <slug>
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
 harness tree                # print the agents and the runs of the project, with their todos

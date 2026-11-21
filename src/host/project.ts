@@ -20,6 +20,7 @@ import {
 	type AskRef,
 	type AskRound,
 	askTransition,
+	type AddedItem,
 	type AskWrite,
 	HELD_KIND,
 	type HeldAction,
@@ -476,7 +477,7 @@ type AskBase = Omit<Extract<Ask, { readonly state: "open" }>, "state">;
 /**
  * Writes the round `round` with the caller `by` as the asker of its asks, and gives the write: the parley with all of
  * its asks, or the new asks when they have no parley. With `round.parley`, a new slug makes an open parley, which needs a title and a goal, and a known slug must be
- * an open parley, whose fields the frame replaces. With `round.item`, the round also writes the edge
+ * an open parley, whose fields the frame replaces. A round with no asks must change a field of a known open parley. With `round.item`, the round also writes the edge
  * `parley:<slug> shapes item:<item>` with the checks of `item link`. The asks of a parley take the next numbers of that
  * parley.
  */
@@ -484,7 +485,11 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
 	const at = Date.now();
-	const parley = round.parley === undefined ? undefined : frameParley(parleys, round.parley, at, by);
+
+	const parley =
+		round.parley === undefined
+			? undefined
+			: frameParley(parleys, round.parley, { at, by, reframe: round.asks.length === 0 });
 
 	if (parley !== undefined && round.item !== undefined) {
 		await writeEdge(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${round.item}` }, by);
@@ -528,7 +533,7 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
  * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent, and the
- * delivery of the ask ends with the line of that todo.
+ * delivery of the ask ends with the line of that todo. The reply gives the items that the write added.
  */
 export async function answerAsks(
 	tx: Tx,
@@ -569,13 +574,20 @@ export async function answerAsks(
 		if (parley !== undefined && input.answer === "ok") readBacks.add(parley.id);
 	}
 
-	for (const id of readBacks) await itemForContract(tx, makeContract(parleys, asks, id, at, by), by, items);
+	const addedItems: AddedItem[] = [];
+
+	for (const id of readBacks) {
+		const item = await itemForContract(tx, makeContract(parleys, asks, id, at, by), by, items);
+
+		if (item !== undefined) addedItems.push(item);
+	}
 
 	const added = await addSaveTodos(tx, root, written);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by, added));
 	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
+	const reply = writeReply(parleys, asks, touched, written);
 
-	return writeReply(parleys, asks, touched, written);
+	return addedItems.length === 0 ? reply : { ...reply, items: addedItems };
 }
 
 /**
@@ -758,13 +770,26 @@ export async function readParley(
 	return { parley, asks: parleyAsks((await readAsks(reader, context)).asks, parley.id) };
 }
 
+/** The fields of a parley that a frame sets: its title, goal, evidence and design sense. */
+function framedFields(parley: OpenParley): readonly unknown[] {
+	return [parley.title, parley.goal, parley.evidence, parley.design_sense];
+}
+
 /**
  * The open parley of the frame `frame`, written at `at` by the caller `by`: a new parley for a new slug, or the known
- * parley with the fields of the frame.
+ * parley with the fields of the frame. With `reframe`, the round has no asks: the frame must name an open parley of
+ * `parleys` and change its title, goal, evidence or design sense.
  */
-function frameParley(parleys: Parley[], frame: ParleyFrame, at: number, by: string): OpenParley {
+function frameParley(
+	parleys: Parley[],
+	frame: ParleyFrame,
+	{ at, by, reframe }: { readonly at: number; readonly by: string; readonly reframe: boolean },
+): OpenParley {
 	const { slug } = frame;
 	const existing = parleys.find((parley) => parley.slug === slug);
+	const unchanged = `A round with no asks must change the title, goal, evidence or design sense of the open parley ${slug}`;
+
+	if (reframe && existing?.status !== "open") throw new Error(unchanged);
 	const found = existing === undefined ? undefined : openParley(existing);
 	const title = frame.title ?? found?.title;
 	const goal = frame.goal ?? found?.goal;
@@ -779,6 +804,10 @@ function frameParley(parleys: Parley[], frame: ParleyFrame, at: number, by: stri
 	if (evidence !== undefined) parley.evidence = [...evidence];
 
 	if (designSense !== undefined) parley.design_sense = designSense;
+
+	if (reframe && found !== undefined && Value.Equal(framedFields(parley), framedFields(found))) {
+		throw new Error(unchanged);
+	}
 
 	if (found === undefined) parleys.push(parley);
 	else parleys[parleys.indexOf(found)] = parley;

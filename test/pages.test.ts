@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { type InspectServer, startInspectServer } from "../src/inspect/index.ts";
 import { addSend } from "../src/inspect/pages.ts";
-import { pageDir } from "../src/protocol/paths.ts";
+import { inspectPaths, pageDir } from "../src/protocol/paths.ts";
 import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import {
 	answer,
@@ -48,8 +48,6 @@ const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array.from({ length: 256 }, (_, i) => i)]);
 
 const USAGE = "harness page <folder> --slug <slug> [<handle> | --conversation <id>]";
-
-const NO_SERVER = "  (no server listens: harness inspect serves the pages)";
 
 let host: Host | undefined;
 let server: InspectServer | undefined;
@@ -317,17 +315,25 @@ describe("harness page", { timeout: 30_000 }, () => {
 		});
 	});
 
-	it("notes an address where no server listens", async () => {
+	it("starts harness inspect when no server listens, and serves the page", async () => {
 		const spare = await startInspectServer({ port: 0, start: false });
 		const closed = new URL(spare.urls[0] ?? "").port;
 		await spare.close();
 		const folder = await pageFolder({ "index.html": INDEX });
+		const result = await cli(["page", folder, "--slug", "closed", "a1b2c3", "--port", closed]);
+		const pid = Number(/pid (\d+)/.exec(result.stderr)?.[1]);
 
-		expect(await cli(["page", folder, "--slug", "closed", "a1b2c3", "--port", closed])).toEqual({
-			code: 0,
-			stdout: `http://127.0.0.1:${closed}/pages/closed/?project=main&handle=a1b2c3${NO_SERVER}\n`,
-			stderr: "",
-		});
+		try {
+			const link = `http://127.0.0.1:${closed}/pages/closed/?project=main&handle=a1b2c3`;
+			expect(result).toEqual({
+				code: 0,
+				stdout: `${link}\n`,
+				stderr: `harness inspect runs as pid ${pid}; log ${inspectPaths().log}\n`,
+			});
+			expect((await fetch(link)).status).toBe(200);
+		} finally {
+			if (pid > 0) process.kill(pid);
+		}
 	});
 
 	it("posts for a caller that the host does not run to the project agent, and needs PI_SESSION_ID and the host", async () => {
