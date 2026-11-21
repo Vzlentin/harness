@@ -8,6 +8,7 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
+import { Asks, loadAsks } from "../host/asks.ts";
 import {
 	HELD_KIND,
 	type HeldAction,
@@ -36,7 +37,6 @@ import {
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
-import { Asks, loadAsks } from "./asks.ts";
 import {
 	foldMessage,
 	known,

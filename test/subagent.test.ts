@@ -47,6 +47,7 @@ import {
 	models,
 	openDurableHost,
 	openWatch,
+	PROJECTS_MODULE,
 	reports,
 	requests,
 	root,
@@ -324,11 +325,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"bash",
 			"subagent",
 			"todo",
+			"codemode",
 			"thread",
 			"rule",
 			"parley",
 			"item",
-			"codemode",
 		]);
 
 		// Once `/trust` saves the decision, the next request loads the project skill.
@@ -707,11 +708,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			"edit",
 			"bash",
 			"todo",
+			"codemode",
 			"thread",
 			"rule",
 			"parley",
 			"item",
-			"codemode",
 		]);
 		expect(called("Task:\nNest tool")).toBe(2);
 	});
@@ -1938,7 +1939,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				JSON.stringify({ type: "list", caller: "cli" }),
 			]);
 
-			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid, entries: {} } });
+			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid, entries: { projects: 1 } } });
 			expect(list).toMatchObject({ ok: true });
 		}
 	});
@@ -1954,7 +1955,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const entries = join(root, "config", "harness", "entries.json");
 		const module = join(root, "gone", "entry.ts");
 		await mkdir(join(root, "config", "harness"), { recursive: true });
-		await writeFile(entries, JSON.stringify({ gone: module }));
+		await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE, gone: module }));
 		process.env.XDG_STATE_HOME = join(root, "state-gone");
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -1968,7 +1969,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(watch.state.degraded).toEqual([{ kind: "entry-skipped", line, since: expect.any(Number) }]);
 
 			// A host that starts with no such entry has no such state.
-			await rm(entries);
+			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
 			const again = await startHost();
 			const clean = await watchProject(MAIN_PROJECT);
 			clean.socket.destroy();
@@ -1977,7 +1978,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		} finally {
 			stderr.mockRestore();
 			process.env.XDG_STATE_HOME = join(root, "state");
-			await rm(entries, { force: true });
+			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
 		}
 	});
 
@@ -1995,7 +1996,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			);
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
-			await rm(entries);
+			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
 		}
 	});
 

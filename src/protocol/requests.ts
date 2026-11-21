@@ -172,10 +172,10 @@ export const Json = Type.Cyclic(
 );
 
 /**
- * One request line, as the host checks it. The caller is `PI_SESSION_ID`, or `cli` without one. Unknown extra keys are
- * allowed.
+ * One request line of a type that the host owns, as the host checks it. The caller is `PI_SESSION_ID`, or `cli`
+ * without one. Unknown extra keys are allowed.
  */
-export const RequestLine = Type.Union([
+export const CoreRequestLine = Type.Union([
 	Type.Object({
 		type: Type.Literal("hello"),
 		version: Type.Number(),
@@ -342,6 +342,64 @@ export const RequestLine = Type.Union([
 	}),
 	/** Replies with the list, in ID order. */
 	...withListTarget({ type: Type.Literal("todo"), caller: Type.String(), action: Type.Literal("list") }),
+	/**
+	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
+	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open. With `item`, which
+	 * needs `parley`, the round also writes the edge `parley:<slug> shapes item:<item>`, with the checks of `item link`.
+	 */
+	...withRoundFrame({ type: Type.Literal("ask"), action: Type.Literal("round"), caller: Type.String() }),
+	/**
+	 * Writes the answers of asks in one write, and replies with the write. Each answer names its ask by `id`, or by `slug`
+	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract. `user` marks answers that the user gave;
+	 * without it, the answers are those of the agent of the caller.
+	 */
+	Type.Object({
+		type: Type.Literal("ask"),
+		action: Type.Literal("answer"),
+		caller: Type.String(),
+		answers: AnswerInputs,
+		user: Type.Optional(Type.Literal(true)),
+	}),
+	/** Drops the open ask of `id`, or of `slug` and `n`, and replies with the write. */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String() }),
+	/**
+	 * Sets `note`, the ID of the note in the vault, on the ask of `id`, or of `slug` and `n`, in any state, and replies
+	 * with the ask. Only the asker of the ask sends it. A second note replaces the first.
+	 */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("note"), caller: Type.String(), note: NoteId }),
+	/** Replies with the ask of `id`, or of `slug` and `n`, in any state. */
+	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("read") }),
+	/** Replies with the open asks, in ID order. */
+	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("list") }),
+	/**
+	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
+	 * child tasks and the conversations of the children library that the tasks own.
+	 */
+	Type.Object({ type: Type.Literal("tree") }),
+	/**
+	 * The reply of `tree`, then one `{ event: TreeEvent }` line for the nodes that a later commit changed, and one for
+	 * the nodes that went. It needs a connection.
+	 */
+	Type.Object({ type: Type.Literal("watch-tree") }),
+	/**
+	 * Asks the classifier of Pi's settings about the todos `ids` that are open, default every open todo, of the list
+	 * `list`. Without `list`, it asks about the list that an entry gives, such as the work items of the projects entry,
+	 * with `ids` as the IDs of that list. It stores nothing.
+	 */
+	Type.Object({
+		type: Type.Literal("classify-todos"),
+		list: Type.Optional(ListRef),
+		ids: Type.Optional(Type.Array(Todo.properties.id)),
+	}),
+]);
+
+export type CoreRequest = Static<typeof CoreRequestLine>;
+
+/**
+ * One request line of a type that the projects entry serves: the persons, threads, messages, digests, memory, rules,
+ * parleys, items, gate, held actions and the watch of the project. The entry checks it with the branches of its type.
+ */
+export const ProjectRequestLine = Type.Union([
 	/** Adds a person, and replies with it. */
 	Type.Object({ type: Type.Literal("person"), action: Type.Literal("add"), ...PersonAdd.properties }),
 	/** Replies with the persons, in ID order. */
@@ -435,35 +493,6 @@ export const RequestLine = Type.Union([
 	/** Adds a decided rule of the user, and replies with it. No tool sends it. */
 	Type.Object({ type: Type.Literal("rule"), caller: Type.String(), ...RuleCreate.properties }),
 	/**
-	 * Writes a round of asks, with the caller as their asker, and replies with the write. With `parley`, the asks serve
-	 * the parley of its slug, which the round makes when the slug is new, and changes when it is open. With `item`, which
-	 * needs `parley`, the round also writes the edge `parley:<slug> shapes item:<item>`, with the checks of `item link`.
-	 */
-	...withRoundFrame({ type: Type.Literal("ask"), action: Type.Literal("round"), caller: Type.String() }),
-	/**
-	 * Writes the answers of asks in one write, and replies with the write. Each answer names its ask by `id`, or by `slug`
-	 * and `n`. The answer `ok` to the read-back of a parley makes it a contract. `user` marks answers that the user gave;
-	 * without it, the answers are those of the agent of the caller.
-	 */
-	Type.Object({
-		type: Type.Literal("ask"),
-		action: Type.Literal("answer"),
-		caller: Type.String(),
-		answers: AnswerInputs,
-		user: Type.Optional(Type.Literal(true)),
-	}),
-	/** Drops the open ask of `id`, or of `slug` and `n`, and replies with the write. */
-	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("drop"), caller: Type.String() }),
-	/**
-	 * Sets `note`, the ID of the note in the vault, on the ask of `id`, or of `slug` and `n`, in any state, and replies
-	 * with the ask. Only the asker of the ask sends it. A second note replaces the first.
-	 */
-	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("note"), caller: Type.String(), note: NoteId }),
-	/** Replies with the ask of `id`, or of `slug` and `n`, in any state. */
-	...withAskRef({ type: Type.Literal("ask"), action: Type.Literal("read") }),
-	/** Replies with the open asks, in ID order. */
-	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("list") }),
-	/**
 	 * Makes the caller the asker of the open asks of the parley `slug`, open or a contract, and replies with the parley
 	 * and its asks.
 	 */
@@ -543,31 +572,16 @@ export const RequestLine = Type.Union([
 		id: LocalId,
 	}),
 	/**
-	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
-	 * child tasks and the conversations of the children library that the tasks own.
-	 */
-	Type.Object({ type: Type.Literal("tree") }),
-	/**
-	 * The reply of `tree`, then one `{ event: TreeEvent }` line for the nodes that a later commit changed, and one for
-	 * the nodes that went. It needs a connection.
-	 */
-	Type.Object({ type: Type.Literal("watch-tree") }),
-	/**
 	 * Replies with the persons, rules, threads with their waits, held actions, parleys and asks of the project, then
 	 * sends one `{ event: ProjectEvent }` line after the commits that change them. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("watch-project") }),
-	/**
-	 * Asks the classifier of Pi's settings about the todos `ids` that are open, default every open todo, of the list
-	 * `list`. Without `list`, it asks about the open work items, with `ids` as item IDs and the title of each item as its
-	 * text. It stores nothing.
-	 */
-	Type.Object({
-		type: Type.Literal("classify-todos"),
-		list: Type.Optional(ListRef),
-		ids: Type.Optional(Type.Array(Todo.properties.id)),
-	}),
 ]);
+
+export type ProjectRequest = Static<typeof ProjectRequestLine>;
+
+/** One request line, of the host or of the projects entry, as a client sends it. */
+export const RequestLine = Type.Union([CoreRequestLine, ProjectRequestLine]);
 
 export type Request = Static<typeof RequestLine>;
 

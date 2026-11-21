@@ -9,6 +9,8 @@
  */
 import type { Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { Asks } from "../host/asks.ts";
+import { labelledTasks, StartedTasks, TaskLabels, taskWorker } from "../host/tasks.ts";
 import {
 	CommitRef,
 	type Edge,
@@ -23,11 +25,9 @@ import {
 } from "../protocol/item.ts";
 import type { Ask, Parley } from "../protocol/project.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
-import { Asks } from "./asks.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { endContract, knownParley, Parleys } from "./project-docs.ts";
-import { labelledTasks, StartedTasks, TaskLabels, taskWorker } from "./tasks.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
 const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;

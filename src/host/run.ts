@@ -5,6 +5,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { copyJson } from "@earendil-works/chord/json";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -20,21 +21,21 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type TSchema, Type } from "typebox";
+import { IsUnion, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Pointer, Value } from "typebox/value";
 import { childContext, PI_TRUST, type ResourcesReport } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
-import { projectToolsExtension } from "../project-tool.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
-import { memoryDir } from "../protocol/projects.ts";
 import {
+	type CoreRequest,
+	CoreRequestLine,
 	errorMessage,
 	HOST_CLOSING,
+	type Replies,
 	type Reply,
 	type Request,
-	RequestLine,
 	STORE_LOCK_WAIT_MS,
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
@@ -47,30 +48,20 @@ import { serveBridge } from "./bridge.ts";
 import { askClassifier, classifierModel } from "./classify.ts";
 import { Degraded } from "./degraded.ts";
 import { queueDelivery } from "./deliveries.ts";
-import { type Base, handleLine, handleRequest, type Line } from "./dispatch.ts";
+import { type Base, handleLine, type Line } from "./dispatch.ts";
 import { type EntryHandles, EntryLine, type EntryRequest, loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
-import { gateExtension } from "./gate.ts";
-import { ItemIndex } from "./item-index.ts";
-import { migrateTodos } from "./item-migration.ts";
-import { itemReports } from "./item-reports.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
-import { checkLabels, WORK_KINDS, workLabelChecks } from "./label-checks.ts";
-import { migrateLabels } from "./label-migration.ts";
+import { checkLabels } from "./label-checks.ts";
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
-import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
-import { parleyReaction } from "./parleys.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
-import { RulesSection } from "./rules-section.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
-import { storeFilePasses } from "./store-file.ts";
 import { library } from "./targets.ts";
-import { stopEndedWork } from "./work-workers.ts";
-import { stopWorker, type WorkerHost, workers } from "./workers.ts";
+import { liveWorkers, stopWorker, type WorkerHost, workers } from "./workers.ts";
 
-/** The host exits after this long with no connection, no live task, no compression of the memory and no request. */
+/** The host exits after this long with no connection, no live task, no busy entry and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
 const IDLE_CHECK_MS = 60_000;
 
@@ -96,15 +87,9 @@ const CORE_PASSIVE = {
 	answers: passive,
 	tree: passive,
 	"watch-tree": passive,
-	"watch-project": passive,
 	"classify-todos": passive,
 	todo: listOrRead,
-	person: listOrRead,
-	thread: listOrRead,
-	rule: listOrRead,
 	ask: listOrRead,
-	parley: listOrRead,
-	item: listOrRead,
 	spawn: active,
 	send: active,
 	input: active,
@@ -119,15 +104,10 @@ const CORE_PASSIVE = {
 	"wait-task": active,
 	"abort-task": active,
 	report: active,
-	message: active,
-	digest: active,
-	memory: active,
-	gate: active,
-	held: active,
 	whoami: active,
 	rename: active,
 	stop: active,
-} satisfies { readonly [T in Request["type"]]: (request: Extract<Request, { type: T }>) => boolean };
+} satisfies { readonly [T in CoreRequest["type"]]: (request: Extract<CoreRequest, { type: T }>) => boolean };
 
 /** The request types that the host owns. */
 const CORE_TYPES: ReadonlySet<string> = new Set(Object.keys(CORE_PASSIVE));
@@ -139,7 +119,7 @@ const CORE_TYPES: ReadonlySet<string> = new Set(Object.keys(CORE_PASSIVE));
 function isPassive(line: Line): boolean {
 	if (line.kind === "entry") return line.served.passive(line.request);
 	// SAFETY: the rule of the type of the request takes that request.
-	const rule = CORE_PASSIVE[line.request.type] as (request: Request) => boolean;
+	const rule = CORE_PASSIVE[line.request.type] as (request: CoreRequest) => boolean;
 
 	return rule(line.request);
 }
@@ -178,7 +158,7 @@ export async function runHost(options: {
 		sessionEndMs = SESSION_END_MS,
 	} = options;
 
-	const { dir: stateDir, socket: socketPath, store: storePath } = statePaths(project);
+	const { dir: stateDir, socket: socketPath } = statePaths(project);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
@@ -204,6 +184,8 @@ export async function runHost(options: {
 	let rootId: ConversationId | undefined;
 	// What the workers of the labels read and stop, once the harness is open.
 	let workerHost: WorkerHost | undefined;
+	// The push of the answers and the inputs, once the harness is open.
+	let openPush: Push | undefined;
 
 	const openWorkerHost = () => {
 		if (workerHost === undefined) throw new Error("The host is not open yet");
@@ -223,8 +205,25 @@ export async function runHost(options: {
 		},
 	};
 
+	let base: Base;
+	// The scope of the tools: a child calls the host in this process, not through the socket, so a long `wait` cannot
+	// hold up the requests of a connection. Its caller is its conversation ID, which the depth limit, the owner checks
+	// and the default list of todos key on.
+	const send: Send = (request, signal) => sendInProcess(request, { ...base, signal }, entries.requests);
+	const scope: DurableScope = { caller: async (api) => String(api.conversationId), send };
+
 	const handles: EntryHandles = {
 		stateDir,
+		project,
+		cwd: projectCwd,
+		settings,
+		scope,
+		tell: async (caller, input) => {
+			if (openPush === undefined) throw new Error("The host is not open yet");
+			const tell = await openPush.inputOf(caller);
+			await tell?.(input);
+		},
+		liveWorkers: () => liveWorkers(openWorkerHost()),
 		openAsks: () => readOpenAsks(place.store, context),
 		degraded,
 		warn,
@@ -240,25 +239,17 @@ export async function runHost(options: {
 		stop: (worker) => stopWorker(openWorkerHost(), worker),
 	};
 
-	const entries = await loadEntries(
-		projectCwd,
-		agentDir,
-		settings,
-		place,
-		library,
-		CORE_TYPES,
-		WORK_KINDS,
-		handles,
-	).catch((cause: unknown) => {
-		lock.close();
-		throw cause;
-	});
+	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(
+		(cause: unknown) => {
+			lock.close();
+			throw cause;
+		},
+	);
 
 	const envs = new ConversationEnvs(project, projectCwd);
 	// The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The registry
 	// refuses a task name that two entries give.
 	const startable = durable.defineExtension({ name: "harness-entry-tasks", tasks: entries.tasks });
-	let base: Base;
 	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
 	let agentSetUp: Promise<Conversation> | undefined;
 
@@ -268,11 +259,6 @@ export async function runHost(options: {
 			throw cause;
 		}));
 
-	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
-	// of a connection. Its caller is its conversation ID, which the depth limit, the owner checks and the default list
-	// of todos key on.
-	const send: Send = (request, signal) => handleRequest(request, { ...base, signal });
-	const scope: DurableScope = { caller: async (api) => String(api.conversationId), send };
 	const bridge = serveBridge(entries.events, warn);
 
 	// Each script runs in a worker thread, in a VM of at most 256 MB, as in Pi.
@@ -283,20 +269,13 @@ export async function runHost(options: {
 		failed: (cwd, line) => degraded.start("resources-failed", cwd, line),
 	};
 
-	// The compressions of the memory of the project agent, which run in the background.
-	const compressor = new Compressor({ settings, models, warn });
-	const memory: HostMemory = { compressor, dir: () => memoryDir(project, projectCwd) };
 	// The MCP servers of the host, which connect once the harness is open.
 	const mcp = new HostMcp({ registry, sandbox, agentDir, cwd: projectCwd, trusted: projectTrusted, models, warn });
 
 	const selected = [
 		childContext(resources),
-		RulesSection,
-		memoryExtension(memory, scope),
 		subagentTool(durable, { Type }, scope),
 		todoTool(durable, { Type }, scope),
-		projectToolsExtension(durable, { Type }, scope),
-		gateExtension(send),
 		bashTimeoutExtension(bashTimeoutSeconds),
 		...mcp.extensions,
 		...entries.extensions,
@@ -348,13 +327,28 @@ export async function runHost(options: {
 	rootId = root.id;
 
 	const owner = { kind: "detached", root } as const;
-	// The first start moves the todos of the project to items, and what the children served to their labels, before any
-	// reader of the items or the records.
-	await migrateTodos(harness, root.id);
-	await migrateLabels(harness, storage);
-	// The index of the ends of the items observes the commits first, so the observers and the passes after it read it
-	// current with each commit.
-	const items = await ItemIndex.open(harness, storage);
+	workerHost = { harness, place, owner };
+
+	const opened = harness;
+
+	/** Closes, in order, what the host opened before the open of the entries, when the start fails. */
+	const closeOpened = async () => {
+		await bridge.close();
+		await entries.close();
+		await sandbox.close();
+		await opened.close(context);
+		await mcp.close();
+		lock.close();
+	};
+
+	// The entries open before any reader of the records and before any task resumes: the projects entry moves the old
+	// records to their labels there, and stops the workers of the work that ended.
+	try {
+		await entries.open({ harness, root, storage });
+	} catch (error) {
+		await closeOpened();
+		throw error;
+	}
 
 	const push = new Push({
 		harness,
@@ -369,12 +363,8 @@ export async function runHost(options: {
 		inputHooks: entries.inputHooks,
 	});
 
+	openPush = push;
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
-	workerHost = { harness, place, owner };
-	// The host checks the labels of the work of the project; the entries check their own kinds.
-	const labelChecks = new Map([...workLabelChecks(harness), ...entries.labelChecks]);
-
-	const landed = itemReports({ harness, place, owner, items, warn });
 
 	base = {
 		harness,
@@ -388,31 +378,21 @@ export async function runHost(options: {
 		push,
 		sessions,
 		storage,
-		items,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		inputHooks: entries.inputHooks,
 		entryVersions: entries.versions,
-		reported: entries.reported === undefined ? [landed] : [landed, entries.reported],
-		checkLabels: (labels) => checkLabels(labelChecks, labels),
+		reported: entries.reported,
+		ask: entries.ask,
+		classifyList: entries.classifyList,
+		checkLabels: (labels) => checkLabels(entries.labelChecks, labels),
 		warn,
 		degraded,
-		memory,
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
-	// A worker of work that ended, such as one that a message resumed, stops at the next start.
-	await stopEndedWork({ harness, place, owner, warn });
 
-	const reaction = parleyReaction({ harness, items, warn });
-
-	const askEvents = new AskEventDispatcher(
-		harness,
-		entries.answeredAsk === undefined ? [reaction] : [reaction, entries.answeredAsk],
-		warn,
-	);
-
-	const storeFile = storeFilePasses({ harness, storage, root, path: storePath, warn });
+	const askEvents = new AskEventDispatcher(harness, entries.answeredAsks, warn);
 
 	const awake = keepAwake({ active: () => harness.wake().active, degraded, system: awakeSystem });
 
@@ -488,20 +468,11 @@ export async function runHost(options: {
 			resolveListen();
 		});
 	}).catch(async (cause: unknown) => {
-		await compressor.close();
 		await push.close();
 		await sessions.close();
-		// The reaction of the parleys reads the index of the items.
 		await askEvents.close();
-		items.close();
-		await storeFile.close();
 		awake.close();
-		await bridge.close();
-		await entries.close();
-		await sandbox.close();
-		await harness.close(context);
-		await mcp.close();
-		lock.close();
+		await closeOpened();
 		throw cause;
 	});
 
@@ -512,11 +483,9 @@ export async function runHost(options: {
 	const close = () => {
 		closing ??= (async () => {
 			clearInterval(timer);
-			const compressorClosed = compressor.close();
 			const pushClosed = push.close();
 			// The socket closes that follow are not session ends.
 			const sessionsClosed = sessions.close();
-			const storeFileClosed = storeFile.close();
 			// The handler of the answered asks gets the abort, and its event waits for the next start.
 			const askEventsClosed = askEvents.close();
 			awake.close();
@@ -542,9 +511,6 @@ export async function runHost(options: {
 				await sandbox.close();
 				await pushClosed;
 				await sessionsClosed;
-				items.close();
-				await storeFileClosed;
-				await compressorClosed;
 				await harness.close(context);
 				await mcp.close();
 
@@ -560,9 +526,9 @@ export async function runHost(options: {
 
 	const timer = setInterval(
 		() => {
-			// A connection with an open `answers` request alone does not keep the host running; a compression of the
-			// memory does.
-			const busy = () => [...connections].some((socket) => !push.listens(socket)) || compressor.running > 0;
+			// A connection with an open `answers` request alone does not keep the host running; a busy entry, such as one
+			// that compresses the memory of the project agent, does.
+			const busy = () => [...connections].some((socket) => !push.listens(socket)) || entries.busy();
 
 			if (busy() || Date.now() - lastActivity < idleExitMs) return;
 			harness
@@ -581,45 +547,107 @@ export async function runHost(options: {
 }
 
 /**
- * The request of a line from a client, checked against the protocol, or against the schema of the entry of `served`
- * that serves its type. A line that fails names its request type, and the path and the rule of the first field that is
- * wrong. A line of a type that neither the host nor an entry serves fails with
- * `no loaded entry serves request type "<type>"`.
+ * The request of a line from a client, checked against the protocol of the host, or against the schema of the entry
+ * that serves its type (see `entryLine`).
  */
 function parseLine(line: string, served: ReadonlyMap<string, EntryRequest>): Line {
 	const request: unknown = JSON.parse(line);
 
-	if (Value.Check(RequestLine, request)) return { kind: "core", request };
+	if (Value.Check(CoreRequestLine, request)) return { kind: "core", request };
 
 	if (!Value.Check(EntryLine, request)) throw new Error("Invalid request");
-	const entry = served.get(request.type);
 
-	if (entry !== undefined) {
-		const [error] = Value.Errors(entry.schema, request);
+	return entryLine(request, served);
+}
 
-		if (error === undefined) return { kind: "entry", request, served: entry };
+/**
+ * Serves `request` in this process with `handleLine`: a request of a core type, or a request of an entry type with the
+ * entry that serves it. As for a core type, a typed request of a tool needs no check of its schema. A watch needs a
+ * connection, and fails.
+ */
+function sendInProcess<T extends Request["type"]>(
+	request: Extract<Request, { type: T }>,
+	handler: Base & { readonly signal: AbortSignal },
+	served: ReadonlyMap<string, EntryRequest>,
+): Promise<Replies[T]>;
+async function sendInProcess(
+	request: Request,
+	handler: Base & { readonly signal: AbortSignal },
+	served: ReadonlyMap<string, EntryRequest>,
+): Promise<Replies[Request["type"]]> {
+	const reply = await handleLine(inProcessLine(request, served), handler);
 
-		throw new Error(`Invalid ${request.type} request: ${requestError(entry.schema, error)}`);
+	// SAFETY: the entry that serves the type of the request gives the reply of that type, as the clients of the socket
+	// read it.
+	return reply as Replies[Request["type"]];
+}
+
+/** The line of `request`, of a core type or of the type of an entry, with no check of the schema of the entry. */
+function inProcessLine(request: Request, served: ReadonlyMap<string, EntryRequest>): Line {
+	if (isCore(request)) return { kind: "core", request };
+	const entry = servedEntry(request.type, served);
+	// The line that the socket would carry: the tools send typed requests, which the host does not check again.
+	const line = copyJson(request, { omitUndefinedProperties: true });
+
+	if (!Value.Check(EntryLine, line)) throw new Error(`Invalid ${request.type} request`);
+
+	return { kind: "entry", request: line, served: entry };
+}
+
+/** The entry that serves the request type `type`. It throws `no loaded entry serves request type "<type>"` without one. */
+function servedEntry(type: string, served: ReadonlyMap<string, EntryRequest>): EntryRequest {
+	const entry = served.get(type);
+
+	if (entry === undefined) throw new Error(`no loaded entry serves request type "${type}"`);
+
+	return entry;
+}
+
+/** Whether `request` is of a type that the host owns. */
+function isCore(request: Request): request is CoreRequest {
+	return CORE_TYPES.has(request.type);
+}
+
+/**
+ * The line of `request`, of a type that the host does not serve, or that fails the protocol of the host. A line of a
+ * type that an entry serves is checked against its schema. A line that fails names its request type, and the path and
+ * the rule of the first field that is wrong. A line of a type that neither the host nor an entry serves fails with
+ * `no loaded entry serves request type "<type>"`.
+ */
+function entryLine(request: EntryLine, served: ReadonlyMap<string, EntryRequest>): Extract<Line, { kind: "entry" }> {
+	const { type } = request;
+
+	// No entry serves a type that the host owns.
+	if (CORE_TYPES.has(type)) throw new Error(`Invalid ${type} request: ${branchError(CoreRequestLine.anyOf, request)}`);
+	const entry = servedEntry(type, served);
+
+	if (!Value.Check(entry.schema, request)) {
+		throw new Error(`Invalid ${type} request: ${branchError(branches(entry.schema), request)}`);
 	}
 
-	if (!CORE_TYPES.has(request.type)) throw new Error(`no loaded entry serves request type "${request.type}"`);
+	return { kind: "entry", request, served: entry };
+}
 
-	// The branch of the request's type, and of its action when a branch has it, with the fewest errors names the field;
-	// on a tie, the first one wins.
-	const ofType = RequestLine.anyOf
-		.map((schema) => ({ schema, errors: [...Value.Errors(schema, request)] }))
-		.filter(({ errors }) => errors.every((error) => error.instancePath !== "/type"));
+/** The branches of `schema`: those of a union, else the schema alone. */
+function branches(schema: TSchema): readonly TSchema[] {
+	return IsUnion(schema) ? schema.anyOf : [schema];
+}
 
+/**
+ * The `<path>: <rule>` of the error of `request` against the branch of `schemas` that names the field: the branch of
+ * the request's type, and of its action when a branch has it, with the fewest errors; on a tie, the first one wins.
+ */
+function branchError(schemas: readonly TSchema[], request: EntryLine): string {
+	const all = schemas.map((schema) => ({ schema, errors: [...Value.Errors(schema, request)] }));
+	const ofType = all.filter(({ errors }) => errors.every((error) => error.instancePath !== "/type"));
 	const ofAction = ofType.filter(({ errors }) => errors.every((error) => error.instancePath !== "/action"));
-	const [best] = (ofAction.length > 0 ? ofAction : ofType).sort((a, b) => a.errors.length - b.errors.length);
+	const candidates = ofAction.length > 0 ? ofAction : ofType;
+	const [best] = candidates.sort((a, b) => a.errors.length - b.errors.length);
+	const [error] = best?.errors ?? [];
 
-	// The type is a core type, so the branches of its type are there.
-	if (best === undefined) throw new Error(`Invalid ${request.type} request`);
+	if (best === undefined || error === undefined) throw new Error(`Invalid ${request.type} request`);
 
-	// SAFETY: Value.Check refused every branch, so each branch, and the best one, has at least one error.
-	const [error] = best.errors as [TLocalizedValidationError, ...TLocalizedValidationError[]];
-
-	throw new Error(`Invalid ${request.type} request: ${requestError(best.schema, error)}`);
+	return requestError(best.schema, error);
 }
 
 /**

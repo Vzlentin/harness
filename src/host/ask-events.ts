@@ -1,5 +1,5 @@
 /**
- * The events of the answered asks, for their handlers: the reaction of the parleys, and the handler of an entry. The
+ * The events of the answered asks, for their handlers: the handlers of the entries, in load order. The
  * commit that writes the answers adds them, so a restart of the host loses none, and the dispatcher gives them to the
  * handlers, oldest first, one at a time.
  */

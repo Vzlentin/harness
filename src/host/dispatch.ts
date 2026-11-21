@@ -1,6 +1,7 @@
 /**
- * The requests of the host: one handler per request type, on the host's store, children and push, and the route of a
- * request of an entry type to the entry that serves it.
+ * The requests of the host: one handler per core request type, on the host's store, children and push, the route of a
+ * request of an entry type to the entry that serves it, and the route of `ask` to the entry that serves it, or to the
+ * plain asks of the host.
  */
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -10,60 +11,25 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
-import { approvedText, TYPED_KIND } from "../protocol/gate.ts";
+import { TYPED_KIND } from "../protocol/gate.ts";
 import type { AnswerAuthor } from "../protocol/project.ts";
 import {
 	type ChildInfo,
-	errorMessage,
+	type CoreRequest,
 	PROTOCOL_VERSION,
 	type Replies,
-	type Request,
 	ThinkingLevel,
 	versionMismatch,
 } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protocol/target.ts";
+import type { Todo } from "../protocol/todo.ts";
 import { workerLabels } from "../protocol/worker-labels.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
-import { readOpenAsks } from "./asks.ts";
+import { type AnswerAuthorOf, type AskRequest, plainAsk } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
-import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
-import type { EntryLine, EntryRequest, ReportedHandler } from "./entries.ts";
+import type { AskHandler, EntryLine, EntryRequest, ReportedHandler } from "./entries.ts";
 import { serveEntryRequest } from "./entry-requests.ts";
-import { gateCall } from "./gate.ts";
 import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
-import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
-import type { ItemIndex } from "./item-index.ts";
-import { stageItem, stageItems } from "./item-stage.ts";
-import { addItem, linkItem, setItem, unlinkItem } from "./items.ts";
-import { answerMemory, type HostMemory } from "./memory.ts";
-import {
-	dropAskRef,
-	endParley,
-	noteAskRef,
-	readAsk,
-	readParley,
-	readParleys,
-	takeParley,
-	writeAnswers,
-	writeRound,
-} from "./parleys.ts";
-import { changeRule, readRules, setRule } from "./project-rules.ts";
-import { serveProjectWatch } from "./project-watch.ts";
-import {
-	addPerson,
-	addThread,
-	approveHeld,
-	deleteMessage,
-	dropHeld,
-	editMessage,
-	joinThread,
-	logMessage,
-	markMessage,
-	readHeld,
-	readPersons,
-	readThread,
-	readThreads,
-} from "./project.ts";
 import type { Connection, Push } from "./push.ts";
 import { queryConversation } from "./query.ts";
 import {
@@ -104,7 +70,6 @@ import { addTodo, readTodos, setTodo, type TodoOwner } from "./todo.ts";
 import { serveTreeWatch } from "./tree-watch.ts";
 import { treeNodes } from "./tree.ts";
 import { serveWatch } from "./watch.ts";
-import { stopWork } from "./work-workers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -129,24 +94,18 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly settings: SettingsManager;
 		/** Writes a warning to the host's log. */
 		readonly warn: (cause: unknown) => void;
-		/** The index of the ends of the items, which gives the items that a contract shapes and the item of a run. */
-		readonly items: ItemIndex;
 		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
 		readonly entryVersions: Readonly<Record<string, number>>;
-		/** The handlers of the reports, in order: the rule of the items of the host, then the handler of an entry. */
+		/** The handlers of the reports of the entries, in load order. */
 		readonly reported: readonly ReportedHandler[];
-		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
-		readonly memory: HostMemory;
+		/** The handler of the `ask` requests of an entry; without it, the host serves the asks with no parley. */
+		readonly ask: AskHandler | undefined;
+		/** The list that `classify-todos` takes without `list`, when an entry gives one. */
+		readonly classifyList: (() => Promise<readonly Todo[]>) | undefined;
 		readonly push: Push;
 		readonly sessions: Sessions;
-		/**
-		 * The storage of the harness: its entry lookup gives the thread of the source of an older rule, its reads of tasks
-		 * and conversations give the tree, and its scan of documents gives the items.
-		 */
-		readonly storage: Pick<
-			Storage,
-			"entry" | "task" | "scanTasks" | "scanConversations" | "scanDocuments" | "findLatestHeadMarker"
-		>;
+		/** The storage of the harness: its reads of tasks and conversations give the tree. */
+		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations" | "findLatestHeadMarker">;
 	};
 
 export type Handler = Base &
@@ -159,11 +118,11 @@ export type Handler = Base &
  * Handles `request`. Each target is parsed once with `parseTarget`: here, or in `todoOwner` for the list target of
  * `todo`, which can also be a task key or none.
  */
-export function handleRequest<T extends Request["type"]>(
-	request: Extract<Request, { type: T }>,
+export function handleRequest<T extends CoreRequest["type"]>(
+	request: Extract<CoreRequest, { type: T }>,
 	handler: Handler,
 ): Promise<Replies[T]>;
-export async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
+export async function handleRequest(request: CoreRequest, handler: Handler): Promise<Replies[CoreRequest["type"]]> {
 	switch (request.type) {
 		case "hello":
 			return hello(request, handler.entryVersions);
@@ -203,34 +162,12 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return todo(request, handler);
 		case "classify-todos":
 			return classify(request, handler);
-		case "person":
-			return person(request, handler);
-		case "thread":
-			return thread(request, handler);
-		case "message":
-			return message(request, handler);
-		case "digest":
-			return digest(request.caller, request.head, handler);
-		case "rule":
-			return rule(request, handler);
-		case "memory":
-			return answerMemory(request, handler.memory, handler.signal);
-		case "gate":
-			return gateCall(request, { ...handler, models: handler.place.models });
-		case "held":
-			return held(request, handler);
 		case "ask":
 			return ask(request, handler);
-		case "parley":
-			return parley(request, handler);
-		case "item":
-			return item(request, handler);
 		case "tree":
 			return { nodes: await treeNodes(handler) };
 		case "watch-tree":
 			return watchTree(handler);
-		case "watch-project":
-			return watchProject(handler);
 		case "list":
 			return list(request, handler);
 		case "whoami":
@@ -244,18 +181,18 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 
 /** A request line: a core request, or a line of a type that an entry serves, with that type. */
 export type Line =
-	| { readonly kind: "core"; readonly request: Request }
+	| { readonly kind: "core"; readonly request: CoreRequest }
 	| { readonly kind: "entry"; readonly request: EntryLine; readonly served: EntryRequest };
 
 /** Handles `line`: a core request here, and a request of an entry type by the entry that serves it. */
-export function handleLine(line: Line, handler: Handler): Promise<Replies[Request["type"]] | JsonValue> {
+export function handleLine(line: Line, handler: Handler): Promise<Replies[CoreRequest["type"]] | JsonValue> {
 	if (line.kind === "core") return handleRequest(line.request, handler);
 
 	return serveEntryRequest(line.served, line.request, handler.signal, handler.connection);
 }
 
 function hello(
-	request: Extract<Request, { type: "hello" }>,
+	request: Extract<CoreRequest, { type: "hello" }>,
 	entries: Readonly<Record<string, number>>,
 ): Replies["hello"] {
 	if (request.version !== PROTOCOL_VERSION && request.external !== true) {
@@ -265,14 +202,13 @@ function hello(
 	return { version: PROTOCOL_VERSION, pid: process.pid, entries };
 }
 
-async function send(request: Extract<Request, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
+async function send(request: Extract<CoreRequest, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
 	const { handle, requestId, notify } = request;
 	const record = await ownRecord(handler.harness, handle, request.caller);
 
 	return handler.push.whileActive(handle, async () => {
 		const found = await childTarget(handler, handle, record);
 		await beforeInput(handler, found);
-		await writeDigest(handler, found);
 
 		return sendTo(request, found, handler.harness, {
 			// The request goes into the record's `requests` in the commit that makes it the last request, so a wait
@@ -283,7 +219,7 @@ async function send(request: Extract<Request, { type: "send" }>, handler: Handle
 }
 
 async function input(
-	request: Extract<Request, { type: "input" }>,
+	request: Extract<CoreRequest, { type: "input" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<Replies["input"]> {
@@ -291,13 +227,15 @@ async function input(
 
 	if (ref.kind === "agent") await catchUp(handler, found.write, request.requestId);
 	await beforeInput(handler, found);
-	await writeDigest(handler, found);
 
 	// A conversation takes input only while it works, so its input is always a steer.
 	return sendTo(ref.kind === "conversation" ? { ...request, followUp: false } : request, found, handler.harness);
 }
 
-async function answers(request: Extract<Request, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
+async function answers(
+	request: Extract<CoreRequest, { type: "answers" }>,
+	handler: Handler,
+): Promise<Replies["answers"]> {
 	if (handler.connection === undefined) throw new Error("answers needs a connection");
 	await handler.sessions.listen(request.caller, handler.connection.socket);
 
@@ -316,13 +254,7 @@ function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
 	return serveTreeWatch(handler, handler.connection);
 }
 
-function watchProject(handler: Handler): Promise<Replies["watch-project"]> {
-	if (handler.connection === undefined) throw new Error("A project watch needs a connection");
-
-	return serveProjectWatch(handler, handler.connection);
-}
-
-async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
+async function start(request: Extract<CoreRequest, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
 	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
 	// for the agent, the task still starts: its children may name their own.
 	await handler.agent().catch(() => undefined);
@@ -331,7 +263,7 @@ async function start(request: Extract<Request, { type: "start" }>, handler: Hand
 }
 
 /** Adds, sets or lists the todos of the list that `request` targets. */
-async function todo(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<Replies["todo"]> {
+async function todo(request: Extract<CoreRequest, { type: "todo" }>, handler: Handler): Promise<Replies["todo"]> {
 	const owner = await todoOwner(request, handler);
 
 	switch (request.action) {
@@ -349,7 +281,7 @@ async function todo(request: Extract<Request, { type: "todo" }>, handler: Handle
  * a child by handle, or the caller. A caller that is a conversation of the host has the list of its conversation. The
  * project agent needs no set-up, and a child by handle needs no check of its caller.
  */
-async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
+async function todoOwner(request: Extract<CoreRequest, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
 	if (request.key !== undefined || request.handle !== undefined || request.conversation !== undefined) {
 		return listOwner(request, handler);
 	}
@@ -364,7 +296,7 @@ async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: H
  * hosted conversation of the caller, else the agent of the caller.
  */
 async function answerAuthor(
-	request: Extract<Request, { type: "ask"; action: "answer" }>,
+	request: Extract<AskRequest, { action: "answer" }>,
 	handler: Handler,
 ): Promise<AnswerAuthor> {
 	if (request.user === true) return { kind: "user" };
@@ -380,203 +312,45 @@ async function listOwner(ref: ListRef, handler: Handler): Promise<TodoOwner> {
 	return { kind: "conversation", id: await targetConversation(handler, parseTarget(ref)) };
 }
 
-function person(request: Extract<Request, { type: "person" }>, handler: Handler): Promise<Replies["person"]> {
-	switch (request.action) {
-		case "add":
-			return handler.harness.commit((tx) => addPerson(tx, request), context);
-		case "list":
-			return readPersons(handler.harness, context);
-	}
-}
-
-function thread(request: Extract<Request, { type: "thread" }>, handler: Handler): Promise<Replies["thread"]> {
-	switch (request.action) {
-		case "add":
-			return handler.harness.commit((tx) => addThread(tx, request), context);
-		case "list":
-			return readThreads(handler.harness, context);
-		case "read":
-			return readThread(handler.harness, request.id, context);
-		case "join":
-			return handler.harness.commit((tx) => joinThread(tx, request), context);
-	}
-}
-
-function message(request: Extract<Request, { type: "message" }>, handler: Handler): Promise<Replies["message"]> {
-	switch (request.action) {
-		case "log":
-			return handler.harness.commit((tx) => logMessage(tx, request, request.caller), context);
-		case "mark":
-			return handler.harness.commit((tx) => markMessage(tx, request, request.caller), context);
-		case "edit":
-			return handler.harness.commit((tx) => editMessage(tx, request, request.caller), context);
-		case "delete":
-			return handler.harness.commit((tx) => deleteMessage(tx, request, request.caller), context);
-	}
-}
-
-/** The digest of `caller` when it changed since its last one or `head` is new, recorded as given. */
-async function digest(caller: string, head: string | undefined, handler: Handler): Promise<Replies["digest"]> {
-	const next = await nextDigest(handler, caller, head);
-
-	if (next === undefined) return {};
-	await recordDigest(handler.harness, caller, next);
-
-	return { text: next.text };
-}
-
-function rule(request: Extract<Request, { type: "rule" }>, handler: Handler): Promise<Replies["rule"]> {
-	switch (request.action) {
-		case "set":
-			return handler.harness.commit((tx) => setRule(tx, request, request.caller), context);
-		case "list":
-			return readRules(handler, request, context);
-		case "decide":
-		case "retire":
-		case "delete":
-		case "edit":
-		case "create": {
-			const { type: _, caller, ...change } = request;
-
-			return handler.harness.commit((tx) => changeRule(tx, change, caller), context);
-		}
-	}
-}
-
-async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler): Promise<Replies["ask"]> {
-	switch (request.action) {
-		case "round":
-			return handler.harness.commit((tx) => writeRound(tx, request, request.caller), context);
-		case "answer": {
-			const author = await answerAuthor(request, handler);
-
-			return handler.harness.commit(
-				(tx) => writeAnswers(tx, request.answers, request.caller, author, handler.root.id),
-				context,
-			);
-		}
-
-		case "drop":
-			return handler.harness.commit((tx) => dropAskRef(tx, request, request.caller), context);
-		case "note":
-			return handler.harness.commit((tx) => noteAskRef(tx, request, request.note, request.caller), context);
-		case "read":
-			return readAsk(handler.harness, request, context);
-		case "list":
-			return readOpenAsks(handler.harness, context);
-	}
-}
-
-async function parley(request: Extract<Request, { type: "parley" }>, handler: Handler): Promise<Replies["parley"]> {
-	switch (request.action) {
-		case "take":
-			return handler.harness.commit((tx) => takeParley(tx, request.slug, request.caller), context);
-		case "end": {
-			const ended = await handler.harness.commit(
-				(tx) => endParley(tx, request.slug, request.status, request.caller, handler.items),
-				context,
-			);
-
-			await stopWork(handler, [`parley:${ended.slug}`]);
-
-			return ended;
-		}
-
-		case "read":
-			return readParley(handler.harness, request.slug, context);
-		case "list":
-			return readParleys(handler.harness, context);
-	}
-}
-
 /**
- * Each item of a reply has its stage, which the host works out after the commit: a commit callback cannot read the
- * states of the agents, which their own commits give.
+ * Serves `request` with the handler of the `ask` requests of an entry, or else with the plain asks of the host, which
+ * refuse an ask of a parley.
  */
-async function item(request: Extract<Request, { type: "item" }>, handler: Handler): Promise<Replies["item"]> {
-	switch (request.action) {
-		case "add":
-			return stageItem(handler, await handler.harness.commit((tx) => addItem(tx, request, request.caller), context));
-		case "set": {
-			const set = await handler.harness.commit((tx) => setItem(tx, request, request.caller, handler.items), context);
+function ask(request: AskRequest, handler: Handler): Promise<Replies["ask"]> {
+	const author: AnswerAuthorOf = (answer) => answerAuthor(answer, handler);
 
-			// A closed item stops the workers of its label and of the contracts that it ended.
-			if (set.item.state !== "open") {
-				await stopWork(handler, [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)]);
-			}
+	if (handler.ask === undefined) return plainAsk(request, handler.harness, handler.root.id, author, context);
 
-			return stageItem(handler, set.item);
-		}
-
-		case "list": {
-			const items = await readItems(handler.harness, handler.storage, request.state ?? "open", context);
-
-			return { items: await stageItems(handler, items) };
-		}
-
-		case "read":
-			return stageItem(handler, await readItemBothWays(handler.harness, handler.storage, request.id, context));
-		case "link":
-			return handler.harness.commit((tx) => linkItem(tx, request, request.caller, handler.items), context);
-		case "unlink":
-			return stageItem(handler, await handler.harness.commit((tx) => unlinkItem(tx, request), context));
-	}
+	return handler.ask(request, { signal: handler.signal, author });
 }
 
 /**
- * Approves or drops the held action of `request`. An approve tells the agent of the action with a follow-up input, so
- * that it calls the command again. The input is found before the commit, and a failed delivery is a warning and the
- * degraded state `approve-tell` of the action, until the action runs.
- */
-async function held(request: Extract<Request, { type: "held" }>, handler: Handler): Promise<Replies["held"]> {
-	const { id, caller } = request;
-
-	if (request.action === "drop") return handler.harness.commit((tx) => dropHeld(tx, id, caller), context);
-	const agent = (await readHeld(handler.harness, context)).held.find((found) => found.id === id)?.agent;
-	const tell = agent === undefined ? undefined : await handler.push.inputOf(agent);
-	const approved = await handler.harness.commit((tx) => approveHeld(tx, id, caller), context);
-
-	await tell?.({
-		type: "input",
-		content: approvedText(approved),
-		whenBusy: "followUp",
-		requestId: `approve:${approved.id}`,
-	}).catch((cause: unknown) => {
-		handler.warn(cause);
-		handler.degraded.start(
-			"approve-tell",
-			String(approved.id),
-			`The tell of approved action ${approved.id} failed: ${errorMessage(cause)}`,
-		);
-	});
-
-	return approved;
-}
-
-/**
- * The answers of the classifier about the open todos of the list of `request`, or without `list` about the open work
- * items, each with its title as its text. The classifier is found first, so a client without a credential gets that
+ * The answers of the classifier about the open todos of the list of `request`, or without `list` about the list that an
+ * entry gives, such as the open work items. The classifier is found first, so a client without a credential gets that
  * error for any list.
  */
 async function classify(
-	request: Extract<Request, { type: "classify-todos" }>,
+	request: Extract<CoreRequest, { type: "classify-todos" }>,
 	handler: Handler,
 ): Promise<Replies["classify-todos"]> {
 	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier", handler.degraded);
 
 	const todos =
 		request.list === undefined
-			? (await allItems(handler.harness, handler.storage, context)).map(({ id, title, state }) => ({
-					id,
-					text: title,
-					state,
-				}))
+			? await entryList(handler)
 			: (await readTodos(handler.harness, await listOwner(request.list, handler), context)).todos;
 
 	return { answers: await classifyTodos(handler.place.models, model, todos, request.ids, handler.signal) };
 }
 
-async function list(request: Extract<Request, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
+/** The list of `classify-todos` without `list`, which an entry gives. */
+function entryList(handler: Handler): Promise<readonly Todo[]> {
+	if (handler.classifyList === undefined) throw new Error("classify-todos needs a list: no loaded entry gives one");
+
+	return handler.classifyList();
+}
+
+async function list(request: Extract<CoreRequest, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
 	const state = await handler.harness.snapshot(ChildRecords, context);
 
 	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
@@ -595,7 +369,7 @@ async function whoami(caller: string, handler: Handler): Promise<Replies["whoami
 	return handle === undefined ? {} : { handle };
 }
 
-async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
+async function rename(request: Extract<CoreRequest, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
 	await ownRecord(handler.harness, request.handle, request.caller);
 	await renameRecord(handler.harness, request.handle, request.name);
 
@@ -606,7 +380,7 @@ async function rename(request: Extract<Request, { type: "rename" }>, handler: Ha
  * Stops the child of `request` with the children it spawned. For `cli`, a target with no record, the project agent or a
  * conversation such as a session of a task, has its turn aborted and stays.
  */
-async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
+async function stop(request: Extract<CoreRequest, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
 	const ref = parseTarget(request);
 	const entry = await stoppedEntry(handler, ref, request.caller);
 
@@ -618,7 +392,7 @@ async function stop(request: Extract<Request, { type: "stop" }>, handler: Handle
 	return record.name === undefined ? { handle } : { handle, name: record.name };
 }
 
-async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+async function spawnChild(request: Extract<CoreRequest, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
 	let handle = await spawnedHandle(harness, request.requestId);
 
@@ -669,7 +443,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	const requestId = `spawn:${request.requestId}`;
 	const found = await childTarget(handler, handle, record);
 	await beforeInput(handler, found);
-	await writeDigest(handler, found);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
 	// the request goes into the record's `requests` in the commit that makes it the last request.
 	await found.send(
@@ -688,7 +461,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
  * the user; the entry of a `send` stays `pi.user`.
  */
 async function sendTo(
-	request: Extract<Request, { type: "send" | "input" }>,
+	request: Extract<CoreRequest, { type: "send" | "input" }>,
 	found: Pick<Found, "conversation" | "info"> & {
 		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
 	},
@@ -711,7 +484,7 @@ async function sendTo(
 
 /** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
 async function noteTo(
-	request: Extract<Request, { type: "note" }>,
+	request: Extract<CoreRequest, { type: "note" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<{ child: ChildInfo }> {
@@ -728,7 +501,10 @@ function sendVerb(busy: boolean, followUp: boolean): string {
 	return !busy ? "Prompted" : followUp ? "Queued follow-up for" : "Steered";
 }
 
-async function waitChild(request: Extract<Request, { type: "wait" }>, handler: Handler): Promise<{ answer: string }> {
+async function waitChild(
+	request: Extract<CoreRequest, { type: "wait" }>,
+	handler: Handler,
+): Promise<{ answer: string }> {
 	const record = await childRecord(handler.harness, request.handle);
 	const child = await childOf(handler, record);
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
@@ -771,7 +547,7 @@ type SpawnSettings = {
  * The provider and the model of a spawn: those of the request when it gives either one, else `setting`. A missing part
  * comes from the caller.
  */
-function spawnModel(request: Extract<Request, { type: "spawn" }>, setting: SpawnSettings["model"]): ModelChoice {
+function spawnModel(request: Extract<CoreRequest, { type: "spawn" }>, setting: SpawnSettings["model"]): ModelChoice {
 	const chosen: { readonly provider?: string | undefined; readonly model?: string | undefined } =
 		request.provider !== undefined || request.model !== undefined ? request : (setting ?? {});
 
@@ -820,7 +596,7 @@ async function abortTarget(ref: Target, handler: Handler): Promise<{ readonly fo
 }
 
 async function configureChild(
-	request: Extract<Request, { type: "configure" }>,
+	request: Extract<CoreRequest, { type: "configure" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<ChildInfo> {

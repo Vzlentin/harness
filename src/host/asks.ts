@@ -2,10 +2,11 @@
  * The asks of the store of the project, by ID: the questions that someone puts to the user, their answers, drops,
  * notes and takes, and their reads. An ask keeps the parley that it serves as data from its caller, which this module
  * does not read. The commit of an answer also adds the todos `Save to the vault`, queues the
- * deliveries of the answers for their askers, and queues one event for each answered ask.
+ * deliveries of the answers for their askers, and queues one event for each answered ask. The plain asks serve the `ask`
+ * requests of a host whose entries serve no parley asks.
  */
 import type { Context } from "@earendil-works/chord/context";
-import { type ConversationId, defineDoc, type DocumentReader, type Tx } from "@earendil-works/pi-durable";
+import { type ConversationId, defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
 	type AnswerAuthor,
@@ -15,15 +16,19 @@ import {
 	type AskInput,
 	type AskList,
 	type AskOption,
+	type AskRef,
 	ASKS_KIND,
 	askTransition,
 } from "../protocol/project.ts";
-import type { UserDelivery } from "../protocol/requests.ts";
+import type { CoreRequest, Replies, UserDelivery } from "../protocol/requests.ts";
 import { todoLine } from "../protocol/todo.ts";
 import { queueAskEvents } from "./ask-events.ts";
 import { boundedReplay } from "./checkpoint.ts";
 import { addSaveTodos, closeSaveTodo } from "./save-todo.ts";
 import { queueAnswers } from "./user-answers.ts";
+
+/** The error of an ask of a parley on a host whose entries serve no parley asks. */
+const NO_PARLEY_ASKS = "no loaded entry serves parley asks";
 
 export const Asks = defineDoc<AskList>({
 	kind: ASKS_KIND,
@@ -50,6 +55,12 @@ export type AnswerGroup = { readonly asker: string; readonly asks: readonly numb
  * order of `answered`. Each ask is in one delivery.
  */
 export type GroupAnswers = (answered: readonly Ask[]) => AnswerGroup[];
+
+/** An `ask` request. */
+export type AskRequest = Extract<CoreRequest, { type: "ask" }>;
+
+/** The author of the answers of the `ask answer` request `request`, as the host works it out. */
+export type AnswerAuthorOf = (request: Extract<AskRequest, { action: "answer" }>) => Promise<AnswerAuthor>;
 
 /** An ask in the state `answered`. */
 type AnsweredAsk = Extract<Ask, { readonly state: "answered" }>;
@@ -212,6 +223,83 @@ export async function readAsks(reader: Pick<DocumentReader, "snapshot">, context
 /** The open asks, in ID order. */
 export async function readOpenAsks(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<AskList> {
 	return { asks: (await readAsks(reader, context)).asks.filter((ask) => ask.state === "open") };
+}
+
+/**
+ * Serves `request` with the plain asks, on the store of `harness`, which refuse an ask of a parley. `root` is the
+ * project agent, and `authorOf` gives the author of the answers of an `answer`.
+ */
+export async function plainAsk(
+	request: AskRequest,
+	harness: Pick<Harness, "commit" | "snapshot">,
+	root: ConversationId,
+	authorOf: AnswerAuthorOf,
+	context: Context,
+): Promise<Replies["ask"]> {
+	switch (request.action) {
+		case "round": {
+			if (request.parley !== undefined) throw new Error(NO_PARLEY_ASKS);
+			const inputs = request.asks.map((input) => ({ input }));
+
+			return {
+				parleys: [],
+				asks: await harness.commit((tx) => addAsks(tx, inputs, request.caller, Date.now()), context),
+			};
+		}
+
+		case "answer": {
+			const answers = request.answers.map(plainAnswer);
+			const author = await authorOf(request);
+
+			const written = await harness.commit(async (tx) => {
+				const asks = (await tx.doc(Asks)).asks;
+
+				for (const { id } of answers) refuseParley(knownAsk(asks, id));
+
+				return answerAsks(tx, answers, new Set(), request.caller, author, root, (answered) => answered.map(askGroup));
+			}, context);
+
+			return { parleys: [], asks: written };
+		}
+
+		case "drop": {
+			const id = plainRef(request);
+
+			const dropped = await harness.commit(async (tx) => {
+				refuseParley(knownAsk((await tx.doc(Asks)).asks, id));
+
+				return dropAsk(tx, id, request.caller);
+			}, context);
+
+			return { parleys: [], asks: [dropped] };
+		}
+
+		case "note":
+			return harness.commit((tx) => noteAsk(tx, plainRef(request), request.note, request.caller), context);
+		case "read":
+			return knownAsk((await readAsks(harness, context)).asks, plainRef(request));
+		case "list":
+			return readOpenAsks(harness, context);
+	}
+}
+
+/** The ID of the ask of `ref`. An ask by its number in a parley fails: the plain asks have no parleys. */
+function plainRef(ref: AskRef): number {
+	if (ref.id === undefined) throw new Error(NO_PARLEY_ASKS);
+
+	return ref.id;
+}
+
+/** The answer `input` by ask ID. An answer of an ask by its number in a parley fails: the plain asks have no parleys. */
+function plainAnswer(input: AnswerInput): AskAnswer {
+	const { slug: _slug, n: _n, ...answer } = input;
+
+	return { ...answer, id: plainRef(input) };
+}
+
+/** Refuses `ask` when it serves a parley: the plain asks have no parleys. */
+function refuseParley(ask: Ask): void {
+	if (ask.parley !== undefined) throw new Error(NO_PARLEY_ASKS);
 }
 
 /** The fields of `ask` without its state, its answer and the author of its answer. */

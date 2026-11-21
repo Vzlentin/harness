@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -14,6 +15,7 @@ import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
 import { type ItemArgs, runItemTool, sendAskNote, sendRuleChange, sendRuleList } from "./project-tool.ts";
+import { setEntry } from "./protocol/entries.ts";
 import {
 	cliCaller,
 	HARNESS_PROJECT,
@@ -51,6 +53,14 @@ import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolAr
 
 /** How long `harness page` waits for the inspect server that it starts. */
 const INSPECT_START_MS = 10_000;
+
+/** The name of the projects entry in `entries.json`. */
+const PROJECTS_ENTRY = "projects";
+
+/** The module of the projects entry: its source in a checkout, which runs from source, else its build. */
+const PROJECTS_MODULE = fileURLToPath(
+	new URL(import.meta.url.endsWith(".ts") ? "./projects/index.ts" : "./projects/index.js", import.meta.url),
+);
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -596,7 +606,7 @@ async function storeCommand(args: string[], project: string | undefined): Promis
 
 	if (action !== "load" || file === undefined || rest.length !== 0) usage();
 	const name = projectOf(project, process.env, process.cwd());
-	const { loadStore } = await import("./host/store-load.ts");
+	const { loadStore } = await import("./projects/store-load.ts");
 	const counts = await loadStore(name, file);
 
 	for (const [key, count] of Object.entries(counts)) process.stdout.write(`${key}: ${count}\n`);
@@ -608,6 +618,8 @@ async function storeCommand(args: string[], project: string | undefined): Promis
  */
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
+	// The host loads the projects entry through `entries.json`, as any entry.
+	setEntry(PROJECTS_ENTRY, PROJECTS_MODULE);
 
 	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } =
 		await import("@earendil-works/pi-coding-agent");

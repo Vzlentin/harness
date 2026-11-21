@@ -6,8 +6,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness, Storage } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { type ChildRecord, ChildRecords } from "../host/records.ts";
 import { allItems, Items } from "./item-docs.ts";
-import { type ChildRecord, ChildRecords } from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
 

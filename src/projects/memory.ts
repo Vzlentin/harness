@@ -8,11 +8,11 @@ import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type ConversationId, defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { settingModel } from "../host/model-choice.ts";
 import { memoryTool } from "../memory-tool.ts";
 import { MEMORY_EXTENSION, MEMORY_SECTION } from "../protocol/project.ts";
 import { errorMessage, type Replies, type Request } from "../protocol/requests.ts";
 import type { DurableScope } from "../tool.ts";
-import { settingModel } from "./model-choice.ts";
 import { memorySnapshot, type NapPrompt, napPrompt, runMemo, runMemoryTool } from "./optmem.ts";
 
 const SYSTEM_PROMPT = `You compress the memories of an agent into one line.

@@ -8,10 +8,10 @@ import type { CommitObserver } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
-import { sessionDoc } from "../src/host/project-docs.ts";
-import { projectEvent } from "../src/host/project-watch.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { type StoreView, serveStoreWatch } from "../src/host/store-watch.ts";
+import { sessionDoc } from "../src/projects/project-docs.ts";
+import { projectEvent } from "../src/projects/project-watch.ts";
 import { StagedItem } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
@@ -833,7 +833,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 		);
 	});
 
-	it("runs a pass at each trigger of its view once the reply is written, and stops the triggers when it stops", async () => {
+	it("runs a pass at each trigger of its view, sends its events once the reply is written, and stops the triggers when it stops", async () => {
 		const harness = { observeCommits: () => ({ detach: () => undefined }) };
 		let trigger: (() => void) | undefined;
 		let untriggered = 0;
@@ -877,16 +877,19 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				afterReply: (run) => (afterReply = () => run(Promise.resolve(true))),
 			});
 
-			// A trigger before the reply is written runs no pass.
+			// The first pass runs at once, and a trigger before the reply is written runs a pass, but their events wait
+			// for the reply.
+			await until(() => reads === 2);
 			trigger?.();
+			await until(() => reads === 3);
 			await new Promise((resolve) => setTimeout(resolve, 50));
-			expect(reads).toBe(1);
+			expect(lines).toEqual([]);
 
 			afterReply?.();
-			await until(() => lines.length === 1);
-			trigger?.();
 			await until(() => lines.length === 2);
-			expect(lines).toEqual(['{"event":2}', '{"event":3}']);
+			trigger?.();
+			await until(() => lines.length === 3);
+			expect(lines).toEqual(['{"event":2}', '{"event":3}', '{"event":4}']);
 
 			abort.abort();
 			expect(untriggered).toBe(1);

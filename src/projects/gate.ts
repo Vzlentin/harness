@@ -15,6 +15,8 @@ import {
 	hook,
 	ToolTask,
 } from "@earendil-works/pi-durable";
+import { answerOf, askClassifier, classifierFailed, classifierModel } from "../host/classify.ts";
+import type { Degraded } from "../host/degraded.ts";
 import {
 	asksNoQuestion,
 	GATE_MESSAGES,
@@ -27,8 +29,6 @@ import {
 import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
-import { answerOf, askClassifier, classifierFailed, classifierModel } from "./classify.ts";
-import type { Degraded } from "./degraded.ts";
 import { readStoredRules } from "./project-rules.ts";
 import { heldFor, holdAction, markSent, readHeld, runApproved, runsFor } from "./project.ts";
 

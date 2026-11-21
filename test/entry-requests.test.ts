@@ -9,7 +9,7 @@ import { setEntry } from "../src/protocol/entries.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { PROTOCOL_VERSION } from "../src/protocol/requests.ts";
-import { createProject, models, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import { createProject, models, PROJECTS_MODULE, root, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 const PROJECT = "entries";
 const TYPEBOX = import.meta.resolve("typebox");
@@ -127,20 +127,30 @@ export default () => ({
 	return module;
 }
 
-/** Starts a host of a new project with only the entries `entries`, by name, and gives the error of its start. */
-async function startError(project: string, entries: Record<string, string>): Promise<string> {
+/**
+ * Starts a host of a new project with only the entries `entries`, by name, and gives it. `entries.json` then has only
+ * the projects entry again.
+ */
+async function startWith(project: string, entries: Record<string, string>): Promise<Host> {
 	const file = join(root, "config", "harness", "entries.json");
 	await mkdir(join(root, "config", "harness"), { recursive: true });
 	await writeFile(file, JSON.stringify(entries));
 	await createProject(project);
 
 	try {
-		const started = await startHost(project);
+		return await startHost(project);
+	} finally {
+		await writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE }));
+	}
+}
+
+/** Starts a host of a new project with only the entries `entries`, by name, and gives the error of its start. */
+async function startError(project: string, entries: Record<string, string>): Promise<string> {
+	try {
+		const started = await startWith(project, entries);
 		await started.close();
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
-	} finally {
-		await writeFile(file, "{}");
 	}
 
 	throw new Error(`The host of ${project} started`);
@@ -161,7 +171,7 @@ afterAll(async () => {
 describe("entry requests", () => {
 	it("gives the protocol versions of the entries in the hello reply", async () => {
 		expect(await exchange(PROJECT, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
-			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: { fixture: 3 } } },
+			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: { projects: 1, fixture: 3 } } },
 		]);
 	});
 
@@ -275,17 +285,17 @@ describe("entry load errors", () => {
 		expect(existsSync(`${first}.closed`)).toBe(true);
 	});
 
-	it("refuses two entries that give a handler of the answered asks", async () => {
-		const source = `export default () => ({ extensions: [], answeredAsk: async () => {}, close: async () => {} });\n`;
+	it("refuses two entries that give a handler of the ask requests", async () => {
+		const source = `export default () => ({ extensions: [], ask: async () => ({ asks: [] }), close: async () => {} });\n`;
 		const first = await entryModule("first-asks", source);
 		const second = await entryModule("second-asks", source);
 
 		expect(await startError("dup-asks", { first, second })).toBe(
-			`The entries ${first} and ${second} both give the handler of the answered asks`,
+			`The entries ${first} and ${second} both give the handler of the ask requests`,
 		);
 	});
 
-	it("refuses an entry that checks a label kind of the host, and two entries that check the same kind", async () => {
+	it("refuses an entry that checks a label kind of the projects entry, and two entries that check the same kind", async () => {
 		const labels = (kind: string) =>
 			`export default () => ({ extensions: [], labels: [{ kind: ${JSON.stringify(kind)}, check: async () => {} }], close: async () => {} });\n`;
 
@@ -293,8 +303,8 @@ describe("entry load errors", () => {
 		const item = await entryModule("item-label", labels("item"));
 		const second = await entryModule("second-label", labels("fix"));
 
-		expect(await startError("host-label", { first, item })).toBe(
-			`The entry ${item} checks the label kind item, which the host owns`,
+		expect(await startError("host-label", { projects: PROJECTS_MODULE, item })).toBe(
+			`The entries ${PROJECTS_MODULE} and ${item} both check the label kind item`,
 		);
 		expect(await startError("dup-label", { first, second })).toBe(
 			`The entries ${first} and ${second} both check the label kind fix`,
@@ -315,5 +325,38 @@ describe("entry load errors", () => {
 		expect(await startError("both", { both })).toMatch(
 			new RegExp(`^The entry ${both.replaceAll(".", "\\.")} returned an invalid result: /requests/0`),
 		);
+	});
+});
+
+describe("a host without the projects entry", () => {
+	let bare: Host | undefined;
+	const project = "no-projects";
+
+	beforeAll(async () => {
+		bare = await startWith(project, {});
+	});
+
+	afterAll(async () => {
+		await bare?.close();
+	});
+
+	it("gives no projects version in the hello reply, and refuses a request of the project with the error that names its type", async () => {
+		expect(await exchange(project, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
+			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: {} } },
+		]);
+		expect(await exchange(project, [{ type: "item", action: "list" }], 1)).toEqual([
+			{ ok: false, error: 'no loaded entry serves request type "item"' },
+		]);
+	});
+
+	it("serves a plain round of asks and their list, and refuses a round of a parley", async () => {
+		const round = { type: "ask", action: "round", caller: "cli", asks: [{ title: "Ship it?" }] };
+		const parley = { ...round, parley: { slug: "ship", title: "Ship", goal: "Ship the change." } };
+		const [written, listed, refused] = await exchange(project, [round, { type: "ask", action: "list" }, parley], 3);
+
+		const ask = { id: 1, title: "Ship it?", state: "open", asker: "cli", at: expect.any(Number), by: "cli" };
+		expect(written).toEqual({ ok: true, value: { parleys: [], asks: [ask] } });
+		expect(listed).toEqual({ ok: true, value: { asks: [ask] } });
+		expect(refused).toEqual({ ok: false, error: "no loaded entry serves parley asks" });
 	});
 });

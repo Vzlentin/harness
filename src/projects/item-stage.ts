@@ -3,21 +3,22 @@
  * from the state of the item and the other ends of its edges, and never stores.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { DocumentReader } from "@earendil-works/pi-durable";
+import { readOpenAsks } from "../host/asks.ts";
+import type { EntryHandles } from "../host/entries.ts";
+import { labelledTasks, TaskLabels } from "../host/tasks.ts";
 import type { ItemStage, StagedItem, WorkItem } from "../protocol/item.ts";
 import type { Ask, HeldAction, Parley } from "../protocol/project.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
-import { readOpenAsks } from "./asks.ts";
 import { itemEnds } from "./item-docs.ts";
 import { runAsker, runLive, taskRun } from "./items.ts";
 import { readParleys } from "./parleys.ts";
 import { readHeld } from "./project.ts";
-import { labelledTasks, TaskLabels } from "./tasks.ts";
-import { liveWorkers, type WorkerHost } from "./workers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** What the stage reads of the host: the store and the children library. */
-export type StageHost = WorkerHost;
+/** What the stage reads of the host: the store, and the live workers of each label. */
+export type StageHost = Pick<EntryHandles, "liveWorkers"> & { readonly harness: Pick<DocumentReader, "snapshot"> };
 
 /**
  * What the stage reads of the store, once for each read of items: the parleys, the open asks, the held actions, the
@@ -60,7 +61,7 @@ async function readInputs(host: StageHost): Promise<StageInputs> {
 		readOpenAsks(host.harness, context),
 		readHeld(host.harness, context),
 		host.harness.snapshot(TaskLabels, context),
-		liveWorkers(host),
+		host.liveWorkers(),
 	]);
 
 	return { parleys, asks, held, taskLabels: taskLabels?.labels ?? {}, workers };

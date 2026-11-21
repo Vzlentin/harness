@@ -1,9 +1,9 @@
 /**
  * The watch of a state that the host reads from its store: the state in the reply, then events with what changed after
- * the commits that can change it.
+ * the commits that can change it, through a sink: the socket of a connection, or the calls of the watch of an entry.
+ * It also holds the sink of a watch on the socket of a connection, which the watches of the entries use too.
  */
 import { once } from "node:events";
-import type { Socket } from "node:net";
 import type { CommitChange, CommitObservation, Harness } from "@earendil-works/pi-durable";
 import { Passes } from "./passes.ts";
 import type { Connection } from "./push.ts";
@@ -23,21 +23,120 @@ export type StoreView<S, E> = {
 	triggers?(request: () => void): () => void;
 };
 
+/** Where a watch sends its events. */
+export type WatchSink<E> = {
+	/** Sends `event`. It is false when the client must drain first. */
+	emit(event: E): boolean;
+	/** Resolves once the client drained. */
+	drained(): Promise<void>;
+	/** Ends the watch for the client. */
+	end(): void;
+};
+
+/** What a watch gets: the sink of its events, and the signal that stops it. */
+export type ConnectionWatchOptions<E> = WatchSink<E> & {
+	/** Aborts when the socket or the host closes. */
+	readonly signal: AbortSignal;
+};
+
 /**
- * Opens a watch of `view` on `connection`, and returns the reply, with the state. A pass runs once the reply is
- * written, and after it each commit with a change that `view` marks, and each trigger of `view`, starts a pass: the
- * host reads the state again and sends a `{ event }` line for each event of `view`. The passes run one at a time, and the commits during a pass give
- * one more pass. When a write waits for a slow socket to drain, the next events have every object. A pass that fails,
- * and the close of the store, end the connection. The watch stops when `signal` aborts, at the close of the socket.
+ * Opens the watch `watch` on `connection`, and returns its state as the reply. Each `emit` of the watch becomes one
+ * `{ event }` line after the reply, in order: the events before the reply wait for it. `emit` is false when the socket
+ * holds the line until it drains, and `drained` waits for that. `end` ends the connection once the reply and the events
+ * before it are written. A watch that fails sends no event.
  */
-export async function serveStoreWatch<S, E>(
+export async function serveConnectionWatch<S, E>(
+	connection: Connection,
+	signal: AbortSignal,
+	watch: (options: ConnectionWatchOptions<E>) => Promise<S>,
+): Promise<S> {
+	const { socket } = connection;
+	/** The events that wait for the reply, until it is written. */
+	let waiting: E[] | undefined = [];
+	let ended = false;
+
+	const write = (event: E) => !socket.writable || socket.write(`${JSON.stringify({ event })}\n`);
+
+	const close = () => {
+		if (socket.writable) socket.end();
+	};
+
+	const emit = (event: E) => {
+		if (ended) return true;
+
+		if (waiting === undefined) return write(event);
+		waiting.push(event);
+
+		return true;
+	};
+
+	// A socket that closes first never drains: the wait then goes with it.
+	const drained = () =>
+		socket.writableNeedDrain
+			? once(socket, "drain").then(
+					() => undefined,
+					() => undefined,
+				)
+			: Promise.resolve();
+
+	const end = () => {
+		if (ended) return;
+		ended = true;
+
+		if (waiting === undefined) close();
+	};
+
+	let state: S;
+
+	try {
+		state = await watch({ signal, emit, drained, end });
+	} catch (error) {
+		ended = true;
+		throw error;
+	}
+
+	connection.afterReply(() => {
+		const events = waiting ?? [];
+		waiting = undefined;
+
+		for (const event of events) write(event);
+
+		if (ended) close();
+	});
+
+	return state;
+}
+
+/**
+ * Opens a watch of `view` on `connection`, and returns the reply, with the state. A pass runs at once, and its events
+ * wait for the reply. After it, each commit with a change that `view` marks, and each trigger of `view`, starts a pass:
+ * the host reads the state again and sends a `{ event }` line for each event of `view`. The passes run one at a time,
+ * and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the next events have
+ * every object. A pass that fails, and the close of the store, end the connection. The watch stops when `signal`
+ * aborts, at the close of the socket.
+ */
+export function serveStoreWatch<S, E>(
 	harness: Pick<Harness, "observeCommits">,
 	view: StoreView<S, E>,
 	signal: AbortSignal,
 	connection: Connection,
 ): Promise<S> {
+	return serveConnectionWatch(connection, signal, (options) => watchStore(harness, view, options));
+}
+
+/**
+ * Opens a watch of `view` that sends its events to the sink in `options`, and returns the state. A pass runs once the
+ * state is read, and each commit with a change that `view` marks, and each trigger of `view`, then starts a pass, as
+ * `serveStoreWatch` says. A pass that fails, and the close of the store, end the sink. The watch stops when the signal
+ * in `options` aborts.
+ */
+export async function watchStore<S, E>(
+	harness: Pick<Harness, "observeCommits">,
+	view: StoreView<S, E>,
+	options: ConnectionWatchOptions<E>,
+): Promise<S> {
 	// The observer attaches before the first read, so a commit during the read gives a pass.
-	const watch = new StoreWatch(harness, view, connection.socket);
+	const watch = new StoreWatch(harness, view, options);
 	let state: S;
 
 	try {
@@ -47,10 +146,9 @@ export async function serveStoreWatch<S, E>(
 		throw error;
 	}
 
-	if (signal.aborted) watch.stop();
-	else signal.addEventListener("abort", () => watch.stop(), { once: true });
-	// The events come after the reply.
-	connection.afterReply(() => watch.start());
+	// The first pass runs on a later turn, so a signal that aborted already cancels it.
+	if (options.signal.aborted) watch.stop();
+	else options.signal.addEventListener("abort", () => watch.stop(), { once: true });
 
 	return state;
 }
@@ -58,53 +156,43 @@ export async function serveStoreWatch<S, E>(
 /** The passes of one watch, and what its client has. */
 class StoreWatch<S, E> {
 	readonly #view: StoreView<S, E>;
-	readonly #socket: Socket;
+	readonly #sink: WatchSink<E>;
 	readonly #observation: CommitObservation;
 	/** Stops the triggers of the view. */
 	readonly #untrigger: () => void;
 	readonly #passes = new Passes(() => this.#pass().catch(() => this.#end()));
-	/** The state that the client has, once the reply is read. */
+	/** The state that the client has, once the first read is done. Until then, a pass sends nothing. */
 	#sent: { readonly state: S } | undefined;
-	/** Whether the reply is written, so the commits give passes. */
-	#started = false;
 	/** Whether the last write waited for the socket to drain, so the next events have every object. */
 	#behind = false;
 
-	constructor(harness: Pick<Harness, "observeCommits">, view: StoreView<S, E>, socket: Socket) {
+	constructor(harness: Pick<Harness, "observeCommits">, view: StoreView<S, E>, sink: WatchSink<E>) {
 		this.#view = view;
-		this.#socket = socket;
+		this.#sink = sink;
 		// The listener only requests a pass: it must not call the store. The view sees every change, so its own state stays
 		// current.
 		this.#observation = harness.observeCommits({
 			advance: (publication) => {
 				const marks = publication.changes.map((change) => view.changes(change));
 
-				if (this.#started && marks.includes(true)) this.#passes.request();
+				if (marks.includes(true)) this.#passes.request();
 			},
 			end: () => this.#end(),
 		});
 
-		this.#untrigger =
-			view.triggers?.(() => {
-				if (this.#started) this.#passes.request();
-			}) ?? (() => {});
-	}
-
-	/** Reads the state that the reply gives, which the client then has. */
-	async open(): Promise<S> {
-		const state = await this.#view.read();
-		this.#sent = { state };
-
-		return state;
+		this.#untrigger = view.triggers?.(() => this.#passes.request()) ?? (() => {});
 	}
 
 	/**
-	 * Lets the passes run, once the reply is written, and runs one. It sends what changed since the reply, so the commits
-	 * before it need no pass of their own.
+	 * Reads the state that the reply gives, which the client then has, and requests a pass. That pass sends what changed
+	 * since the state, so the commits during the read need no pass of their own.
 	 */
-	start(): void {
-		this.#started = true;
+	async open(): Promise<S> {
+		const state = await this.#view.read();
+		this.#sent = { state };
 		this.#passes.request();
+
+		return state;
 	}
 
 	/** Stops the passes. */
@@ -114,11 +202,10 @@ class StoreWatch<S, E> {
 		this.#untrigger();
 	}
 
-	/** Stops the passes and ends the connection. */
+	/** Stops the passes and ends the sink. */
 	#end(): void {
 		this.stop();
-
-		if (this.#socket.writable) this.#socket.end();
+		this.#sink.end();
 	}
 
 	/**
@@ -128,16 +215,15 @@ class StoreWatch<S, E> {
 	async #pass(): Promise<void> {
 		const state = await this.#view.read();
 
-		if (this.#passes.stopped || !this.#socket.writable || this.#sent === undefined) return;
+		if (this.#passes.stopped || this.#sent === undefined) return;
 		const events = this.#view.events(this.#sent.state, state, this.#behind);
 		this.#sent = { state };
 		this.#behind = false;
-		const writes = events.map((event) => this.#socket.write(`${JSON.stringify({ event })}\n`));
+		const writes = events.map((event) => this.#sink.emit(event));
 
 		if (writes.includes(false)) {
 			this.#behind = true;
-			// A socket that closes first never drains: the wait then goes with it.
-			await once(this.#socket, "drain").catch(() => {});
+			await this.#sink.drained();
 		}
 	}
 }

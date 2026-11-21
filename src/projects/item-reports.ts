@@ -1,19 +1,21 @@
 /**
  * The rule of the items on the reports of the workers: a commit that a worker of an item reports lands on the item and
- * closes it. The host gives this handler of the reports before the handler of an entry.
+ * closes it. The projects entry gives it as its handler of the reports.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Harness } from "@earendil-works/pi-durable";
+import type { ReportedHandler } from "../host/entries.ts";
 import { refParts } from "../protocol/item.ts";
-import type { ReportedHandler } from "./entries.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { landCommits } from "./items.ts";
-import { workState } from "./label-checks.ts";
+import { workState } from "./work-state.ts";
 import { stopWork, type WorkStopHost } from "./work-workers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** What the rule of the items on the reports uses of the host. */
 export type ItemReportHost = WorkStopHost & {
+	readonly harness: Pick<Harness, "commit">;
 	/** The index of the ends of the items, which gives the items that a contract shapes. */
 	readonly items: Pick<ItemIndex, "itemsOf">;
 };

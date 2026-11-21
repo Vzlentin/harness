@@ -8,14 +8,14 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, ROOT_CONVERSATION_ID, type Storage, type Tx } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { takeLock } from "../host/lock.ts";
+import { loadTodos } from "../host/todo-lists.ts";
 import { statePaths } from "../protocol/paths.ts";
 import { STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from "../protocol/store-file.ts";
 import { loadItems } from "./items.ts";
-import { takeLock } from "./lock.ts";
 import { loadLists } from "./project.ts";
 import { readStoreFile } from "./store-file.ts";
-import { loadTodos } from "./todo-lists.ts";
 
 const context = BACKGROUND_CONTEXT;
 

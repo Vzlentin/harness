@@ -2,7 +2,8 @@
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
  * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
  * hook, a handler of the answered asks, a handler of the reports of the workers, the request types that it serves, the
- * checks of its label kinds and the version of its protocol to the host.
+ * checks of its label kinds, the version of its protocol, its open and busy calls, the handler of the `ask` requests and
+ * the list that `classify-todos` takes without `list` to the host.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -17,19 +18,23 @@ import {
 	type EventBus,
 	type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AnyTask, Extension, Harness } from "@earendil-works/pi-durable";
+import type { AnyTask, Conversation, Extension, Harness, Storage } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import type { createChildren, Place } from "../children/library.ts";
+import type { createChildren, Input, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
 import type { Ask, AskList } from "../protocol/project.ts";
-import { Json } from "../protocol/requests.ts";
+import { Json, type Replies } from "../protocol/requests.ts";
+import type { Todo } from "../protocol/todo.ts";
 import type { WorkerId, Worker } from "../protocol/worker-labels.ts";
+import type { DurableScope } from "../tool.ts";
+import type { AnswerAuthorOf, AskRequest } from "./asks.ts";
 import type { ClassifierKey } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
 import type { LabelCheck } from "./label-checks.ts";
+import type { ConnectionWatchOptions } from "./store-watch.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 
@@ -108,8 +113,9 @@ export type ReportedEvent = {
 };
 
 /**
- * The handler of the reports of an entry. It runs after the commit of the report and the handler of the rule of the
- * items, before the reply. A throw fails the request, and the references stay stored.
+ * The handler of the reports of an entry. It runs after the commit of the report and the handlers of the entries that
+ * loaded before it, before the reply. A throw fails the request, the later handlers do not run, and the references stay
+ * stored.
  */
 export type ReportedHandler = (event: ReportedEvent) => Promise<void>;
 
@@ -118,15 +124,8 @@ export const EntryLine = Type.Intersect([Type.Object({ type: Type.String() }), T
 
 export type EntryLine = Static<typeof EntryLine>;
 
-/** What a watch of an entry gets: the signal of its connection, and the calls that send an event and end it. */
-export type EntryWatchOptions = {
-	/** Aborts when the socket or the host closes. */
-	readonly signal: AbortSignal;
-	/** Sends `event` as one `{ "event": ... }` line, after the reply. */
-	readonly emit: (event: JsonValue) => void;
-	/** Ends the connection, after the reply and the events before it. */
-	readonly end: () => void;
-};
+/** What a watch of an entry gets. */
+export type EntryWatchOptions = ConnectionWatchOptions<JsonValue>;
 
 /** The fields of a request type of an entry: its type, the schema of its lines, and whether a line is passive. */
 const EntryRequestFields = {
@@ -169,13 +168,27 @@ const LabelKind = Type.Object({
 	check: Type.Unsafe<LabelCheck>(Type.Function([Type.Unknown()], Type.Unknown())),
 });
 
+/** What the host gives the open call of an entry: the open harness, its root conversation and its storage. */
+export type EntryOpen = { readonly harness: Harness; readonly root: Conversation; readonly storage: Storage };
+
+/**
+ * The handler of the `ask` requests of an entry, which serves them in place of the host. Its `author` gives the author
+ * of the answers of an `answer`, as the host works it out.
+ */
+export type AskHandler = (
+	request: AskRequest,
+	options: { readonly signal: AbortSignal; readonly author: AnswerAuthorOf },
+) => Promise<Replies["ask"]>;
+
 /** The name and the version of the protocol of an entry, which the `hello` reply gives. */
 const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) });
 
 /**
  * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
  * input hook, its handler of the answered asks, its handler of the reports, the request types that it serves, the checks
- * of its label kinds, the version of its protocol, and `close`.
+ * of its label kinds, the version of its protocol, `open`, which the host calls once the root conversation and the
+ * workers are there and before any task resumes, `busy`, which keeps the host from its idle exit, the handler of the
+ * `ask` requests, the list of `classify-todos` without `list`, and `close`.
  */
 const EntryResult = Type.Object({
 	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
@@ -189,24 +202,35 @@ const EntryResult = Type.Object({
 	requests: Type.Optional(Type.Array(EntryRequest)),
 	labels: Type.Optional(Type.Array(LabelKind)),
 	protocol: Type.Optional(EntryProtocol),
+	open: Type.Optional(
+		Type.Unsafe<(opened: EntryOpen) => Promise<void>>(Type.Function([Type.Unknown()], Type.Unknown())),
+	),
+	busy: Type.Optional(Type.Unsafe<() => boolean>(Type.Function([], Type.Unknown()))),
+	ask: Type.Optional(Type.Unsafe<AskHandler>(Type.Function([Type.Unknown(), Type.Unknown()], Type.Unknown()))),
+	classifyList: Type.Optional(Type.Unsafe<() => Promise<readonly Todo[]>>(Type.Function([], Type.Unknown()))),
 	close: Type.Unsafe<() => Promise<void>>(Type.Function([], Type.Unknown())),
 });
 
 export type Entry = Static<typeof EntryResult>;
 
 /**
- * The entries that the host loaded, as one: their extensions, tasks, catch-up hooks and input hooks in load order, the
- * handler of the answered asks and the handler of the reports, each of at most one entry, their request types by type,
- * the checks of their labels by kind, the versions of their protocols by name, the event bus that they share, and
- * `close`.
+ * The entries that the host loaded, as one: their extensions, tasks, catch-up hooks, input hooks, handlers of the
+ * answered asks and handlers of the reports in load order, the handler of the `ask` requests and the list of
+ * `classify-todos`, each of at most one entry, their request types by type, the checks of their labels by kind, the
+ * versions of their protocols by name, the event bus that they share, `open`, which opens each entry in load order,
+ * `busy`, true while an entry is busy, and `close`.
  */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
 	readonly tasks: readonly AnyTask[];
 	readonly catchUps: readonly CatchUpHook[];
 	readonly inputHooks: readonly InputHook[];
-	readonly answeredAsk: AnsweredAskHandler | undefined;
-	readonly reported: ReportedHandler | undefined;
+	readonly answeredAsks: readonly AnsweredAskHandler[];
+	readonly reported: readonly ReportedHandler[];
+	readonly ask: AskHandler | undefined;
+	readonly classifyList: (() => Promise<readonly Todo[]>) | undefined;
+	open(opened: EntryOpen): Promise<void>;
+	busy(): boolean;
 	readonly requests: ReadonlyMap<string, EntryRequest>;
 	readonly labelChecks: ReadonlyMap<string, LabelCheck>;
 	readonly versions: Readonly<Record<string, number>>;
@@ -230,6 +254,25 @@ export type EntryClassifier = {
 export type EntryHandles = {
 	/** The state directory of the project. */
 	readonly stateDir: string;
+	/** The name of the project. */
+	readonly project: string;
+	/** The working directory of the project. */
+	readonly cwd: string;
+	/** Pi's settings for the project directory, as the host reads them. */
+	readonly settings: SettingsManager;
+	/**
+	 * The scope of the tools of the hosted conversations: its `send` serves a typed request in this process, by the host
+	 * or by the entry of its type, with no check of its schema. A watch type needs a connection, and fails.
+	 */
+	readonly scope: DurableScope;
+	/**
+	 * Sends `input` to `caller` when it is a conversation of the host (the project agent, a child or a library
+	 * conversation), after the input hooks. It resumes an ended conversation. Another caller, such as a Pi session, gets
+	 * nothing. It throws until the host is open.
+	 */
+	readonly tell: (caller: string, input: Input) => Promise<void>;
+	/** The live workers of each label. It throws until the host is open. */
+	readonly liveWorkers: () => Promise<ReadonlyMap<string, readonly Worker[]>>;
 	/** The open asks of the store. It throws until the host is open, as `place.store` does. */
 	readonly openAsks: () => Promise<AskList>;
 	/** The degraded states of the host. */
@@ -262,7 +305,7 @@ export const EntryDelivery = Type.Object({
 export type EntryDelivery = Static<typeof EntryDelivery>;
 
 /** What the host gives the default export of an entry. */
-type EntryOptions = EntryHandles & {
+export type EntryOptions = EntryHandles & {
 	readonly durable: typeof durable;
 	readonly ai: typeof ai;
 	readonly events: EventBus;
@@ -283,9 +326,9 @@ const Manifest = Type.Object({
  * `entries.json` (see `readEntries`), with the children library `children` and the host's `handles`, in one shared
  * event bus, as one entry whose `close()` closes each of them and passes its errors to `handles.warn`. When an entry
  * fails to load, returns an invalid result, gives the kind of catch-up hook or input hook, a request type or the protocol
- * name of an earlier entry, gives a handler of the answered asks or of the reports when an earlier entry gave one,
- * serves a request type of `coreTypes` or checks a label kind of `hostKinds`, which the host owns, or checks the label
- * kind of an earlier entry, the entries loaded before it close.
+ * name of an earlier entry, gives a handler of the `ask` requests or the list of
+ * `classify-todos` when an earlier entry gave one, serves a request type of `coreTypes`, which the host owns, or checks
+ * the label kind of an earlier entry, the entries loaded before it close.
  * Missing packages are skipped, not installed, and so is an entry module of `entries.json` that does not exist, such as
  * one of an uninstalled package, with a warning. A package or an entry that it skips is a degraded state in
  * `handles.degraded` for the life of the host.
@@ -297,7 +340,6 @@ export async function loadEntries(
 	place: Place,
 	children: ChildrenLibrary,
 	coreTypes: ReadonlySet<string>,
-	hostKinds: ReadonlySet<string>,
 	handles: EntryHandles,
 ): Promise<LoadedEntries> {
 	const { warn, degraded } = handles;
@@ -368,9 +410,9 @@ export async function loadEntries(
 
 			if (result.input !== undefined) claim(owners, module, "give the input hook", result.input.kind);
 
-			if (result.answeredAsk !== undefined) claim(owners, module, "give the handler of the", "answered asks");
+			if (result.ask !== undefined) claim(owners, module, "give the handler of the", "ask requests");
 
-			if (result.reported !== undefined) claim(owners, module, "give the handler of the", "reports");
+			if (result.classifyList !== undefined) claim(owners, module, "give the list of", "classify-todos");
 
 			for (const request of result.requests ?? []) {
 				if (coreTypes.has(request.type)) {
@@ -382,10 +424,6 @@ export async function loadEntries(
 			}
 
 			for (const { kind, check } of result.labels ?? []) {
-				if (hostKinds.has(kind)) {
-					throw new Error(`The entry ${module} checks the label kind ${kind}, which the host owns`);
-				}
-
 				claim(owners, module, "check the label kind", kind);
 				labelChecks.set(kind, check);
 			}
@@ -405,8 +443,14 @@ export async function loadEntries(
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
 		catchUps: entries.flatMap((entry) => (entry.catchUp === undefined ? [] : [checkedHook(entry.catchUp)])),
 		inputHooks: entries.flatMap((entry) => entry.input ?? []),
-		answeredAsk: entries.find((entry) => entry.answeredAsk !== undefined)?.answeredAsk,
-		reported: entries.find((entry) => entry.reported !== undefined)?.reported,
+		answeredAsks: entries.flatMap((entry) => entry.answeredAsk ?? []),
+		reported: entries.flatMap((entry) => entry.reported ?? []),
+		ask: entries.find((entry) => entry.ask !== undefined)?.ask,
+		classifyList: entries.find((entry) => entry.classifyList !== undefined)?.classifyList,
+		open: async (opened) => {
+			for (const entry of entries) await entry.open?.(opened);
+		},
+		busy: () => entries.some((entry) => entry.busy?.() === true),
 		requests,
 		labelChecks,
 		versions,

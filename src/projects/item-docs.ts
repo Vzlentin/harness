@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, DocumentReader, Storage } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { familyKeys } from "../host/doc-family.ts";
 import {
 	ITEM_COUNTER_KIND,
 	ITEM_KIND,
@@ -14,7 +15,6 @@ import {
 	refParts,
 	type WorkItem,
 } from "../protocol/item.ts";
-import { familyKeys } from "./doc-family.ts";
 
 /** The items, one document for each, keyed by its ID. An item is small, so each write stores a whole base. */
 export const Items = durable.defineDocFamily<WorkItem, WorkItem>({

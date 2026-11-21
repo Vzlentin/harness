@@ -41,6 +41,7 @@ import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
@@ -871,7 +872,12 @@ export async function setUp(): Promise<void> {
 
 	faux.setResponses(Array.from({ length: 500 }, () => respond));
 	models.setProvider(faux.provider);
+	// The host loads the projects entry, as `harness host` sets it.
+	setEntry("projects", PROJECTS_MODULE);
 }
+
+/** The module of the projects entry, which `setUp` sets in `entries.json`. */
+export const PROJECTS_MODULE = fileURLToPath(new URL("../src/projects/index.ts", import.meta.url));
 
 /**
  * Makes `values` the environment of this process. It changes `process.env` in place, so `os.homedir()` also reads the

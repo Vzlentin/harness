@@ -7,8 +7,9 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Write } from "../src/children/library.ts";
 import { Degraded } from "../src/host/degraded.ts";
-import { writeDigest } from "../src/host/digest.ts";
-import { holdAction } from "../src/host/project.ts";
+import { beforeInput } from "../src/host/input-hooks.ts";
+import { digestHook } from "../src/projects/digest.ts";
+import { holdAction } from "../src/projects/project.ts";
 import { DigestReply } from "../src/protocol/project.ts";
 import { errorMessage } from "../src/protocol/requests.ts";
 import { models, projectHost, root, send, setUp, tearDown } from "./helpers.ts";
@@ -42,19 +43,20 @@ describe("the digest", () => {
 			const warnings: string[] = [];
 			const degraded = new Degraded((cause) => warnings.push(errorMessage(cause)));
 			const host = { harness, storage, project: "digest-failed", degraded };
+			const hooks = { storage, inputHooks: [digestHook(() => host)], degraded };
 
 			const failing = async () => {
 				throw new Error("Write failed");
 			};
 
-			await writeDigest(host, { conversation, write: failing });
+			await beforeInput(hooks, { conversation, write: failing });
 			expect(warnings).toEqual(["digest: Write failed"]);
 			expect(host.degraded.list()).toEqual([
 				{ kind: "digest-failed", line: "digest: Write failed", since: expect.any(Number) },
 			]);
 
 			const written: unknown[] = [];
-			await writeDigest(host, { conversation, write: async (write) => void written.push(write) });
+			await beforeInput(hooks, { conversation, write: async (write) => void written.push(write) });
 			expect(written).toEqual([
 				expect.objectContaining({
 					entry: expect.objectContaining({ data: { waits: [], held: [1], items: [] } }),
@@ -77,6 +79,7 @@ describe("the digest", () => {
 			await harness.commit((tx) => holdAction(tx, call), BACKGROUND_CONTEXT);
 			const degraded = new Degraded(() => {});
 			const host = { harness, storage, project: "digest-head", degraded };
+			const hooks = { storage, inputHooks: [digestHook(() => host)], degraded };
 			const written: string[] = [];
 
 			const target = {
@@ -87,9 +90,9 @@ describe("the digest", () => {
 				},
 			};
 
-			await writeDigest(host, target);
-			await writeDigest(host, target);
-			expect(written).toEqual([expect.stringMatching(/^digest:1:/)]);
+			await beforeInput(hooks, target);
+			await beforeInput(hooks, target);
+			expect(written).toEqual([expect.stringMatching(/^input:digest:1:/)]);
 
 			for (const text of ["One", "Two"]) {
 				const model = [{ role: "user", content: text, timestamp: Date.now() }] as const;
@@ -100,13 +103,13 @@ describe("the digest", () => {
 			await harness.waitForTask(task, BACKGROUND_CONTEXT);
 			const marker = await storage.findLatestHeadMarker(conversation.id, undefined, BACKGROUND_CONTEXT);
 			expect(marker?.kind).toBe("pi.compaction");
-			await writeDigest(host, target);
-			await writeDigest(host, target);
-			expect(written).toEqual([expect.stringMatching(/^digest:1:/), expect.stringMatching(/^digest:2:/)]);
+			await beforeInput(hooks, target);
+			await beforeInput(hooks, target);
+			expect(written).toEqual([expect.stringMatching(/^input:digest:1:/), expect.stringMatching(/^input:digest:2:/)]);
 
 			await conversation.reset(undefined, BACKGROUND_CONTEXT);
-			await writeDigest(host, target);
-			expect(written.at(-1)).toMatch(/^digest:3:/);
+			await beforeInput(hooks, target);
+			expect(written.at(-1)).toMatch(/^input:digest:3:/);
 			expect(written.map((id) => id.split(":").at(-1))).toEqual(Array(3).fill(written[0]?.split(":").at(-1)));
 			expect(degraded.list()).toEqual([]);
 		} finally {

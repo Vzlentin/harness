@@ -6,12 +6,12 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { ChildRecords } from "../host/records.ts";
+import { ConversationTodos, draftOf } from "../host/todo-lists.ts";
 import { moveTodos } from "../protocol/item-move.ts";
 import { ItemCounterDoc } from "./item-docs.ts";
 import { loadItems } from "./items.ts";
 import { OldTodoRecord, relabel } from "./label-migration.ts";
-import { ChildRecords } from "./records.ts";
-import { ConversationTodos, draftOf } from "./todo-lists.ts";
 
 const context = BACKGROUND_CONTEXT;
 

@@ -6,6 +6,7 @@
 import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { boundedReplay } from "../host/checkpoint.ts";
 import {
 	type Author,
 	MESSAGE_DELETE_KIND,
@@ -19,7 +20,6 @@ import {
 	type PersonList,
 	PERSONS_KIND,
 } from "../protocol/project.ts";
-import { boundedReplay } from "./checkpoint.ts";
 
 /** The number of entries that one page of a scan of a thread gives. */
 export const PAGE = 200;

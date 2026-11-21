@@ -4,15 +4,19 @@
  * the commits that change them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { CHILD_DOC_KIND } from "../children/library.ts";
+import { readAsks } from "../host/asks.ts";
+import type { Degraded } from "../host/degraded.ts";
+import type { EntryWatchOptions } from "../host/entries.ts";
+import { ChildRecords } from "../host/records.ts";
+import { type StoreView, watchStore } from "../host/store-watch.ts";
+import { StartedTasks, TaskLabels } from "../host/tasks.ts";
 import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
 import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
-import type { Replies } from "../protocol/requests.ts";
-import { readAsks } from "./asks.ts";
-import type { Degraded } from "./degraded.ts";
 import { changedItemId, readItem, readItems } from "./item-docs.ts";
 import { type StageHost, stageItems } from "./item-stage.ts";
 import { readParleys } from "./parleys.ts";
@@ -28,10 +32,6 @@ import {
 	readThreads,
 	type StoredMessage,
 } from "./project.ts";
-import type { Connection } from "./push.ts";
-import { ChildRecords } from "./records.ts";
-import { type StoreView, serveStoreWatch } from "./store-watch.ts";
-import { StartedTasks, TaskLabels } from "./tasks.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -61,21 +61,28 @@ export type ProjectHost = StageHost & {
 };
 
 /**
- * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
- * the reply is written, and after it each commit that changes a person, a rule, a thread, a message, a held action,
- * a parley, an ask, an item, a child, a started task or a task that ends starts a pass, and so does each change of the
- * degraded states of the host: the host reads the
- * objects again and sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that
- * went and every degraded state, only when one of its lists is not empty or the degraded states changed. The passes run
- * one at a time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the
- * next event has every object. A pass that fails, and the close of the store, end the connection. The watch stops when the socket
+ * Opens a watch of the store of the project with the calls of the entry watch `options`, and returns the reply, with
+ * every object. A pass runs at once, and its events wait for the reply. After it, each commit that changes a person, a
+ * rule, a thread, a message, a held action, a parley, an ask, an item, a child, a started task or a task that ends
+ * starts a pass, and so does each change of the degraded states of the host: the host reads the objects again and
+ * sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that went and every
+ * degraded state, only when one of its lists is not empty or the degraded states changed. The passes run one at a
+ * time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the next event
+ * has every object. A pass that fails, and the close of the store, end the connection. The watch stops when the socket
  * closes.
  */
-export function serveProjectWatch(
-	handler: ProjectHost & { readonly signal: AbortSignal },
-	connection: Connection,
-): Promise<Replies["watch-project"]> {
-	return serveStoreWatch(handler.harness, new ProjectView(handler), handler.signal, connection);
+export async function serveProjectWatch(host: ProjectHost, options: EntryWatchOptions): Promise<JsonValue> {
+	return json(
+		await watchStore(host.harness, new ProjectView(host), {
+			...options,
+			emit: (event: ProjectEvent) => options.emit(json(event)),
+		}),
+	);
+}
+
+/** `value` as JSON, without its undefined properties. */
+function json(value: ProjectState | ProjectEvent): JsonValue {
+	return copyJson(value, { omitUndefinedProperties: true });
 }
 
 /**

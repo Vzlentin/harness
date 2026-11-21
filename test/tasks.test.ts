@@ -25,6 +25,7 @@ import {
 	gates,
 	logLines,
 	models,
+	PROJECTS_MODULE,
 	requests,
 	root,
 	setSettings,
@@ -110,7 +111,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 	it("sets an entry in entries.json once", () => {
 		expect(setEntry("fixture", join(FIXTURE, "ask.ts"))).toBe(false);
-		expect(readEntries()).toEqual({ fixture: join(FIXTURE, "ask.ts") });
+		expect(readEntries()).toEqual({ projects: PROJECTS_MODULE, fixture: join(FIXTURE, "ask.ts") });
 	});
 
 	it("starts a task once per key and waits for its outcome", async () => {

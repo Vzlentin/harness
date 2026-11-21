@@ -17,11 +17,11 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { Degraded } from "../src/host/degraded.ts";
-import { type GateHost, gateCall } from "../src/host/gate.ts";
-import { changeRule } from "../src/host/project-rules.ts";
-import { approveHeld, holdAction } from "../src/host/project.ts";
 import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { type GateHost, gateCall } from "../src/projects/gate.ts";
+import { changeRule } from "../src/projects/project-rules.ts";
+import { approveHeld, holdAction } from "../src/projects/project.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import {

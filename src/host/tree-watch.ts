@@ -39,8 +39,8 @@ const NODE_DOCS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Opens a watch of the tree on `connection`, and returns the reply, with the nodes. A pass runs once the reply is
- * written, and after it each commit that can change a node starts a pass: the host builds the tree again and sends
+ * Opens a watch of the tree on `connection`, and returns the reply, with the nodes. A pass runs at once, and its events
+ * wait for the reply. After it, each commit that can change a node starts a pass: the host builds the tree again and sends
  * `{ event: { nodes } }` with the nodes that are new or changed, in tree order, then `{ event: { removed } }` with the
  * IDs of the nodes that went, each only when it is not empty. The passes run one at a time, and the commits during a
  * pass give one more pass. When a write waits for a slow socket to drain, the next `nodes` event has every node. A pass

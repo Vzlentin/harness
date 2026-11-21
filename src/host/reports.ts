@@ -1,6 +1,6 @@
 /**
  * The reports of the result references of the workers: the `report` request stores them for a child or a started
- * task, and then the handlers of the reports run, in order, before the reply.
+ * task, and then the handlers of the reports of the entries run, in load order, before the reply.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -16,7 +16,7 @@ const context = BACKGROUND_CONTEXT;
 
 /** What a report uses of the host. */
 export type ReportHost = Pick<TaskHost, "harness" | "root"> & {
-	/** The handlers of the reports, in order: the rule of the items of the host, then the handler of an entry. */
+	/** The handlers of the reports of the entries, in load order. */
 	readonly reported: readonly ReportedHandler[];
 };
 

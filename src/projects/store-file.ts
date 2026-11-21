@@ -5,13 +5,14 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { readAsks } from "../host/asks.ts";
+import { CommitPasses } from "../host/passes.ts";
+import { readCallerTodos, readTodos, todoListChange } from "../host/todo.ts";
 import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { type FileMessage, STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
-import { readAsks } from "./asks.ts";
 import { allItems, ItemCounterDoc, itemChange } from "./item-docs.ts";
 import { readParleys } from "./parleys.ts";
-import { CommitPasses } from "./passes.ts";
 import { readLastRuleId, readRules } from "./project-rules.ts";
 import {
 	type OutState,
@@ -23,7 +24,6 @@ import {
 	readThreads,
 	type StoredMessage,
 } from "./project.ts";
-import { readCallerTodos, readTodos, todoListChange } from "./todo.ts";
 
 const context = BACKGROUND_CONTEXT;
 

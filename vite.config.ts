@@ -23,6 +23,32 @@ const hostImports: ImportPattern = {
 	message: "host/ imports only protocol/, children/, bridge/, tool.ts, project-tool.ts and memory-tool.ts.",
 };
 
+/** The projects entry, which the core loads only through `loadEntries`. */
+const noProjects: ImportPattern = {
+	group: ["../projects/**"],
+	message: "The core does not import projects/: the host loads the projects entry through loadEntries.",
+};
+
+/** The modules of host/ that projects/ imports: the parts of the core that the entry API does not give. */
+const PROJECTS_HOST_MODULES = [
+	"asks.ts",
+	"user-answers.ts",
+	"checkpoint.ts",
+	"doc-family.ts",
+	"passes.ts",
+	"store-watch.ts",
+	"classify.ts",
+	"model-choice.ts",
+	"records.ts",
+	"tasks.ts",
+	"todo.ts",
+	"todo-lists.ts",
+	"lock.ts",
+];
+
+/** The modules of host/ whose types projects/ imports: the entry API, the degraded states and the label checks. */
+const PROJECTS_HOST_TYPES = ["entries.ts", "degraded.ts", "label-checks.ts"];
+
 export default defineConfig({
 	fmt: {
 		useTabs: true,
@@ -98,11 +124,16 @@ export default defineConfig({
 					message: "pi/ loads only protocol/, client/, bridge/, tool.ts, project-tool.ts and memory-tool.ts.",
 				},
 			),
-			restrictImports(["src/protocol/**"], { group: ["../**"], message: "protocol/ imports nothing else from src/." }),
-			restrictImports(["src/children/**"], {
-				group: ["../**", "!../protocol/**"],
-				message: "children/ imports only protocol/ from src/.",
-			}),
+			restrictImports(
+				["src/protocol/**"],
+				{ group: ["../**"], message: "protocol/ imports nothing else from src/." },
+				noProjects,
+			),
+			restrictImports(
+				["src/children/**"],
+				{ group: ["../**", "!../protocol/**"], message: "children/ imports only protocol/ from src/." },
+				noProjects,
+			),
 			restrictImports(["src/client/**"], {
 				group: ["../**", "!../protocol/**"],
 				message: "client/ imports only protocol/ from src/.",
@@ -123,16 +154,28 @@ export default defineConfig({
 					message: "The Pi extension loads bridge/ from dist/: import the types of Pi packages only.",
 				},
 			),
-			restrictImports(["src/host/**"], hostImports),
+			restrictImports(["src/host/**"], hostImports, noProjects),
 			restrictImports(
-				["src/host/asks.ts", "src/host/save-todo.ts", "src/host/user-answers.ts", "src/host/ask-events.ts"],
-				hostImports,
+				["src/projects/**"],
 				{
-					group: ["./parleys.ts", "./project-docs.ts", "./project.ts", "./items.ts", "./item-*.ts"],
-					message: "The asks are core: they import nothing of the parleys, the project or the items.",
+					group: [
+						"../**",
+						"!../protocol/**",
+						"!../children/**",
+						"!../tool.ts",
+						"!../project-tool.ts",
+						"!../memory-tool.ts",
+						...[...PROJECTS_HOST_MODULES, ...PROJECTS_HOST_TYPES].map((module) => `!../host/${module}`),
+					],
+					message: `projects/ imports only protocol/, children/, tool.ts, project-tool.ts, memory-tool.ts and, of host/, ${PROJECTS_HOST_MODULES.join(", ")}, and the types of ${PROJECTS_HOST_TYPES.join(", ")}.`,
+				},
+				{
+					group: PROJECTS_HOST_TYPES.map((module) => `../host/${module}`),
+					allowTypeImports: true,
+					message: `projects/ imports only the types of ${PROJECTS_HOST_TYPES.join(", ")}.`,
 				},
 			),
-			restrictImports(["src/host/durable-entry.ts"], hostImports, {
+			restrictImports(["src/host/durable-entry.ts"], hostImports, noProjects, {
 				group: ["@earendil-works/*"],
 				allowTypeImports: true,
 				message:

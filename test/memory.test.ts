@@ -1,8 +1,8 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { memorySnapshot, napPrompt, runMemoryTool, wakePart } from "../src/host/optmem.ts";
 import type { Host } from "../src/host/run.ts";
+import { memorySnapshot, napPrompt, runMemoryTool, wakePart } from "../src/projects/optmem.ts";
 import { installMemo, memoCalls, optmem, readState, seed } from "./fake-memo.ts";
 import {
 	agentTurn,

@@ -56,7 +56,7 @@ describe("registry files", { timeout: 30_000 }, () => {
 			`import { setEntry } from ${source("entries")};
 			for (let i = 0; i < ${WRITES}; i++) setEntry(\`w\${process.env.WORKER}-\${i}\`, \`/modules/\${i}.ts\`);`,
 		);
-		expect(Object.keys(readEntries())).toHaveLength(WORKERS * WRITES);
+		expect(Object.keys(readEntries()).filter((name) => name.startsWith("w"))).toHaveLength(WORKERS * WRITES);
 	});
 
 	it("keeps every project that processes add at the same time", async () => {

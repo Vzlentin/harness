@@ -10,6 +10,20 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { ConversationId, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
+	type AnswerGroup,
+	answerAsks,
+	askGroup,
+	Asks,
+	addAsks,
+	dropAsk,
+	knownAsk,
+	noteAsk,
+	readAsks,
+	takeAsks,
+} from "../host/asks.ts";
+import type { AnsweredAskHandler } from "../host/entries.ts";
+import { dropAnswers } from "../host/user-answers.ts";
+import {
 	type AnswerAuthor,
 	type AnswerInput,
 	type Ask,
@@ -24,23 +38,9 @@ import {
 	type ParleyList,
 	parleyText,
 } from "../protocol/project.ts";
-import {
-	type AnswerGroup,
-	answerAsks,
-	askGroup,
-	Asks,
-	addAsks,
-	dropAsk,
-	knownAsk,
-	noteAsk,
-	readAsks,
-	takeAsks,
-} from "./asks.ts";
-import type { AnsweredAskHandler } from "./entries.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { contractItems, itemForContract, writeEdge } from "./items.ts";
 import { endContract, known, knownParley, Parleys } from "./project-docs.ts";
-import { dropAnswers } from "./user-answers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
