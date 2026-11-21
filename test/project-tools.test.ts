@@ -212,7 +212,7 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		const results = cellResults.get(prompt) ?? [];
 
 		expect(results.slice(0, 2)).toEqual([
-			"where · open · Where asks live\n1 · Where · your call · open · plan a · In the store\n2 · These are the terms · open\n[where] 1a ok\n",
+			"where · open · Where asks live\n1 · Where · your call · open · plan a · In the store\n  a · In the store · gains: One writer\n  b · In files\n2 · These are the terms · open\n[where] 1a ok\n",
 			"1 · Where · your call · open · plan a · In the store\nA `table` of the places\n",
 		]);
 		// The host refuses the answer, and its error reaches the call.
@@ -289,7 +289,8 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Run the parley flow"]));
 		await cli(["wait", handle]);
 		const head = "flow · open · Flow\n1 · Where · your call · ";
-		const open = `${head}open · plan a · In the store\n2 · How · my call · open · plan b · Fast\n[flow] 1a ok\n`;
+		const options = "  a · Slow\n  b · Fast · gains: Half the time\n";
+		const open = `${head}open · plan a · In the store\n  a · In the store\n2 · How · my call · open · plan b · Fast\n${options}[flow] 1a ok\n`;
 		const answered = `${head}a · In the store\n2 · How · my call · b · Fast\n`;
 
 		expect(cellResults.get(prompt)).toEqual([

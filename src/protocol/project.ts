@@ -821,9 +821,23 @@ function parleyAnswerLine(parley: Parley, asks: readonly Ask[]): string {
 	return `[${parley.slug}] ${parts.join(" ")}`;
 }
 
-/** The text of a parley: its line, the line of each of its asks, and its answer line. */
+/** The lines of the options of `ask` while it is open, each `  <key> · <label>` with its gains and its costs. */
+function optionLines(ask: Ask): string[] {
+	if (ask.state !== "open") return [];
+
+	return (ask.options ?? []).map((option) => {
+		const gains = option.gains === undefined ? undefined : `gains: ${option.gains.join("; ")}`;
+		const costs = option.costs === undefined ? undefined : `costs: ${option.costs.join("; ")}`;
+
+		return `  ${fieldsText([option.key, option.label, gains, costs])}`;
+	});
+}
+
+/** The text of a parley: its line, the line of each of its asks with the options of each open ask, and its answer line. */
 export function parleyText(reply: ParleyAsks): string {
-	return [parleyLine(reply.parley), ...reply.asks.map(askLine), parleyAnswerLine(reply.parley, reply.asks)]
+	const asks = reply.asks.flatMap((ask) => [askLine(ask), ...optionLines(ask)]);
+
+	return [parleyLine(reply.parley), ...asks, parleyAnswerLine(reply.parley, reply.asks)]
 		.map((line) => `${line}\n`)
 		.join("");
 }

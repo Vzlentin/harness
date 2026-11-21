@@ -1083,7 +1083,7 @@ describe("the Pi extension", () => {
 		];
 
 		expect(await tools.get("parley")?.call({ action: "round", slug: "pi", title: "Pi asks", goal: "Ask.", asks })).toBe(
-			"pi · open · Pi asks\n1 · Where · your call · open · plan a · Here\n[pi] 1a\n",
+			"pi · open · Pi asks\n1 · Where · your call · open · plan a · Here\n  a · Here\n[pi] 1a\n",
 		);
 		expect(await tools.get("parley")?.call({ action: "read", slug: "pi", ask: 1 })).toBe(
 			"1 · Where · your call · open · plan a · Here\nHere\n",

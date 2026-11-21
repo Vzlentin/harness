@@ -341,18 +341,21 @@ async function treeCommand(args: string[], project: string | undefined): Promise
 
 /**
  * Prints the parley `slug` of the project as Markdown: its frame, its asks with their answers, and its contract. With
- * `note`, records the note of an ask for the caller, and prints the line of the ask.
+ * `--json`, prints the reply of the host as one JSON line. With `note`, records the note of an ask for the caller, and
+ * prints the line of the ask.
  */
 async function parleyCommand(args: string[], project: string | undefined): Promise<void> {
-	const [action, slug] = args;
+	const [action, slug, flag] = args;
 
 	if (action === "note") return noteCommand(args.slice(1), project);
 
-	if (args.length !== 2 || action !== "show" || slug === undefined) usage();
+	const json = flag === "--json";
+
+	if (args.length !== (json ? 3 : 2) || action !== "show" || slug === undefined || slug.startsWith("--")) usage();
 	const reply = await request({ type: "parley", action: "read", slug }, { start: true, project });
 
 	if (!Value.Check(ParleyAsks, reply)) throw new Error("The host replied with no parley");
-	process.stdout.write(parleyShowText(reply));
+	process.stdout.write(json ? `${JSON.stringify(reply)}\n` : parleyShowText(reply));
 }
 
 /** Runs `parley note [<slug>] <ask> <note>`: the ask is its number in the parley `slug`, else its ID. */
@@ -910,7 +913,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
 		parley: {
-			usage: ["  harness parley show <slug>", "  harness parley note [<slug>] <ask> <note>"],
+			usage: ["  harness parley show <slug> [--json]", "  harness parley note [<slug>] <ask> <note>"],
 			run: parleyCommand,
 		},
 		rule: {

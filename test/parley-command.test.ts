@@ -93,6 +93,21 @@ describe("harness parley show", { timeout: 30_000 }, () => {
 		});
 	});
 
+	it("prints the reply of the host as one JSON line with --json, the read-back included", async () => {
+		await contract("as-json");
+
+		const result = await cli(["parley", "show", "as-json", "--json"]);
+		expect(result).toMatchObject({ code: 0, stderr: "" });
+		expect(result.stdout.endsWith("}\n")).toBe(true);
+		expect(JSON.parse(result.stdout)).toMatchObject({
+			parley: { slug: "as-json", status: "contract", goal: "Pick the place." },
+			asks: [
+				{ parley: { n: 1 }, state: "answered", answer: "own", words: ["Keep it.", "And the view."] },
+				{ parley: { n: 2 }, state: "answered", answer: "ok" },
+			],
+		});
+	});
+
 	it("puts the status of a done or dropped parley in the title", async () => {
 		for (const status of ["done", "dropped"] as const) {
 			const slug = `ended-${status}`;
@@ -114,13 +129,17 @@ describe("harness parley show", { timeout: 30_000 }, () => {
 			["list"],
 			["show"],
 			["show", "made", "more"],
+			["show", "--json"],
+			["show", "made", "--yaml"],
 			[],
 			["note", "1"],
 			["note", "a", "1", "n", "x"],
 		]) {
 			const result = await cli(["parley", ...args]);
 			expect(result).toMatchObject({ code: 1, stdout: "" });
-			expect(result.stderr).toContain("  harness parley show <slug>\n  harness parley note [<slug>] <ask> <note>\n");
+			expect(result.stderr).toContain(
+				"  harness parley show <slug> [--json]\n  harness parley note [<slug>] <ask> <note>\n",
+			);
 		}
 	});
 });
