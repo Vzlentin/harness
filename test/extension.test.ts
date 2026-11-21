@@ -963,7 +963,7 @@ describe("the Pi extension", () => {
 		expect(existsSync(dirname(restarted))).toBe(false);
 	});
 
-	it("gives the todo tool of the host, on the list of the session only", async () => {
+	it("gives the todo tool of the host, on the list of the session only, with the whole list after each call", async () => {
 		host = await startHost();
 		const registered = await load();
 		const todo = registered.tools.get("todo");
@@ -976,15 +976,25 @@ describe("the Pi extension", () => {
 			executionMode: "sequential",
 		});
 		expect(Object.keys(parameters.properties)).toEqual(["action", "text", "id", "state"]);
-		expect(await todo?.call({ action: "add", text: "Write the plan" })).toBe("○ 1 Write the plan\n");
-		expect(await todo?.call({ action: "set", id: 1, state: "doing" })).toBe("◉ 1 Write the plan\n");
+		await request({ type: "todo", caller: "session", action: "add", text: "Save to the vault" }, { start: false });
+		expect(await todo?.call({ action: "add", text: "Write the plan" })).toBe(
+			"○ 1 Save to the vault\n○ 2 Write the plan\n",
+		);
+		expect(await todo?.call({ action: "set", id: 2, state: "doing" })).toBe(
+			"○ 1 Save to the vault\n◉ 2 Write the plan\n",
+		);
 		expect(todo?.structured).toEqual([
-			{ action: "add", value: { id: 1, text: "Write the plan", state: "open" } },
-			{ action: "set", value: { id: 1, text: "Write the plan", state: "doing" } },
+			{ action: "add", value: { id: 2, text: "Write the plan", state: "open" } },
+			{ action: "set", value: { id: 2, text: "Write the plan", state: "doing" } },
 		]);
 
 		const own = await request({ type: "todo", caller: "session", action: "list" }, { start: false });
-		expect(own).toEqual({ todos: [{ id: 1, text: "Write the plan", state: "doing" }] });
+		expect(own).toEqual({
+			todos: [
+				{ id: 1, text: "Save to the vault", state: "open" },
+				{ id: 2, text: "Write the plan", state: "doing" },
+			],
+		});
 		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
 		expect(project).toEqual({ todos: [] });
 	});

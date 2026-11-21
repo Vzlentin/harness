@@ -122,6 +122,21 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 		expect(declared?.parameters).not.toHaveProperty("properties.list");
 	});
 
+	it("gives the whole list after an add or a set, with the todos that another caller added", async () => {
+		const prompt = "Task:\nSee the whole list";
+		scripts.set(prompt, [
+			{ name: "todo", arguments: { action: "add", text: "Mine" } },
+			{ name: "todo", arguments: { action: "set", id: 1, state: "doing" } },
+		]);
+		gates.set(prompt, Promise.withResolvers());
+		const handle = handleOf(await cli(["spawn", "--prompt", "See the whole list"]));
+		await request({ type: "todo", caller: "cli", action: "add", handle, text: "From the host" }, { start: false });
+		gates.get(prompt)?.resolve();
+		await cli(["wait", handle]);
+
+		expect(cellResults.get(prompt)).toEqual(["○ 1 From the host\n○ 2 Mine\n", "◉ 1 From the host\n○ 2 Mine\n"]);
+	});
+
 	it("gives the project agent the tool", async () => {
 		await agentTurn("Agent todo tools");
 

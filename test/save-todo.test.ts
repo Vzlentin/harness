@@ -152,6 +152,38 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		});
 	});
 
+	it("ends the delivery of the answer with the line of the todo, in a parley and with no parley", async () => {
+		const caller = "pi-told";
+		const warm = await ask(caller, "Warm up");
+		await answer([{ id: warm, answer: "a" }]);
+		const answers = listenAnswers(caller);
+		await until(() => answers.deliveries.length === 1);
+
+		try {
+			const alone = await ask(caller, "Which note");
+			await answer([{ id: alone, answer: "a" }]);
+			await until(() => answers.deliveries.length === 2);
+			expect(answers.deliveries[1]?.text).toMatch(
+				/^\d+ · Which note · your call · a · In the store\n○ 1 Save to the vault: Which note\n$/,
+			);
+
+			const frame = { slug: "told", title: "Told", goal: "Tell the todo." };
+
+			const framedAsks = [
+				{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" },
+				{ title: "The terms" },
+			] as const;
+
+			const asked = (await round(caller, frame, [...framedAsks])).parleys[0]?.asks[0]?.id;
+			await answer([{ slug: "told", n: 1, answer: "a" }]);
+			await until(() => answers.deliveries.length === 3);
+			expect(answers.deliveries[2]?.text).toMatch(/\[told\] ok\n○ 2 Save to the vault: Where\n$/);
+			expect((await todosOf(caller)).at(-1)).toMatchObject({ id: 2, ask: asked });
+		} finally {
+			answers.listener.close();
+		}
+	});
+
 	it("goes to the list of a known Pi session, which store.json keeps with its ask", async () => {
 		const close = await knownSession("pi-save");
 

@@ -54,6 +54,7 @@ import {
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
+import { type Todo, todoLine } from "../protocol/todo.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { itemForContract, writeEdge } from "./items.ts";
 import {
@@ -524,7 +525,8 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * item with its title and the edge `shapes`: `items` gives the items that each parley shapes. The same commit queues the answers for
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
- * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent.
+ * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent, and the
+ * delivery of the ask ends with the line of that todo.
  */
 export async function answerAsks(
 	tx: Tx,
@@ -567,8 +569,8 @@ export async function answerAsks(
 
 	for (const id of readBacks) await itemForContract(tx, makeContract(parleys, asks, id, at, by), by, items);
 
-	await addSaveTodos(tx, root, written);
-	await queueAnswers(tx, deliveries(parleys, asks, written, by));
+	const added = await addSaveTodos(tx, root, written);
+	await queueAnswers(tx, deliveries(parleys, asks, written, by, added));
 	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
 
 	return writeReply(parleys, asks, touched, written);
@@ -589,9 +591,16 @@ function writeReply(parleys: readonly Parley[], asks: readonly Ask[], ids: reado
 
 /**
  * The deliveries of the answered asks `written` to their askers other than `by`, in the order of `written`: one for
- * each asker and parley, with the text of the parley in `parleys` and `asks`, and one for each ask with no parley.
+ * each asker and parley, with the text of the parley in `parleys` and `asks`, and one for each ask with no parley. Each
+ * delivery ends with the line of each todo of `added` that belongs to one of its asks.
  */
-function deliveries(parleys: readonly Parley[], asks: readonly Ask[], written: readonly Ask[], by: string) {
+function deliveries(
+	parleys: readonly Parley[],
+	asks: readonly Ask[],
+	written: readonly Ask[],
+	by: string,
+	added: readonly Todo[],
+): UserAnswerInput[] {
 	const queued: UserAnswerInput[] = [];
 	const byParley = new Map<string, number[]>();
 
@@ -618,7 +627,15 @@ function deliveries(parleys: readonly Parley[], asks: readonly Ask[], written: r
 		queued.push({ asker: ask.asker, delivery: { source: "parley", parley: parley.slug, asks: ids, text } });
 	}
 
-	return queued;
+	return queued.map(({ asker, delivery }) => {
+		const ids = delivery.source === "parley" ? delivery.asks : [delivery.ask];
+		const mine = added.filter((todo) => todo.ask !== undefined && ids.includes(todo.ask));
+
+		return {
+			asker,
+			delivery: { ...delivery, text: delivery.text + mine.map((todo) => `${todoLine(todo)}\n`).join("") },
+		};
+	});
 }
 
 /**

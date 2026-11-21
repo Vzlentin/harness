@@ -4,7 +4,7 @@ import * as durable from "@earendil-works/pi-durable";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import { projectToolsExtension } from "../src/project-tool.ts";
@@ -241,6 +241,13 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 
 	it("runs the flow of the parley skill from its first round to the contract", async () => {
 		const prompt = "Task:\nRun the parley flow";
+		// With a vault, each answer adds the todo Save to the vault, and the text of the answer gives it.
+		const vault = process.env.VAULT;
+		process.env.VAULT = process.env.HOME;
+		onTestFinished(() => {
+			if (vault === undefined) delete process.env.VAULT;
+			else process.env.VAULT = vault;
+		});
 
 		const calls = [
 			{ title: "Where", kind: "your call", options: [{ key: "a", label: "In the store" }], plan: "a" },
@@ -292,13 +299,15 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 		const options = "  a · Slow\n  b · Fast · gains: Half the time\n";
 		const open = `${head}open · plan a · In the store\n  a · In the store\n2 · How · my call · open · plan b · Fast\n${options}[flow] 1a ok\n`;
 		const answered = `${head}a · In the store\n2 · How · my call · b · Fast\n`;
+		const todos = "○ 1 Save to the vault: Where\n○ 2 Save to the vault: How\n";
+		const contract = `${answered.replace("flow · open", "flow · contract")}3 · These are the terms · ok\n`;
 
 		expect(cellResults.get(prompt)).toEqual([
 			open,
 			open,
-			`${answered}[flow] ok\n`,
+			`${answered}[flow] ok\n${todos}`,
 			`${answered}3 · These are the terms · open\n[flow] ok\n`,
-			`${answered.replace("flow · open", "flow · contract")}3 · These are the terms · ok\nharness parley show flow\n`,
+			`${contract}harness parley show flow\n${todos}`,
 		]);
 	});
 

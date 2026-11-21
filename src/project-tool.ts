@@ -54,7 +54,8 @@ import {
 	ThreadMessages,
 } from "./protocol/project.ts";
 import type { Request } from "./protocol/requests.ts";
-import { type DurableScope, listText, NO_ABORT, oneOf, required, type ToolScope } from "./tool.ts";
+import { isFinished, todoLine } from "./protocol/todo.ts";
+import { type DurableScope, listText, NO_ABORT, oneOf, replyList, required, type ToolScope } from "./tool.ts";
 
 export const THREAD_TOOL_DESCRIPTION = `Read and write the threads of messages between the user and the persons of the project.
 - list: the threads, each as \`<id> <topic> with <persons>: <time of the last message>\`.
@@ -86,7 +87,7 @@ The user answers a parley with a line such as \`[<slug>] 1a 3:"own words" 4b:"a 
 - \`<n>:"<words>"\` is \`{ ask: n, answer: own, label, words: [<words>] }\`, with a short label of the words.
 - \`?<n>\` writes nothing: explain n first.
 - \`ok\` is \`{ ask: n, answer: <plan> }\` for each open my call n that the line does not name, and \`{ ask: n, answer: ok }\` for the open read-back n.
-A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Under an open ask, each option prints as \`  <key> · <label> · gains: … · costs: …\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`.`;
+A parley prints as \`<slug> · <status> · <title>\`, then each ask as \`<n> · <title> · <kind> · open · plan <key> · <label>\`, \`<n> · <title> · <kind> · <answer> · <label>\` or \`<n> · <title> · <kind> · dropped\`. Under an open ask, each option prints as \`  <key> · <label> · gains: … · costs: …\`. Its last line is the answer line of an open parley, \`[<slug>]\` with \`<n><plan>\` for each open your call and ok, or \`harness parley show <slug>\`. After an answer come your open todos of its asks, such as \`○ 3 Save to the vault: <title>\`.`;
 
 export const ITEM_TOOL_DESCRIPTION = `Keep the work items of the project. An item is a piece of work: a title, a text that says what to build, and a state, ${oneOf(ITEM_STATES)}. Its edges link it to the parleys that shape it, the agents and runs that serve it, and the commits that landed it.
 - add: add an open item with \`title\`, and \`text\` when you give it.
@@ -475,6 +476,19 @@ function writeText(write: AskWrite): string {
 	return write.parleys.map(parleyText).join("") + write.asks.map((ask) => `${askLine(ask)}\n`).join("");
 }
 
+/**
+ * The line of each open todo of the caller's list that belongs to an ask of `write`, such as the todo `Save to the
+ * vault` that an answer adds: the host adds it in the write, and its reply does not give it.
+ */
+async function saveTodoText(write: AskWrite, scope: ProjectScope): Promise<string> {
+	const ids = new Set([...write.parleys.flatMap((parley) => parley.asks), ...write.asks].map((ask) => ask.id));
+	const request = { type: "todo", action: "list", caller: scope.caller } as const;
+	const list = replyList(await scope.send(request, scope.signal ?? NO_ABORT));
+	const lines = list.todos.filter((todo) => !isFinished(todo.state) && todo.ask !== undefined && ids.has(todo.ask));
+
+	return lines.map((todo) => `${todoLine(todo)}\n`).join("");
+}
+
 /** The frame of the parley of a round: its slug and the fields that the call gives. */
 function roundFrame(args: ParleyArgs): ParleyFrame | undefined {
 	const { slug, title, goal, evidence, design_sense, item } = args;
@@ -531,8 +545,9 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 			const answers = answerInputs(args.answers, slug);
 			const request = { type: "ask", action, caller, answers } as const;
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
+			const todos = await saveTodoText(reply, scope);
 
-			return { text: writeText(reply), data: { action, value: reply } };
+			return { text: writeText(reply) + todos, data: { action, value: reply } };
 		}
 
 		case "drop": {

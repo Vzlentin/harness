@@ -392,7 +392,7 @@ Use it for each task of 3 steps or more: add one todo for each step before you s
 - add: add a todo with \`text\`. It starts open, with the next ID of the list.
 - set: set the \`state\` of the todo \`id\`, and its \`text\` when you give one.
 - list: the todos, in ID order.
-Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.`;
+Each call prints the whole list, with the todos that the host added, such as \`Save to the vault\`. Each todo prints as \`<mark> <id> <text>\`: ${TODO_STATES.map((state) => `${TODO_MARKS[state]} ${state}`).join(", ")}.`;
 
 /** The parameters and the output schema of the todo tool, built with the caller's TypeBox `Type`, as in `toolSchemas`. */
 export function todoToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
@@ -423,10 +423,13 @@ type TodoSchemas = ReturnType<typeof todoToolSchemas>;
 
 export type TodoToolArgs = Static<TodoSchemas["parameters"]>;
 
-/** The result of a call of the todo tool: the output of `harness todo`, and the host's reply. */
+/** The result of a call of the todo tool: the text that the caller shows, and the host's reply. */
 export type TodoToolResult = { readonly text: string; readonly data: Static<TodoSchemas["output"]> };
 
-/** Runs one call of the todo tool on the list of `target`: `{}` is the caller's own list. */
+/**
+ * Runs one call of the todo tool on the list of `target`: `{}` is the caller's own list. Its text is the output of
+ * `harness todo`: one line after an `add` or a `set`, and the whole list after a `list`.
+ */
 export async function runTodoTool(
 	args: TodoToolArgs,
 	scope: Pick<ToolScope, "caller" | "send" | "signal">,
@@ -466,6 +469,22 @@ export async function runTodoTool(
 		default:
 			throw new Error(`Unknown action: ${String(action)}`);
 	}
+}
+
+/**
+ * Runs one call of the todo tool of an agent on its own list. Its text is the whole list after each call, also after
+ * an `add` or a `set`, because the host adds todos, such as `Save to the vault`, by itself.
+ */
+export async function runAgentTodoTool(
+	args: TodoToolArgs,
+	scope: Pick<ToolScope, "caller" | "send" | "signal">,
+): Promise<TodoToolResult> {
+	const result = await runTodoTool(args, scope, {});
+
+	if (result.data.action === "list") return result;
+	const { text } = await runTodoTool({ action: "list" }, scope, {});
+
+	return { text, data: result.data };
 }
 
 /** One line for each item of `items`, or the line `empty` when there are none. */
@@ -509,7 +528,7 @@ export function todoTool(
 
 			const caller = await scope.caller(api, context);
 			const signal = context.abortSignal;
-			const { text, data } = await runTodoTool(args, { caller, send: scope.send, signal }, {});
+			const { text, data } = await runAgentTodoTool(args, { caller, send: scope.send, signal });
 
 			return { output: [{ type: "text", text }], structuredOutput: data };
 		},

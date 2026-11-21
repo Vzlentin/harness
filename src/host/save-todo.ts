@@ -6,6 +6,7 @@
 import { statSync } from "node:fs";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import { type Ask, isReadBack } from "../protocol/project.ts";
+import type { Todo } from "../protocol/todo.ts";
 import { knownSession } from "./sessions.ts";
 import { library } from "./targets.ts";
 import { addListTodo, draftOf, linkOwner, type TodoOwner } from "./todo-lists.ts";
@@ -15,10 +16,12 @@ import { isFinished } from "./todo.ts";
  * Adds the todo `Save to the vault: <first line of the title>` for each answered ask of `asks` to the list of its asker
  * in `tx`, where `root` is the project agent. It reads the vault once for all of `asks`, and adds nothing when the host
  * has no vault. With a vault, it adds nothing for the read-back of a parley, an ask that has a note, an asker with no
- * list, or an ask that already has its todo, in any state.
+ * list, or an ask that already has its todo, in any state. It gives the todos that it added.
  */
-export async function addSaveTodos(tx: Tx, root: ConversationId, asks: readonly Ask[]): Promise<void> {
-	if (!hasVault()) return;
+export async function addSaveTodos(tx: Tx, root: ConversationId, asks: readonly Ask[]): Promise<Todo[]> {
+	const added: Todo[] = [];
+
+	if (!hasVault()) return added;
 
 	for (const ask of asks) {
 		if (isReadBack(ask) || ask.note !== undefined) continue;
@@ -27,8 +30,10 @@ export async function addSaveTodos(tx: Tx, root: ConversationId, asks: readonly 
 		const owner = await askerList(tx, root, ask.asker);
 
 		if (owner === undefined) continue;
-		await addListTodo(tx, owner, `Save to the vault: ${ask.title.split(/\r?\n/)[0]}`, ask.id);
+		added.push(await addListTodo(tx, owner, `Save to the vault: ${ask.title.split(/\r?\n/)[0]}`, ask.id));
 	}
+
+	return added;
 }
 
 /**

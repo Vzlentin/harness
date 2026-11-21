@@ -13,7 +13,7 @@ The user takes many decisions each day, on many systems. Brief him like an execu
 
 - BLUF, then Minto's pyramid principle.
 - Start each round with the rundown: what is true today, concretely, as a `show-me` view. From the second round, the rundown includes the design as its nouns, in one view: its objects, stores, agents, prompts and steps. The calls come after it.
-- Each call: your plan, and what each option costs, in outcomes and numbers, not code.
+- Each call: every option with what it gains and costs, in outcomes and numbers, not code, and which option is your plan. The text of the tool lists the options of each open ask: show them all.
 - Plain language. Define each term on first use.
 - When the user thinks aloud, or says that a question is still open, do not answer with a design. Say back what you heard, in his words and in 5 lines at most, and ask one question. Add no noun that he did not use. Propose a design when he asks for one, or after he confirms what you said back.
 - At most 5 open calls at a time. The others wait their turn.
