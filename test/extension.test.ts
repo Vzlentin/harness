@@ -15,6 +15,7 @@ import type {
 	ToolCall,
 } from "@earendil-works/pi-ai";
 import { createProvider } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
@@ -230,11 +231,62 @@ async function closeFake(): Promise<void> {
 	if (server !== undefined) await new Promise((resolve) => server.close(resolve));
 }
 
-/** The context of a tool call: the fields that the tool reads for `list`. */
+/** The context of a tool call: the fields that the tool reads for `list` and `spawn`. */
 function toolContext(): ToolContext {
 	const ctx = {
-		sessionManager: { getSessionId: () => "session" },
+		sessionManager: { getSessionId: () => "session", getBranch: (): SessionEntry[] => [] },
 		model: undefined,
+		cwd: root,
+		isProjectTrusted: () => false,
+	};
+
+	// SAFETY: the tool reads only these fields of the context for `list` and `spawn`.
+	return ctx as ToolContext;
+}
+
+/** One assistant entry of a session whose virtual model dispatched to `faux/faux-1` at thinking `medium`. */
+const DISPATCHED: SessionEntry = {
+	type: "message",
+	id: "dispatched",
+	parentId: null,
+	timestamp: "",
+	message: { ...fauxAssistantMessage("Answer of the routed model"), thinkingLevel: "medium" },
+};
+
+/** The pi virtual model a session of the tests runs, as pi's catalog entry for one. */
+const VIRTUAL: ToolContext["model"] = {
+	id: "auto",
+	name: "Auto",
+	api: "pi-virtual",
+	provider: "router",
+	baseUrl: "",
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	reasoning: false,
+	thinkingLevelMap: { off: "off" },
+	contextWindow: 0,
+	maxTokens: 0,
+};
+
+/** A physical model of the tests' catalog, as `ctx.model` gives it. */
+const PHYSICAL: ToolContext["model"] = {
+	id: "faux-1",
+	name: "Faux 1",
+	api: "faux",
+	provider: "faux",
+	baseUrl: "",
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	reasoning: true,
+	contextWindow: 200_000,
+	maxTokens: 8_000,
+};
+
+/** The context of a tool call whose session runs `model`, with `entries` as its session branch. */
+function modelContext(model: ToolContext["model"], entries: readonly SessionEntry[]): ToolContext {
+	const ctx = {
+		sessionManager: { getSessionId: () => "session", getBranch: (): SessionEntry[] => [...entries] },
+		model,
 		cwd: root,
 		isProjectTrusted: () => false,
 	};
@@ -280,6 +332,16 @@ function cellContext(registered: Registered): ToolContext {
 	return ctx;
 }
 
+/** The text of the parts of a message or of the result of a tool call: its text parts, joined. */
+function partsText(parts: readonly { readonly type: string; readonly text?: string }[]): string {
+	return parts.map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
+/** The handle that the text of a spawn gives, or undefined when it gives none. */
+function spawnedHandle(text: string): string | undefined {
+	return /^Spawned ([a-z0-9]+)$/m.exec(text)?.[1];
+}
+
 /** Runs the extension against a fake Pi without flags, and gives what it registers. */
 async function load(): Promise<Registered> {
 	let calls = 0;
@@ -319,7 +381,7 @@ async function load(): Promise<Registered> {
 				const result = await tool.execute(`call-${++calls}`, args as never, undefined, undefined, toolContext());
 				structured.push(result.structuredContent);
 
-				return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+				return partsText(result.content);
 			};
 
 			registered.definitions.set(tool.name, {
@@ -359,9 +421,7 @@ async function load(): Promise<Registered> {
 		getThinkingLevel: () => "off",
 		appendEntry: () => {},
 		sendMessage: (message, options) => {
-			const text = Array.isArray(message.content)
-				? message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
-				: message.content;
+			const text = Array.isArray(message.content) ? partsText(message.content) : message.content;
 
 			registered.messages.push({ customType: message.customType, text, details: message.details, options });
 		},
@@ -380,6 +440,25 @@ async function callTool(registered: Registered, args: Args): Promise<string> {
 	if (tool === undefined) throw new Error("no subagent tool");
 
 	return tool.call(args);
+}
+
+/** The text that the `subagent` tool gives for `args`, called from the context `ctx`. */
+async function callToolAs(registered: Registered, ctx: ToolContext, args: Args): Promise<string> {
+	const tool = registered.definitions.get("subagent");
+
+	if (tool === undefined) throw new Error("no subagent tool");
+
+	const params = validateToolArguments(tool, {
+		type: "toolCall",
+		id: "call",
+		name: "subagent",
+		// SAFETY: the tests give the arguments of the tool's schema.
+		arguments: args as ToolCall["arguments"],
+	});
+
+	const result = await tool.execute("call", params, undefined, ctx);
+
+	return partsText(result.content);
 }
 
 /**
@@ -750,9 +829,7 @@ describe("the Pi extension", () => {
 		const registered = await load();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" });
 
-		const first = /^Spawned ([a-z0-9]+)$/m.exec(
-			await callTool(registered, { action: "spawn", prompts: ["One"], ...FAUX }),
-		)?.[1];
+		const first = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["One"], ...FAUX }));
 
 		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
 		expect(registered.messages[0]).toEqual({
@@ -770,9 +847,7 @@ describe("the Pi extension", () => {
 		// An answer that a wait gave is not sent again.
 		gates.set("Task:\nGated", Promise.withResolvers());
 
-		const gated = /^Spawned ([a-z0-9]+)$/m.exec(
-			await callTool(registered, { action: "spawn", prompts: ["Gated"], ...FAUX }),
-		)?.[1];
+		const gated = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["Gated"], ...FAUX }));
 
 		const waiting = callTool(registered, { action: "wait", handle: gated ?? "" });
 		await new Promise((resolve) => setTimeout(resolve, 300));
@@ -784,6 +859,58 @@ describe("the Pi extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(registered.messages).toHaveLength(2);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("spawns a child of a virtual model on the physical model its session dispatched to", async () => {
+		host = await startHost();
+		const registered = await load();
+
+		const spawned = spawnedHandle(
+			await callToolAs(registered, modelContext(VIRTUAL, [DISPATCHED]), {
+				action: "spawn",
+				prompts: ["Virtual"],
+			}),
+		);
+
+		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-1, medium)");
+	});
+
+	it("spawns a child of a virtual model without a dispatched response on the subagent setting", async () => {
+		host = await startHost();
+		await setSettings({ subagentModel: "faux/faux-2" });
+		const registered = await load();
+
+		const spawned = spawnedHandle(
+			await callToolAs(registered, modelContext(VIRTUAL, []), {
+				action: "spawn",
+				prompts: ["Virtual"],
+			}),
+		);
+
+		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-2, off)");
+	});
+
+	it("refuses a spawn of a virtual model without a dispatched response and without the setting", async () => {
+		host = await startHost();
+		const registered = await load();
+
+		await expect(
+			callToolAs(registered, modelContext(VIRTUAL, []), { action: "spawn", prompts: ["Virtual"] }),
+		).rejects.toThrow("No provider specified and the caller has no model");
+	});
+
+	it("spawns a child of a session with a physical model on that model", async () => {
+		host = await startHost();
+		const registered = await load();
+
+		const spawned = spawnedHandle(
+			await callToolAs(registered, modelContext(PHYSICAL, []), {
+				action: "spawn",
+				prompts: ["Physical"],
+			}),
+		);
+
+		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-1, off)");
 	});
 
 	it("sends the answers that came before the session start, and none for mirror input", async () => {
