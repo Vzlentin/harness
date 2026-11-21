@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { moveTodos } from "./item-move.ts";
-import { edgeItem, edgeLine, WorkItem } from "./item.ts";
+import { edgeItem, edgeLine, refParts, WorkItem } from "./item.ts";
 import { Ask, HeldAction, Message, Parley, Person, Rule, Thread } from "./project.ts";
 import { errorMessage } from "./requests.ts";
 import { Todo } from "./todo.ts";
@@ -182,7 +182,62 @@ function brokenReference(file: StoreFile): string | undefined {
 
 	if (rule !== undefined) return `the source of the rule ${rule.id} is no message of the file`;
 
-	return unknownAsk(file) ?? foreignEdge(file);
+	return unknownAsk(file) ?? foreignEdge(file) ?? brokenNeeds(file);
+}
+
+/**
+ * The first `needs` edge of `file` that goes to no item of the file, or the first cycle of `needs` edges, as a reason, or
+ * undefined when there is none. It runs after `foreignEdge`, so each `needs` edge is stored on its `from` item.
+ */
+function brokenNeeds(file: StoreFile): string | undefined {
+	const needs = new Map<number, number[]>(file.items.map((item) => [item.id, []]));
+
+	for (const item of file.items) {
+		for (const edge of item.edges) {
+			if (edge.kind !== "needs") continue;
+			const to = Number(refParts(edge.to).value);
+
+			if (!needs.has(to)) return `the edge ${edgeLine(edge)} goes to no item of the file`;
+			needs.get(item.id)?.push(to);
+		}
+	}
+
+	const done = new Set<number>();
+
+	for (const id of needs.keys()) {
+		const cycle = needsCycle(id, needs, new Set(), done);
+
+		if (cycle !== undefined) return `the needs edges make a cycle through the item ${cycle}`;
+	}
+
+	return undefined;
+}
+
+/**
+ * The ID of an item on a cycle of `needs` that the walk from `id` reaches, or undefined when there is none. `path` holds
+ * the items of the walk, and `done` the items whose walk found no cycle.
+ */
+function needsCycle(
+	id: number,
+	needs: ReadonlyMap<number, readonly number[]>,
+	path: Set<number>,
+	done: Set<number>,
+): number | undefined {
+	if (path.has(id)) return id;
+
+	if (done.has(id)) return undefined;
+	path.add(id);
+
+	for (const to of needs.get(id) ?? []) {
+		const cycle = needsCycle(to, needs, path, done);
+
+		if (cycle !== undefined) return cycle;
+	}
+
+	path.delete(id);
+	done.add(id);
+
+	return undefined;
 }
 
 /** The first edge of an item of `file` that is not an edge of that item, as a reason, or undefined when there is none. */

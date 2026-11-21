@@ -485,6 +485,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 
 		const todo = (id: number) => ({ id, text: "Plan", state: "open" });
 		const edge = { from: "agent:7", kind: "serves", to: "item:2", at: 1, by: "cli" };
+		const needs = { from: "item:2", kind: "needs", to: "item:1", at: 1, by: "cli" };
 
 		const item = (id: number, edges: readonly object[]) => ({
 			id,
@@ -563,6 +564,29 @@ describe("harness store load", { timeout: 60_000 }, () => {
 				"needs-on-to.json",
 				{ ...twice, items: [item(2, [{ ...edge, from: "item:1", kind: "needs" }])], lastItem: 2 },
 				"the edge item:1 needs item:2 is not an edge of the item 2",
+			],
+			[
+				"needs-unknown.json",
+				{ ...twice, items: [item(2, [{ ...needs, to: "item:99" }])], lastItem: 2 },
+				"the edge item:2 needs item:99 goes to no item of the file",
+			],
+			[
+				"needs-cycle.json",
+				{
+					...twice,
+					items: [
+						item(1, [{ ...needs, from: "item:1", to: "item:2" }]),
+						item(2, [needs]),
+						item(3, [{ ...needs, from: "item:3", to: "item:2" }]),
+					],
+					lastItem: 3,
+				},
+				"the needs edges make a cycle through the item 1",
+			],
+			[
+				"needs-self.json",
+				{ ...twice, items: [item(2, [{ ...needs, to: "item:2" }])], lastItem: 2 },
+				"the needs edges make a cycle through the item 2",
 			],
 		] as const;
 

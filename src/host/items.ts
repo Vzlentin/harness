@@ -84,13 +84,20 @@ export async function setItem(
 }
 
 /**
- * The IDs of the open items that the contract `slug` shapes in `tx`, in ID order. `items` gives the items with an edge
- * from the parley, and an item counts only while its document still has the edge `shapes`.
+ * The drafts of the items that the contract `slug` shapes in `tx`, in the order of `items`. `items` gives the items with
+ * an edge from the parley, and an item counts only while its document still has the edge `shapes`.
  */
-export async function openContractItems(tx: Tx, slug: string, items: Pick<ItemIndex, "itemsOf">): Promise<number[]> {
-	const work = await contractItems(tx, slug, items.itemsOf(`parley:${slug}`));
+export async function contractItems(tx: Tx, slug: string, items: Pick<ItemIndex, "itemsOf">): Promise<WorkItem[]> {
+	const end = `parley:${slug}`;
+	const work: WorkItem[] = [];
 
-	return work.filter((item) => item.state === "open").map((item) => item.id);
+	for (const id of items.itemsOf(end)) {
+		const item = await itemDraft(tx, id);
+
+		if (item.edges.some((edge) => edge.from === end && edge.kind === "shapes")) work.push(item);
+	}
+
+	return work;
 }
 
 /**
@@ -233,7 +240,7 @@ async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
 
 /**
  * Ends each contract with an edge to `item`, a closed item, for the caller `by` when the contract shapes no open item:
- * `done` when one item that it shapes is done, else `dropped`. `items` gives the other items that a contract shapes.
+ * `done` when one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes.
  */
 async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<void> {
 	const { parleys: slugs } = itemEnds(item);
@@ -245,26 +252,11 @@ async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<Item
 		const parley = parleys.find((found) => found.slug === slug);
 
 		if (parley?.status !== "contract") continue;
-		const ids = new Set([...items.itemsOf(`parley:${slug}`), item.id]);
-		const work = await contractItems(tx, slug, [...ids]);
+		const work = await contractItems(tx, slug, items);
 
 		if (work.some((found) => found.state === "open")) continue;
 		endContract(parleys, parley, work.some((found) => found.state === "done") ? "done" : "dropped", by);
 	}
-}
-
-/** The drafts of the items of `ids` in `tx` whose document has the edge `parley:<slug> shapes`. */
-async function contractItems(tx: Tx, slug: string, ids: readonly number[]): Promise<WorkItem[]> {
-	const end = `parley:${slug}`;
-	const work: WorkItem[] = [];
-
-	for (const id of ids) {
-		const item = await itemDraft(tx, id);
-
-		if (item.edges.some((edge) => edge.from === end && edge.kind === "shapes")) work.push(item);
-	}
-
-	return work;
 }
 
 /** The `at` of the seed of a missing item, which no stored item has. */

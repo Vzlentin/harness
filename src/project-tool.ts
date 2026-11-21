@@ -79,7 +79,7 @@ Before you ask, read the vault on the topic. Write the view of each ask with sho
 - drop: drop the open ask \`ask\`.
 - note: record \`note\`, the ID of the note in the vault that explains the ask \`ask\`, in any state. Only the asker of the ask records its note, and a second note replaces the first.
 - take: become the asker of the open asks of the parley \`slug\`, open or a contract. It gives the answers that waited for the asker.
-- end: end the contract \`slug\` with \`status\`: done or dropped.
+- end: end the contract \`slug\` with \`status\`: done or dropped. It takes only a contract that shapes no open item: the change of the last open item of a contract to done or dropped ends the contract.
 - read: the parley \`slug\` and its asks, or the ask \`ask\` and its view.
 - list: the parleys, then the open asks with no parley.
 With \`slug\`, \`ask\` is the number of the ask in the parley. Without \`slug\`, it is the ID of an ask with no parley.

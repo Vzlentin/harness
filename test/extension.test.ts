@@ -714,6 +714,10 @@ describe("the Pi extension", () => {
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
 		expect(registered.tools.get("item")?.description).toContain("board: +2, closed 3, 10 needs 8");
+
+		expect(registered.tools.get("parley")?.description).toContain(
+			"It takes only a contract that shapes no open item: the change of the last open item of a contract to done or dropped ends the contract.",
+		);
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
 	});
 

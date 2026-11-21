@@ -57,7 +57,7 @@ import {
 import type { StoreFile } from "../protocol/store-file.ts";
 import { type Todo, todoLine } from "../protocol/todo.ts";
 import type { ItemIndex } from "./item-index.ts";
-import { itemForContract, openContractItems, writeEdge } from "./items.ts";
+import { contractItems, itemForContract, writeEdge } from "./items.ts";
 import {
 	Asks,
 	endContract,
@@ -711,7 +711,8 @@ export async function endParley(
 	const parley = knownParley(parleys, slug);
 
 	if (parley.status !== "contract") throw new Error(`Parley ${slug} is ${parley.status}: only a contract ends`);
-	const open = await openContractItems(tx, slug, items);
+	const work = await contractItems(tx, slug, items);
+	const open = work.filter((item) => item.state === "open").map((item) => item.id);
 
 	if (open.length > 0) {
 		throw new Error(`Parley ${slug} shapes open items ${open.join(", ")}: close them, and the contract ends`);
