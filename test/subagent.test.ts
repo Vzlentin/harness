@@ -914,7 +914,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a request line that does not match the protocol", async () => {
-		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown request: nope");
+		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe('no loaded entry serves request type "nope"');
 		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Invalid status request: handle: required");
 		expect(await rawError("[]")).toBe("Invalid request");
 
@@ -1938,7 +1938,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				JSON.stringify({ type: "list", caller: "cli" }),
 			]);
 
-			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid } });
+			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid, entries: {} } });
 			expect(list).toMatchObject({ ok: true });
 		}
 	});

@@ -1,7 +1,9 @@
 /**
- * The requests of the host: one handler per request type, on the host's store, children and push.
+ * The requests of the host: one handler per request type, on the host's store, children and push, and the route of a
+ * request of an entry type to the entry that serves it.
  */
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type * as durable from "@earendil-works/pi-durable";
 import type { Harness, Storage } from "@earendil-works/pi-durable";
@@ -24,6 +26,8 @@ import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protoco
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
+import type { EntryLine, EntryRequest } from "./entries.ts";
+import { serveEntryRequest } from "./entry-requests.ts";
 import { gateCall } from "./gate.ts";
 import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
@@ -118,6 +122,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly settings: SettingsManager;
 		/** Writes a warning to the host's log. */
 		readonly warn: (cause: unknown) => void;
+		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
+		readonly entryVersions: Readonly<Record<string, number>>;
 		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
 		readonly memory: HostMemory;
 		readonly push: Push;
@@ -149,7 +155,7 @@ export function handleRequest<T extends Request["type"]>(
 export async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
 	switch (request.type) {
 		case "hello":
-			return hello(request);
+			return hello(request, handler.entryVersions);
 		case "spawn":
 			return spawnChild(request, handler);
 		case "send":
@@ -223,12 +229,27 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 	}
 }
 
-function hello(request: Extract<Request, { type: "hello" }>): Replies["hello"] {
+/** A request line: a core request, or a line of a type that an entry serves, with that type. */
+export type Line =
+	| { readonly kind: "core"; readonly request: Request }
+	| { readonly kind: "entry"; readonly request: EntryLine; readonly served: EntryRequest };
+
+/** Handles `line`: a core request here, and a request of an entry type by the entry that serves it. */
+export function handleLine(line: Line, handler: Handler): Promise<Replies[Request["type"]] | JsonValue> {
+	if (line.kind === "core") return handleRequest(line.request, handler);
+
+	return serveEntryRequest(line.served, line.request, handler.signal, handler.connection);
+}
+
+function hello(
+	request: Extract<Request, { type: "hello" }>,
+	entries: Readonly<Record<string, number>>,
+): Replies["hello"] {
 	if (request.version !== PROTOCOL_VERSION && request.external !== true) {
 		throw new Error(versionMismatch(request.version, PROTOCOL_VERSION, process.pid));
 	}
 
-	return { version: PROTOCOL_VERSION, pid: process.pid };
+	return { version: PROTOCOL_VERSION, pid: process.pid, entries };
 }
 
 async function send(request: Extract<Request, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {

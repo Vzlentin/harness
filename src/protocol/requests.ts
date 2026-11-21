@@ -567,7 +567,12 @@ export type Request = Static<typeof RequestLine>;
 
 /** The value of the reply to each request type. */
 export type Replies = {
-	readonly hello: { readonly version: number; readonly pid: number };
+	/** `entries` has the version of the protocol of each entry that gives one, by its name. */
+	readonly hello: {
+		readonly version: number;
+		readonly pid: number;
+		readonly entries: Readonly<Record<string, number>>;
+	};
 	readonly spawn: ChildInfo;
 	readonly send: { readonly verb: string; readonly child: ChildInfo };
 	readonly wait: { readonly answer: string };

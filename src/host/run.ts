@@ -41,9 +41,10 @@ import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts
 import { setUpAgent } from "./agent.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
+import { askClassifier, classifierModel } from "./classify.ts";
 import { Degraded } from "./degraded.ts";
-import { type Base, handleRequest } from "./dispatch.ts";
-import { loadEntries } from "./entries.ts";
+import { type Base, handleLine, handleRequest, type Line } from "./dispatch.ts";
+import { type EntryHandles, EntryLine, type EntryRequest, loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { ItemIndex } from "./item-index.ts";
@@ -52,6 +53,7 @@ import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts"
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
+import { readOpenAsks } from "./project.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
@@ -69,42 +71,69 @@ const REPLY_WRITE_MS = 2000;
 
 const context = BACKGROUND_CONTEXT;
 
-/** The request types that do not count as activity for the idle exit. */
-const PASSIVE_REQUESTS: ReadonlySet<Request["type"]> = new Set([
-	"hello",
-	"list",
-	"status",
-	"answers",
-	"tree",
-	"watch-tree",
-	"watch-project",
-	"classify-todos",
-]);
+const passive = () => true;
+const active = () => false;
 
-/** The request types whose `list` and `read` actions are passive. */
-const LIST_REQUESTS: ReadonlySet<Request["type"]> = new Set([
-	"todo",
-	"person",
-	"thread",
-	"rule",
-	"ask",
-	"parley",
-	"item",
-]);
+/** Whether a request with an action is a `list` or a `read`, which a widget can poll, and not a change. */
+const listOrRead = (request: { readonly action: string }) => request.action === "list" || request.action === "read";
 
 /**
- * Whether `request` does not count as activity for the idle exit. A `list` or a `read` of a todo list or of the store of
- * the project does not, because a widget can poll it, but a change does.
+ * Whether a request of each core type does not count as activity for the idle exit. Its keys are the request types that
+ * the host owns.
  */
-function isPassive(request: Request): boolean {
-	return (
-		PASSIVE_REQUESTS.has(request.type) ||
-		(LIST_REQUESTS.has(request.type) && "action" in request && (request.action === "list" || request.action === "read"))
-	);
-}
+const CORE_PASSIVE = {
+	hello: passive,
+	list: passive,
+	status: passive,
+	answers: passive,
+	tree: passive,
+	"watch-tree": passive,
+	"watch-project": passive,
+	"classify-todos": passive,
+	todo: listOrRead,
+	person: listOrRead,
+	thread: listOrRead,
+	rule: listOrRead,
+	ask: listOrRead,
+	parley: listOrRead,
+	item: listOrRead,
+	spawn: active,
+	send: active,
+	input: active,
+	note: active,
+	wait: active,
+	abort: active,
+	query: active,
+	configure: active,
+	watch: active,
+	start: active,
+	task: active,
+	"wait-task": active,
+	"abort-task": active,
+	message: active,
+	digest: active,
+	memory: active,
+	gate: active,
+	held: active,
+	whoami: active,
+	rename: active,
+	stop: active,
+} satisfies { readonly [T in Request["type"]]: (request: Extract<Request, { type: T }>) => boolean };
 
-/** A JSON object with a string `type`, which names the request that a line meant. */
-const Typed = Type.Object({ type: Type.String() });
+/** The request types that the host owns. */
+const CORE_TYPES: ReadonlySet<string> = new Set(Object.keys(CORE_PASSIVE));
+
+/**
+ * Whether `line` does not count as activity for the idle exit: by the rule of its core type, or by the `passive` rule
+ * of the entry that serves it.
+ */
+function isPassive(line: Line): boolean {
+	if (line.kind === "entry") return line.served.passive(line.request);
+	// SAFETY: the rule of the type of the request takes that request.
+	const rule = CORE_PASSIVE[line.request.type] as (request: Request) => boolean;
+
+	return rule(line.request);
+}
 
 export type Host = {
 	/** Resolves once the host has closed, by `close()`, the idle exit, or a store failure. */
@@ -175,7 +204,18 @@ export async function runHost(options: {
 		},
 	};
 
-	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, warn, degraded).catch(
+	const handles: EntryHandles = {
+		stateDir,
+		openAsks: () => readOpenAsks(place.store, context),
+		degraded,
+		warn,
+		classifier: {
+			model: (key) => classifierModel(settings, models, key, degraded),
+			ask: (model, classifierContext, signal) => askClassifier(models, model, classifierContext, signal),
+		},
+	};
+
+	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(
 		(cause: unknown) => {
 			lock.close();
 			throw cause;
@@ -299,6 +339,7 @@ export async function runHost(options: {
 		items,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
+		entryVersions: entries.versions,
 		warn,
 		degraded,
 		memory,
@@ -339,14 +380,11 @@ export async function runHost(options: {
 				try {
 					// A line that comes while the host closes runs no handler.
 					if (closing !== undefined) throw new Error(HOST_CLOSING);
-					const request = parseRequest(line);
+					const parsed = parseLine(line, entries.requests);
 
-					if (!isPassive(request)) lastActivity = Date.now();
+					if (!isPassive(parsed)) lastActivity = Date.now();
 
-					reply = {
-						ok: true,
-						value: await handleRequest(request, { ...base, signal: abort.signal, connection }),
-					};
+					reply = { ok: true, value: await handleLine(parsed, { ...base, signal: abort.signal, connection }) };
 				} catch (error) {
 					reply = { ok: false, error: errorMessage(error) };
 				}
@@ -476,15 +514,28 @@ export async function runHost(options: {
 }
 
 /**
- * The request of a line from a client, checked against the protocol. A line that fails names its request type, and the
- * path and the rule of the first field that is wrong.
+ * The request of a line from a client, checked against the protocol, or against the schema of the entry of `served`
+ * that serves its type. A line that fails names its request type, and the path and the rule of the first field that is
+ * wrong. A line of a type that neither the host nor an entry serves fails with
+ * `no loaded entry serves request type "<type>"`.
  */
-function parseRequest(line: string): Request {
+function parseLine(line: string, served: ReadonlyMap<string, EntryRequest>): Line {
 	const request: unknown = JSON.parse(line);
 
-	if (Value.Check(RequestLine, request)) return request;
+	if (Value.Check(RequestLine, request)) return { kind: "core", request };
 
-	if (!Value.Check(Typed, request)) throw new Error("Invalid request");
+	if (!Value.Check(EntryLine, request)) throw new Error("Invalid request");
+	const entry = served.get(request.type);
+
+	if (entry !== undefined) {
+		const [error] = Value.Errors(entry.schema, request);
+
+		if (error === undefined) return { kind: "entry", request, served: entry };
+
+		throw new Error(`Invalid ${request.type} request: ${requestError(entry.schema, error)}`);
+	}
+
+	if (!CORE_TYPES.has(request.type)) throw new Error(`no loaded entry serves request type "${request.type}"`);
 
 	// The branch of the request's type, and of its action when a branch has it, with the fewest errors names the field;
 	// on a tie, the first one wins.
@@ -495,7 +546,8 @@ function parseRequest(line: string): Request {
 	const ofAction = ofType.filter(({ errors }) => errors.every((error) => error.instancePath !== "/action"));
 	const [best] = (ofAction.length > 0 ? ofAction : ofType).sort((a, b) => a.errors.length - b.errors.length);
 
-	if (best === undefined) throw new Error(`Unknown request: ${request.type}`);
+	// The type is a core type, so the branches of its type are there.
+	if (best === undefined) throw new Error(`Invalid ${request.type} request`);
 
 	// SAFETY: Value.Check refused every branch, so each branch, and the best one, has at least one error.
 	const [error] = best.errors as [TLocalizedValidationError, ...TLocalizedValidationError[]];

@@ -331,15 +331,15 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				{ type: "rule", action: "create", caller: "cli", name: "x", kind: "domain" },
 				"Invalid rule request: value: required",
 			],
-			[{ type: "term", action: "list" }, "Unknown request: term"],
+			[{ type: "term", action: "list" }, 'no loaded entry serves request type "term"'],
 			[
 				{ type: "term", action: "set", caller: "cli", name: "x", meaning: "y", saidBy: "user" },
-				"Unknown request: term",
+				'no loaded entry serves request type "term"',
 			],
-			[{ type: "part", action: "list" }, "Unknown request: part"],
+			[{ type: "part", action: "list" }, 'no loaded entry serves request type "part"'],
 			[
 				{ type: "part", action: "add", caller: "cli", kind: "table", path: "x.md", rules: [], terms: [] },
-				"Unknown request: part",
+				'no loaded entry serves request type "part"',
 			],
 			[
 				{ type: "thread", action: "add", topic: "No one", persons: [] },
