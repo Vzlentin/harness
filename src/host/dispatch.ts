@@ -527,14 +527,15 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 	return Promise.all(own.map(([handle, record]) => childInfo(handler, handle, record)));
 }
 
-/** The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. */
+/**
+ * The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. Another
+ * caller, such as a Pi session, gets no handle.
+ */
 async function whoami(caller: string, handler: Handler): Promise<Replies["whoami"]> {
 	const state = await handler.harness.snapshot(ChildRecords, context);
 	const handle = callerHandle(handler.root.id, recordsByAge(state), caller);
 
-	if (handle === undefined) throw new Error(`The caller ${caller} is not a child or the project agent of this host`);
-
-	return { handle };
+	return handle === undefined ? {} : { handle };
 }
 
 async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {

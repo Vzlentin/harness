@@ -330,17 +330,17 @@ describe("harness page", { timeout: 30_000 }, () => {
 		});
 	});
 
-	it("refuses a caller that is not a child or the project agent, and keeps the old page", async () => {
+	it("posts for a caller that the host does not run to the project agent, and needs PI_SESSION_ID and the host", async () => {
 		const first = await pageFolder({ "index.html": INDEX });
 		expect((await cli(["page", first, "--slug", "kept", "a1b2c3", "--port", port])).code).toBe(0);
 		const other = await pageFolder({ "index.html": "<p>other</p>\n" });
 
 		expect(await cli(["page", other, "--slug", "kept", "--port", port], { PI_SESSION_ID: "other" })).toEqual({
-			code: 1,
-			stdout: "",
-			stderr: "The caller other is not a child or the project agent of this host\n",
+			code: 0,
+			stdout: `${base}pages/kept/?project=main\n`,
+			stderr: "",
 		});
-		expect(await readFile(join(pageDir("kept"), "index.html"), "utf8")).toBe(INDEX);
+		expect(await readFile(join(pageDir("kept"), "index.html"), "utf8")).toBe("<p>other</p>\n");
 
 		expect(await cli(["page", other, "--slug", "unset", "--port", port])).toEqual({
 			code: 1,
@@ -357,6 +357,23 @@ describe("harness page", { timeout: 30_000 }, () => {
 			stderr: "The harness host of web is not running\n",
 		});
 		expect(existsSync(pageDir("down"))).toBe(false);
+	});
+
+	it("posts for a caller that the host does not run to the project agent of the working directory", async () => {
+		const folder = await pageFolder({ "index.html": INDEX });
+		const dir = realpathSync(await mkdtemp(join(root, "site-")));
+		expect((await cli(["create", "site", "--cwd", dir])).code).toBe(0);
+		const site = await startHost("site");
+
+		try {
+			expect(await cli(["page", folder, "--slug", "site", "--port", port], { PI_SESSION_ID: "other" }, dir)).toEqual({
+				code: 0,
+				stdout: `${base}pages/site/?project=site\n`,
+				stderr: "",
+			});
+		} finally {
+			await site.close();
+		}
 	});
 
 	it("refuses a bad slug, a folder without index.html, a host name, and arguments that it does not take", async () => {

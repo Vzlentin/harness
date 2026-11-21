@@ -826,8 +826,8 @@ function pageArgs(args: string[]): PageArgs {
 
 /**
  * Copies the page in `<folder>` to the pages of the inspect routes, and prints its link on each address, with the target
- * that its Send posts to: the target of the arguments, else the child or the project agent of `PI_SESSION_ID`. It starts
- * no server: a line notes an address where none listens.
+ * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the project agent. It
+ * starts no server: a line notes an address where none listens.
  */
 async function pageCommand(args: string[], project: string | undefined): Promise<void> {
 	const { folder, slug, ref, port = DEFAULT_PORT, host, tailscale } = pageArgs(args);
@@ -845,7 +845,10 @@ async function pageCommand(args: string[], project: string | undefined): Promise
 	}
 }
 
-/** The target of the caller of this process in the host of `project`: its child by handle, or the project agent. */
+/**
+ * The target of the caller of this process in the host of `project`: its child by handle, else the project agent, also
+ * for a caller that the host does not run, such as a Pi session.
+ */
 async function callerTarget(project: string): Promise<Target> {
 	const caller = process.env[PI_SESSION_ID];
 
@@ -854,7 +857,7 @@ async function callerTarget(project: string): Promise<Target> {
 
 	if (reply === undefined) fail(`The harness host of ${project} is not running`);
 
-	return parseTarget(reply);
+	return reply.handle === undefined ? { kind: "agent" } : parseTarget({ handle: reply.handle });
 }
 
 function versionCommand(args: string[], project: string | undefined): void {
