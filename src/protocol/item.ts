@@ -7,6 +7,9 @@ import { type Static, Type } from "typebox";
 import { SLUG } from "./paths.ts";
 import { Caller, LocalId, Text, Time } from "./project.ts";
 
+/** The reference of a Git commit by its full SHA-1. */
+export const CommitRef = Type.String({ pattern: "^commit:[0-9a-f]{40}$" });
+
 /** A reference: the kind and the ID that the kind already has. No new ID scheme. */
 export const Ref = Type.Union([
 	Type.String({ pattern: "^item:[1-9][0-9]*$" }),
@@ -15,7 +18,7 @@ export const Ref = Type.Union([
 	/** A run ID of workflows, as `newRunId()` makes it. */
 	Type.String({ pattern: "^run:[0-9]{8}T[0-9]{6}-[0-9a-f]{8}$" }),
 	Type.String({ pattern: `^parley:${SLUG.source.slice(1, -1)}$` }),
-	Type.String({ pattern: "^commit:[0-9a-f]{40}$" }),
+	CommitRef,
 ]);
 
 export type Ref = Static<typeof Ref>;

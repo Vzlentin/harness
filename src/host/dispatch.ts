@@ -27,7 +27,7 @@ import { type CatchUpHost, catchUp } from "./agent.ts";
 import { readOpenAsks } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
-import type { EntryLine, EntryRequest } from "./entries.ts";
+import type { EntryLine, EntryRequest, ReportedHandler } from "./entries.ts";
 import { serveEntryRequest } from "./entry-requests.ts";
 import { gateCall } from "./gate.ts";
 import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
@@ -80,6 +80,7 @@ import {
 	type UnreadAnswers,
 	unreadAnswers,
 } from "./records.ts";
+import { report } from "./reports.ts";
 import type { Sessions } from "./sessions.ts";
 import {
 	callerConversation,
@@ -132,6 +133,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly items: ItemIndex;
 		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
 		readonly entryVersions: Readonly<Record<string, number>>;
+		/** The handlers of the reports, in order: the rule of the items of the host, then the handler of an entry. */
+		readonly reported: readonly ReportedHandler[];
 		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
 		readonly memory: HostMemory;
 		readonly push: Push;
@@ -194,6 +197,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return waitTask(handler, request.key);
 		case "abort-task":
 			return abortTask(handler.harness, request.key);
+		case "report":
+			return report(request, handler);
 		case "todo":
 			return todo(request, handler);
 		case "classify-todos":

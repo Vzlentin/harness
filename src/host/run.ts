@@ -53,6 +53,7 @@ import { ConversationEnvs } from "./envs.ts";
 import { gateExtension } from "./gate.ts";
 import { ItemIndex } from "./item-index.ts";
 import { migrateTodos } from "./item-migration.ts";
+import { itemReports } from "./item-reports.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { checkLabels, WORK_KINDS, workLabelChecks } from "./label-checks.ts";
 import { migrateLabels } from "./label-migration.ts";
@@ -117,6 +118,7 @@ const CORE_PASSIVE = {
 	task: active,
 	"wait-task": active,
 	"abort-task": active,
+	report: active,
 	message: active,
 	digest: active,
 	memory: active,
@@ -372,6 +374,8 @@ export async function runHost(options: {
 	// The host checks the labels of the work of the project; the entries check their own kinds.
 	const labelChecks = new Map([...workLabelChecks(harness), ...entries.labelChecks]);
 
+	const landed = itemReports({ harness, place, owner, items, warn });
+
 	base = {
 		harness,
 		place,
@@ -389,6 +393,7 @@ export async function runHost(options: {
 		catchUps: entries.catchUps,
 		inputHooks: entries.inputHooks,
 		entryVersions: entries.versions,
+		reported: entries.reported === undefined ? [landed] : [landed, entries.reported],
 		checkLabels: (labels) => checkLabels(labelChecks, labels),
 		warn,
 		degraded,

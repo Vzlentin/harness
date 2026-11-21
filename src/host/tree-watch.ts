@@ -21,11 +21,12 @@ import { type StoreView, serveStoreWatch } from "./store-watch.ts";
 import { AgentState } from "./targets.ts";
 import { entryKinds, StartedTasks } from "./tasks.ts";
 import { runState, type TreeHost, treeNodes } from "./tree.ts";
+import { WorkerRefs } from "./worker-refs.ts";
 
 /**
  * The kinds of the documents whose changes can change a node: the lists of todos, the last request of the project
- * agent, the records of the children by handle, with their labels, the started tasks, and the documents of the
- * conversations of the children library.
+ * agent, the records of the children by handle, with their labels, the started tasks, the result references of the
+ * workers, and the documents of the conversations of the children library.
  */
 const NODE_DOCS: ReadonlySet<string> = new Set([
 	TODO_LIST_KIND,
@@ -33,6 +34,7 @@ const NODE_DOCS: ReadonlySet<string> = new Set([
 	AgentState.definition.kind,
 	ChildRecords.definition.kind,
 	StartedTasks.definition.kind,
+	WorkerRefs.definition.kind,
 	CHILD_DOC_KIND,
 ]);
 

@@ -1,6 +1,6 @@
 /**
  * The labels of the work of a project: the text that ties an agent or a task to the work that it does, such as
- * `parley:<slug>` or `item:<id>`, and the workers that a label gives.
+ * `parley:<slug>` or `item:<id>`, the workers that a label gives, and the identity of a worker.
  */
 import { type Static, Type } from "typebox";
 import { LocalId, Slug } from "./project.ts";
@@ -40,3 +40,11 @@ export type Worker =
 			readonly state: "running" | "idle";
 	  }
 	| { readonly kind: "task"; readonly key: string; readonly state: "running" };
+
+/**
+ * The identity of a worker in any state, such as the worker that a `report` names: a child of the host by handle, or a
+ * started task by key.
+ */
+export type WorkerId =
+	| { readonly kind: "agent"; readonly handle: string }
+	| { readonly kind: "task"; readonly key: string };

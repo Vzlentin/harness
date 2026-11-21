@@ -43,13 +43,18 @@ type Shared = {
 		/** The place of the host, whose store is the harness of the host. */
 		readonly place: { readonly store: Pick<Harness, "observeCommits"> };
 	};
+	/** The reports that the `reported` handler of the entry got, in order. */
+	readonly reports: unknown[];
 };
 
-const shared: Shared = {};
+const shared: Shared = { reports: [] };
 
 Object.assign(globalThis, { harnessLabels: shared });
 
-/** The entry of the tests: it checks the label kind `fix`, and refuses `fix:no`. */
+/**
+ * The entry of the tests: it checks the label kind `fix`, and refuses `fix:no`. It keeps each report, and throws for a
+ * report with the reference `throw:me`.
+ */
 const LABELS_ENTRY = `export default function labelsEntry(handles) {
 	globalThis.harnessLabels.handles = handles;
 	return {
@@ -62,10 +67,17 @@ const LABELS_ENTRY = `export default function labelsEntry(handles) {
 				},
 			},
 		],
+		reported: async (event) => {
+			globalThis.harnessLabels.reports.push(event);
+			if (event.refs.includes("throw:me")) throw new Error("The fixture refuses throw:me");
+		},
 		close: async () => {},
 	};
 }
 `;
+
+/** A commit reference. */
+const COMMIT = `commit:${"a".repeat(40)}`;
 
 let host: Host | undefined;
 
@@ -347,5 +359,104 @@ describe("the end of the work stops its workers", { timeout: 30_000 }, () => {
 		expect(listed.get(byParley)).toEqual(["parley:worker-cli"]);
 		expect(listed.get(byItem)).toEqual([`item:${item}`]);
 		expect(Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item })).edges).toEqual([]);
+	});
+});
+
+describe("a report of the result references of a worker", { timeout: 30_000 }, () => {
+	it("lands a commit on the item of a task, sets the item done, and keeps the reporter live", async () => {
+		const item = await addItem("Reported item");
+		const gate = await startTask("report-task", "Report task", { labels: [`item:${item}`] });
+		const refs = [COMMIT, "note:result"];
+
+		expect(await send({ type: "report", caller: "report-caller", key: "report-task", refs })).toEqual({ refs });
+		const read = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }));
+		expect(read.state).toBe("done");
+		expect(read.edges).toEqual([
+			{ from: `item:${item}`, kind: "landed", to: COMMIT, at: expect.any(Number), by: "report-caller" },
+		]);
+		expect(await send({ type: "task", key: "report-task" })).toMatchObject({ refs });
+		const { nodes } = await send({ type: "tree" });
+		expect(nodes.find((node) => node.id === "task:report-task")).toMatchObject({ kind: "run", refs });
+		expect(shared.reports.at(-1)).toEqual({
+			worker: { kind: "task", key: "report-task" },
+			labels: [`item:${item}`],
+			refs,
+			caller: "report-caller",
+		});
+
+		await sleep(300);
+		expect(await handles().workers(`item:${item}`)).toEqual([{ kind: "task", key: "report-task", state: "running" }]);
+		gate.resolve();
+		expect(await send({ type: "wait-task", key: "report-task" })).toMatchObject({ status: "terminal", refs });
+	});
+
+	it("writes one edge for a repeated report, and keeps a dropped item dropped", async () => {
+		const item = await addItem("Twice reported");
+		const gate = await startTask("twice-task", "Twice task", { labels: [`item:${item}`] });
+		const report = { type: "report", caller: "cli", key: "twice-task" } as const;
+		await send({ ...report, refs: [COMMIT] });
+		expect(await send({ ...report, refs: [COMMIT, COMMIT] })).toEqual({ refs: [COMMIT] });
+		expect(shared.reports.at(-1)).toMatchObject({ refs: [COMMIT, COMMIT] });
+		const twice = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }));
+		expect(twice.state).toBe("done");
+		expect(twice.edges).toHaveLength(1);
+		gate.resolve();
+
+		const dropped = await addItem("Dropped then reported");
+		const late = await startTask("dropped-task", "Dropped task", { labels: [`item:${dropped}`] });
+		await setItem(dropped, "dropped");
+		await send({ type: "report", caller: "cli", key: "dropped-task", refs: [COMMIT] });
+		const read = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: dropped }));
+		expect(read.state).toBe("dropped");
+		expect(read.edges.map((edge) => edge.to)).toEqual([COMMIT]);
+		late.resolve();
+	});
+
+	it("stores the references of a task with no item label, and changes no item", async () => {
+		const item = await addItem("Untouched item");
+		const bare = await startTask("bare-task", "Bare task");
+		const fixed = await startTask("fixed-task", "Fixed task", { labels: ["fix:report"] });
+
+		await send({ type: "report", caller: "cli", key: "bare-task", refs: [COMMIT] });
+		await send({ type: "report", caller: "cli", key: "fixed-task", refs: [COMMIT] });
+		expect(await send({ type: "task", key: "bare-task" })).toMatchObject({ refs: [COMMIT] });
+		expect(shared.reports.at(-1)).toMatchObject({ labels: ["fix:report"] });
+		expect(await send({ type: "item", action: "read", id: item })).toMatchObject({ state: "open", edges: [] });
+		bare.resolve();
+		fixed.resolve();
+	});
+
+	it("takes a child by handle or as the caller, refuses another caller, and fails with the handler of the entry", async () => {
+		const agent = await spawnWithId("report-session");
+		expect(await send({ type: "report", caller: "cli", handle: agent.handle, refs: ["note:one"] })).toEqual({
+			refs: ["note:one"],
+		});
+		expect(await send({ type: "report", caller: agent.id, refs: ["note:two"] })).toEqual({
+			refs: ["note:one", "note:two"],
+		});
+		expect(await send({ type: "status", handle: agent.handle })).toMatchObject({ refs: ["note:one", "note:two"] });
+
+		await expect(send({ type: "report", caller: "cli", refs: ["note:x"] })).rejects.toThrow(
+			"The caller is no worker of this host: give handle or key",
+		);
+		await expect(send({ type: "report", caller: "cli", key: "no-task", refs: ["note:x"] })).rejects.toThrow(
+			"Unknown task: no-task",
+		);
+		await expect(send({ type: "report", caller: "cli", key: "x", refs: [] })).rejects.toThrow(
+			"Invalid report request: refs:",
+		);
+
+		// Both workers at once: the type refuses it, so the line goes through JSON.
+		const both = JSON.parse(
+			JSON.stringify({ type: "report", caller: "cli", handle: agent.handle, key: "x", refs: ["a"] }),
+		);
+
+		await expect(send(both)).rejects.toThrow("Invalid report request: key: not allowed");
+		await expect(send({ type: "report", caller: agent.id, handle: agent.handle, refs: ["throw:me"] })).rejects.toThrow(
+			"The fixture refuses throw:me",
+		);
+		expect(await send({ type: "status", handle: agent.handle })).toMatchObject({
+			refs: ["note:one", "note:two", "throw:me"],
+		});
 	});
 });

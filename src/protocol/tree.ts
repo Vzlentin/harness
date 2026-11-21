@@ -21,8 +21,8 @@ const NODE_FIELDS = {
 
 /**
  * One node of the tree of a project: an agent (the project agent, a child, or a conversation of the children library)
- * with the state of a child and its labels, or a run (a started task, or a child task under it) with the state of
- * its task.
+ * with the state of a child, its labels and its result references, or a run (a started task, or a child task under
+ * it) with the state of its task and the result references of a started task.
  */
 export const TreeNode = Type.Union([
 	Type.Object({
@@ -31,8 +31,16 @@ export const TreeNode = Type.Union([
 		state: Type.Enum(CHILD_STATES),
 		/** The labels of a child of the host, when it has one. The project agent and a conversation of a task have none. */
 		labels: Type.Optional(Type.Array(Label)),
+		/** The result references that `report` stored for a child of the host, when it has one. */
+		refs: Type.Optional(Type.Array(Type.String())),
 	}),
-	Type.Object({ ...NODE_FIELDS, kind: Type.Literal("run"), state: Type.Enum(RUN_STATES) }),
+	Type.Object({
+		...NODE_FIELDS,
+		kind: Type.Literal("run"),
+		state: Type.Enum(RUN_STATES),
+		/** The result references that `report` stored for a started task, when it has one. */
+		refs: Type.Optional(Type.Array(Type.String())),
+	}),
 ]);
 
 export type TreeNode = Static<typeof TreeNode>;

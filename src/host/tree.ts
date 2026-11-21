@@ -1,6 +1,6 @@
 /**
  * The tree of a project: the project agent, the children by handle, and the started tasks, each with its state and its
- * list of todos. A started task that did not end has its child tasks and the conversations of the children library that
+ * list of todos, and a child or a started task with its result references. A started task that did not end has its child tasks and the conversations of the children library that
  * these tasks own under it; a started task that ended has only its own node.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -22,6 +22,7 @@ import { callerHandle, type ChildRecord, ChildRecords, recordLabels, recordsByAg
 import { agentTurn, childOf, heldState, library, type TargetHost } from "./targets.ts";
 import { entryKinds, StartedTasks, type TaskHost } from "./tasks.ts";
 import { readTodos, type TodoOwner } from "./todo.ts";
+import { WorkerRefs, workerRefs } from "./worker-refs.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -71,6 +72,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 	const runs = await scanRuns(host.storage, root.id, kinds, started, recent);
 	const records = await harness.snapshot(ChildRecords, context);
 	const entries = recordsByAge(records);
+	const refs = await harness.snapshot(WorkerRefs, context);
 
 	/** The node ID of the task `id`: its key for a started task, else its ID. */
 	const runId = (id: TaskId) => `task:${started.get(id) ?? id}`;
@@ -97,10 +99,9 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			todos: await todosOf(host, { kind: "task", id: task.id }),
 		};
 
-		return {
-			order: task.id,
-			node: key === undefined && task.owner !== undefined ? { ...node, parent: runId(task.owner) } : node,
-		};
+		if (key !== undefined) return { order: task.id, node: { ...node, ...workerRefs(refs, { kind: "task", key }) } };
+
+		return { order: task.id, node: task.owner === undefined ? node : { ...node, parent: runId(task.owner) } };
 	};
 
 	const conversation = async (record: ConversationRecord, owner: TaskId): Promise<Placed | undefined> => {
@@ -135,6 +136,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			state,
 			todos: await todosOf(host, { kind: "conversation", id: record.conversationId }),
 			...recordLabels(record),
+			...workerRefs(refs, { kind: "agent", handle }),
 		};
 
 		const parent = await callerNode(host, entries, record.caller);

@@ -1,21 +1,23 @@
 /**
- * The stops of the workers of the work of the project: the workers of a parley or an item that ended.
+ * The stops of the workers of the work of the project: the workers of a parley or an item that ended, but the worker
+ * whose report ended it.
  */
+import type { WorkerId, Worker } from "../protocol/worker-labels.ts";
 import { workState } from "./label-checks.ts";
 import { liveWorkers, stopWorker, type WorkerHost } from "./workers.ts";
 
 /** What the stops of the workers use of the host. */
 export type WorkStopHost = WorkerHost & { readonly warn: (cause: unknown) => void };
 
-/** Stops the live workers of each label of `labels`. A failed stop is a warning. */
-export async function stopWork(host: WorkStopHost, labels: readonly string[]): Promise<void> {
+/** Stops the live workers of each label of `labels`, but `except` when it gives one. A failed stop is a warning. */
+export async function stopWork(host: WorkStopHost, labels: readonly string[], except?: WorkerId): Promise<void> {
 	if (labels.length === 0) return;
 
 	try {
 		const live = await liveWorkers(host);
 
 		for (const worker of new Set(labels.flatMap((label) => live.get(label) ?? []))) {
-			await stopWorker(host, worker).catch(host.warn);
+			if (except === undefined || !sameWorker(worker, except)) await stopWorker(host, worker).catch(host.warn);
 		}
 	} catch (cause) {
 		host.warn(cause);
@@ -39,4 +41,11 @@ export async function stopEndedWork(host: WorkStopHost): Promise<void> {
 	} catch (cause) {
 		host.warn(cause);
 	}
+}
+
+/** Whether `worker` is `other`: the same kind, and the same handle or key. */
+function sameWorker(worker: Worker, other: WorkerId): boolean {
+	if (worker.kind === "agent") return other.kind === "agent" && other.handle === worker.handle;
+
+	return other.kind === "task" && other.key === worker.key;
 }

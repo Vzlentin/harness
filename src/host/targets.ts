@@ -31,6 +31,7 @@ import {
 	ownRecord,
 	recordLabels,
 } from "./records.ts";
+import { WorkerRefs, workerRefs } from "./worker-refs.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -315,7 +316,10 @@ export async function childEnded(handler: Pick<TargetHost, "place" | "owner">, r
 	return (await (await childOf(handler, record)).state(context)) === "ended";
 }
 
-/** The info of `handle`, with its labels when it has one. A caller that already has the record gives it as `record`. */
+/**
+ * The info of `handle`, with its labels and its result references when it has them. A caller that already has the
+ * record gives it as `record`.
+ */
 export async function childInfo(
 	handler: Pick<TargetHost, "harness" | "place" | "owner">,
 	handle: string,
@@ -331,7 +335,9 @@ export async function childInfo(
 	const info =
 		record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 
-	return { ...info, ...recordLabels(record) };
+	const refs = workerRefs(await handler.harness.snapshot(WorkerRefs, context), { kind: "agent", handle });
+
+	return { ...info, ...recordLabels(record), ...refs };
 }
 
 /**

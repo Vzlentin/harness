@@ -53,7 +53,7 @@ import { Label, SpawnServes } from "./worker-labels.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 42;
+export const PROTOCOL_VERSION = 43;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -114,6 +114,8 @@ export type ChildInfo = {
 	readonly cwd: string;
 	/** The labels of the child, when it has one. A conversation of the children library with no record has none. */
 	readonly labels?: string[];
+	/** The result references that `report` stored for the child, in the order of their first report. */
+	readonly refs?: string[];
 };
 
 /** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */
@@ -129,7 +131,19 @@ export type TaskInfo = {
 	readonly version: number;
 	readonly status: TaskState<JsonValue, JsonValue>["status"];
 	readonly outcome?: TaskOutcome<JsonValue>;
+	/** The result references that `report` stored for the task, in the order of their first report. */
+	readonly refs?: string[];
 };
+
+/** The fields of a `report` line, before its worker. */
+const ReportFields = {
+	type: Type.Literal("report"),
+	caller: Type.String(),
+	refs: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+};
+
+/** The absent key of a `report` line, which refuses the other worker key. */
+const absent = Type.Optional(Type.Never());
 
 /** The prototypes of a plain object, which JSON gives and the store takes. */
 const PLAIN_PROTOTYPES: readonly unknown[] = [Object.prototype, null];
@@ -296,6 +310,14 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("wait-task"), key: Type.String() }),
 	/** Aborts the task and the work that it owns. */
 	Type.Object({ type: Type.Literal("abort-task"), key: Type.String() }),
+	/**
+	 * Stores the result references `refs` of a worker, each once, and replies with all the references of the worker. The
+	 * worker is the child `handle`, the started task `key`, or, with neither, the child whose conversation is the caller.
+	 * After the commit, the rule of the items and the `reported` handler of an entry run, and the reply waits for them.
+	 */
+	Type.Object({ ...ReportFields, handle: Type.String(), key: absent }),
+	Type.Object({ ...ReportFields, key: Type.String(), handle: absent }),
+	Type.Object({ ...ReportFields, handle: absent, key: absent }),
 	/**
 	 * Adds a todo with the state `open` to a list, and replies with it. The list is the one of a handle, a conversation or
 	 * the task of a `start` key, or, with none of them, the caller's own list.
@@ -576,6 +598,8 @@ export type Replies = {
 	readonly task: TaskInfo;
 	readonly "wait-task": TaskInfo;
 	readonly "abort-task": TaskInfo;
+	/** All the references of the worker, in the order of their first report. */
+	readonly report: { readonly refs: readonly string[] };
 	/** The todo of `add` and `set`, or the list of `list`. */
 	readonly todo: Todo | TodoList;
 	readonly tree: TreeReply;

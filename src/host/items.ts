@@ -4,17 +4,20 @@
  * that makes a parley a contract gives it an item when it shapes none. A load of a store file writes its items, with their
  * edges and the counter. It also gives whether a run is live: the stage of an item reads it,
  * and a live run, or a live task with the label of the item, refuses a change of the item to `done`. A change of an item to `done` or `dropped` ends each contract
- * that shapes it and no open item, and the end of a contract reads the open items that it shapes.
+ * that shapes it and no open item, and the end of a contract reads the open items that it shapes. A report of a commit
+ * by a worker of an item writes its `landed` edge and sets the item `done`, with no refusal for a live run.
  */
 import type { Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
+	CommitRef,
 	type Edge,
 	type EdgeInput,
 	type EdgeItem,
 	edgeItem,
 	type ItemAdd,
 	type ItemSet,
+	type ItemState,
 	refParts,
 	type WorkItem,
 } from "../protocol/item.ts";
@@ -73,14 +76,41 @@ export async function setItem(
 	if (change.title !== undefined) item.title = change.title;
 
 	if (change.text !== undefined) item.text = change.text;
-
-	if (change.state !== undefined) item.state = change.state;
-	item.at = Date.now();
-	item.by = by;
-
-	const ended = change.state === "done" || change.state === "dropped" ? await endContracts(tx, item, by, items) : [];
+	const ended = await changeItem(tx, item, change.state, by, items);
 
 	return { item: Value.Clone(item), ended };
+}
+
+/**
+ * Writes the edge `item:<id> landed <commit>` for the caller `by`, for each item of `ids`, which the store has, and each
+ * commit reference of `refs`, as a report of a worker of the item gives them, and sets each open item of them `done`.
+ * A closed item keeps its state. Unlike `setItem`, a live run or task of the item does not refuse the change: the
+ * reporter is such a task. `items` gives the items that a contract shapes. It gives the IDs of the items that it set
+ * `done`, and the slugs of the contracts that it ended. With no commit reference, it changes nothing.
+ */
+export async function landCommits(
+	tx: Tx,
+	ids: readonly number[],
+	refs: readonly string[],
+	by: string,
+	items: Pick<ItemIndex, "itemsOf">,
+): Promise<{ readonly done: readonly number[]; readonly ended: readonly string[] }> {
+	const commits = refs.filter((ref) => Value.Check(CommitRef, ref));
+	const done: number[] = [];
+	const ended: string[] = [];
+
+	if (commits.length === 0) return { done, ended };
+
+	for (const id of ids) {
+		for (const commit of commits) await writeEdge(tx, { from: `item:${id}`, kind: "landed", to: commit }, by);
+		const item = await itemDraft(tx, id);
+
+		if (item.state !== "open") continue;
+		ended.push(...(await changeItem(tx, item, "done", by, items)));
+		done.push(id);
+	}
+
+	return { done, ended };
 }
 
 /**
@@ -224,6 +254,24 @@ async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
 	const task = workers.find((worker) => worker.kind === "task" && taskRun(worker.key) === undefined);
 
 	if (task?.kind === "task") throw refused(`task ${task.key}`);
+}
+
+/**
+ * Sets the state of `item` to `state`, when it gives one, and its `at` and `by` for the caller `by`. A change to `done`
+ * or `dropped` ends each contract that shapes the item and no open item (`endContracts`), and it gives their slugs.
+ */
+async function changeItem(
+	tx: Tx,
+	item: WorkItem,
+	state: ItemState | undefined,
+	by: string,
+	items: Pick<ItemIndex, "itemsOf">,
+): Promise<string[]> {
+	if (state !== undefined) item.state = state;
+	item.at = Date.now();
+	item.by = by;
+
+	return state === "done" || state === "dropped" ? endContracts(tx, item, by, items) : [];
 }
 
 /**

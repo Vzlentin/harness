@@ -11,6 +11,7 @@ import { Value } from "typebox/value";
 import type { Request, TaskInfo } from "../protocol/requests.ts";
 import { SpawnServes, type Worker, workerLabels } from "../protocol/worker-labels.ts";
 import { boundedReplay } from "./checkpoint.ts";
+import { WorkerRefs, workerRefs } from "./worker-refs.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -140,14 +141,15 @@ export function labelledTasks(taskLabels: Readonly<Record<string, readonly strin
 	return Object.entries(taskLabels).flatMap(([key, labels]) => (labels.includes(label) ? [key] : []));
 }
 
-/** The info of the task that `start` created for `key`. */
+/** The info of the task that `start` created for `key`, with its result references when it has one. */
 export async function taskInfo(harness: Harness, key: string): Promise<TaskInfo> {
 	const id = await taskId(harness, key);
 	const record = await harness.getTask(id, context);
 
 	if (record === undefined) throw new Error(`Missing task ${id}`);
 
-	const info: TaskInfo = { key, id, kind: record.kind, version: record.version, status: record.state.status };
+	const refs = workerRefs(await harness.snapshot(WorkerRefs, context), { kind: "task", key });
+	const info: TaskInfo = { key, id, kind: record.kind, version: record.version, status: record.state.status, ...refs };
 
 	return record.state.status === "terminal" ? { ...info, outcome: record.state.outcome } : info;
 }
