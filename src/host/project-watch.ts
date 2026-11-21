@@ -10,19 +10,19 @@ import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
 import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
 import type { Replies } from "../protocol/requests.ts";
+import { readAsks } from "./asks.ts";
 import type { Degraded } from "./degraded.ts";
 import { changedItemId, readItem, readItems } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { type StageHost, stageItems } from "./item-stage.ts";
+import { readParleys } from "./parleys.ts";
 import { readRules } from "./project-rules.ts";
 import {
 	joinMessage,
 	outStates,
 	projectChange,
-	readAsks,
 	readHeld,
 	readOutbox,
-	readParleys,
 	readPersons,
 	readStored,
 	readThreads,

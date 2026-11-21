@@ -23,6 +23,7 @@ import {
 } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protocol/target.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
+import { readOpenAsks } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import type { EntryLine, EntryRequest } from "./entries.ts";
@@ -33,32 +34,33 @@ import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
 import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
+import {
+	dropAskRef,
+	endParley,
+	noteAskRef,
+	readAsk,
+	readParley,
+	readParleys,
+	takeParley,
+	writeAnswers,
+	writeRound,
+} from "./parleys.ts";
 import { changeRule, readRules, setRule } from "./project-rules.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import {
 	addPerson,
 	addThread,
-	answerAsks,
 	approveHeld,
 	deleteMessage,
-	dropAsk,
 	dropHeld,
 	editMessage,
-	endParley,
 	joinThread,
 	logMessage,
 	markMessage,
-	noteAsk,
 	readHeld,
-	readAsk,
-	readOpenAsks,
-	readParley,
-	readParleys,
 	readPersons,
 	readThread,
 	readThreads,
-	takeParley,
-	writeRound,
 } from "./project.ts";
 import type { Connection, Push } from "./push.ts";
 import { queryConversation } from "./query.ts";
@@ -126,8 +128,6 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly warn: (cause: unknown) => void;
 		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
 		readonly entryVersions: Readonly<Record<string, number>>;
-		/** Whether an entry handles the answered asks, so the commit of the answers records their events. */
-		readonly askEvents: boolean;
 		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
 		readonly memory: HostMemory;
 		readonly push: Push;
@@ -442,16 +442,15 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 			const author = await answerAuthor(request, handler);
 
 			return handler.harness.commit(
-				(tx) =>
-					answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items, handler.askEvents),
+				(tx) => writeAnswers(tx, request.answers, request.caller, author, handler.root.id),
 				context,
 			);
 		}
 
 		case "drop":
-			return handler.harness.commit((tx) => dropAsk(tx, request, request.caller), context);
+			return handler.harness.commit((tx) => dropAskRef(tx, request, request.caller), context);
 		case "note":
-			return handler.harness.commit((tx) => noteAsk(tx, request, request.note, request.caller), context);
+			return handler.harness.commit((tx) => noteAskRef(tx, request, request.note, request.caller), context);
 		case "read":
 			return readAsk(handler.harness, request, context);
 		case "list":

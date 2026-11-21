@@ -25,6 +25,7 @@ import {
 	setUp,
 	startHost,
 	tearDown,
+	untilContract,
 } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -215,16 +216,18 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 			"where · open · Where asks live\n1 · Where · your call · open · plan a · In the store\n  a · In the store · gains: One writer\n  b · In files\n2 · These are the terms · open\n[where] 1a ok\n",
 			"1 · Where · your call · open · plan a · In the store\nA `table` of the places\n",
 		]);
+		await untilContract("where");
 		// The host refuses the answer, and its error reaches the call.
 		expect(results[2]).toContain("Ask 1 takes a, b or own");
 
 		expect(results[3]).toBe(
-			"where · contract · Where asks live\n1 · Where · your call · b · In files\n2 · These are the terms · ok\nharness parley show where\n+ item 1 Where asks live\n",
+			"where · open · Where asks live\n1 · Where · your call · b · In files\n2 · These are the terms · ok\n[where] ok\n",
 		);
 		expect(results[4]).toContain("round requires slug");
 		expect(results.slice(5, 7)).toEqual(["3 · Push now? · open\n", "3 · Push now? · open\n"]);
 		expect(results[7]).toContain("Parley where has no ask 9");
-		expect(results[8]).toBe("where · contract · Where asks live\n3 · Push now? · open\n");
+		// The event of the read-back makes the contract after the answer, so the list can come before or after it.
+		expect(results[8]).toMatch(/^where · (open|contract) · Where asks live\n3 · Push now\? · open\n$/);
 		// The answers of a hosted agent have the conversation of the agent as their author.
 		const answered = await request({ type: "ask", action: "read", slug: "where", n: 1 }, { start: false });
 		const by = Value.Parse(Type.Object({ by: Type.String() }), answered).by;
@@ -295,19 +298,20 @@ describe("the tools of the store of the project", { timeout: 30_000 }, () => {
 
 		const handle = handleOf(await cli(["spawn", "--prompt", "Run the parley flow"]));
 		await cli(["wait", handle]);
+		await untilContract("flow");
 		const head = "flow · open · Flow\n1 · Where · your call · ";
 		const options = "  a · Slow\n  b · Fast · gains: Half the time\n";
 		const open = `${head}open · plan a · In the store\n  a · In the store\n2 · How · my call · open · plan b · Fast\n${options}[flow] 1a ok\n`;
 		const answered = `${head}a · In the store\n2 · How · my call · b · Fast\n`;
 		const todos = "○ 1 Save to the vault: Where\n○ 2 Save to the vault: How\n";
-		const contract = `${answered.replace("flow · open", "flow · contract")}3 · These are the terms · ok\n`;
+		const agreed = `${answered}3 · These are the terms · ok\n[flow] ok\n`;
 
 		expect(cellResults.get(prompt)).toEqual([
 			open,
 			open,
 			`${answered}[flow] ok\n${todos}`,
 			`${answered}3 · These are the terms · open\n[flow] ok\n`,
-			`${contract}harness parley show flow\n+ item 2 Flow\n${todos}`,
+			`${agreed}${todos}`,
 		]);
 	});
 

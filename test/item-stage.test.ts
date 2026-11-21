@@ -19,6 +19,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	untilContract,
 	untilState,
 } from "./helpers.ts";
 
@@ -88,6 +89,7 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 			{ id: call, answer: "a" },
 			{ id: readBack, answer: "ok" },
 		]);
+		await untilContract("stage-shaper");
 
 		expect(await markOf(item.id)).toEqual({ stage: "ready", needsYou: false });
 

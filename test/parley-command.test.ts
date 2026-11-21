@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { cli, setUp, startHost, tearDown, unlinkContract } from "./helpers.ts";
+import { cli, setUp, startHost, tearDown, unlinkContract, untilContract } from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -56,6 +56,7 @@ async function contract(slug: string): Promise<void> {
 		answers: [{ id: call, answer: "own", label: "In the store, with a view", words: ["Keep it.", "And the view."] }],
 	});
 	await send({ type: "ask", action: "answer", caller: "user", answers: [{ id: readBack, answer: "ok" }] });
+	await untilContract(slug);
 }
 
 beforeAll(async () => {

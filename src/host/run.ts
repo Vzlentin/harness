@@ -41,6 +41,7 @@ import { savedTrust } from "../protocol/trust.ts";
 import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { AskEventDispatcher } from "./ask-events.ts";
+import { readOpenAsks } from "./asks.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
 import { askClassifier, classifierModel } from "./classify.ts";
@@ -56,7 +57,7 @@ import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts"
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
-import { readOpenAsks } from "./project.ts";
+import { parleyReaction } from "./parleys.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
@@ -364,7 +365,6 @@ export async function runHost(options: {
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
 		inputHooks: entries.inputHooks,
-		askEvents: entries.answeredAsk !== undefined,
 		entryVersions: entries.versions,
 		warn,
 		degraded,
@@ -373,8 +373,13 @@ export async function runHost(options: {
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
 
-	const askEvents =
-		entries.answeredAsk === undefined ? undefined : new AskEventDispatcher(harness, entries.answeredAsk, warn);
+	const reaction = parleyReaction({ harness, items, warn });
+
+	const askEvents = new AskEventDispatcher(
+		harness,
+		entries.answeredAsk === undefined ? [reaction] : [reaction, entries.answeredAsk],
+		warn,
+	);
 
 	const storeFile = storeFilePasses({ harness, storage, root, path: storePath, warn });
 
@@ -456,11 +461,12 @@ export async function runHost(options: {
 		await push.close();
 		await sessions.close();
 		await serving.close();
+		// The reaction of the parleys reads the index of the items.
+		await askEvents.close();
 		items.close();
 		await storeFile.close();
 		awake.close();
 		await bridge.close();
-		await askEvents?.close();
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
@@ -483,7 +489,7 @@ export async function runHost(options: {
 			const servingClosed = serving.close();
 			const storeFileClosed = storeFile.close();
 			// The handler of the answered asks gets the abort, and its event waits for the next start.
-			const askEventsClosed = askEvents?.close();
+			const askEventsClosed = askEvents.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);

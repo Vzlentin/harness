@@ -75,7 +75,7 @@ Each rule prints as \`<id> <name> (<kind>, <status>): <value> [said by <author> 
 export const PARLEY_TOOL_DESCRIPTION = `Put questions to the user as asks, alone or in a parley: a group of asks with a slug, a title, a goal, evidence and a design sense.
 Before you ask, read the vault on the topic. Write the view of each ask with show-me, with wiki links to the notes that the vault already holds. When the user answers an ask and \`VAULT\` names a folder that exists, you get the todo \`Save to the vault: <title>\`. Ask your next question first, and do the todo while the user decides: write the view and the decision into the vault, with an update of a note that exists when you can. Give the note an \`id\` in its front matter, and record that ID with \`note\` (or \`harness parley note\`): this closes the todo. When nothing is worth a note, set the todo to dropped with the \`todo\` tool, and say why in one line.
 - round: add the asks \`asks\`. With \`slug\`, they serve the parley \`slug\`: a new slug needs \`title\` and \`goal\`, and \`title\`, \`goal\`, \`evidence\` and \`design_sense\` change an open parley. With \`slug\` of an open parley, \`asks\` can be left out when the round changes one of these fields. With \`item\` and \`slug\`, the parley shapes the open work item \`item\`.
-- answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract, and adds a work item with the title of the parley when the contract shapes no item: the text gives it as \`+ item <id> <title>\`.
+- answer: write the answers of the user, \`answers\`, each to the ask \`ask\`: the key of an option, ok, or own with the \`label\` that the user gave it, and \`words\`, the exact words of the user. The answer ok to the read-back of a parley, its ask with no options, makes the parley a contract a moment after the answer, and adds a work item with the title of the parley when the contract shapes no item: read the parley to see them.
 - drop: drop the open ask \`ask\`.
 - note: record \`note\`, the ID of the note in the vault that explains the ask \`ask\`, in any state. Only the asker of the ask records its note, and a second note replaces the first.
 - take: become the asker of the open asks of the parley \`slug\`, open or a contract. It gives the answers that waited for the asker.
@@ -548,9 +548,8 @@ async function runParleyTool(args: ParleyArgs, scope: ProjectScope) {
 			const request = { type: "ask", action, caller, answers } as const;
 			const reply = replyOf(AskWrite, await scope.send(request, signal), "write of asks");
 			const todos = await saveTodoText(reply, scope);
-			const items = (reply.items ?? []).map((item) => `+ item ${item.id} ${item.title}\n`).join("");
 
-			return { text: writeText(reply) + items + todos, data: { action, value: reply } };
+			return { text: writeText(reply) + todos, data: { action, value: reply } };
 		}
 
 		case "drop": {

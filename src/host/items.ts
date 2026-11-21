@@ -20,10 +20,11 @@ import {
 	refParts,
 	type WorkItem,
 } from "../protocol/item.ts";
-import type { AddedItem, Ask, Parley } from "../protocol/project.ts";
+import type { Ask, Parley } from "../protocol/project.ts";
+import { Asks } from "./asks.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
-import { Asks, endContract, knownParley, Parleys } from "./project-docs.ts";
+import { endContract, knownParley, Parleys } from "./project-docs.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
@@ -158,22 +159,19 @@ export async function serveItem(tx: Tx, id: number, conversationId: Conversation
 
 /**
  * Gives the contract `parley` an item in `tx` for the caller `by`: when `items` gives no item with the edge
- * `parley:<slug> shapes`, it adds an item with the title of the parley, writes that edge, and gives the item. Else it
- * gives nothing.
+ * `parley:<slug> shapes`, it adds an item with the title of the parley and writes that edge.
  */
 export async function itemForContract(
 	tx: Tx,
 	parley: Readonly<Parley>,
 	by: string,
 	items: Pick<ItemIndex, "itemsOf">,
-): Promise<AddedItem | undefined> {
+): Promise<void> {
 	const end = `parley:${parley.slug}`;
 
-	if (items.itemsOf(end).length > 0) return undefined;
+	if (items.itemsOf(end).length > 0) return;
 	const item = await addItem(tx, { title: parley.title }, by);
 	await writeEdge(tx, { from: end, kind: "shapes", to: `item:${item.id}` }, by);
-
-	return { id: item.id, title: item.title };
 }
 
 /** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */

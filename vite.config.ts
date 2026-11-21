@@ -9,7 +9,7 @@ function restrictImports(files: string[], ...patterns: ImportPattern[]): OxlintO
 	return { files, rules: { "no-restricted-imports": ["error", { patterns }] } };
 }
 
-// An override replaces the options of a rule, so `src/host/durable-entry.ts` repeats the pattern of `src/host/**`.
+// An override replaces the options of a rule, so the later overrides of `src/host/` repeat the pattern of `src/host/**`.
 const hostImports: ImportPattern = {
 	group: [
 		"../**",
@@ -124,6 +124,14 @@ export default defineConfig({
 				},
 			),
 			restrictImports(["src/host/**"], hostImports),
+			restrictImports(
+				["src/host/asks.ts", "src/host/save-todo.ts", "src/host/user-answers.ts", "src/host/ask-events.ts"],
+				hostImports,
+				{
+					group: ["./parleys.ts", "./project-docs.ts", "./project.ts", "./items.ts", "./item-*.ts"],
+					message: "The asks are core: they import nothing of the parleys, the project or the items.",
+				},
+			),
 			restrictImports(["src/host/durable-entry.ts"], hostImports, {
 				group: ["@earendil-works/*"],
 				allowTypeImports: true,

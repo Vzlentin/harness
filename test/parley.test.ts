@@ -1,6 +1,7 @@
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
+import { ItemList } from "../src/protocol/item.ts";
 import {
 	Ask,
 	type AskEvent,
@@ -13,7 +14,18 @@ import {
 	ParleyList,
 } from "../src/protocol/project.ts";
 import type { Request } from "../src/protocol/requests.ts";
-import { answer, framed, OPTIONS, round, send, setUp, startHost, tearDown, unlinkContract } from "./helpers.ts";
+import {
+	answer,
+	framed,
+	OPTIONS,
+	round,
+	send,
+	setUp,
+	startHost,
+	tearDown,
+	unlinkContract,
+	untilContract,
+} from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -146,12 +158,21 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		const agreed = await answer([{ id: readBack, answer: "ok" }]);
 		expect(agreed.parleys).toMatchObject([
 			{
-				parley: { slug: "read-back", status: "contract", design_sense: "One writer." },
+				parley: { slug: "read-back", status: "open", design_sense: "One writer." },
 				asks: [{ id: call }, { id: readBack, state: "answered", answer: "ok" }],
 			},
 		]);
+		expect(agreed).not.toHaveProperty("items");
 		expect(agreed.parleys[0]?.asks[1]).not.toHaveProperty("words");
-		expect(await readParley("read-back")).toEqual(agreed.parleys[0]);
+
+		const contract = await untilContract("read-back");
+		expect(contract.parley).toMatchObject({ status: "contract", design_sense: "One writer.", by: "user" });
+		expect(contract.asks).toEqual(agreed.parleys[0]?.asks);
+		const { items } = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
+
+		expect(items.filter((item) => item.edges.some((edge) => edge.from === "parley:read-back"))).toMatchObject([
+			{ title: "Where asks live", edges: [{ from: "parley:read-back", kind: "shapes" }] },
+		]);
 	});
 
 	it("reads one ask in any state, by its ID or by its number in its parley", async () => {
@@ -271,7 +292,8 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			{ id: call, answer: "b" },
 		]);
 
-		expect(written.parleys).toMatchObject([{ parley: { slug: "one-write", status: "contract" } }]);
+		expect(written.parleys).toMatchObject([{ parley: { slug: "one-write", status: "open" } }]);
+		await untilContract("one-write");
 	});
 
 	it("ends a contract that shapes no item as done or dropped, and not an open parley", async () => {
@@ -285,6 +307,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				{ id: call, answer: "a" },
 				{ id: readBack, answer: "ok" },
 			]);
+			await untilContract(slug);
 			await unlinkContract(slug);
 
 			const ended = Value.Parse(Parley, await send(end));
@@ -320,6 +343,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 			{ id: contract.call, answer: "a" },
 			{ id: contract.readBack, answer: "ok" },
 		]);
+		await untilContract("signed");
 
 		const before = { ...(await stored()), asks: await everyAsk() };
 

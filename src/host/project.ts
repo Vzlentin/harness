@@ -1,32 +1,18 @@
 /**
- * The store of the project: the persons that the user talks with, the threads of messages with them, the tool calls
- * that the gate held, and the parleys and their asks. The rules are in `project-rules.ts`. Each list is one document of
- * the session, and each thread is an ownerless conversation whose entries are its messages, and the edits and deletes
- * of its messages, which a read applies in order. The states of the messages out are in the outbox, a document of the
- * session, because an entry cannot change. The requests of the host change them with these functions, each in its own
- * commit. A round and a contract also write the `shapes` edge of their parley to a work item, and a contract that
- * shapes an open item does not end.
+ * The store of the project: the persons that the user talks with, the threads of messages with them, and the tool calls
+ * that the gate held. The rules are in `project-rules.ts`, the asks in `asks.ts` and the parleys in `parleys.ts`. Each
+ * list is one document of the session, and each thread is an ownerless conversation whose entries are its messages, and
+ * the edits and deletes of its messages, which a read applies in order. The states of the messages out are in the
+ * outbox, a document of the session, because an entry cannot change. The requests of the host change them with these
+ * functions, each in its own commit. A load of a store file writes all of these lists.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
 import {
-	type AnswerAuthor,
-	type AnswerInput,
-	type Ask,
-	askAnswerText,
-	type AskList,
-	type AskOption,
-	type AskRef,
-	type AskRound,
-	askTransition,
-	type AddedItem,
-	type AskWrite,
 	HELD_KIND,
 	type HeldAction,
 	type HeldInput,
 	type HeldList,
-	isReadBack,
 	MESSAGE_DELETE_KIND,
 	MESSAGE_EDIT_KIND,
 	MESSAGE_KIND,
@@ -38,12 +24,6 @@ import {
 	type MessageState,
 	messageTransition,
 	OUTBOX_KIND,
-	type Parley,
-	type ParleyAsks,
-	type ParleyEnd,
-	type ParleyFrame,
-	type ParleyList,
-	parleyText,
 	type Person,
 	type PersonAdd,
 	type PersonList,
@@ -56,18 +36,12 @@ import {
 	THREADS_KIND,
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
-import { type Todo, todoLine } from "../protocol/todo.ts";
-import { queueAskEvents } from "./ask-events.ts";
-import type { ItemIndex } from "./item-index.ts";
-import { contractItems, itemForContract, writeEdge } from "./items.ts";
+import { Asks, loadAsks } from "./asks.ts";
 import {
-	Asks,
-	endContract,
 	foldMessage,
 	known,
 	knownAuthor,
 	knownMessage,
-	knownParley,
 	MessageDeleteEntry,
 	type MessageData,
 	MessageEditEntry,
@@ -78,8 +52,6 @@ import {
 	sessionDoc,
 } from "./project-docs.ts";
 import { loadRules, releaseSource } from "./project-rules.ts";
-import { addSaveTodos, closeSaveTodo } from "./save-todo.ts";
-import { dropParleyAnswers, queueAnswers, type UserAnswerInput } from "./user-answers.ts";
 
 const Threads = sessionDoc<ThreadList>(THREADS_KIND, () => ({ threads: [] }));
 const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
@@ -463,444 +435,7 @@ export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
 	await loadRules(tx, file.rules, file.lastRule, messageIds);
 	(await tx.doc(Held)).held.push(...file.held);
 	(await tx.doc(Parleys)).parleys.push(...file.parleys);
-	(await tx.doc(Asks)).asks.push(...file.asks);
-}
-
-/** A parley in the status `open`. */
-type OpenParley = Extract<Parley, { readonly status: "open" }>;
-
-/** An ask in the state `answered`. */
-type AnsweredAsk = Extract<Ask, { readonly state: "answered" }>;
-
-/** The fields of an ask without its state and its answer. */
-type AskBase = Omit<Extract<Ask, { readonly state: "open" }>, "state">;
-
-/**
- * Writes the round `round` with the caller `by` as the asker of its asks, and gives the write: the parley with all of
- * its asks, or the new asks when they have no parley. With `round.parley`, a new slug makes an open parley, which needs a title and a goal, and a known slug must be
- * an open parley, whose fields the frame replaces. A round with no asks must change a field of a known open parley. With `round.item`, the round also writes the edge
- * `parley:<slug> shapes item:<item>` with the checks of `item link`. The asks of a parley take the next numbers of that
- * parley.
- */
-export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<AskWrite> {
-	const parleys = (await tx.doc(Parleys)).parleys;
-	const asks = (await tx.doc(Asks)).asks;
-	const at = Date.now();
-
-	const parley =
-		round.parley === undefined
-			? undefined
-			: frameParley(parleys, round.parley, { at, by, reframe: round.asks.length === 0 });
-
-	if (parley !== undefined && round.item !== undefined) {
-		await writeEdge(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${round.item}` }, by);
-	}
-
-	let n = parley === undefined ? 0 : lastNumber(asks, parley.id);
-	const written: Ask[] = [];
-
-	for (const input of round.asks) {
-		const ask: Ask = { id: nextId(asks), title: input.title, state: "open", asker: by, at, by };
-
-		if (input.kind !== undefined) ask.kind = input.kind;
-
-		if (input.tension !== undefined) ask.tension = input.tension;
-
-		if (input.options !== undefined) ask.options = input.options.map(copyOption);
-
-		if (input.plan !== undefined) ask.plan = input.plan;
-
-		if (input.view !== undefined) ask.view = input.view;
-
-		if (parley !== undefined) {
-			n += 1;
-			ask.parley = { id: parley.id, n };
-		}
-
-		asks.push(ask);
-		written.push(Value.Clone(ask));
-	}
-
-	return writeReply(parleys, asks, parley === undefined ? [] : [parley.id], written);
-}
-
-/**
- * Writes the answers `answers` of `author` for the caller `by`, and gives the write: each parley of the answered asks,
- * with all of its asks, and the answered asks with no parley. Each answer names its ask by ID, or by its number in a parley, and
- * two answers of one ask fail. Each answer replaces the answer of its ask, with its label and its words, as one unit. The answer `ok` to the read-back of
- * a parley, an ask of the parley with no options, makes the parley a contract, once every answer is written: each other
- * ask of the parley must be answered or dropped, and its `design_sense` set. A contract that shapes no item gets a new
- * item with its title and the edge `shapes`: `items` gives the items that each parley shapes. The same commit queues the answers for
- * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
- * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
- * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent, and the
- * delivery of the ask ends with the line of that todo. With `askEvents`, the same commit also queues one event for each
- * answered ask, for the handler of an entry. The reply gives the items that the write added.
- */
-export async function answerAsks(
-	tx: Tx,
-	answers: readonly AnswerInput[],
-	by: string,
-	author: AnswerAuthor,
-	root: ConversationId,
-	items: Pick<ItemIndex, "itemsOf">,
-	askEvents: boolean,
-): Promise<AskWrite> {
-	const parleys = (await tx.doc(Parleys)).parleys;
-	const asks = (await tx.doc(Asks)).asks;
-	const at = Date.now();
-	const written: Ask[] = [];
-	const readBacks = new Set<number>();
-
-	for (const input of answers) {
-		const ask = resolveAsk(parleys, asks, input);
-
-		if (written.some((each) => each.id === ask.id)) throw new Error(`Ask ${ask.id} has two answers in one write`);
-		const parley = ask.parley === undefined ? undefined : openParley(known(parleys, ask.parley.id, "parley"));
-
-		if (askTransition(ask.state, "answer") === undefined)
-			throw new Error(`Ask ${ask.id} is ${ask.state}: it takes no answer`);
-		const keys = answerKeys(ask);
-
-		if (input.answer !== "own" && !keys.includes(input.answer)) {
-			throw new Error(`Ask ${ask.id} takes ${keys.length === 0 ? "own" : `${keys.join(", ")} or own`}`);
-		}
-
-		const answered: AnsweredAsk = { ...askBase(ask), state: "answered", answer: input.answer, at, by, author };
-
-		if (input.label !== undefined) answered.label = input.label;
-
-		if (input.words !== undefined) answered.words = [...input.words];
-		asks[asks.indexOf(ask)] = answered;
-		written.push(Value.Clone(answered));
-
-		if (parley !== undefined && input.answer === "ok") readBacks.add(parley.id);
-	}
-
-	const addedItems: AddedItem[] = [];
-
-	for (const id of readBacks) {
-		const item = await itemForContract(tx, makeContract(parleys, asks, id, at, by), by, items);
-
-		if (item !== undefined) addedItems.push(item);
-	}
-
-	const added = await addSaveTodos(tx, root, written);
-	await queueAnswers(tx, deliveries(parleys, asks, written, by, added));
-
-	if (askEvents) await queueAskEvents(tx, written);
-	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
-	const reply = writeReply(parleys, asks, touched, written);
-
-	return addedItems.length === 0 ? reply : { ...reply, items: addedItems };
-}
-
-/**
- * The reply of a write: each parley of `ids`, once, in ID order, with all of its asks in `asks`, and the asks of
- * `written` with no parley.
- */
-function writeReply(parleys: readonly Parley[], asks: readonly Ask[], ids: readonly number[], written: readonly Ask[]) {
-	const changed = [...new Set(ids)].sort((a, b) => a - b);
-
-	return {
-		parleys: changed.map((id) => ({ parley: Value.Clone(known(parleys, id, "parley")), asks: parleyAsks(asks, id) })),
-		asks: written.filter((ask) => ask.parley === undefined),
-	} satisfies AskWrite;
-}
-
-/**
- * The deliveries of the answered asks `written` to their askers other than `by`, in the order of `written`: one for
- * each asker and parley, with the text of the parley in `parleys` and `asks`, and one for each ask with no parley. Each
- * delivery ends with the line of each todo of `added` that belongs to one of its asks.
- */
-function deliveries(
-	parleys: readonly Parley[],
-	asks: readonly Ask[],
-	written: readonly Ask[],
-	by: string,
-	added: readonly Todo[],
-): UserAnswerInput[] {
-	const queued: UserAnswerInput[] = [];
-	const byParley = new Map<string, number[]>();
-
-	for (const ask of written) {
-		if (ask.asker === by) continue;
-
-		if (ask.parley === undefined) {
-			queued.push({ asker: ask.asker, delivery: { source: "ask", ask: ask.id, text: askAnswerText(ask) } });
-			continue;
-		}
-
-		const key = `${ask.asker}\n${ask.parley.id}`;
-		const found = byParley.get(key);
-
-		if (found !== undefined) {
-			found.push(ask.id);
-			continue;
-		}
-
-		const parley = known(parleys, ask.parley.id, "parley");
-		const text = parleyText({ parley, asks: parleyAsks(asks, parley.id) });
-		const ids = [ask.id];
-		byParley.set(key, ids);
-		queued.push({ asker: ask.asker, delivery: { source: "parley", parley: parley.slug, asks: ids, text } });
-	}
-
-	return queued.map(({ asker, delivery }) => {
-		const ids = delivery.source === "parley" ? delivery.asks : [delivery.ask];
-		const mine = added.filter((todo) => todo.ask !== undefined && ids.includes(todo.ask));
-
-		return {
-			asker,
-			delivery: { ...delivery, text: delivery.text + mine.map((todo) => `${todoLine(todo)}\n`).join("") },
-		};
-	});
-}
-
-/**
- * Drops the open ask of `ref` for the caller `by`, and gives the write: its parley with all of its asks, or the ask
- * when it has no parley. The ask of a parley that is not open does not change.
- */
-export async function dropAsk(tx: Tx, ref: AskRef, by: string): Promise<AskWrite> {
-	const parleys = (await tx.doc(Parleys)).parleys;
-	const asks = (await tx.doc(Asks)).asks;
-	const ask = resolveAsk(parleys, asks, ref);
-
-	if (ask.parley !== undefined) openParley(known(parleys, ask.parley.id, "parley"));
-
-	if (askTransition(ask.state, "drop") === undefined)
-		throw new Error(`Ask ${ask.id} is ${ask.state}: only an open ask drops`);
-	const dropped: Ask = { ...askBase(ask), state: "dropped", at: Date.now(), by };
-	asks[asks.indexOf(ask)] = dropped;
-
-	return writeReply(parleys, asks, ask.parley === undefined ? [] : [ask.parley.id], [Value.Clone(dropped)]);
-}
-
-/**
- * Sets `note`, the ID of a note in the vault, on the ask of `ref` for the caller `by`, and gives the ask. Only the asker
- * of the ask records its note. An ask in any state takes a note, also in a parley that is not open, and a second note
- * replaces the first. The note sets the todo `Save to the vault` of the ask to done, unless the asker dropped it.
- */
-export async function noteAsk(tx: Tx, ref: AskRef, note: string, by: string): Promise<Ask> {
-	const parleys = (await tx.doc(Parleys)).parleys;
-	const ask = resolveAsk(parleys, (await tx.doc(Asks)).asks, ref);
-
-	if (ask.asker !== by) throw new Error(`Ask ${ask.id} was asked by another caller: only its asker records its note`);
-	Object.assign(ask, { note, at: Date.now(), by });
-	await closeSaveTodo(tx, ask);
-
-	return Value.Clone(ask);
-}
-
-/**
- * Makes the caller `by` the asker of the open asks of the parley `slug`, and gives the parley and its asks. The parley
- * is open or a contract: a contract has no open ask, so its take changes no ask. The answers of the parley that wait in
- * the queue go: the reply has them, and no asker gets them after the take.
- */
-export async function takeParley(tx: Tx, slug: string, by: string): Promise<ParleyAsks> {
-	const parley = knownParley((await tx.doc(Parleys)).parleys, slug);
-
-	if (parley.status !== "contract") openParley(parley);
-	const asks = (await tx.doc(Asks)).asks;
-	const at = Date.now();
-
-	for (const ask of asks) {
-		if (ask.parley?.id === parley.id && ask.state === "open") Object.assign(ask, { asker: by, at, by });
-	}
-
-	await dropParleyAnswers(tx, parley.slug);
-
-	return { parley: Value.Clone(parley), asks: parleyAsks(asks, parley.id) };
-}
-
-/**
- * Ends the contract `slug` with the status `status` for the caller `by`, and gives the parley. A contract that shapes
- * an open item fails: the close of its last item ends it. `items` gives the items that the contract shapes.
- */
-export async function endParley(
-	tx: Tx,
-	slug: string,
-	status: ParleyEnd,
-	by: string,
-	items: Pick<ItemIndex, "itemsOf">,
-): Promise<Parley> {
-	const parleys = (await tx.doc(Parleys)).parleys;
-	const parley = knownParley(parleys, slug);
-
-	if (parley.status !== "contract") throw new Error(`Parley ${slug} is ${parley.status}: only a contract ends`);
-	const work = await contractItems(tx, slug, items);
-	const open = work.filter((item) => item.state === "open").map((item) => item.id);
-
-	if (open.length > 0) {
-		throw new Error(`Parley ${slug} shapes open items ${open.join(", ")}: close them, and the contract ends`);
-	}
-
-	return endContract(parleys, parley, status, by);
-}
-
-/** The parleys, in ID order. */
-export async function readParleys(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<ParleyList> {
-	const list = await reader.snapshot(Parleys, context);
-
-	return { parleys: Value.Clone(list?.parleys ?? []) };
-}
-
-/** Every ask, in ID order. */
-export async function readAsks(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<AskList> {
-	const list = await reader.snapshot(Asks, context);
-
-	return { asks: Value.Clone(list?.asks ?? []) };
-}
-
-/** The open asks, in ID order. */
-export async function readOpenAsks(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<AskList> {
-	return { asks: (await readAsks(reader, context)).asks.filter((ask) => ask.state === "open") };
-}
-
-/** The ask of `ref`, in any state. */
-export async function readAsk(reader: Pick<DocumentReader, "snapshot">, ref: AskRef, context: Context): Promise<Ask> {
-	const { parleys } = await readParleys(reader, context);
-
-	return resolveAsk(parleys, (await readAsks(reader, context)).asks, ref);
-}
-
-/** The parley `slug` and its asks, in the order of their numbers. */
-export async function readParley(
-	reader: Pick<DocumentReader, "snapshot">,
-	slug: string,
-	context: Context,
-): Promise<ParleyAsks> {
-	const parley = knownParley((await readParleys(reader, context)).parleys, slug);
-
-	return { parley, asks: parleyAsks((await readAsks(reader, context)).asks, parley.id) };
-}
-
-/** The fields of a parley that a frame sets: its title, goal, evidence and design sense. */
-function framedFields(parley: OpenParley): readonly unknown[] {
-	return [parley.title, parley.goal, parley.evidence, parley.design_sense];
-}
-
-/**
- * The open parley of the frame `frame`, written at `at` by the caller `by`: a new parley for a new slug, or the known
- * parley with the fields of the frame. With `reframe`, the round has no asks: the frame must name an open parley of
- * `parleys` and change its title, goal, evidence or design sense.
- */
-function frameParley(
-	parleys: Parley[],
-	frame: ParleyFrame,
-	{ at, by, reframe }: { readonly at: number; readonly by: string; readonly reframe: boolean },
-): OpenParley {
-	const { slug } = frame;
-	const existing = parleys.find((parley) => parley.slug === slug);
-	const unchanged = `A round with no asks must change the title, goal, evidence or design sense of the open parley ${slug}`;
-
-	if (reframe && existing?.status !== "open") throw new Error(unchanged);
-	const found = existing === undefined ? undefined : openParley(existing);
-	const title = frame.title ?? found?.title;
-	const goal = frame.goal ?? found?.goal;
-
-	if (title === undefined) throw new Error(`Parley ${slug} is new: title is required`);
-
-	if (goal === undefined) throw new Error(`Parley ${slug} is new: goal is required`);
-	const parley: OpenParley = { id: found?.id ?? nextId(parleys), slug, title, goal, status: "open", at, by };
-	const evidence = frame.evidence ?? found?.evidence;
-	const designSense = frame.design_sense ?? found?.design_sense;
-
-	if (evidence !== undefined) parley.evidence = [...evidence];
-
-	if (designSense !== undefined) parley.design_sense = designSense;
-
-	if (reframe && found !== undefined && Value.Equal(framedFields(parley), framedFields(found))) {
-		throw new Error(unchanged);
-	}
-
-	if (found === undefined) parleys.push(parley);
-	else parleys[parleys.indexOf(found)] = parley;
-
-	return Value.Clone(parley);
-}
-
-/**
- * Makes the parley `id` a contract at `at` for the caller `by`, and gives the contract. It needs `design_sense`, and no
- * open ask.
- */
-function makeContract(parleys: Parley[], asks: readonly Ask[], id: number, at: number, by: string): Parley {
-	const parley = openParley(known(parleys, id, "parley"));
-	const { design_sense } = parley;
-
-	if (design_sense === undefined) {
-		throw new Error(`Parley ${parley.slug} cannot be a contract: design_sense is not set`);
-	}
-
-	const open = asks.find((ask) => ask.parley?.id === id && ask.state === "open");
-
-	if (open?.parley !== undefined) {
-		throw new Error(`Parley ${parley.slug} cannot be a contract: ask ${open.parley.n} is open`);
-	}
-
-	const contract: Parley = { ...parley, status: "contract", design_sense, at, by };
-	parleys[parleys.indexOf(parley)] = contract;
-
-	return contract;
-}
-
-/** `parley` when it is open. A parley in another status fails: its asks do not change. */
-function openParley(parley: Parley): OpenParley {
-	if (parley.status !== "open") throw new Error(`Parley ${parley.slug} is ${parley.status}: its asks do not change`);
-
-	return parley;
-}
-
-/** The ask of `ref` in `asks`: the ask of its ID, or the ask of its number in its parley. */
-function resolveAsk<T extends Ask>(parleys: readonly Parley[], asks: readonly T[], ref: AskRef): T {
-	if (ref.id !== undefined) return known(asks, ref.id, "ask");
-	const parley = knownParley(parleys, ref.slug);
-	const ask = asks.find((found) => found.parley?.id === parley.id && found.parley.n === ref.n);
-
-	if (ask === undefined) throw new Error(`Parley ${parley.slug} has no ask ${ref.n}`);
-
-	return ask;
-}
-
-/** The highest number of the asks of the parley `id`, or 0 when it has none. */
-function lastNumber(asks: readonly Ask[], id: number): number {
-	return Math.max(0, ...asks.flatMap((ask) => (ask.parley?.id === id ? [ask.parley.n] : [])));
-}
-
-/** Copies of the asks of the parley `id`, in the order of their numbers. */
-function parleyAsks(asks: readonly Ask[], id: number): Ask[] {
-	return asks.flatMap((ask) => (ask.parley?.id === id ? [Value.Clone(ask)] : []));
-}
-
-/** The fields of `ask` without its state, its answer and the author of its answer. */
-function askBase(ask: Ask): AskBase {
-	if (ask.state !== "answered") {
-		const { state: _state, ...base } = ask;
-
-		return base;
-	}
-
-	const { state: _state, author: _author, answer: _answer, label: _label, words: _words, ...base } = ask;
-
-	return base;
-}
-
-/** The keys that `ask` takes besides `own`: the keys of its options, or `ok` when it is the read-back of a parley. */
-function answerKeys(ask: Ask): string[] {
-	if (isReadBack(ask)) return ["ok"];
-
-	return ask.options?.map((option) => option.key) ?? [];
-}
-
-/** A copy of `option` with only the fields of an option. */
-function copyOption(option: AskOption): AskOption {
-	const copy: AskOption = { key: option.key, label: option.label };
-
-	if (option.gains !== undefined) copy.gains = [...option.gains];
-
-	if (option.costs !== undefined) copy.costs = [...option.costs];
-
-	return copy;
+	await loadAsks(tx, file.asks);
 }
 
 function nextId(items: readonly { readonly id: number }[]): number {

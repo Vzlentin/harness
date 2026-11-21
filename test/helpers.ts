@@ -45,7 +45,7 @@ import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
-import { AskWrite } from "../src/protocol/project.ts";
+import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, Delivery, Replies, Request, ServesInput, WatchLine } from "../src/protocol/requests.ts";
 import { StoreFile } from "../src/protocol/store-file.ts";
@@ -715,6 +715,23 @@ export async function framed(slug: string): Promise<{ call: number; readBack: nu
 	if (call === undefined || readBack === undefined) throw new Error("no asks");
 
 	return { call, readBack };
+}
+
+/**
+ * Waits until the parley `slug` of the host of `project`, the main project by default, is a contract, and gives it with
+ * its asks: the event of the answered read-back makes the contract after the answer.
+ */
+export async function untilContract(slug: string, project?: string): Promise<ParleyAsks> {
+	return vi.waitFor(
+		async () => {
+			const read = Value.Parse(ParleyAsks, await send({ type: "parley", action: "read", slug }, project));
+
+			if (read.parley.status !== "contract") throw new Error(`Parley ${slug} is ${read.parley.status}`);
+
+			return read;
+		},
+		{ timeout: 10_000 },
+	);
 }
 
 /** The ID of the first open item that the parley `slug` shapes, as `item list` gives it. */

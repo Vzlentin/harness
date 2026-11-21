@@ -1,7 +1,7 @@
 /**
  * The answers of the user that wait to go to their askers. The commit that writes the answers of asks adds them here,
- * so a restart of the host loses none. The push removes each one after its delivery, and the take of a parley removes
- * those of the parley, whose taker gets the answers in its reply.
+ * so a restart of the host loses none. The push removes each one after its delivery, and a caller can remove the answers
+ * of some asks, as the take of a parley does: its taker gets the answers in its reply.
  */
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
@@ -39,12 +39,14 @@ export async function queueAnswers(tx: Tx, answers: readonly UserAnswerInput[]):
 	}
 }
 
-/** Removes the answers of the parley `slug` from the queue in `tx`, for every asker. */
-export async function dropParleyAnswers(tx: Tx, slug: string): Promise<void> {
+/** Removes each answer whose delivery gives one of the asks `asks` from the queue in `tx`, for every asker. */
+export async function dropAnswers(tx: Tx, asks: readonly number[]): Promise<void> {
 	const queue = await tx.doc(UserAnswers);
-	queue.deliveries = queue.deliveries.filter(
-		({ delivery }) => delivery.source !== "parley" || delivery.parley !== slug,
-	);
+	queue.deliveries = queue.deliveries.filter(({ delivery }) => {
+		const given = delivery.source === "ask" ? [delivery.ask] : delivery.asks;
+
+		return !given.some((id) => asks.includes(id));
+	});
 }
 
 /** The answers that wait, oldest first. */

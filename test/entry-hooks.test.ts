@@ -2,12 +2,16 @@ import { writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Conversation } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Children, Place } from "../src/children/library.ts";
 import { connect, request } from "../src/client/client.ts";
+import { addAsks, answerAsks, askGroup } from "../src/host/asks.ts";
+import { readParley, writeAnswers } from "../src/host/parleys.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
+import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
@@ -16,15 +20,19 @@ import {
 	answer,
 	called,
 	contexts,
+	framed,
 	inputAgent,
+	openDurableHost,
 	root,
 	round,
+	send,
 	setSettings,
 	setUp,
 	spawnAs,
 	startHost,
 	tearDown,
 	until,
+	untilContract,
 } from "./helpers.ts";
 
 const TYPEBOX = import.meta.resolve("typebox");
@@ -42,7 +50,7 @@ type Shared = {
 	/** The events that the handler of the answered asks got, in order. */
 	events: { key: string; ask: { id: number } }[];
 	/** What the handler does with an event after it records it. */
-	handle: (event: { key: string }, options: { signal: AbortSignal }) => Promise<void>;
+	handle: (event: { key: string; ask: { id: number } }, options: { signal: AbortSignal }) => Promise<void>;
 	/** The error of a delivery before the host opens. */
 	beforeOpen: string;
 };
@@ -171,6 +179,31 @@ async function answeredAsk(title: string): Promise<number> {
 	return id;
 }
 
+/** The IDs of the items that the parley `slug` shapes. */
+async function itemsOfParley(slug: string): Promise<number[]> {
+	const { items } = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
+
+	return items.filter((item) => item.edges.some((edge) => edge.from === `parley:${slug}`)).map((item) => item.id);
+}
+
+/** Runs `write` on the store of the main host while the host is closed, and starts the host again. */
+async function offline(write: (harness: Awaited<ReturnType<typeof openDurableHost>>) => Promise<void>): Promise<void> {
+	await host?.close();
+	host = undefined;
+	const harness = await openDurableHost(join(statePaths(MAIN_PROJECT).dir, "durable.sqlite"), []);
+
+	try {
+		await write(harness);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+
+	host = await startHost();
+}
+
+// SAFETY: with no vault, the answers add no todo, so they never read the conversation of the project agent.
+const NO_ROOT = 1 as ConversationId;
+
 /** The keys of the events that the handler got for the ask `id`. */
 function keysOf(id: number): string[] {
 	return shared.events.filter((event) => event.ask.id === id).map((event) => event.key);
@@ -294,6 +327,85 @@ describe("the answered asks", { timeout: 30_000 }, () => {
 		await restart();
 		await until(() => keysOf(failed).length === 2);
 		expect(keysOf(later)).toHaveLength(1);
+	});
+});
+
+describe("the contract of a read-back", { timeout: 30_000 }, () => {
+	it("comes from the event of the answer, also when the host stops between the answer and the event", async () => {
+		const { call, readBack } = await framed("offline-sign");
+		let open: string | undefined;
+
+		await offline(async (harness) => {
+			const answers = [
+				{ id: call, answer: "a" },
+				{ id: readBack, answer: "ok" },
+			];
+
+			await harness.commit((tx) => writeAnswers(tx, answers, "user", { kind: "user" }, NO_ROOT), BACKGROUND_CONTEXT);
+			open = (await readParley(harness, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
+		});
+
+		expect(open).toBe("open");
+		const contract = await untilContract("offline-sign");
+		expect(contract.parley.by).toBe("user");
+		expect(await itemsOfParley("offline-sign")).toHaveLength(1);
+
+		await restart();
+		expect(await untilContract("offline-sign")).toEqual(contract);
+		expect(await itemsOfParley("offline-sign")).toHaveLength(1);
+	});
+
+	it("is made once when the same event comes again after a restart", async () => {
+		const hung = Promise.withResolvers<void>();
+		const { call, readBack } = await framed("hung-sign");
+		shared.handle = async (event) => (event.ask.id === readBack ? hung.promise : undefined);
+
+		await answer([
+			{ id: call, answer: "a" },
+			{ id: readBack, answer: "ok" },
+		]);
+		await until(() => keysOf(readBack).length === 1);
+		// The entry gets the event after the reaction of the parleys.
+		const contract = await untilContract("hung-sign");
+		expect(await itemsOfParley("hung-sign")).toHaveLength(1);
+
+		shared.handle = async () => {};
+
+		await restart();
+		await until(() => keysOf(readBack).length === 2);
+		const [key, again] = keysOf(readBack);
+		expect(again).toBe(key);
+		expect(await untilContract("hung-sign")).toEqual(contract);
+		expect(await itemsOfParley("hung-sign")).toHaveLength(1);
+	});
+
+	it("does not stop an answer of an ask whose parley the store does not have", async () => {
+		let id = 0;
+
+		await offline(async (harness) => {
+			await harness.commit(async (tx) => {
+				const [ask] = await addAsks(tx, [{ input: { title: "Orphan" }, parley: { id: 99, n: 1 } }], "pi-orphan", 1);
+				id = ask?.id ?? 0;
+				// The asks module does not read the parley: with no option, the ask takes only `own`.
+				await expect(
+					answerAsks(tx, [{ id, answer: "ok" }], new Set(), "user", { kind: "user" }, NO_ROOT, (answered) =>
+						answered.map(askGroup),
+					),
+				).rejects.toThrow(`Ask ${id} takes own`);
+				await answerAsks(
+					tx,
+					[{ id, answer: "own", label: "Mine" }],
+					new Set(),
+					"user",
+					{ kind: "user" },
+					NO_ROOT,
+					(answered) => answered.map(askGroup),
+				);
+			}, BACKGROUND_CONTEXT);
+		});
+
+		await until(() => keysOf(id).length === 1);
+		expect(shared.events.at(-1)?.ask).toMatchObject({ id, state: "answered", answer: "own", parley: { id: 99, n: 1 } });
 	});
 });
 

@@ -11,8 +11,8 @@ import { type Parley, PARLEYS_KIND } from "../protocol/project.ts";
 import type { ServesInput } from "../protocol/requests.ts";
 import { isFinished, TODO_LIST_KIND } from "../protocol/todo.ts";
 import { readItem } from "./item-docs.ts";
+import { readParley, readParleys } from "./parleys.ts";
 import { CommitPasses } from "./passes.ts";
-import { readParley, readParleys } from "./project.ts";
 import {
 	type ChildRecord,
 	ChildRecords,

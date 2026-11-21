@@ -1,14 +1,12 @@
 /**
  * The parts of the store of the project that its modules share: the documents of the session, the entries of a message
- * and of its edits and deletes, the fold that applies them, the persons, the parleys, the asks, the lookup of an object
- * by its ID, the lookup of a parley by its slug, and the end of a contract.
+ * and of its edits and deletes, the fold that applies them, the persons, the parleys, the lookup of an object by its ID,
+ * the lookup of a parley by its slug, and the end of a contract. The asks are in `asks.ts`.
  */
 import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
-	type AskList,
-	ASKS_KIND,
 	type Author,
 	MESSAGE_DELETE_KIND,
 	MESSAGE_EDIT_KIND,
@@ -94,8 +92,6 @@ async function scanMessages(tx: Tx, thread: ConversationId): Promise<Map<number,
 export const Persons = sessionDoc<PersonList>(PERSONS_KIND, () => ({ persons: [] }));
 
 export const Parleys = sessionDoc<ParleyList>(PARLEYS_KIND, () => ({ parleys: [] }));
-
-export const Asks = sessionDoc<AskList>(ASKS_KIND, () => ({ asks: [] }));
 
 /** A document of the session of the kind `kind`, which starts as `initial()`. */
 export function sessionDoc<T extends JsonObject>(kind: string, initial: () => T) {

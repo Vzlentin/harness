@@ -1,6 +1,7 @@
 /**
- * The events of the answered asks, for the handler of an entry. The commit that writes the answers adds them, so a
- * restart of the host loses none, and the dispatcher gives them to the handler, oldest first, one at a time.
+ * The events of the answered asks, for their handlers: the reaction of the parleys, and the handler of an entry. The
+ * commit that writes the answers adds them, so a restart of the host loses none, and the dispatcher gives them to the
+ * handlers, oldest first, one at a time.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
@@ -37,13 +38,14 @@ export async function queueAskEvents(tx: Tx, asks: readonly Ask[]): Promise<void
 }
 
 /**
- * Gives each event to `handler`, oldest first, one at a time, after each commit of the queue, and removes it once the
- * handler resolves. A handler that throws is a warning, and its event waits for the next start of the host. `close()`
- * aborts the handler that runs and does not wait for it: its event stays for the next start.
+ * Gives each event to each of `handlers` in order, oldest first, one at a time, after each commit of the queue, and
+ * removes it once every handler resolves. A handler that throws is a warning: the later handlers do not get the event,
+ * and it waits for the next start of the host. `close()` aborts the handler that runs and does not wait for it: its
+ * event stays for the next start, and each handler gets it again.
  */
 export class AskEventDispatcher {
 	readonly #harness: Harness;
-	readonly #handler: AnsweredAskHandler;
+	readonly #handlers: readonly AnsweredAskHandler[];
 	readonly #warn: (cause: unknown) => void;
 	readonly #abort = new AbortController();
 	/** Resolves once `close()` aborts. */
@@ -52,9 +54,9 @@ export class AskEventDispatcher {
 	readonly #failed = new Set<string>();
 	readonly #passes: CommitPasses;
 
-	constructor(harness: Harness, handler: AnsweredAskHandler, warn: (cause: unknown) => void) {
+	constructor(harness: Harness, handlers: readonly AnsweredAskHandler[], warn: (cause: unknown) => void) {
 		this.#harness = harness;
-		this.#handler = handler;
+		this.#handlers = handlers;
 		this.#warn = warn;
 		const { signal } = this.#abort;
 		this.#aborted = new Promise((resolve) =>
@@ -83,23 +85,36 @@ export class AskEventDispatcher {
 			if (signal.aborted || this.#passes.stopped) return;
 
 			if (this.#failed.has(event.key)) continue;
+			const outcome = await this.#handle(event, signal);
 
-			try {
-				const handled = Promise.resolve(this.#handler(event, { signal }));
-				// A handler that fails after the close has no one to tell.
-				handled.catch(() => {});
+			if (outcome === "aborted") return;
 
-				if ((await Promise.race([handled, this.#aborted])) === "aborted") return;
-			} catch (cause) {
-				this.#failed.add(event.key);
-				this.#warn(cause);
-				continue;
-			}
+			if (outcome === "failed") continue;
 
 			await this.#harness.commit(async (tx) => {
 				const doc = await tx.doc(AskEvents);
 				doc.events = doc.events.filter(({ key }) => key !== event.key);
 			}, context);
 		}
+	}
+
+	/** Gives `event` to each handler in order, and stops at the first that throws, or at the close. */
+	async #handle(event: AnsweredAskEvent, signal: AbortSignal): Promise<"handled" | "failed" | "aborted"> {
+		for (const handler of this.#handlers) {
+			try {
+				const handled = Promise.resolve(handler(event, { signal }));
+				// A handler that fails after the close has no one to tell.
+				handled.catch(() => {});
+
+				if ((await Promise.race([handled, this.#aborted])) === "aborted") return "aborted";
+			} catch (cause) {
+				this.#failed.add(event.key);
+				this.#warn(cause);
+
+				return "failed";
+			}
+		}
+
+		return "handled";
 	}
 }

@@ -28,6 +28,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	untilContract,
 } from "./helpers.ts";
 
 const INDEX = `<!doctype html>
@@ -594,7 +595,7 @@ describe("the asks of a page", { timeout: 30_000 }, () => {
 			]);
 
 			const write = Value.Parse(AskWrite, sent);
-			expect(write.parleys.map((each) => each.parley.status)).toEqual(["contract"]);
+			expect(write.parleys.map((each) => each.parley.status)).toEqual(["open"]);
 			expect(write.parleys[0]?.asks).toMatchObject([
 				{ id: call, state: "answered", answer: "a", by: "page", author: { kind: "user" } },
 				{ id: readBack, state: "answered", answer: "ok", by: "page", author: { kind: "user" } },
@@ -625,6 +626,7 @@ describe("the asks of a page", { timeout: 30_000 }, () => {
 			{ id: signedCall ?? 0, answer: "a" },
 			{ id: signedReadBack ?? 0, answer: "ok" },
 		]);
+		await untilContract("page-signed");
 
 		const before = [await readParley("page-bad"), await readParley("page-signed")];
 

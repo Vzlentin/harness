@@ -24,6 +24,7 @@ import {
 	stateOf,
 	tearDown,
 	until,
+	untilContract,
 	untilState,
 } from "./helpers.ts";
 
@@ -39,12 +40,13 @@ afterAll(async () => {
 	await tearDown();
 });
 
-/** Makes the parley `slug` of `framed` a contract. */
-async function sign(parley: { readonly call: number; readonly readBack: number }): Promise<void> {
+/** Makes the parley `slug` of `framed`, with the asks `parley`, a contract. */
+async function sign(slug: string, parley: { readonly call: number; readonly readBack: number }): Promise<void> {
 	await answer([
 		{ id: parley.call, answer: "a" },
 		{ id: parley.readBack, answer: "ok" },
 	]);
+	await untilContract(slug);
 }
 
 /** Adds the todo `text` to the list of `handle`, and gives its ID. */
@@ -92,14 +94,14 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		});
 		expect(await send({ type: "status", handle: child })).toMatchObject({ serves: { kind: "spawner" } });
 
-		await sign(parley);
+		await sign("serve-open", parley);
 		await untilState(agent.handle, "ended");
 		await untilState(child, "ended");
 	});
 
 	it("waits for the open and doing todos of the agent of a contract, and keeps it after a message", async () => {
 		const parley = await framed("serve-contract");
-		await sign(parley);
+		await sign("serve-contract", parley);
 
 		const { handle } = await spawnAs("contract-session", "Task:\nServe contract", {
 			notify: false,
@@ -209,7 +211,7 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		await until(() => called("Task:\nHeld child") === 1);
 		await addTodo(child, "Keep me");
 
-		await sign(parley);
+		await sign("serve-held", parley);
 		await untilState(agent.handle, "ended");
 		gates.get("Task:\nHeld child")?.resolve();
 		await untilState(child, "idle");
@@ -235,7 +237,7 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		const [ask] = (await round(agent.id, undefined, [{ title: "Served ask" }])).asks;
 
 		if (ask === undefined) throw new Error("no ask");
-		await sign(parley);
+		await sign("serve-asked", parley);
 		await untilState(agent.handle, "ended");
 
 		await answer([{ id: ask.id, answer: "own", label: "Go" }]);
@@ -267,7 +269,7 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		const agentTodo = await addTodo(agent.handle, "Finish the plan");
 		const childTodo = await addTodo(child, "Finish the step");
 
-		await sign(parley);
+		await sign("serve-todos", parley);
 		await sleep(300);
 		expect(await stateOf(agent.handle)).toBe("idle");
 
@@ -302,7 +304,7 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		await expect(spawn({ parley: "nope" })).rejects.toThrow("Unknown parley: nope");
 		await expect(spawn({ item: 999 })).rejects.toThrow("Unknown item: 999");
 		const parley = await framed("serve-ended");
-		await sign(parley);
+		await sign("serve-ended", parley);
 		await setItem(await contractItem("serve-ended"), "dropped");
 		await expect(spawn({ parley: "serve-ended" })).rejects.toThrow(
 			"Parley serve-ended is dropped: an agent cannot serve it",

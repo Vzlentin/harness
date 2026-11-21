@@ -24,6 +24,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	untilContract,
 } from "./helpers.ts";
 
 const PROJECT = "migration";
@@ -278,6 +279,7 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			}));
 
 			await send({ type: "ask", action: "answer", caller: "user", user: true, answers }, PROJECT);
+			await untilContract("after-move", PROJECT);
 			expect((await items()).map((item) => [item.id, item.title])).toEqual([
 				[1, "Open work"],
 				[4, "Doing work"],

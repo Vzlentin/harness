@@ -24,6 +24,7 @@ import {
 	startHost,
 	tearDown,
 	until,
+	untilContract,
 	watchProject,
 } from "./helpers.ts";
 
@@ -167,10 +168,10 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 			await untilCount(answers.deliveries, 1);
 
 			const text = [
-				"ship-plan · contract · Ship plan",
+				"ship-plan · open · Ship plan",
 				"1 · Where · your call · a · In the store",
 				"2 · These are the terms · ok",
-				"harness parley show ship-plan",
+				"[ship-plan] ok",
 			]
 				.map((line) => `${line}\n`)
 				.join("");
@@ -310,6 +311,7 @@ describe("the answers of the user", { timeout: 30_000 }, () => {
 			{ id: call ?? 0, answer: "a" },
 			{ id: readBack ?? 0, answer: "ok" },
 		]);
+		await untilContract("signed-away");
 
 		const taken = Value.Parse(
 			ParleyAsks,

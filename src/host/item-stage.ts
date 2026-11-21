@@ -5,9 +5,11 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ItemStage, StagedItem, WorkItem } from "../protocol/item.ts";
 import type { Ask, HeldAction, Parley } from "../protocol/project.ts";
+import { readOpenAsks } from "./asks.ts";
 import { type ItemEnds, itemEnds } from "./item-docs.ts";
 import { runAsker, runLive } from "./items.ts";
-import { readHeld, readOpenAsks, readParleys } from "./project.ts";
+import { readParleys } from "./parleys.ts";
+import { readHeld } from "./project.ts";
 import { library, type TargetHost } from "./targets.ts";
 import { type StartedTaskIds, StartedTasks, type TaskHost } from "./tasks.ts";
 

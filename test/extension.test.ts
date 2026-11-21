@@ -715,7 +715,7 @@ describe("the Pi extension", () => {
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
 		expect(registered.tools.get("item")?.description).not.toContain("board:");
 		expect(registered.tools.get("parley")?.description).toContain(
-			"adds a work item with the title of the parley when the contract shapes no item: the text gives it as `+ item <id> <title>`.",
+			"makes the parley a contract a moment after the answer, and adds a work item with the title of the parley when the contract shapes no item: read the parley to see them.",
 		);
 
 		expect(registered.tools.get("parley")?.description).toContain(
