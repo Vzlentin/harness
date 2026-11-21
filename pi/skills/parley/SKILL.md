@@ -45,7 +45,7 @@ Life also shapes by deletion: a hand gets its fingers when the cells between the
 
 ## Flow
 
-1. Get the facts. Search the parleys with the `list` and `read` actions, the vault, and the earlier records on the topic. A settled decision stays settled until the user opens it again.
+1. Get the facts. Search the parleys with the `list` and `read` actions, the vault, and the earlier records on the topic. A settled decision stays settled until the user opens it again. When a call is about a failure, read its primary source first (the run log, the session, the error) and find its cause. Put the cause in the tension of the call, and build the options on it, not on a summary of the failure.
 2. Sort the calls, and add them with the `round` action. A your call is taste, priority, or how it must work for the user: it has no answer until the user gives one. A my call is a choice that evidence can settle: its plan is yours, and one line of evidence goes in the `gains` of its plan option. A call that waits its turn goes into the round that asks it. A call that adds a noun has, as option `a`, the option that reuses an existing noun. When your plan is another option, its `gains` give the evidence for it.
 3. Ask in the chat: the rundown, then the text of the `read` action. Its last line is the answer line that takes all your plans. When the topic is something that the user looks at or drives, Round 1 is the page of its screens, with the rundown at its top, and that output in the chat (see How you talk).
 4. Write each answer line with the `answer` action. For `?N`, explain N first.
