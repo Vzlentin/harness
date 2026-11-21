@@ -24,7 +24,7 @@ export function oneOf(words: readonly string[]): string {
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
 When a child finishes, its answer comes to you as a message that starts a turn. An answer longer than ${MAX_ANSWER.text} is cut, and ends with the line \`${CUT_LINE}\`. Use \`wait\` only when you need the answer in this turn.
-- spawn: start a child with \`prompts\` and \`files\`. It uses the model and thinking level of the user's subagent settings, else yours, unless you give others. Give it a short \`name\`. A child ends when what it serves ends, once its todos are done: you, by default, or the parley or the work item of \`serves\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
+- spawn: start a child with \`prompts\` and \`files\`. It uses the model and thinking level of the user's subagent settings, else yours, unless you give others. Give it a short \`name\`. A child ends when you stop it or end, with the children it spawned. With \`serves\`, a parley or a work item, it gets the label of that work, and it also stops when that work is done or dropped. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer, after the earlier answers of the spawn and the sends that no \`wait\` gave. \`stop\` ends the child and the children it spawned; they keep their conversation, and a \`send\` resumes one. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - spawn, send: \`notify: false\` turns off the message for the turns of this call; get the answers with \`wait\`.
 - list: your children.
@@ -78,7 +78,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 				],
 				{
 					description:
-						"spawn: what the child serves, a parley by slug or a work item by ID; it ends when that ends. Default you",
+						"spawn: the parley by slug or the work item by ID that the child works on; it stops when that is done or dropped",
 				},
 			),
 		),
@@ -101,15 +101,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		model: Type.String(),
 		thinking: Type.String(),
 		cwd: Type.String(),
-		serves: Type.Optional(
-			Type.Union([
-				Type.Object({ kind: Type.Literal("spawner") }),
-				Type.Object({ kind: Type.Literal("parley"), slug: Type.String() }),
-				Type.Object({ kind: Type.Literal("contract"), slug: Type.String() }),
-				Type.Object({ kind: Type.Literal("item"), id: Type.Integer({ minimum: 1 }) }),
-				Type.Object({ kind: Type.Literal("project") }),
-			]),
-		),
+		labels: Type.Optional(Type.Array(Type.String())),
 	});
 
 	const result = <A extends string, V extends TSchema>(action: A, value: V) =>

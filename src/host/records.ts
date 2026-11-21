@@ -1,5 +1,5 @@
 /**
- * The `ChildRecords` of the host, one per child, with what each child serves and their read marks: which requests a
+ * The `ChildRecords` of the host, one per child, with the labels of each child and their read marks: which requests a
  * `wait` or a push gives the answers of, their text, and whether a child holds its caller.
  */
 import { randomBytes } from "node:crypto";
@@ -10,10 +10,8 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
-import type { Served } from "../protocol/requests.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import { boundedReplay } from "./checkpoint.ts";
-import type { ItemIndex } from "./item-index.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -29,28 +27,12 @@ export type ChildRecord = {
 	read: number;
 	/** The request whose answer the last push gave as the last answer, so a `wait` for it gives no new answer. */
 	pushed?: string;
-	/** What the child serves, fixed at its spawn. */
-	serves: ChildServes;
-	/**
-	 * Whether the end of what the child serves was applied to it: `ended` when the rule ended it, `passed` when the
-	 * child was already ended, by a `stop` or the end of its session. The rule ends a child once, so a resumed child
-	 * stays. `due` is an end to apply: the move of the todos to items gives it to a child of a todo that was done or
-	 * dropped, so the rule ends the child once its own list is clear.
-	 */
-	servedEnd?: "ended" | "passed" | "due";
+	/** The labels of the child, fixed at its spawn, such as `item:<id>`. */
+	labels: string[];
 };
 
-/**
- * What a child serves, as its record keeps it: what an agent serves, except the project, and an item with no ID. The
- * `serves` edge of the item holds the ID.
- */
-export type ChildServes = Exclude<Served, { readonly kind: "project" | "item" }> | { kind: "item" };
-
-/** What a record of version 5 served before the work items: the todo `id` of the list of the project. */
-export const OldTodoServes = Type.Object({ kind: Type.Literal("todo"), id: Type.Integer() });
-
-/** A record of version 4, which has no `serves`. */
-type RecordV4 = Omit<ChildRecord, "serves" | "servedEnd">;
+/** A record of version 4, which has no labels. */
+type RecordV4 = Omit<ChildRecord, "labels">;
 
 type ChildrenV4 = { children: Record<string, RecordV4>; requests: Record<string, string> };
 
@@ -97,26 +79,26 @@ const ChildrenV3 = Type.Object({
 });
 
 /**
- * The children by handle, and the handle of each spawn request ID. Version 6 has no child that serves a todo: the move
- * of the todos to items at the first start of a host rewrites the records of version 5 that serve one (`OldTodoServes`).
- * Version 5 has what each child serves; the children
- * of an older version serve their spawner. Version 4 has no kind of a child; version 3 marked the children of a kernel
+ * The children by handle, and the handle of each spawn request ID. Version 7 has the labels of each child. Versions 5
+ * and 6 had what each child serves instead, which the first start of a host turns into labels (`migrateLabels`), after
+ * the move of the todos to items rewrites the records of version 5 that serve a todo. The children of an older version
+ * have no label. Version 6 has no child that serves a todo. Version 4 has no kind of a child; version 3 marked the children of a kernel
  * with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their IDs in `sent` and those
  * without `notify` in `quiet`. Version 2 leaves each child's last request to the children library; a store with
  * version 1 has children that the library does not know.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
-	version: 6,
+	version: 7,
 	scope: "session",
 	checkpointWhen: boundedReplay,
 	initial: () => ({ children: {}, requests: {} }),
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
 
-		if (fromVersion === 5) {
-			// SAFETY: a value of version 5 has the shape of version 6, except a `serves` of `OldTodoServes`, which the move
-			// of the todos to items rewrites at the first start of the host, before it serves a request.
+		if (fromVersion === 5 || fromVersion === 6) {
+			// SAFETY: a value of version 5 or 6 has the shape of version 7, except a `serves` in place of `labels`, which the
+			// first start of the host rewrites, before it serves a request.
 			return value as ChildrenState;
 		}
 
@@ -127,12 +109,10 @@ export const ChildRecords = defineDoc<ChildrenState>({
 	},
 });
 
-/** Makes each child of `state` serve its spawner. */
+/** Gives each child of `state` no label. */
 function migrateV4(state: ChildrenV4): ChildrenState {
-	const serves: ChildServes = { kind: "spawner" };
-
 	const children = Object.fromEntries(
-		Object.entries(state.children).map(([handle, record]) => [handle, { ...record, serves }]),
+		Object.entries(state.children).map(([handle, record]) => [handle, { ...record, labels: [] }]),
 	);
 
 	return { children, requests: state.requests };
@@ -187,7 +167,7 @@ export async function addRecord(
 		readonly caller: string;
 		readonly conversationId: ConversationId;
 		readonly name: string | undefined;
-		readonly serves: ChildServes;
+		readonly labels: readonly string[];
 	},
 ): Promise<void> {
 	const current = await tx.doc(ChildRecords);
@@ -201,7 +181,7 @@ export async function addRecord(
 		conversationId: child.conversationId,
 		requests: [],
 		read: 0,
-		serves: child.serves,
+		labels: [...child.labels],
 	};
 
 	if (child.name !== undefined) record = { name: child.name, ...record };
@@ -219,45 +199,19 @@ export async function renameRecord(harness: Harness, handle: string, name: strin
 
 /**
  * Marks read every request of the records of the children whose conversation ID is in `conversationIds`, so that a
- * stopped child holds no caller. An answer that was not pushed is not pushed. With `servedEnded`, it also marks each of
- * these records as ended by the end of what it serves (`servedEnd` is `ended`).
+ * stopped child holds no caller. An answer that was not pushed is not pushed.
  */
-export async function markAllRead(
-	harness: Harness,
-	conversationIds: ReadonlySet<string>,
-	options: { readonly servedEnded: boolean },
-): Promise<void> {
+export async function markAllRead(harness: Harness, conversationIds: ReadonlySet<string>): Promise<void> {
 	await harness.commit(async (tx) => {
 		for (const record of Object.values((await tx.doc(ChildRecords)).children)) {
-			if (!conversationIds.has(String(record.conversationId))) continue;
-			record.read = record.requests.length;
-
-			if (options.servedEnded) record.servedEnd = "ended";
+			if (conversationIds.has(String(record.conversationId))) record.read = record.requests.length;
 		}
 	}, context);
 }
 
-/**
- * Marks the record of `handle` as passed by the end of what it serves (`servedEnd` is `passed`), unless the rule ended
- * it: the child was already ended, so the rule does not end it again, and its deliveries do not wait.
- */
-export async function markServedPassed(harness: Harness, handle: string): Promise<void> {
-	await harness.commit(async (tx) => {
-		const record = (await tx.doc(ChildRecords)).children[handle];
-
-		if (record !== undefined && record.servedEnd !== "ended") record.servedEnd = "passed";
-	}, context);
-}
-
-/**
- * What the child of `record` serves, as its info and its node give it. For a record that serves an item, `items` gives
- * the item of the child, and a child that no `serves` edge names serves nothing.
- */
-export function childServed(record: Readonly<ChildRecord>, items: Pick<ItemIndex, "childItem">): Served | undefined {
-	if (record.serves.kind !== "item") return record.serves;
-	const id = items.childItem(record.conversationId);
-
-	return id === undefined ? undefined : { kind: "item", id };
+/** The labels of `record` for its info and its node: none when it has no label. */
+export function recordLabels(record: Readonly<ChildRecord>): { readonly labels?: string[] } {
+	return record.labels.length === 0 ? {} : { labels: [...record.labels] };
 }
 
 /** The `[handle, record]` entries of `state`, oldest child first. */

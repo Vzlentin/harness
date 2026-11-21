@@ -1,14 +1,12 @@
 /**
  * The changes of the work items of the store of the project, each in the commit that a caller gives: the `item`
- * request changes them with these functions, each change in its own commit, and a spawn writes the `serves` edge of
- * its child in the commit that creates the child. A round of asks writes the `shapes` edge of its parley, and the commit
+ * request changes them with these functions, each change in its own commit. A round of asks writes the `shapes` edge of its parley, and the commit
  * that makes a parley a contract gives it an item when it shapes none. A load of a store file writes its items, with their
  * edges and the counter. It also gives whether a run is live: the stage of an item reads it,
- * and a live run refuses a change of its item to `done`. A change of an item to `done` or `dropped` ends each contract
+ * and a live run, or a live task with the label of the item, refuses a change of the item to `done`. A change of an item to `done` or `dropped` ends each contract
  * that shapes it and no open item, and the end of a contract reads the open items that it shapes.
  */
-import type { JsonValue } from "@earendil-works/chord/json";
-import type { ConversationId, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
+import type { Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
 	type Edge,
@@ -21,11 +19,12 @@ import {
 	type WorkItem,
 } from "../protocol/item.ts";
 import type { Ask, Parley } from "../protocol/project.ts";
+import type { Worker } from "../protocol/worker-labels.ts";
 import { Asks } from "./asks.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { endContract, knownParley, Parleys } from "./project-docs.ts";
-import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
+import { labelledTasks, StartedTasks, TaskLabels, taskWorker } from "./tasks.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
 const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;
@@ -56,17 +55,17 @@ export async function loadItems(tx: Tx, items: readonly WorkItem[], last: number
 }
 
 /**
- * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item. A change to
- * `done` fails while a run that serves the item is live. A change to `done` or `dropped` ends each contract that shapes
- * the item and no open item: `done` when one item that it shapes is done, else `dropped`. `items` gives the items that
- * a contract shapes.
+ * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item and the slugs of
+ * the contracts that the change ended. A change to `done` fails while a run or a task that serves the item is live. A
+ * change to `done` or `dropped` ends each contract that shapes the item and no open item: `done` when one item that it
+ * shapes is done, else `dropped`. `items` gives the items that a contract shapes.
  */
 export async function setItem(
 	tx: Tx,
 	change: ItemSet,
 	by: string,
 	items: Pick<ItemIndex, "itemsOf">,
-): Promise<WorkItem> {
+): Promise<{ readonly item: WorkItem; readonly ended: readonly string[] }> {
 	const item = await itemDraft(tx, change.id);
 
 	if (change.state === "done") await refuseLiveRun(tx, item);
@@ -79,9 +78,9 @@ export async function setItem(
 	item.at = Date.now();
 	item.by = by;
 
-	if (change.state === "done" || change.state === "dropped") await endContracts(tx, item, by, items);
+	const ended = change.state === "done" || change.state === "dropped" ? await endContracts(tx, item, by, items) : [];
 
-	return Value.Clone(item);
+	return { item: Value.Clone(item), ended };
 }
 
 /**
@@ -103,8 +102,8 @@ export async function contractItems(tx: Tx, slug: string, items: Pick<ItemIndex,
 
 /**
  * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it, as the request
- * `item link` does. On top of the checks of `writeEdge`, only the spawn of an agent writes its `serves` edge, and a run
- * serves one item at most: `items` gives the items of the run.
+ * `item link` does. On top of the checks of `writeEdge`, an agent has no `serves` edge, and a run serves one item at
+ * most: `items` gives the items of the run.
  */
 export async function linkItem(tx: Tx, input: EdgeInput, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<Edge> {
 	if (input.kind === "serves") {
@@ -146,18 +145,6 @@ export async function writeEdge(tx: Tx, input: EdgeInput, by: string): Promise<E
 }
 
 /**
- * Writes the edge `agent:<conversationId> serves item:<id>` into the item `id` for the caller `by`, in `tx`, the commit
- * that creates the child of the conversation `conversationId`. The item must be open. It reads only documents, which a
- * commit can read after its writes of tables, such as the creation of the child.
- */
-export async function serveItem(tx: Tx, id: number, conversationId: ConversationId, by: string): Promise<void> {
-	const item = await itemDraft(tx, id);
-
-	if (item.state !== "open") throw new Error(`Item ${id} is ${item.state}: an agent cannot serve it`);
-	item.edges.push({ from: `agent:${conversationId}`, kind: "serves", to: `item:${id}`, at: Date.now(), by });
-}
-
-/**
  * Gives the contract `parley` an item in `tx` for the caller `by`: when `items` gives no item with the edge
  * `parley:<slug> shapes`, it adds an item with the title of the parley and writes that edge.
  */
@@ -193,27 +180,14 @@ export function runAsker(runId: string): string {
 
 /**
  * Whether the run `runId` is live: an ask of `asks` with the asker `runAsker(runId)` is open, as while the run waits for
- * an input of the user, or a task that `start` created with a key `wf:<runId>#<n>` of `started` is not terminal, which
- * is a run state `pending` or `running` in the tree. `task` reads a task, and gives nothing for an unknown ID.
+ * an input of the user, or a task of `workers`, the live workers of a label, has a key `wf:<runId>#<n>`.
  */
-export async function runLive(
-	runId: string,
-	started: StartedTaskIds,
-	asks: readonly Ask[],
-	task: (id: TaskId<JsonValue>) => Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>,
-): Promise<boolean> {
+export function runLive(runId: string, workers: readonly Worker[], asks: readonly Ask[]): boolean {
 	const asker = runAsker(runId);
 
 	if (asks.some((ask) => ask.state === "open" && ask.asker === asker)) return true;
 
-	for (const [key, id] of Object.entries(started.tasks)) {
-		if (taskRun(key) !== runId) continue;
-		const record = await task(id);
-
-		if (record !== undefined && record.state.status !== "terminal") return true;
-	}
-
-	return false;
+	return workers.some((worker) => worker.kind === "task" && taskRun(worker.key) === runId);
 }
 
 /** The run ID of the task whose `start` key is `key`, `wf:<runId>#<n>`, and nothing for a key of another form. */
@@ -222,32 +196,47 @@ export function taskRun(key: string): string | undefined {
 }
 
 /**
- * Fails when a run that serves `item` is live in `tx`, and names the first one in the order of the edges. An item with
- * no run reads nothing, because `tx.doc` creates a document that is missing.
+ * Fails when a run or a task with the label `item:<id>` of `item` is live in `tx`, and names the first one: the runs of
+ * the started tasks with the label, in any state of the task, then the live tasks with the label whose key is of another
+ * form. A run (`wf:<runId>#<n>`) is live while a live task with the label is a task of the run, or while an ask of the
+ * run is open.
  */
 async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
-	const { runs } = itemEnds(item);
+	const keys = labelledTasks((await tx.doc(TaskLabels)).labels, `item:${item.id}`);
 
-	if (runs.length === 0) return;
+	if (keys.length === 0) return;
 	const started = await tx.doc(StartedTasks);
-	const { asks } = await tx.doc(Asks);
+	const workers: Worker[] = [];
 
-	for (const run of runs) {
-		if (await runLive(run, started, asks, (id) => tx.task(id))) {
-			throw new Error(`Item ${item.id} cannot be done: run ${run} serves it and is live`);
-		}
+	for (const key of keys) {
+		const worker = await taskWorker(started, key, (id) => tx.task(id));
+
+		if (worker !== undefined) workers.push(worker);
 	}
+
+	const { asks } = await tx.doc(Asks);
+	const refused = (worker: string) => new Error(`Item ${item.id} cannot be done: ${worker} serves it and is live`);
+
+	for (const run of new Set(keys.flatMap((key) => taskRun(key) ?? []))) {
+		if (runLive(run, workers, asks)) throw refused(`run ${run}`);
+	}
+
+	const task = workers.find((worker) => worker.kind === "task" && taskRun(worker.key) === undefined);
+
+	if (task?.kind === "task") throw refused(`task ${task.key}`);
 }
 
 /**
  * Ends each contract with an edge to `item`, a closed item, for the caller `by` when the contract shapes no open item:
- * `done` when one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes.
+ * `done` when one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes. It gives
+ * the slugs of the contracts that it ended.
  */
-async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<void> {
+async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<string[]> {
 	const { parleys: slugs } = itemEnds(item);
 
-	if (slugs.length === 0) return;
+	if (slugs.length === 0) return [];
 	const parleys = (await tx.doc(Parleys)).parleys;
+	const ended: string[] = [];
 
 	for (const slug of new Set(slugs)) {
 		const parley = parleys.find((found) => found.slug === slug);
@@ -257,7 +246,10 @@ async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<Item
 
 		if (work.some((found) => found.state === "open")) continue;
 		endContract(parleys, parley, work.some((found) => found.state === "done") ? "done" : "dropped", by);
+		ended.push(slug);
 	}
+
+	return ended;
 }
 
 /** The `at` of the seed of a missing item, which no stored item has. */
@@ -327,13 +319,13 @@ async function refuseCycle(tx: Tx, from: number, to: number): Promise<void> {
 }
 
 /**
- * Fails when `from`, the end of a new `serves` edge of `item link`, cannot write it: an agent, whose spawn writes its
- * only `serves` edge, or a run that `items` gives an item for.
+ * Fails when `from`, the end of a new `serves` edge of `item link`, cannot write it: an agent, which serves an item
+ * through its label, or a run that `items` gives an item for.
  */
 function refuseServe(from: string, items: Pick<ItemIndex, "itemsOf">): void {
 	const { kind, value } = refParts(from);
 
-	if (kind === "agent") throw new Error("Only the spawn of an agent writes its edge serves");
+	if (kind === "agent") throw new Error("An agent serves an item through its label: spawn it with serves");
 	const served = items.itemsOf(from)[0];
 
 	if (served !== undefined) throw new Error(`Run ${value} already serves item ${served}`);

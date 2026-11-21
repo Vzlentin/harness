@@ -1,7 +1,8 @@
 /**
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
  * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
- * hook, a handler of the answered asks, the request types that it serves and the version of its protocol to the host.
+ * hook, a handler of the answered asks, the request types that it serves, the checks of its label kinds and the version
+ * of its protocol to the host.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -25,8 +26,10 @@ import type { createChildren, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
 import type { Ask, AskList } from "../protocol/project.ts";
 import { Json } from "../protocol/requests.ts";
+import type { Worker } from "../protocol/worker-labels.ts";
 import type { ClassifierKey } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
+import type { LabelCheck } from "./label-checks.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 
@@ -139,13 +142,23 @@ const EntryRequest = Type.Union([
 
 export type EntryRequest = Static<typeof EntryRequest>;
 
+/**
+ * The check of the labels of the kind `kind` of an entry. Before a spawn of a child or a first start of a task with
+ * such a label, the host calls `check`, which throws the reason when it refuses the label, and the spawn or the start
+ * fails with it.
+ */
+const LabelKind = Type.Object({
+	kind: Type.String({ minLength: 1 }),
+	check: Type.Unsafe<LabelCheck>(Type.Function([Type.Unknown()], Type.Unknown())),
+});
+
 /** The name and the version of the protocol of an entry, which the `hello` reply gives. */
 const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) });
 
 /**
  * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
- * input hook, its handler of the answered asks, the request types that it serves, the version of its protocol, and
- * `close`.
+ * input hook, its handler of the answered asks, the request types that it serves, the checks of its label kinds, the
+ * version of its protocol, and `close`.
  */
 const EntryResult = Type.Object({
 	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
@@ -156,6 +169,7 @@ const EntryResult = Type.Object({
 		Type.Unsafe<AnsweredAskHandler>(Type.Function([Type.Unknown(), Type.Unknown()], Type.Unknown())),
 	),
 	requests: Type.Optional(Type.Array(EntryRequest)),
+	labels: Type.Optional(Type.Array(LabelKind)),
 	protocol: Type.Optional(EntryProtocol),
 	close: Type.Unsafe<() => Promise<void>>(Type.Function([], Type.Unknown())),
 });
@@ -164,8 +178,8 @@ export type Entry = Static<typeof EntryResult>;
 
 /**
  * The entries that the host loaded, as one: their extensions, tasks, catch-up hooks and input hooks in load order, the
- * handler of the answered asks of at most one entry, their request types by type, the versions of their protocols by
- * name, the event bus that they share, and `close`.
+ * handler of the answered asks of at most one entry, their request types by type, the checks of their labels by kind,
+ * the versions of their protocols by name, the event bus that they share, and `close`.
  */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
@@ -174,6 +188,7 @@ export type LoadedEntries = {
 	readonly inputHooks: readonly InputHook[];
 	readonly answeredAsk: AnsweredAskHandler | undefined;
 	readonly requests: ReadonlyMap<string, EntryRequest>;
+	readonly labelChecks: ReadonlyMap<string, LabelCheck>;
 	readonly versions: Readonly<Record<string, number>>;
 	readonly events: EventBus;
 	close(): Promise<void>;
@@ -208,6 +223,13 @@ export type EntryHandles = {
 	 * another `to`.
 	 */
 	readonly deliver: (delivery: EntryDelivery) => Promise<void>;
+	/** The live workers of `label`. It throws until the host is open. */
+	readonly workers: (label: string) => Promise<readonly Worker[]>;
+	/**
+	 * Stops `worker`: a child with the children that it spawned, or a task. A worker that already ended is left as it is.
+	 * It throws until the host is open.
+	 */
+	readonly stop: (worker: Worker) => Promise<void>;
 };
 
 /** A delivery of an entry: the text that goes to the conversation or Pi session `to` once for the key `key`. */
@@ -241,7 +263,9 @@ const Manifest = Type.Object({
  * `entries.json` (see `readEntries`), with the children library `children` and the host's `handles`, in one shared
  * event bus, as one entry whose `close()` closes each of them and passes its errors to `handles.warn`. When an entry
  * fails to load, returns an invalid result, gives the kind of catch-up hook or input hook, a request type or the protocol
- * name of an earlier entry, gives a handler of the answered asks when an earlier entry gave one, or serves a request type of `coreTypes`, which the host owns, the entries loaded before it close.
+ * name of an earlier entry, gives a handler of the answered asks when an earlier entry gave one, serves a request type
+ * of `coreTypes` or checks a label kind of `hostKinds`, which the host owns, or checks the label kind of an earlier
+ * entry, the entries loaded before it close.
  * Missing packages are skipped, not installed, and so is an entry module of `entries.json` that does not exist, such as
  * one of an uninstalled package, with a warning. A package or an entry that it skips is a degraded state in
  * `handles.degraded` for the life of the host.
@@ -253,6 +277,7 @@ export async function loadEntries(
 	place: Place,
 	children: ChildrenLibrary,
 	coreTypes: ReadonlySet<string>,
+	hostKinds: ReadonlySet<string>,
 	handles: EntryHandles,
 ): Promise<LoadedEntries> {
 	const { warn, degraded } = handles;
@@ -290,9 +315,13 @@ export async function loadEntries(
 
 	const events = createEventBus();
 	const entries: Entry[] = [];
-	/** The module of each catch-up hook kind, input hook kind, request type and protocol name, and of the ask handler. */
+	/**
+	 * The module of each catch-up hook kind, input hook kind, request type, label kind and protocol name, and of the ask
+	 * handler.
+	 */
 	const owners = new Map<string, string>();
 	const requests = new Map<string, EntryRequest>();
+	const labelChecks = new Map<string, LabelCheck>();
 	const versions: Record<string, number> = {};
 
 	const close = async () => {
@@ -330,6 +359,15 @@ export async function loadEntries(
 				requests.set(request.type, request);
 			}
 
+			for (const { kind, check } of result.labels ?? []) {
+				if (hostKinds.has(kind)) {
+					throw new Error(`The entry ${module} checks the label kind ${kind}, which the host owns`);
+				}
+
+				claim(owners, module, "check the label kind", kind);
+				labelChecks.set(kind, check);
+			}
+
 			if (result.protocol !== undefined) {
 				claim(owners, module, "give the protocol", result.protocol.name);
 				versions[result.protocol.name] = result.protocol.version;
@@ -347,6 +385,7 @@ export async function loadEntries(
 		inputHooks: entries.flatMap((entry) => entry.input ?? []),
 		answeredAsk: entries.find((entry) => entry.answeredAsk !== undefined)?.answeredAsk,
 		requests,
+		labelChecks,
 		versions,
 		events,
 		close,

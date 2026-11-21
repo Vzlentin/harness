@@ -20,17 +20,16 @@ import { CLI_CALLER } from "../protocol/env.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
 import { boundedReplay } from "./checkpoint.ts";
-import type { ItemIndex } from "./item-index.ts";
 import {
 	type ChildRecord,
 	ChildRecords,
 	type ChildrenState,
 	childRecord,
-	childServed,
 	conversationEntry,
 	isHeld,
 	markAllRead,
 	ownRecord,
+	recordLabels,
 } from "./records.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -44,8 +43,6 @@ export type TargetHost = {
 	readonly project: string;
 	/** The project agent: the root conversation, with a model and the project directory from its first use. */
 	readonly agent: () => Promise<Conversation>;
-	/** The index of the ends of the items, which gives the item that a child serves. */
-	readonly items: ItemIndex;
 };
 
 /** The request ID of the project agent's newest input, which its `error` state comes from. */
@@ -105,7 +102,6 @@ async function agentTarget(handler: TargetHost) {
 			handle: AGENT_HANDLE,
 			name: `${project} agent`,
 			state: await turn.state(context),
-			serves: { kind: "project" },
 		}),
 		send: (input: Input) => turn.send(input, context),
 		write: async (write: Write) => {
@@ -282,36 +278,28 @@ export async function refuseEnded(child: Child): Promise<void> {
 }
 
 /**
- * How `endChildren` ends its records: with their subtree, or `served`, each record alone, by the end of what it serves.
- * With `keepAnswers`, the records of `records` stay unread, so their callers still get their answers.
- */
-export type EndOptions = { readonly keepAnswers: boolean } | { readonly served: true };
-
-/**
  * Ends the children of `records` and the children they spawned, and marks the requests of the records of the ended
- * children read, so that they hold no caller. With `served`, it ends each child of `records` alone, and marks its
- * record as ended by the end of what it serves in the same commit. The records stay, so a `send` resumes a child. A
- * repeat finishes an end.
+ * children read, so that they hold no caller. With `keepAnswers`, the records of `records` stay unread, so their callers
+ * still get their answers. The records stay, so a `send` resumes a child. A repeat finishes an end.
  */
 export async function endChildren(
 	host: Pick<TargetHost, "harness" | "place" | "owner">,
 	records: readonly ChildRecord[],
-	options: EndOptions,
+	options: { readonly keepAnswers: boolean },
 ): Promise<void> {
 	const ended = new Set<string>();
-	const served = "served" in options;
 
 	for (const record of records) {
 		const child = await childOf(host, record);
 
-		for (const id of await child.close(context, served ? { alone: true } : undefined)) ended.add(String(id));
+		for (const id of await child.close(context)) ended.add(String(id));
 	}
 
-	if ("keepAnswers" in options && options.keepAnswers) {
+	if (options.keepAnswers) {
 		for (const record of records) ended.delete(String(record.conversationId));
 	}
 
-	await markAllRead(host.harness, ended, { servedEnded: served });
+	await markAllRead(host.harness, ended);
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {
@@ -327,23 +315,9 @@ export async function childEnded(handler: Pick<TargetHost, "place" | "owner">, r
 	return (await (await childOf(handler, record)).state(context)) === "ended";
 }
 
-/**
- * Whether the answers of the children of the child of `record` wait: the end of what it serves ended it, and no message
- * resumed it since. As input, they would resume it.
- */
-export async function heldByServing(
-	handler: Pick<TargetHost, "place" | "owner">,
-	record: ChildRecord,
-): Promise<boolean> {
-	return record.servedEnd === "ended" && (await childEnded(handler, record));
-}
-
-/**
- * The info of `handle`. A caller that already has the record gives it as `record`. A child that serves an item has the
- * item whose `serves` edge names it, and no `serves` when no edge names it.
- */
+/** The info of `handle`, with its labels when it has one. A caller that already has the record gives it as `record`. */
 export async function childInfo(
-	handler: Pick<TargetHost, "harness" | "place" | "owner" | "items">,
+	handler: Pick<TargetHost, "harness" | "place" | "owner">,
 	handle: string,
 	record?: ChildRecord,
 ): Promise<ChildInfo> {
@@ -357,9 +331,7 @@ export async function childInfo(
 	const info =
 		record.name === undefined ? { handle, state, ...fields } : { handle, name: record.name, state, ...fields };
 
-	const serves = childServed(record, handler.items);
-
-	return serves === undefined ? info : { ...info, serves };
+	return { ...info, ...recordLabels(record) };
 }
 
 /**

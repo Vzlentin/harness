@@ -54,6 +54,8 @@ import { gateExtension } from "./gate.ts";
 import { ItemIndex } from "./item-index.ts";
 import { migrateTodos } from "./item-migration.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
+import { checkLabels, WORK_KINDS, workLabelChecks } from "./label-checks.ts";
+import { migrateLabels } from "./label-migration.ts";
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
@@ -61,10 +63,11 @@ import { parleyReaction } from "./parleys.ts";
 import { type Connection, Push } from "./push.ts";
 import { ChildRecords, OldChildRecordsError } from "./records.ts";
 import { RulesSection } from "./rules-section.ts";
-import { Serving } from "./serving.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { storeFilePasses } from "./store-file.ts";
 import { library } from "./targets.ts";
+import { stopEndedWork } from "./work-workers.ts";
+import { stopWorker, type WorkerHost, workers } from "./workers.ts";
 
 /** The host exits after this long with no connection, no live task, no compression of the memory and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -197,6 +200,14 @@ export async function runHost(options: {
 	let storage: Storage | undefined;
 	// The root conversation, which entry deliveries need to know, once the harness is open.
 	let rootId: ConversationId | undefined;
+	// What the workers of the labels read and stop, once the harness is open.
+	let workerHost: WorkerHost | undefined;
+
+	const openWorkerHost = () => {
+		if (workerHost === undefined) throw new Error("The host is not open yet");
+
+		return workerHost;
+	};
 
 	const place: Place = {
 		get store() {
@@ -223,14 +234,23 @@ export async function runHost(options: {
 			if (harness === undefined || rootId === undefined) throw new Error("The host is not open yet");
 			await queueDelivery(harness, rootId, delivery, context);
 		},
+		workers: (label) => workers(openWorkerHost(), label),
+		stop: (worker) => stopWorker(openWorkerHost(), worker),
 	};
 
-	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(
-		(cause: unknown) => {
-			lock.close();
-			throw cause;
-		},
-	);
+	const entries = await loadEntries(
+		projectCwd,
+		agentDir,
+		settings,
+		place,
+		library,
+		CORE_TYPES,
+		WORK_KINDS,
+		handles,
+	).catch((cause: unknown) => {
+		lock.close();
+		throw cause;
+	});
 
 	const envs = new ConversationEnvs(project, projectCwd);
 	// The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The registry
@@ -326,8 +346,10 @@ export async function runHost(options: {
 	rootId = root.id;
 
 	const owner = { kind: "detached", root } as const;
-	// The first start moves the todos of the project to items, before any reader of the items or the records.
+	// The first start moves the todos of the project to items, and what the children served to their labels, before any
+	// reader of the items or the records.
 	await migrateTodos(harness, root.id);
+	await migrateLabels(harness, storage);
 	// The index of the ends of the items observes the commits first, so the observers and the passes after it read it
 	// current with each commit.
 	const items = await ItemIndex.open(harness, storage);
@@ -339,7 +361,6 @@ export async function runHost(options: {
 		root,
 		project,
 		agent,
-		items,
 		warn,
 		degraded,
 		storage,
@@ -347,7 +368,9 @@ export async function runHost(options: {
 	});
 
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
-	const serving = new Serving({ harness, place, owner, items, warn });
+	workerHost = { harness, place, owner };
+	// The host checks the labels of the work of the project; the entries check their own kinds.
+	const labelChecks = new Map([...workLabelChecks(harness), ...entries.labelChecks]);
 
 	base = {
 		harness,
@@ -366,12 +389,15 @@ export async function runHost(options: {
 		catchUps: entries.catchUps,
 		inputHooks: entries.inputHooks,
 		entryVersions: entries.versions,
+		checkLabels: (labels) => checkLabels(labelChecks, labels),
 		warn,
 		degraded,
 		memory,
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
+	// A worker of work that ended, such as one that a message resumed, stops at the next start.
+	await stopEndedWork({ harness, place, owner, warn });
 
 	const reaction = parleyReaction({ harness, items, warn });
 
@@ -460,7 +486,6 @@ export async function runHost(options: {
 		await compressor.close();
 		await push.close();
 		await sessions.close();
-		await serving.close();
 		// The reaction of the parleys reads the index of the items.
 		await askEvents.close();
 		items.close();
@@ -486,7 +511,6 @@ export async function runHost(options: {
 			const pushClosed = push.close();
 			// The socket closes that follow are not session ends.
 			const sessionsClosed = sessions.close();
-			const servingClosed = serving.close();
 			const storeFileClosed = storeFile.close();
 			// The handler of the answered asks gets the abort, and its event waits for the next start.
 			const askEventsClosed = askEvents.close();
@@ -513,7 +537,6 @@ export async function runHost(options: {
 				await sandbox.close();
 				await pushClosed;
 				await sessionsClosed;
-				await servingClosed;
 				items.close();
 				await storeFileClosed;
 				await compressorClosed;

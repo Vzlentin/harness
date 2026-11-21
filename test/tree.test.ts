@@ -201,7 +201,6 @@ describe("tree", { timeout: 60_000 }, () => {
 				kind: "agent",
 				name: "four agent",
 				state: "idle",
-				serves: { kind: "project" },
 				todos: [open(1, "Agent todo"), { id: 2, text: "Agent todo done", state: "done" }],
 			};
 
@@ -211,7 +210,6 @@ describe("tree", { timeout: 60_000 }, () => {
 				kind: "agent",
 				name: child.handle,
 				state: "idle",
-				serves: { kind: "spawner" },
 				todos: [open(1, "Child todo")],
 			};
 
@@ -403,7 +401,6 @@ describe("tree", { timeout: 60_000 }, () => {
 							kind: "agent",
 							name: a.handle,
 							state: "idle",
-							serves: { kind: "spawner" },
 							todos: [open(1, "Todo of A")],
 						},
 					],
@@ -436,7 +433,7 @@ describe("tree", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("gives the item of a child in its node, and sends the node without it to a watch after an unlink", async () => {
+	it("gives the labels of a child in its node, and sends the node to a watch when the end of its item stops it", async () => {
 		const project = "item-node";
 		const host = await projectHost(project);
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
@@ -448,14 +445,6 @@ describe("tree", { timeout: 60_000 }, () => {
 			await answerOf(child.handle, project);
 			watch = await openTreeWatch(project);
 			const { events } = watch;
-			expect(watch.nodes.find((node) => node.id === child.handle)).toMatchObject({ serves: { kind: "item", id } });
-
-			const [edge] = Value.Parse(StagedItem, await send({ type: "item", action: "read", id }, project)).edges;
-
-			if (edge === undefined) throw new Error("no edge");
-			const { from, kind, to } = edge;
-			await send({ type: "item", action: "unlink", caller: "cli", from, kind, to }, project);
-			await until(() => events.length > 0);
 
 			const node = {
 				id: child.handle,
@@ -464,9 +453,13 @@ describe("tree", { timeout: 60_000 }, () => {
 				name: child.handle,
 				state: "idle",
 				todos: [],
+				labels: [`item:${id}`],
 			};
 
-			expect(events).toEqual([{ nodes: [node] }]);
+			expect(watch.nodes.find((found) => found.id === child.handle)).toEqual(node);
+			await send({ type: "item", action: "set", caller: "cli", id, state: "done" }, project);
+			await until(() => events.length > 0);
+			expect(events).toEqual([{ nodes: [{ ...node, state: "ended" }] }]);
 		} finally {
 			watch?.socket.destroy();
 			await host.close();

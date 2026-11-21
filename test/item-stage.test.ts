@@ -57,11 +57,13 @@ async function set(id: number, state: ItemState): Promise<StagedItem> {
 	return Value.Parse(StagedItem, await send({ type: "item", action: "set", caller: "cli", id, state }));
 }
 
-/** Starts the first task of the run `runId`, whose child waits until the test opens the gate of `prompt`. */
-async function startRun(runId: string, prompt: string): Promise<PromiseWithResolvers<void>> {
+/**
+ * Starts the first task of the run `runId` with `labels`, whose child waits until the test opens the gate of `prompt`.
+ */
+async function startRun(runId: string, prompt: string, labels: string[]): Promise<PromiseWithResolvers<void>> {
 	const gate = Promise.withResolvers<void>();
 	gates.set(prompt, gate);
-	await send({ type: "start", kind: "fixture.ask", key: `wf:${runId}#1`, input: { cwd: root, prompt } });
+	await send({ type: "start", kind: "fixture.ask", key: `wf:${runId}#1`, input: { cwd: root, prompt }, labels });
 	await until(() => called(prompt) === 1);
 
 	return gate;
@@ -127,7 +129,7 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 		// The host keeps no run by ID: a run with no task and no ask is not live.
 		expect(await markOf(item.id)).toEqual({ stage: "inbox", needsYou: false });
 
-		const gate = await startRun(runId, "Stage run");
+		const gate = await startRun(runId, "Stage run", [`item:${item.id}`]);
 		expect(await markOf(item.id)).toEqual({ stage: "building", needsYou: false });
 
 		const refused = `Item ${item.id} cannot be done: run ${runId} serves it and is live`;
@@ -157,6 +159,16 @@ describe("the stage and the mark of the work items", { timeout: 60_000 }, () => 
 		await answer([{ id: again, answer: "own", label: "origin" }]);
 		expect(await markOf(item.id)).toEqual({ stage: "inbox", needsYou: false });
 		expect(await set(item.id, "done")).toMatchObject({ state: "done", stage: "done" });
+	});
+
+	it("refuses done only for the runs of the tasks with the label of the item, not for its serves edges", async () => {
+		const runId = "20261121T090000-a0000003";
+		const item = await add("Edge only");
+		await link(`run:${runId}`, "serves", `item:${item.id}`);
+		const ask = await askOf(`workflows:${runId}`, "Which tag");
+
+		expect(await set(item.id, "done")).toMatchObject({ state: "done", stage: "done" });
+		await send({ type: "ask", action: "drop", caller: "cli", id: ask });
 	});
 
 	it("needs the user for an open ask or a held action of an agent that serves the item", async () => {

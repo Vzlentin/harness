@@ -12,7 +12,6 @@ import {
 	type TaskRecord,
 } from "@earendil-works/pi-durable";
 import { CHILD_DOC_KIND } from "../children/library.ts";
-import { ITEM_KIND } from "../protocol/item.ts";
 import type { Replies } from "../protocol/requests.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND } from "../protocol/todo.ts";
 import type { RunState, TreeEvent, TreeNode } from "../protocol/tree.ts";
@@ -25,15 +24,14 @@ import { runState, type TreeHost, treeNodes } from "./tree.ts";
 
 /**
  * The kinds of the documents whose changes can change a node: the lists of todos, the last request of the project
- * agent, the records of the children by handle, the items, whose `serves` edges give what a child serves, the started
- * tasks, and the documents of the conversations of the children library.
+ * agent, the records of the children by handle, with their labels, the started tasks, and the documents of the
+ * conversations of the children library.
  */
 const NODE_DOCS: ReadonlySet<string> = new Set([
 	TODO_LIST_KIND,
 	TASK_TODO_LIST_KIND,
 	AgentState.definition.kind,
 	ChildRecords.definition.kind,
-	ITEM_KIND,
 	StartedTasks.definition.kind,
 	CHILD_DOC_KIND,
 ]);

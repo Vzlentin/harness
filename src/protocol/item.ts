@@ -165,14 +165,17 @@ export function edgeItem(edge: EdgeInput): EdgeItem | undefined {
 	return from.kind === "item" ? { id: Number(from.value), other: edge.to } : { id: Number(to.value), other: edge.from };
 }
 
-/** A reference `<kind>:<value>`, cut at its first colon. */
+/** A reference or a label `<kind>:<value>`, cut at its first colon. */
 export type RefParts = { readonly kind: string; readonly value: string };
 
-/** The kind and the value of the reference `ref`, `<kind>:<value>`. */
+/**
+ * The kind and the value of the reference or the label `ref`, `<kind>:<value>`. Without a colon, the kind is the whole
+ * text and the value is empty.
+ */
 export function refParts(ref: string): RefParts {
 	const colon = ref.indexOf(":");
 
-	return { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
+	return colon === -1 ? { kind: ref, value: "" } : { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
 }
 
 /** The kind of the family of the documents of the items, one for each item, keyed by its ID. */

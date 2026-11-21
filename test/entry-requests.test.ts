@@ -285,6 +285,22 @@ describe("entry load errors", () => {
 		);
 	});
 
+	it("refuses an entry that checks a label kind of the host, and two entries that check the same kind", async () => {
+		const labels = (kind: string) =>
+			`export default () => ({ extensions: [], labels: [{ kind: ${JSON.stringify(kind)}, check: async () => {} }], close: async () => {} });\n`;
+
+		const first = await entryModule("first-label", labels("fix"));
+		const item = await entryModule("item-label", labels("item"));
+		const second = await entryModule("second-label", labels("fix"));
+
+		expect(await startError("host-label", { first, item })).toBe(
+			`The entry ${item} checks the label kind item, which the host owns`,
+		);
+		expect(await startError("dup-label", { first, second })).toBe(
+			`The entries ${first} and ${second} both check the label kind fix`,
+		);
+	});
+
 	it("refuses a request type with both a handler and a watch", async () => {
 		const both = await entryModule(
 			"both-entry",

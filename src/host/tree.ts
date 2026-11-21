@@ -18,7 +18,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import { AGENT_HANDLE } from "../protocol/target.ts";
 import type { RunState, TreeNode } from "../protocol/tree.ts";
-import { callerHandle, type ChildRecord, ChildRecords, childServed, recordsByAge } from "./records.ts";
+import { callerHandle, type ChildRecord, ChildRecords, recordLabels, recordsByAge } from "./records.ts";
 import { agentTurn, childOf, heldState, library, type TargetHost } from "./targets.ts";
 import { entryKinds, StartedTasks, type TaskHost } from "./tasks.ts";
 import { readTodos, type TodoOwner } from "./todo.ts";
@@ -41,7 +41,7 @@ const PAGE_SIZE = 100;
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
 /** What the tree reads of the host. */
-export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "project" | "items"> &
+export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "project"> &
 	Pick<TaskHost, "root" | "startable"> & {
 		/** The reads of the tasks and the conversations of the tree, without a write transaction. */
 		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations">;
@@ -83,7 +83,6 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			name: `${host.project} agent`,
 			state: await agentTurn(place, root).state(context),
 			todos: await todosOf(host, { kind: "conversation", id: root.id }),
-			serves: { kind: "project" },
 		},
 	});
 
@@ -135,13 +134,12 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 			name: record.name ?? handle,
 			state,
 			todos: await todosOf(host, { kind: "conversation", id: record.conversationId }),
+			...recordLabels(record),
 		};
 
-		const serves = childServed(record, host.items);
-		const served = serves === undefined ? node : { ...node, serves };
 		const parent = await callerNode(host, entries, record.caller);
 
-		return { order: record.conversationId, node: parent === undefined ? served : { ...served, parent } };
+		return { order: record.conversationId, node: parent === undefined ? node : { ...node, parent } };
 	};
 
 	const placed = await Promise.all([

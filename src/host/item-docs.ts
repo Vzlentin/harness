@@ -98,8 +98,6 @@ export async function readItems(
 
 /** The other ends of the `serves` and `shapes` edges of an item, without their kinds, in the order of the edges. */
 export type ItemEnds = {
-	/** The IDs of the conversations of the agents that serve the item. */
-	readonly agents: readonly string[];
 	/** The IDs of the runs that serve the item. */
 	readonly runs: readonly string[];
 	/** The slugs of the parleys that shape the item. */
@@ -108,19 +106,17 @@ export type ItemEnds = {
 
 /** The other ends of the `serves` and `shapes` edges of `item`. */
 export function itemEnds(item: Readonly<WorkItem>): ItemEnds {
-	const agents: string[] = [];
 	const runs: string[] = [];
 	const parleys: string[] = [];
 
 	for (const edge of item.edges) {
 		const { kind, value } = refParts(edge.from);
 
-		if (kind === "agent") agents.push(value);
-		else if (kind === "run") runs.push(value);
+		if (kind === "run") runs.push(value);
 		else if (kind === "parley") parleys.push(value);
 	}
 
-	return { agents, runs, parleys };
+	return { runs, parleys };
 }
 
 /** Every item, in ID order, as the session has it. `storage`, the storage of `reader`, lists them. */

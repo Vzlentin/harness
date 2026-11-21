@@ -22,6 +22,7 @@ import {
 	versionMismatch,
 } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protocol/target.ts";
+import { workerLabels } from "../protocol/worker-labels.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { readOpenAsks } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
@@ -31,8 +32,9 @@ import { serveEntryRequest } from "./entry-requests.ts";
 import { gateCall } from "./gate.ts";
 import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
 import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
+import type { ItemIndex } from "./item-index.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
-import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
+import { addItem, linkItem, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import {
 	dropAskRef,
@@ -78,7 +80,6 @@ import {
 	type UnreadAnswers,
 	unreadAnswers,
 } from "./records.ts";
-import { servesOf } from "./serving.ts";
 import type { Sessions } from "./sessions.ts";
 import {
 	callerConversation,
@@ -102,6 +103,7 @@ import { addTodo, readTodos, setTodo, type TodoOwner } from "./todo.ts";
 import { serveTreeWatch } from "./tree-watch.ts";
 import { treeNodes } from "./tree.ts";
 import { serveWatch } from "./watch.ts";
+import { stopWork } from "./work-workers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -126,6 +128,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly settings: SettingsManager;
 		/** Writes a warning to the host's log. */
 		readonly warn: (cause: unknown) => void;
+		/** The index of the ends of the items, which gives the items that a contract shapes and the item of a run. */
+		readonly items: ItemIndex;
 		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
 		readonly entryVersions: Readonly<Record<string, number>>;
 		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
@@ -458,15 +462,21 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 	}
 }
 
-function parley(request: Extract<Request, { type: "parley" }>, handler: Handler): Promise<Replies["parley"]> {
+async function parley(request: Extract<Request, { type: "parley" }>, handler: Handler): Promise<Replies["parley"]> {
 	switch (request.action) {
 		case "take":
 			return handler.harness.commit((tx) => takeParley(tx, request.slug, request.caller), context);
-		case "end":
-			return handler.harness.commit(
+		case "end": {
+			const ended = await handler.harness.commit(
 				(tx) => endParley(tx, request.slug, request.status, request.caller, handler.items),
 				context,
 			);
+
+			await stopWork(handler, [`parley:${ended.slug}`]);
+
+			return ended;
+		}
+
 		case "read":
 			return readParley(handler.harness, request.slug, context);
 		case "list":
@@ -482,11 +492,17 @@ async function item(request: Extract<Request, { type: "item" }>, handler: Handle
 	switch (request.action) {
 		case "add":
 			return stageItem(handler, await handler.harness.commit((tx) => addItem(tx, request, request.caller), context));
-		case "set":
-			return stageItem(
-				handler,
-				await handler.harness.commit((tx) => setItem(tx, request, request.caller, handler.items), context),
-			);
+		case "set": {
+			const set = await handler.harness.commit((tx) => setItem(tx, request, request.caller, handler.items), context);
+
+			// A closed item stops the workers of its label and of the contracts that it ended.
+			if (set.item.state !== "open") {
+				await stopWork(handler, [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)]);
+			}
+
+			return stageItem(handler, set.item);
+		}
+
 		case "list": {
 			const items = await readItems(handler.harness, handler.storage, request.state ?? "open", context);
 
@@ -606,7 +622,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		const parent = (await callerConversation(handler, request.caller)) === undefined ? undefined : request.caller;
 
 		const settings = await spawnSettings(handler.settings);
-		const serves = await servesOf(handler, request.serves);
+		const labels = workerLabels(request.labels, request.serves);
+		await handler.checkLabels(labels);
 
 		let spec: Spec = {
 			...(parent === undefined ? { root: request.caller } : { parent }),
@@ -626,18 +643,14 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		for (let attempt = 0; handle === undefined; attempt += 1) {
 			const key = attempt === 0 ? `sub:${request.requestId}` : `sub:${request.requestId}:${attempt}`;
 
-			// The record, and the `serves` edge of an item, are written in the commit that creates the child.
+			// The record, with its labels, is written in the commit that creates the child.
 			const opened = await library.open(place, handler.owner, key, spec, context, async (tx, id) => {
 				await addRecord(tx, request.requestId, {
 					caller: request.caller,
 					conversationId: id,
 					name: request.name,
-					serves,
+					labels,
 				});
-
-				if (request.serves !== undefined && "item" in request.serves) {
-					await serveItem(tx, request.serves.item, id, request.caller);
-				}
 			});
 
 			handle = await spawnedHandle(harness, request.requestId);

@@ -273,14 +273,6 @@ describe("children library", { timeout: 30_000 }, () => {
 		});
 	});
 
-	it("ends only the child with alone, and its subtree keeps its state", async () => {
-		const parent = await library.open(place, owner, "t:alone", { root: "test", ...faux, cwd: root }, context);
-		const child = await library.open(place, owner, "t:alone-child", { parent: String(parent.id), ...faux }, context);
-		expect(await parent.close(context, { alone: true })).toEqual([parent.id]);
-		expect(await parent.state(context)).toBe("ended");
-		expect(await child.state(context)).toBe("idle");
-	});
-
 	it("stops only the wait when a wait is cancelled", async () => {
 		const child = await library.open(place, owner, "t:slow", { root: "test", ...faux, cwd: root }, context);
 		const gate = Promise.withResolvers<void>();

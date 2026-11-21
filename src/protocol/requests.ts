@@ -47,12 +47,13 @@ import { ListRef, withListTarget, withTarget } from "./target.ts";
 import { type ClassifyReply, Todo, type TodoList, TodoState } from "./todo.ts";
 import type { TreeReply } from "./tree.ts";
 import type { ViewChange } from "./view-change.ts";
+import { Label, SpawnServes } from "./worker-labels.ts";
 
 /**
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 41;
+export const PROTOCOL_VERSION = 42;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -97,29 +98,6 @@ export const CHILD_STATES = ["busy", "idle", "error", "ended"] as const;
 
 export type ChildState = (typeof CHILD_STATES)[number];
 
-/** What a `spawn` names that the child serves: a parley by slug, or a work item by ID. */
-export const ServesInput = Type.Union([
-	Type.Object({ parley: Slug }, { additionalProperties: false }),
-	Type.Object({ item: LocalId }, { additionalProperties: false }),
-]);
-
-export type ServesInput = Static<typeof ServesInput>;
-
-/**
- * What an agent serves, whose end ends the agent: the agent that spawned it, an open parley until it is no longer open,
- * a contract until it is done or dropped, or a work item until it is done or dropped. The project agent serves the
- * project, which never ends.
- */
-export const Served = Type.Union([
-	Type.Object({ kind: Type.Literal("spawner") }),
-	Type.Object({ kind: Type.Literal("parley"), slug: Slug }),
-	Type.Object({ kind: Type.Literal("contract"), slug: Slug }),
-	Type.Object({ kind: Type.Literal("item"), id: LocalId }),
-	Type.Object({ kind: Type.Literal("project") }),
-]);
-
-export type Served = Static<typeof Served>;
-
 /**
  * One child as the host reports it. Provider, model and thinking level come from the child's agent. For a `{ conversation }`
  * target, `handle` and `conversation` are the conversation ID, and `name` is the child's lineage key.
@@ -134,8 +112,8 @@ export type ChildInfo = {
 	readonly thinking: ModelThinkingLevel;
 	/** The child's working directory. */
 	readonly cwd: string;
-	/** What the child serves. A conversation of the children library with no record of a child has none. */
-	readonly serves?: Served;
+	/** The labels of the child, when it has one. A conversation of the children library with no record has none. */
+	readonly labels?: string[];
 };
 
 /** A task that `start` created, by its client key. `outcome` is there only when the task is terminal. */
@@ -216,8 +194,10 @@ export const RequestLine = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		tools: Type.Optional(Type.Immutable(Type.Array(Type.String()))),
 		prompt: Type.String(),
-		/** What the child serves. Without it, the child serves its caller. */
-		serves: Type.Optional(ServesInput),
+		/** What the child serves, which gives it the label `parley:<slug>` or `item:<id>`. */
+		serves: Type.Optional(SpawnServes),
+		/** The labels of the child, which the entry of each label kind checks before the spawn. */
+		labels: Type.Optional(Type.Array(Label)),
 	}),
 	Type.Object({
 		type: Type.Literal("send"),
@@ -298,7 +278,8 @@ export const RequestLine = Type.Union([
 	}),
 	/**
 	 * Starts a background task of the kind `kind`, a task of an entry in `entries.json`, in the root conversation.
-	 * A repeated `key` gives the first task, and its new kind, version and input are ignored. With `version`, a host
+	 * A repeated `key` gives the first task, and its new kind, version, input and labels are ignored. The task has the
+	 * labels of `labels`, and the label of `input.serves` when the input has a `serves` of a spawn. With `version`, a host
 	 * whose definition of `kind` has another version refuses before it creates anything.
 	 */
 	Type.Object({
@@ -307,6 +288,8 @@ export const RequestLine = Type.Union([
 		input: Json,
 		key: Type.String(),
 		version: Type.Optional(Type.Number()),
+		/** The labels of the task, which the entry of each label kind checks before a first start. */
+		labels: Type.Optional(Type.Array(Label)),
 	}),
 	Type.Object({ type: Type.Literal("task"), key: Type.String() }),
 	/** Waits until the task is terminal, and replies with its outcome. A client polls `task` for the status. */
@@ -465,7 +448,7 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("take"), caller: Type.String(), slug: Slug }),
 	/**
 	 * Ends the contract `slug` as `done` or `dropped`, and replies with the parley. A contract that shapes an open item
-	 * does not end: the close of its last open item ends it.
+	 * does not end: the close of its last open item ends it. The end stops the workers of `parley:<slug>`.
 	 */
 	Type.Object({
 		type: Type.Literal("parley"),
@@ -486,8 +469,9 @@ export const RequestLine = Type.Union([
 		...ItemAdd.properties,
 	}),
 	/**
-	 * Changes the fields that it gives of the item `id`, and replies with it. A change to `done` fails while a run that
-	 * serves the item is live. A change to `done` or `dropped` ends each contract that shapes the item and no open item.
+	 * Changes the fields that it gives of the item `id`, and replies with it. A change to `done` fails while a run or a
+	 * task that serves the item is live. A change to `done` or `dropped` ends each contract that shapes the item and no
+	 * open item, and stops the workers of the item and of each contract that it ends.
 	 */
 	Type.Object({
 		type: Type.Literal("item"),

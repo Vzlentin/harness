@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { ItemCounterDoc } from "../src/host/item-docs.ts";
+import { ItemCounterDoc, Items } from "../src/host/item-docs.ts";
 import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { ConversationTodos } from "../src/host/todo-lists.ts";
@@ -28,11 +28,21 @@ import {
 } from "./helpers.ts";
 
 const PROJECT = "migration";
+const LABELS_PROJECT = "labels-migration";
 
 /** The `subagent.children` document as version 5 kept it, whose records can serve a todo of the project. */
 const ChildrenV5 = durable.defineDoc<durable.JsonObject>({
 	kind: "subagent.children",
 	version: 5,
+	scope: "session",
+	checkpointWhen: () => false,
+	initial: () => ({ children: {}, requests: {} }),
+});
+
+/** The `subagent.children` document as version 6 kept it, whose records serve a spawner, a parley, a contract or an item. */
+const ChildrenV6 = durable.defineDoc<durable.JsonObject>({
+	kind: "subagent.children",
+	version: 6,
 	scope: "session",
 	checkpointWhen: () => false,
 	initial: () => ({ children: {}, requests: {} }),
@@ -82,7 +92,7 @@ function sleep(ms: number): Promise<void> {
 async function storeBeforeItems(
 	todos: Readonly<Record<string, number>>,
 	asks: Readonly<Record<number, number>>,
-): Promise<Record<string, string>> {
+): Promise<void> {
 	const store = await openDurableHost(join(statePaths(PROJECT).dir, "durable.sqlite"), []);
 
 	try {
@@ -90,14 +100,12 @@ async function storeBeforeItems(
 
 		if (state === undefined) throw new Error("no records");
 		const old: ChildrenState = Value.Clone(state);
-		const conversations: Record<string, string> = {};
 
 		const children = Object.fromEntries(
-			Object.entries(old.children).map(([handle, record]) => {
-				conversations[handle] = String(record.conversationId);
+			Object.entries(old.children).map(([handle, { labels: _labels, ...record }]) => {
 				const id = todos[handle];
 
-				return [handle, id === undefined ? record : { ...record, serves: { kind: "todo", id } }];
+				return [handle, { ...record, serves: id === undefined ? { kind: "spawner" } : { kind: "todo", id } }];
 			}),
 		);
 
@@ -117,15 +125,13 @@ async function storeBeforeItems(
 		await store.commit(async (tx) => {
 			Object.assign(await tx.doc(ChildrenV5), { children, requests: old.requests });
 		}, BACKGROUND_CONTEXT);
-
-		return conversations;
 	} finally {
 		await store.close(BACKGROUND_CONTEXT);
 	}
 }
 
 describe("the move of the todos of the project to items", { timeout: 60_000 }, () => {
-	it("moves the open todos once, links or ends the children that served a todo, and skips the IDs of old todos", async () => {
+	it("moves the open todos once, labels the children that served a moved todo, and skips the IDs of old todos", async () => {
 		await createProject(PROJECT);
 		let host: Host | undefined = await startHost(PROJECT);
 		let moved: string;
@@ -160,26 +166,16 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			await host.close();
 		}
 
-		const conversations = await storeBeforeItems({ [moved]: 1, [finished]: 2, [busy]: 3, [asked]: 5 }, { 5: ask });
+		await storeBeforeItems({ [moved]: 1, [finished]: 2, [busy]: 3, [asked]: 5 }, { 5: ask });
 		host = await startHost(PROJECT);
 
 		try {
-			await vi.waitFor(async () => expect(await stateOf(finished)).toBe("ended"), { timeout: 10_000 });
-
 			expect(await items()).toEqual([
 				{
 					id: 1,
 					title: "Open work",
 					state: "open",
-					edges: [
-						{
-							from: `agent:${conversations[moved]}`,
-							kind: "serves",
-							to: "item:1",
-							at: expect.any(Number),
-							by: "migration",
-						},
-					],
+					edges: [],
 					at: expect.any(Number),
 					by: "migration",
 					stage: "building",
@@ -209,13 +205,15 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 
 			expect(await send({ type: "status", handle: moved }, PROJECT)).toMatchObject({
 				state: "idle",
-				serves: { kind: "item", id: 1 },
+				labels: ["item:1"],
 			});
-			expect(await send({ type: "status", handle: busy }, PROJECT)).not.toHaveProperty("serves");
-			expect(await send({ type: "status", handle: asked }, PROJECT)).not.toHaveProperty("serves");
+
+			for (const handle of [finished, busy, asked]) {
+				expect(await send({ type: "status", handle }, PROJECT)).not.toHaveProperty("labels");
+			}
 
 			const { nodes } = Value.Parse(TreeReply, await send({ type: "tree" }, PROJECT));
-			expect(nodes.find((node) => node.id === moved)).toMatchObject({ serves: { kind: "item", id: 1 } });
+			expect(nodes.find((node) => node.id === moved)).toMatchObject({ labels: ["item:1"] });
 			await expect(send({ type: "item", action: "read", id: 2 }, PROJECT)).rejects.toThrow("Unknown item: 2");
 			await expect(send({ type: "item", action: "set", caller: "cli", id: 3, state: "done" }, PROJECT)).rejects.toThrow(
 				"Unknown item: 3",
@@ -223,8 +221,8 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			await until(() => readStoreFile(PROJECT)?.items.length === 2);
 			expect(readStoreFile(PROJECT)).toMatchObject({ version: 2, lastItem: 5 });
 			await sleep(300);
-			expect(await stateOf(busy)).toBe("idle");
-			expect(await stateOf(asked)).toBe("idle");
+
+			for (const handle of [moved, finished, busy, asked]) expect(await stateOf(handle)).toBe("idle");
 			expect(await addTodo(AGENT_HANDLE, "Later work")).toBe(6);
 		} finally {
 			await host.close();
@@ -288,11 +286,111 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			]);
 
 			await setTodo(busy, own, "done");
-			await vi.waitFor(async () => expect(await stateOf(busy)).toBe("ended"), { timeout: 10_000 });
+			await sleep(300);
+			expect(await stateOf(busy)).toBe("idle");
 			expect(await stateOf(moved)).toBe("idle");
 		} finally {
 			await host.close();
 			host = undefined;
+		}
+	});
+
+	it("turns what each child of a store of version 6 served into its labels, and takes the serves edge of an agent", async () => {
+		await createProject(LABELS_PROJECT);
+		let host: Host | undefined = await startHost(LABELS_PROJECT);
+		const handles: string[] = [];
+		let item: number;
+
+		try {
+			for (const prompt of ["item", "parley", "contract", "spawner"]) {
+				const { handle } = await spawnAs("labels-session", `Task:\nServe ${prompt}`, {
+					notify: false,
+					project: LABELS_PROJECT,
+				});
+
+				handles.push(handle);
+			}
+
+			const added = await send({ type: "item", action: "add", caller: "cli", title: "Served" }, LABELS_PROJECT);
+			item = Value.Parse(StagedItem, added).id;
+		} finally {
+			await host.close();
+		}
+
+		const [byItem = "", byParley = "", byContract = "", bySpawner = ""] = handles;
+		const store = await openDurableHost(join(statePaths(LABELS_PROJECT).dir, "durable.sqlite"), []);
+
+		try {
+			const state = await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
+
+			if (state === undefined) throw new Error("no records");
+
+			const served = {
+				[byItem]: { serves: { kind: "item" } },
+				[byParley]: { serves: { kind: "parley", slug: "old-open" } },
+				[byContract]: { serves: { kind: "contract", slug: "old-contract" } },
+				[bySpawner]: { serves: { kind: "spawner" }, servedEnd: "due" },
+			} satisfies Record<string, durable.JsonObject>;
+
+			const children = Object.fromEntries(
+				Object.entries(Value.Clone(state).children).map(([handle, { labels: _labels, ...record }]) => [
+					handle,
+					{ ...record, ...served[handle] },
+				]),
+			);
+
+			const agent = `agent:${state.children[byItem]?.conversationId}`;
+
+			await store.commit(async (tx) => {
+				await tx.retireDoc(ChildRecords);
+
+				const stored = await tx.doc(Items, String(item), {
+					id: item,
+					title: "-",
+					state: "open",
+					edges: [],
+					at: 0,
+					by: "",
+				});
+
+				stored.edges.push({ from: agent, kind: "serves", to: `item:${item}`, at: 1, by: "old" });
+			}, BACKGROUND_CONTEXT);
+
+			await store.commit(async (tx) => {
+				Object.assign(await tx.doc(ChildrenV6), { children, requests: state.requests });
+			}, BACKGROUND_CONTEXT);
+		} finally {
+			await store.close(BACKGROUND_CONTEXT);
+		}
+
+		host = await startHost(LABELS_PROJECT);
+
+		try {
+			const labels = async (handle: string) => (await send({ type: "status", handle }, LABELS_PROJECT)).labels;
+			expect(await labels(byItem)).toEqual([`item:${item}`]);
+			expect(await labels(byParley)).toEqual(["parley:old-open"]);
+			expect(await labels(byContract)).toEqual(["parley:old-contract"]);
+			expect(await labels(bySpawner)).toBeUndefined();
+			expect(
+				Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }, LABELS_PROJECT)),
+			).toMatchObject({ edges: [], stage: "building" });
+		} finally {
+			await host.close();
+			host = undefined;
+		}
+
+		const after = await openDurableHost(join(statePaths(LABELS_PROJECT).dir, "durable.sqlite"), []);
+
+		try {
+			const records = Object.values((await after.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children ?? {});
+			expect(records).toHaveLength(4);
+
+			for (const record of records) {
+				expect(record).not.toHaveProperty("serves");
+				expect(record).not.toHaveProperty("servedEnd");
+			}
+		} finally {
+			await after.close(BACKGROUND_CONTEXT);
 		}
 	});
 });

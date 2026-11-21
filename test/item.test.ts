@@ -164,22 +164,18 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("refuses a serves edge from an agent: only the spawn of the agent writes it", async () => {
+	it("refuses a serves edge from an agent, which serves an item through its label", async () => {
 		const item = await add("Agent");
 		const other = await add("Other");
-		const refused = "Only the spawn of an agent writes its edge serves";
+		const refused = "An agent serves an item through its label: spawn it with serves";
 
 		const idle = await spawnWithId("item-session");
 		await expect(link(`agent:${idle.id}`, "serves", `item:${item.id}`)).rejects.toThrow(refused);
 		await expect(link("agent:999999", "serves", `item:${item.id}`)).rejects.toThrow(refused);
 
 		const child = await spawnWithId("item-server", { serves: { item: item.id } });
-		const [edge] = (await read(item.id)).edges;
-		expect(edge).toMatchObject({ from: `agent:${child.id}`, kind: "serves", to: `item:${item.id}` });
-		await expect(link(`agent:${child.id}`, "serves", `item:${other.id}`)).rejects.toThrow(refused);
-
-		// The spawn wrote the edge: a link of the same edge gives it.
-		expect(await link(`agent:${child.id}`, "serves", `item:${item.id}`)).toEqual(edge);
+		expect((await read(item.id)).edges).toEqual([]);
+		await expect(link(`agent:${child.id}`, "serves", `item:${item.id}`)).rejects.toThrow(refused);
 		expect((await read(item.id)).stage).toBe("building");
 		expect(await read(other.id)).toEqual(other);
 	});

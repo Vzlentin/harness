@@ -96,7 +96,7 @@ The agent that talks with the user keeps the board true: it adds, rewords, close
 - set: change the \`title\`, the \`text\` or the \`state\` of the item \`id\`.
 - list: the items in the state \`state\`, default open, in ID order.
 - read: the item \`id\`, its text and its edges, with the \`needs\` edges of the items that need it.
-- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`run:<run ID>\`, \`parley:<slug>\`, \`commit:<sha>\`, or \`item:<id>\` for \`needs\`: \`item:<a> needs item:<b>\` says that a waits for b. An open item can need another item, but not itself, and the needs edges make no cycle. A run serves one item. An agent serves the item of its spawn: spawn it with \`serves: { item: <id> }\`.
+- link: add the edge \`from\` \`kind\` \`to\`, where \`kind\` is ${oneOf(EDGE_KINDS)}, and one end is \`item:<id>\`. The other end is \`run:<run ID>\`, \`parley:<slug>\`, \`commit:<sha>\`, or \`item:<id>\` for \`needs\`: \`item:<a> needs item:<b>\` says that a waits for b. An open item can need another item, but not itself, and the needs edges make no cycle. A run serves one item. An agent serves an item through its label: spawn it with \`serves: { item: <id> }\`, and it stops when the item is done or dropped.
 The host works out the stage of each item: ${oneOf(ITEM_STAGES)}.
 Each item prints as \`<mark> <id> <stage> <title>\`: ${ITEM_STATES.map((state) => `${ITEM_MARKS[state]} ${state}`).join(", ")}, or \`${NEEDS_YOU_MARK}\` when the item needs the user. Each edge prints as \`<from> <kind> <to>\`.`;
 

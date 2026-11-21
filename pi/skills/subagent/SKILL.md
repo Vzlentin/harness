@@ -37,7 +37,7 @@ Only the user puts a rule in effect. With the `rule` tool, you add a rule as ope
 - `["read", "bash"]`: investigation that searches the repository or runs tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
-Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end once their own todos are done. A subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "item": <id> }` with the ID of a work item) ends when that parley or item ends, once its own todos are done. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
+Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end with it. A subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "item": <id> }` with the ID of a work item) gets the label of that work, and it is stopped with the children it spawned when that parley or item is done or dropped. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
 
 ## Answers and wait
 

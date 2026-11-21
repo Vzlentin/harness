@@ -47,10 +47,11 @@ import { statePaths } from "../src/protocol/paths.ts";
 import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
 import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import type { ChildInfo, Delivery, Replies, Request, ServesInput, WatchLine } from "../src/protocol/requests.ts";
+import type { ChildInfo, Delivery, Replies, Request, WatchLine } from "../src/protocol/requests.ts";
 import { StoreFile } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
+import type { SpawnServes } from "../src/protocol/worker-labels.ts";
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.ts");
 
@@ -606,13 +607,14 @@ export async function agentTurn(message: string): Promise<void> {
 
 /**
  * The options of a spawn through the socket: whether its answers are pushed, its request ID
- * (`<caller>:<prompt>` by default), the project of its host, and what the child serves.
+ * (`<caller>:<prompt>` by default), the project of its host, what the child serves, and its labels.
  */
 type SpawnOptions = {
 	readonly notify: boolean;
 	readonly requestId?: string;
 	readonly project?: string;
-	readonly serves?: ServesInput;
+	readonly serves?: SpawnServes;
+	readonly labels?: readonly string[];
 };
 
 /** Spawns a child of `caller` with the first message `prompt` through the socket, as the tool does. */
@@ -630,6 +632,8 @@ export async function spawnAs(caller: string, prompt: string, options: SpawnOpti
 	};
 
 	if (options.serves !== undefined) spawn = { ...spawn, serves: options.serves };
+
+	if (options.labels !== undefined) spawn = { ...spawn, labels: [...options.labels] };
 
 	const spawned = await request(spawn, {
 		start: false,
@@ -656,7 +660,7 @@ export async function answerOf(handle: string, project?: string): Promise<string
  */
 export async function spawnWithId(
 	caller: string,
-	options: { readonly serves?: ServesInput; readonly requestId?: string } = {},
+	options: { readonly serves?: SpawnServes; readonly requestId?: string } = {},
 ): Promise<{ handle: string; id: string }> {
 	const child = await spawnAs(caller, "Task:\nEnvironment", { notify: false, ...options });
 	const id = /^Tool said: (\d+) /.exec(await answerOf(child.handle))?.[1];

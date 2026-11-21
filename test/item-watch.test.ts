@@ -247,6 +247,7 @@ describe("the work items in watch-project", { timeout: 60_000 }, () => {
 				kind: "fixture.ask",
 				key: `wf:${runId}#1`,
 				input: { cwd: root, prompt: "Watched run" },
+				labels: [`item:${item.id}`],
 			});
 			await until(() => called("Watched run") === 1);
 			expect((await itemEvent(watch, from, item.id)).item).toMatchObject({ stage: "building", needsYou: false });

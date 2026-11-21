@@ -26,7 +26,7 @@ import {
 	unreadAnswers,
 	unreadNotify,
 } from "./records.ts";
-import { childOf, childTarget, type Found, heldByServing, library, type TargetHost, target } from "./targets.ts";
+import { childOf, childTarget, type Found, library, type TargetHost, target } from "./targets.ts";
 import { readUserAnswers, removeUserAnswer, USER_ANSWERS_KIND, type UserAnswer } from "./user-answers.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -74,13 +74,10 @@ type InputPush = {
 /** A delivery that also goes in the reply of an `answers` request, as `delivery`. */
 type Pending = InputPush & { readonly delivery: Delivery };
 
-/**
- * Where the answers of a caller go: its open `answers` request, or the input of a conversation of the host. With
- * `holdsChildren`, the answers of children to that conversation wait, and only the user answers go.
- */
+/** Where the answers of a caller go: its open `answers` request, or the input of a conversation of the host. */
 type Destination =
 	| { readonly kind: "reply" }
-	| { readonly kind: "input"; readonly send: (input: Input) => Promise<void>; readonly holdsChildren: boolean };
+	| { readonly kind: "input"; readonly send: (input: Input) => Promise<void> };
 
 /** The end of the next sweep, and a function that stops waiting for it. */
 type NextSweep = { readonly ended: Promise<void>; readonly cancel: () => void };
@@ -378,9 +375,8 @@ export class Push {
 			}
 
 			waiting.delete(caller);
-			const held = destination.kind === "input" && destination.holdsChildren;
 			const reply = destination.kind === "reply";
-			const { pending, stopped } = await this.#pending(held ? [] : children, answers, reply);
+			const { pending, stopped } = await this.#pending(children, answers, reply);
 			// The entry deliveries go after the children and the user answers, and wait when one of them stopped.
 			const pushes = stopped ? pending : [...pending, ...others.map((other) => this.#entryPending(other, reply))];
 
@@ -458,17 +454,13 @@ export class Push {
 	/**
 	 * Where the answers for `caller` go: its open `answers` request, else the input of a conversation of the host (a
 	 * child, the project agent, or another conversation of the children library, such as a child of a task), which resumes
-	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait. The
-	 * answers of children to a child that the end of what it serves ended wait too, until a message resumes it: its
-	 * children keep running and end later, and their answers as input would resume it at once. Its user answers go.
+	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait.
 	 */
 	async #destination(caller: string, entries: readonly Entry[]): Promise<Destination | undefined> {
 		if (this.#listeners.has(caller)) return { kind: "reply" };
-		const parent = conversationEntry(entries, caller);
-		const holdsChildren = parent !== undefined && (await heldByServing(this.#host, parent[1]));
 		const send = await this.#input(caller, entries);
 
-		return send === undefined ? undefined : { kind: "input", send, holdsChildren };
+		return send === undefined ? undefined : { kind: "input", send };
 	}
 
 	/**

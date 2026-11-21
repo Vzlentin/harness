@@ -1104,7 +1104,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 					conversationId,
 					requests: [{ id: "backoff-request", notify: true }],
 					read: 0,
-					serves: { kind: "spawner" },
+					labels: [],
 				};
 			}, BACKGROUND_CONTEXT);
 			await until(() => warnings() === 1);
@@ -1782,7 +1782,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("makes each child of a store from version 4 serve its spawner", async () => {
+	it("gives each child of a store from version 4 no label", async () => {
 		process.env.XDG_STATE_HOME = join(root, "state-v4");
 		const caller = "v4-session";
 
@@ -1798,7 +1798,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 			try {
 				const children = await request({ type: "list", caller }, { start: false });
-				expect(children?.map((info) => [info.handle, info.serves])).toEqual([["v4kid", { kind: "spawner" }]]);
+				expect(children?.map((info) => [info.handle, info.labels])).toEqual([["v4kid", undefined]]);
 			} finally {
 				await migrated?.close();
 			}
@@ -1806,7 +1806,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect((await storedChildren())?.children.v4kid).toMatchObject({
 				caller,
 				conversationId,
-				serves: { kind: "spawner" },
+				labels: [],
 			});
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
@@ -1814,9 +1814,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
-		const stateDir = await childrenStore("new-state", 7);
+		const stateDir = await childrenStore("new-state", 8);
 		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
-		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 7 than 6");
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 8 than 7");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 

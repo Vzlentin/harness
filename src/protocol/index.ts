@@ -24,3 +24,5 @@ export * from "./target.ts";
 export * from "./todo.ts";
 
 export * from "./tree.ts";
+
+export * from "./worker-labels.ts";

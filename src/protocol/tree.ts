@@ -1,6 +1,7 @@
 import { type Static, Type } from "typebox";
-import { CHILD_STATES, type ChildState, Served } from "./requests.ts";
+import { CHILD_STATES, type ChildState } from "./requests.ts";
 import { Todo } from "./todo.ts";
+import { Label } from "./worker-labels.ts";
 
 /** The states of a run node: the status of its task, as the tree gives it. */
 export const RUN_STATES = ["pending", "running", "completed", "failed", "aborted"] as const;
@@ -20,7 +21,7 @@ const NODE_FIELDS = {
 
 /**
  * One node of the tree of a project: an agent (the project agent, a child, or a conversation of the children library)
- * with the state of a child and what it serves, or a run (a started task, or a child task under it) with the state of
+ * with the state of a child and its labels, or a run (a started task, or a child task under it) with the state of
  * its task.
  */
 export const TreeNode = Type.Union([
@@ -28,8 +29,8 @@ export const TreeNode = Type.Union([
 		...NODE_FIELDS,
 		kind: Type.Literal("agent"),
 		state: Type.Enum(CHILD_STATES),
-		/** What the agent serves. A conversation of a task has none. */
-		serves: Type.Optional(Served),
+		/** The labels of a child of the host, when it has one. The project agent and a conversation of a task have none. */
+		labels: Type.Optional(Type.Array(Label)),
 	}),
 	Type.Object({ ...NODE_FIELDS, kind: Type.Literal("run"), state: Type.Enum(RUN_STATES) }),
 ]);

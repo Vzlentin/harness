@@ -6,6 +6,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
+import { CHILD_DOC_KIND } from "../children/library.ts";
 import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
 import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
@@ -13,7 +14,6 @@ import type { Replies } from "../protocol/requests.ts";
 import { readAsks } from "./asks.ts";
 import type { Degraded } from "./degraded.ts";
 import { changedItemId, readItem, readItems } from "./item-docs.ts";
-import type { ItemIndex } from "./item-index.ts";
 import { type StageHost, stageItems } from "./item-stage.ts";
 import { readParleys } from "./parleys.ts";
 import { readRules } from "./project-rules.ts";
@@ -29,12 +29,26 @@ import {
 	type StoredMessage,
 } from "./project.ts";
 import type { Connection } from "./push.ts";
+import { ChildRecords } from "./records.ts";
 import { type StoreView, serveStoreWatch } from "./store-watch.ts";
+import { StartedTasks, TaskLabels } from "./tasks.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** The kinds of the documents whose changes can change the stage or `needsYou` of any item. */
 const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND, HELD_KIND]);
+
+/**
+ * The kinds of the documents whose changes can change a worker of a label, and so the stage or `needsYou` of any item:
+ * the documents of the children, their records, the started tasks and the labels of the tasks. A task becomes live in
+ * the commit that writes the started tasks.
+ */
+const WORKER_DOCS: ReadonlySet<string> = new Set([
+	CHILD_DOC_KIND,
+	ChildRecords.definition.kind,
+	StartedTasks.definition.kind,
+	TaskLabels.definition.kind,
+]);
 
 export type ProjectHost = StageHost & {
 	readonly harness: Harness;
@@ -44,14 +58,12 @@ export type ProjectHost = StageHost & {
 	 */
 	readonly storage: Pick<Storage, "entry" | "scanDocuments">;
 	readonly degraded: Degraded;
-	/** The index of the ends of the items, which names the items of a node of the tree. */
-	readonly items: Pick<ItemIndex, "nodeItems">;
 };
 
 /**
  * Opens a watch of the store of the project on `connection`, and returns the reply, with every object. A pass runs once
  * the reply is written, and after it each commit that changes a person, a rule, a thread, a message, a held action,
- * a parley, an ask, an item, or a node of the tree at an end of an item starts a pass, and so does each change of the
+ * a parley, an ask, an item, a child, a started task or a task that ends starts a pass, and so does each change of the
  * degraded states of the host: the host reads the
  * objects again and sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that
  * went and every degraded state, only when one of its lists is not empty or the degraded states changed. The passes run
@@ -121,11 +133,9 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	#staged: Map<number, StagedItem> | undefined;
 	/** The IDs of the items that a commit changed since the last read, which the next read reads again. */
 	#freshItems = new Set<number>();
-	/** The IDs of the items at the ends of the nodes that changed since the last read, whose stages it works out again. */
-	#nodeItems = new Set<number>();
 	/**
-	 * Whether a parley, an ask or a held action changed since the last read, so it works out every stage again. The first
-	 * read works out every stage.
+	 * Whether a parley, an ask, a held action, a child, a started task or a task that ends changed since the last read, so it works out every stage
+	 * again. The first read works out every stage.
 	 */
 	#allStages = true;
 
@@ -195,13 +205,9 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 
 	/**
 	 * Whether `change` can change an object of the project. It records the threads that get a message, the items that
-	 * change, and the items whose stages can change.
+	 * change, and whether every stage can change.
 	 */
 	changes(change: CommitChange): boolean {
-		const nodes = this.#host.items.nodeItems(change);
-
-		for (const id of nodes) this.#nodeItems.add(id);
-
 		const item = changedItemId(change);
 
 		if (item !== undefined) {
@@ -210,7 +216,16 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			return true;
 		}
 
-		if (!projectChange(change)) return nodes.length > 0;
+		if (
+			(change.type === "task" && change.value.state.status === "terminal") ||
+			(change.type === "document" && WORKER_DOCS.has(change.record.kind))
+		) {
+			this.#allStages = true;
+
+			return true;
+		}
+
+		if (!projectChange(change)) return false;
 
 		if (change.type === "entry") this.#fresh.add(change.value.conversationId);
 
@@ -222,15 +237,12 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	/**
 	 * The open items with their stages, in ID order, and the items that left `open` since the last read, once. The first
 	 * read lists the open items. A later read reads again the items that a commit changed, and works out the stages of
-	 * those items, of the items of the nodes that changed, or of every open item after a change of a parley, an ask or a
-	 * held action.
+	 * those items, or of every open item after a change of a parley, an ask, a held action, a child, a started task or a task that ends.
 	 */
 	async #readItems(): Promise<StagedItem[]> {
 		const fresh = this.#freshItems;
-		const nodes = this.#nodeItems;
 		const all = this.#allStages;
 		this.#freshItems = new Set();
-		this.#nodeItems = new Set();
 		this.#allStages = false;
 		const map = this.#staged ?? new Map<number, StagedItem>();
 
@@ -249,7 +261,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		}
 
 		const readIds = new Set(open.map((item) => item.id));
-		const cached = [...map.values()].filter((item) => !readIds.has(item.id) && (all || nodes.has(item.id)));
+		const cached = [...map.values()].filter((item) => !readIds.has(item.id) && all);
 		const again = [...open, ...cached, ...left];
 		const staged = again.length === 0 ? [] : await stageItems(this.#host, again);
 		const leftStaged: StagedItem[] = [];

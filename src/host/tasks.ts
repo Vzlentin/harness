@@ -1,12 +1,15 @@
 /**
  * The tasks that clients start in the host: the tasks of the entries, as background tasks of the root
- * conversation, by the client's key.
+ * conversation, by the client's key, with their labels.
  */
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
-import type { Conversation, Extension, Harness, Task, TaskId } from "@earendil-works/pi-durable";
+import type { Conversation, Extension, Harness, Task, TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import type { Request, TaskInfo } from "../protocol/requests.ts";
+import { SpawnServes, type Worker, workerLabels } from "../protocol/worker-labels.ts";
 import { boundedReplay } from "./checkpoint.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -23,6 +26,18 @@ export const StartedTasks = durable.defineDoc<StartedTaskIds>({
 	initial: () => ({ tasks: {} }),
 });
 
+/** The labels of each started task by `start` key, for a task that has one. A key is never removed. */
+export const TaskLabels = durable.defineDoc<{ labels: Record<string, string[]> }>({
+	kind: "harness.task-labels",
+	version: 1,
+	scope: "session",
+	checkpointWhen: boundedReplay,
+	initial: () => ({ labels: {} }),
+});
+
+/** A task input with the `serves` of a spawn, which gives the task its label. */
+const ServesTaskInput = Type.Object({ serves: SpawnServes });
+
 /** What the task requests use of the host. */
 export type TaskHost = {
 	readonly harness: Harness;
@@ -32,18 +47,28 @@ export type TaskHost = {
 	readonly startable: Extension;
 	/** Aborted when the connection of the request closes. */
 	readonly signal: AbortSignal;
+	/** Refuses `labels` with the reason of the first label that the check of its kind refuses. */
+	readonly checkLabels: (labels: readonly string[]) => Promise<void>;
 };
 
 /**
  * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the project
  * agent's turn does not reach it. The key is written in the commit that creates the task, so a start after a crash
  * finds it. A repeat for a known key refuses another kind than the task's, and a version that the loaded definition
- * does not have, as a first start does.
+ * does not have, as a first start does. A first start checks the labels of the task (`taskLabels`) before its commit,
+ * which writes them.
  */
 export async function startTask(host: TaskHost, request: Extract<Request, { type: "start" }>): Promise<TaskInfo> {
+	const labels = taskLabels(request);
+	const started = await host.harness.snapshot(StartedTasks, context);
+
+	if (labels.length > 0 && startedTaskId(started, request.key) === undefined) {
+		await host.checkLabels(labels);
+	}
+
 	await host.root.commit(async (tx) => {
 		const state = await tx.doc(StartedTasks);
-		const known = Object.hasOwn(state.tasks, request.key) ? state.tasks[request.key] : undefined;
+		const known = startedTaskId(state, request.key);
 
 		if (known !== undefined) {
 			const record = await tx.task(known);
@@ -66,9 +91,53 @@ export async function startTask(host: TaskHost, request: Extract<Request, { type
 			ownership: { kind: "conversation" },
 			background: true,
 		});
+
+		if (labels.length > 0) (await tx.doc(TaskLabels)).labels[request.key] = labels;
 	}, context);
 
 	return taskInfo(host.harness, request.key);
+}
+
+/** The labels of the task of `request`: its `labels`, then the label of the `serves` of its input, each once. */
+function taskLabels(request: Extract<Request, { type: "start" }>): string[] {
+	return workerLabels(request.labels, Value.Check(ServesTaskInput, request.input) ? request.input.serves : undefined);
+}
+
+/** The ID of the task that `start` created for `key` in `started`, or nothing for a key that no `start` gave. */
+export function startedTaskId(
+	started: Readonly<StartedTaskIds> | undefined,
+	key: string,
+): TaskId<JsonValue> | undefined {
+	return started !== undefined && Object.hasOwn(started.tasks, key) ? started.tasks[key] : undefined;
+}
+
+/** Reads a task by ID, from the harness or in a commit, and gives nothing for an unknown ID. */
+export type TaskReader = (id: TaskId<JsonValue>) => Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
+
+/** The ID of the task of `key` in `started` while it is live: started and not terminal. `task` reads the task. */
+export async function liveTaskId(
+	started: Readonly<StartedTaskIds> | undefined,
+	key: string,
+	task: TaskReader,
+): Promise<TaskId<JsonValue> | undefined> {
+	const id = startedTaskId(started, key);
+	const record = id === undefined ? undefined : await task(id);
+
+	return record !== undefined && record.state.status !== "terminal" ? id : undefined;
+}
+
+/** The worker of the started task of `key` while it is live, as `liveTaskId` finds it, and else nothing. */
+export async function taskWorker(
+	started: Readonly<StartedTaskIds> | undefined,
+	key: string,
+	task: TaskReader,
+): Promise<Worker | undefined> {
+	return (await liveTaskId(started, key, task)) === undefined ? undefined : { kind: "task", key, state: "running" };
+}
+
+/** The keys of the started tasks that have `label` in `taskLabels`, the labels of each task by key. */
+export function labelledTasks(taskLabels: Readonly<Record<string, readonly string[]>>, label: string): string[] {
+	return Object.entries(taskLabels).flatMap(([key, labels]) => (labels.includes(label) ? [key] : []));
 }
 
 /** The info of the task that `start` created for `key`. */
@@ -99,8 +168,7 @@ export async function abortTask(harness: Harness, key: string): Promise<TaskInfo
 
 /** The ID of the task that `start` created for `key`. */
 export async function taskId(harness: Harness, key: string): Promise<TaskId<JsonValue>> {
-	const state = await harness.snapshot(StartedTasks, context);
-	const id = state != null && Object.hasOwn(state.tasks, key) ? state.tasks[key] : undefined;
+	const id = startedTaskId(await harness.snapshot(StartedTasks, context), key);
 
 	if (id === undefined) throw new Error(`Unknown task: ${key}`);
 
