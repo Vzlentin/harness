@@ -22,7 +22,7 @@ import type { Degraded } from "./degraded.ts";
 import { readItems } from "./item-docs.ts";
 import { sessionDoc } from "./project-docs.ts";
 import { type OutState, readHeld, readOutbox, readPersons, readThreads } from "./project.ts";
-import type { Found } from "./targets.ts";
+import { type Found, passiveEntry } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -137,11 +137,10 @@ export async function writeDigest(host: DigestHost, target: Pick<Found, "convers
 		const digest = await nextDigest(host, caller, marker === undefined ? undefined : String(marker.id));
 
 		if (digest === undefined) return;
-		const model = [{ role: "user", content: digest.text, timestamp: Date.now() }] as const;
 		await target.write({
 			type: "write",
 			requestId: digest.requestId,
-			entry: { kind: DIGEST_KIND, model, data: digest.data },
+			entry: passiveEntry({ kind: DIGEST_KIND, text: digest.text, data: digest.data }),
 		});
 		await recordDigest(host.harness, caller, digest);
 	});

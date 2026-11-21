@@ -11,6 +11,7 @@ import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import {
 	type Conversation,
+	type ConversationId,
 	createRegistry,
 	type Extension,
 	Harness,
@@ -39,10 +40,12 @@ import {
 import { savedTrust } from "../protocol/trust.ts";
 import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
+import { AskEventDispatcher } from "./ask-events.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
 import { askClassifier, classifierModel } from "./classify.ts";
 import { Degraded } from "./degraded.ts";
+import { queueDelivery } from "./deliveries.ts";
 import { type Base, handleLine, handleRequest, type Line } from "./dispatch.ts";
 import { type EntryHandles, EntryLine, type EntryRequest, loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
@@ -191,6 +194,8 @@ export async function runHost(options: {
 	let harness: Harness | undefined;
 	// The storage of the harness, whose scan `store.json` uses for the lists of the callers.
 	let storage: Storage | undefined;
+	// The root conversation, which entry deliveries need to know, once the harness is open.
+	let rootId: ConversationId | undefined;
 
 	const place: Place = {
 		get store() {
@@ -212,6 +217,10 @@ export async function runHost(options: {
 		classifier: {
 			model: (key) => classifierModel(settings, models, key, degraded),
 			ask: (model, classifierContext, signal) => askClassifier(models, model, classifierContext, signal),
+		},
+		deliver: async (delivery) => {
+			if (harness === undefined || rootId === undefined) throw new Error("The host is not open yet");
+			await queueDelivery(harness, rootId, delivery, context);
 		},
 	};
 
@@ -313,6 +322,7 @@ export async function runHost(options: {
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
 	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
 	const root = await harness.root(context);
+	rootId = root.id;
 
 	const owner = { kind: "detached", root } as const;
 	// The first start moves the todos of the project to items, before any reader of the items or the records.
@@ -320,7 +330,21 @@ export async function runHost(options: {
 	// The index of the ends of the items observes the commits first, so the observers and the passes after it read it
 	// current with each commit.
 	const items = await ItemIndex.open(harness, storage);
-	const push = new Push({ harness, place, owner, root, project, agent, items, warn, degraded });
+
+	const push = new Push({
+		harness,
+		place,
+		owner,
+		root,
+		project,
+		agent,
+		items,
+		warn,
+		degraded,
+		storage,
+		inputHooks: entries.inputHooks,
+	});
+
 	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
 	const serving = new Serving({ harness, place, owner, items, warn });
 
@@ -339,6 +363,8 @@ export async function runHost(options: {
 		items,
 		cwd: projectCwd,
 		catchUps: entries.catchUps,
+		inputHooks: entries.inputHooks,
+		askEvents: entries.answeredAsk !== undefined,
 		entryVersions: entries.versions,
 		warn,
 		degraded,
@@ -346,6 +372,9 @@ export async function runHost(options: {
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
+
+	const askEvents =
+		entries.answeredAsk === undefined ? undefined : new AskEventDispatcher(harness, entries.answeredAsk, warn);
 
 	const storeFile = storeFilePasses({ harness, storage, root, path: storePath, warn });
 
@@ -431,6 +460,7 @@ export async function runHost(options: {
 		await storeFile.close();
 		awake.close();
 		await bridge.close();
+		await askEvents?.close();
 		await entries.close();
 		await sandbox.close();
 		await harness.close(context);
@@ -452,6 +482,8 @@ export async function runHost(options: {
 			const sessionsClosed = sessions.close();
 			const servingClosed = serving.close();
 			const storeFileClosed = storeFile.close();
+			// The handler of the answered asks gets the abort, and its event waits for the next start.
+			const askEventsClosed = askEvents?.close();
 			awake.close();
 			server.close();
 			const reason = new Error(HOST_CLOSING);
@@ -470,6 +502,7 @@ export async function runHost(options: {
 
 				// Entries close first: an entry may still need the open harness. The sandbox closes before the harness, so a
 				// script that runs gets no outcome and continues after a restart.
+				await askEventsClosed;
 				await entries.close();
 				await sandbox.close();
 				await pushClosed;

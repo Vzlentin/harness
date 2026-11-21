@@ -111,6 +111,8 @@ describe("push", () => {
 			items,
 			warn: () => {},
 			degraded: new Degraded(() => undefined),
+			storage,
+			inputHooks: [],
 		});
 
 		const done = push.done(child, new AbortController().signal);

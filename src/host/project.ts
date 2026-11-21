@@ -57,6 +57,7 @@ import {
 } from "../protocol/project.ts";
 import type { StoreFile } from "../protocol/store-file.ts";
 import { type Todo, todoLine } from "../protocol/todo.ts";
+import { queueAskEvents } from "./ask-events.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { contractItems, itemForContract, writeEdge } from "./items.ts";
 import {
@@ -533,7 +534,8 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  * their askers: one delivery for each asker and parley, with the text of the parley, and one for each answered ask with
  * no parley. An ask whose asker is `by` gets no delivery. When the host has a vault at this answer, it also adds the
  * todo `Save to the vault` of each answered ask to the list of its asker, where `root` is the project agent, and the
- * delivery of the ask ends with the line of that todo. The reply gives the items that the write added.
+ * delivery of the ask ends with the line of that todo. With `askEvents`, the same commit also queues one event for each
+ * answered ask, for the handler of an entry. The reply gives the items that the write added.
  */
 export async function answerAsks(
 	tx: Tx,
@@ -542,6 +544,7 @@ export async function answerAsks(
 	author: AnswerAuthor,
 	root: ConversationId,
 	items: Pick<ItemIndex, "itemsOf">,
+	askEvents: boolean,
 ): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const asks = (await tx.doc(Asks)).asks;
@@ -584,6 +587,8 @@ export async function answerAsks(
 
 	const added = await addSaveTodos(tx, root, written);
 	await queueAnswers(tx, deliveries(parleys, asks, written, by, added));
+
+	if (askEvents) await queueAskEvents(tx, written);
 	const touched = written.flatMap((ask) => (ask.parley === undefined ? [] : [ask.parley.id]));
 	const reply = writeReply(parleys, asks, touched, written);
 

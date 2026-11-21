@@ -5,7 +5,6 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
-import type * as durable from "@earendil-works/pi-durable";
 import type { Harness, Storage } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -29,6 +28,7 @@ import { nextDigest, recordDigest, writeDigest } from "./digest.ts";
 import type { EntryLine, EntryRequest } from "./entries.ts";
 import { serveEntryRequest } from "./entry-requests.ts";
 import { gateCall } from "./gate.ts";
+import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
 import { allItems, readItemBothWays, readItems } from "./item-docs.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
 import { addItem, linkItem, serveItem, setItem, unlinkItem } from "./items.ts";
@@ -86,6 +86,7 @@ import {
 	endChildren,
 	type Found,
 	library,
+	passiveEntry,
 	refuseEnded,
 	type SendOptions,
 	stoppedEntry,
@@ -114,7 +115,8 @@ const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 /** What every request of the host uses. */
 export type Base = Omit<TaskHost, "signal"> &
 	TargetHost &
-	CatchUpHost & {
+	CatchUpHost &
+	InputHooksHost & {
 		/**
 		 * Pi's settings, for the depth limit of the subagent tree, the default model and thinking level of a spawn, and the
 		 * classifiers of the todos and of the gate, and the model of a query.
@@ -124,6 +126,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly warn: (cause: unknown) => void;
 		/** The versions of the protocols of the entries, by name, which the `hello` reply gives. */
 		readonly entryVersions: Readonly<Record<string, number>>;
+		/** Whether an entry handles the answered asks, so the commit of the answers records their events. */
+		readonly askEvents: boolean;
 		/** The memory of the project agent, for the `memory` requests of the Pi sessions. */
 		readonly memory: HostMemory;
 		readonly push: Push;
@@ -258,6 +262,7 @@ async function send(request: Extract<Request, { type: "send" }>, handler: Handle
 
 	return handler.push.whileActive(handle, async () => {
 		const found = await childTarget(handler, handle, record);
+		await beforeInput(handler, found);
 		await writeDigest(handler, found);
 
 		return sendTo(request, found, handler.harness, {
@@ -276,6 +281,7 @@ async function input(
 	const found = await target(handler, ref);
 
 	if (ref.kind === "agent") await catchUp(handler, found.write, request.requestId);
+	await beforeInput(handler, found);
 	await writeDigest(handler, found);
 
 	// A conversation takes input only while it works, so its input is always a steer.
@@ -436,7 +442,8 @@ async function ask(request: Extract<Request, { type: "ask" }>, handler: Handler)
 			const author = await answerAuthor(request, handler);
 
 			return handler.harness.commit(
-				(tx) => answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items),
+				(tx) =>
+					answerAsks(tx, request.answers, request.caller, author, handler.root.id, handler.items, handler.askEvents),
 				context,
 			);
 		}
@@ -644,6 +651,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	const record = await childRecord(harness, handle);
 	const requestId = `spawn:${request.requestId}`;
 	const found = await childTarget(handler, handle, record);
+	await beforeInput(handler, found);
 	await writeDigest(handler, found);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it. As for a `send`,
 	// the request goes into the record's `requests` in the commit that makes it the last request.
@@ -692,8 +700,7 @@ async function noteTo(
 ): Promise<{ child: ChildInfo }> {
 	const kind = request.kind ?? "harness.note";
 	const found = await target(handler, ref);
-	const model = [{ role: "user", content: request.text, timestamp: Date.now() }] as const;
-	const entry: durable.EntryDraft = request.data === undefined ? { kind, model } : { kind, model, data: request.data };
+	const entry = passiveEntry({ kind, text: request.text, data: request.data });
 	// The scope keeps a note from taking the request ID of an input to the same conversation.
 	await found.write({ type: "write", requestId: `note:${request.requestId}`, entry });
 

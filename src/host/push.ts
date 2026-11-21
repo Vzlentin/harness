@@ -1,6 +1,7 @@
 /**
- * The push of the answers of children to their callers, and of the answers of the user to their askers: a caller in the
- * host gets them as input, another caller as the reply to its open `answers` request.
+ * The push of the answers of children to their callers, of the answers of the user to their askers, and of the
+ * deliveries of the entries to their conversations: a caller in the host gets them as input, another caller as the
+ * reply to its open `answers` request.
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -9,6 +10,9 @@ import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import { type Delivery, errorMessage, HOST_CLOSING } from "../protocol/requests.ts";
 import type { Degraded } from "./degraded.ts";
+import { DELIVERIES_KIND, deliveryRequest, readDeliveries, removeDelivery } from "./deliveries.ts";
+import type { EntryDelivery } from "./entries.ts";
+import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
 import { CommitPasses } from "./passes.ts";
 import {
 	type ChildRecord,
@@ -22,18 +26,19 @@ import {
 	unreadAnswers,
 	unreadNotify,
 } from "./records.ts";
-import { childOf, childTarget, heldByServing, library, type TargetHost, target } from "./targets.ts";
+import { childOf, childTarget, type Found, heldByServing, library, type TargetHost, target } from "./targets.ts";
 import { readUserAnswers, removeUserAnswer, USER_ANSWERS_KIND, type UserAnswer } from "./user-answers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** What the push uses of the host. */
-export type PushHost = TargetHost & {
-	/** The root conversation, which is the project agent. */
-	readonly root: Conversation;
-	readonly warn: (cause: unknown) => void;
-	readonly degraded: Degraded;
-};
+export type PushHost = TargetHost &
+	InputHooksHost & {
+		/** The root conversation, which is the project agent. */
+		readonly root: Conversation;
+		readonly warn: (cause: unknown) => void;
+		readonly degraded: Degraded;
+	};
 
 /**
  * The socket of a request, and a hook that runs `run` once the reply goes to the socket. `written` resolves once the
@@ -54,16 +59,20 @@ type Listener = {
 };
 
 /**
- * One delivery that a sweep takes for a caller: the answers of a child, or a queued answer of the user. `key` is the
- * handle of the child, or the request ID of the user answer. The input of the delivery has the request ID `requestId`,
- * and `settle()` marks the answers of the child read, or removes the user answer from the queue.
+ * One delivery that a sweep pushes to a caller as input: the answers of a child, a queued answer of the user, or a
+ * delivery of an entry. `key` is the handle of the child, the request ID of the user answer, or the key of the entry
+ * delivery and its conversation. The input has the text `content` and the request ID `requestId`, and `settle()` marks
+ * the answers of the child read, or removes the user answer or the entry delivery from its queue.
  */
-type Pending = {
+type InputPush = {
 	readonly key: string;
-	readonly delivery: Delivery;
+	readonly content: string;
 	readonly requestId: string;
 	readonly settle: () => Promise<void>;
 };
+
+/** A delivery that also goes in the reply of an `answers` request, as `delivery`. */
+type Pending = InputPush & { readonly delivery: Delivery };
 
 /**
  * Where the answers of a caller go: its open `answers` request, or the input of a conversation of the host. With
@@ -78,6 +87,9 @@ type NextSweep = { readonly ended: Promise<void>; readonly cancel: () => void };
 
 type Entry = readonly [handle: string, record: ChildRecord];
 
+/** A conversation of the host that a push sends input to, and where the input hooks write. */
+type HostedInput = Pick<Found, "conversation" | "write"> & { readonly send: (input: Input) => Promise<void> };
+
 /** The failed pushes of a delivery in a row, and when the next try may run. */
 type Failure = { readonly count: number; readonly retryAt: number };
 
@@ -91,7 +103,8 @@ const MAX_RETRY_MS = 60_000;
  * the end of each `wait` and `send`, and when an `answers` request opens or its reply is written. Calls for a sweep
  * while one runs give one more sweep. After a push of a child fails, the sweeps skip that child for a time that doubles
  * with each failure, and a timer sweeps again when it ends. The answers of the user go to their askers in the same
- * sweeps, after the answers of the children of the same caller, oldest first, with the same waits. A delivery whose
+ * sweeps, after the answers of the children of the same caller, oldest first, with the same waits, and the deliveries
+ * of the entries go after them, oldest first, as input only. A delivery whose
  * last push failed is the degraded state `push-failed` until a push of it succeeds or it goes, and an asker with
  * answers of the user and no destination is the degraded state `answer-waits` until it gets one or no answer waits for
  * it.
@@ -283,14 +296,20 @@ export class Push {
 	}
 
 	/**
-	 * Pushes the answers of the children that are done, oldest child first, then the user answers, oldest first, for each
-	 * caller with a destination.
+	 * Pushes the answers of the children that are done, oldest child first, then the user answers, oldest first, then the
+	 * deliveries of the entries, oldest first, for each caller with a destination.
 	 */
 	async #sweep(now: number): Promise<void> {
 		const state = await this.#host.harness.snapshot(ChildRecords, context);
 		const entries: Entry[] = recordsByAge(state);
 		const queued = await readUserAnswers(this.#host.harness, context);
-		const keys = new Set([...Object.keys(state?.children ?? {}), ...queued.map(({ id }) => userAnswerRequest(id))]);
+		const delivered = await readDeliveries(this.#host.harness, context);
+
+		const keys = new Set([
+			...Object.keys(state?.children ?? {}),
+			...queued.map(({ id }) => userAnswerRequest(id)),
+			...delivered.map(entryDeliveryKey),
+		]);
 
 		for (const key of this.#failures.keys()) {
 			if (!keys.has(key)) this.#succeed(key);
@@ -318,18 +337,35 @@ export class Push {
 			asked.set(answer.asker, [...(asked.get(answer.asker) ?? []), answer]);
 		}
 
+		const fromEntries = new Map<string, EntryDelivery[]>();
+
+		for (const delivery of delivered) {
+			const key = entryDeliveryKey(delivery);
+
+			if (this.#waits(key, delivery.to, blocked, now) || this.#writing.has(key)) continue;
+			fromEntries.set(delivery.to, [...(fromEntries.get(delivery.to) ?? []), delivery]);
+		}
+
 		// The askers whose answers of the user wait with no destination; an asker that has one this sweep leaves.
 		const waiting = new Set(queued.map(({ asker }) => asker));
 
-		for (const caller of new Set([...done.keys(), ...asked.keys()])) {
+		for (const caller of new Set([...done.keys(), ...asked.keys(), ...fromEntries.keys()])) {
 			const children = done.get(caller) ?? [];
 			const answers = asked.get(caller) ?? [];
+			const others = fromEntries.get(caller) ?? [];
 			let destination: Destination | undefined;
 
 			try {
 				destination = await this.#destination(caller, entries);
 			} catch (cause) {
-				this.#fail([...children.map(([handle]) => handle), ...answers.map(({ id }) => userAnswerRequest(id))], cause);
+				this.#fail(
+					[
+						...children.map(([handle]) => handle),
+						...answers.map(({ id }) => userAnswerRequest(id)),
+						...others.map(entryDeliveryKey),
+					],
+					cause,
+				);
 
 				continue;
 			}
@@ -343,9 +379,15 @@ export class Push {
 
 			waiting.delete(caller);
 			const held = destination.kind === "input" && destination.holdsChildren;
-			const pending = await this.#pending(held ? [] : children, answers, destination.kind === "reply");
+			const reply = destination.kind === "reply";
+			const { pending, stopped } = await this.#pending(held ? [] : children, answers, reply);
+			// The entry deliveries go after the children and the user answers, and wait when one of them stopped.
+			const pushes = stopped ? pending : [...pending, ...others.map((other) => this.#entryPending(other, reply))];
 
-			if (pending.length > 0) await this.#deliver(caller, destination, pending);
+			if (pushes.length === 0) continue;
+
+			if (destination.kind === "reply") this.#reply(caller, pushes);
+			else await this.#push(destination.send, pushes);
 		}
 
 		this.#host.degraded.keepOnly("answer-waits", waiting);
@@ -363,10 +405,14 @@ export class Push {
 
 	/**
 	 * The deliveries of `children`, oldest child first, then of the user answers `answers`. It stops at the first child
-	 * whose answers cannot be taken, so the later deliveries of the caller keep their order. Only a `reply` takes the
-	 * answers of an ended child.
+	 * whose answers cannot be taken, and then gives `stopped`, so the later deliveries of the caller keep their order.
+	 * Only a `reply` takes the answers of an ended child.
 	 */
-	async #pending(children: readonly Entry[], answers: readonly UserAnswer[], reply: boolean): Promise<Pending[]> {
+	async #pending(
+		children: readonly Entry[],
+		answers: readonly UserAnswer[],
+		reply: boolean,
+	): Promise<{ pending: Pending[]; stopped: boolean }> {
 		const pending: Pending[] = [];
 
 		for (const [handle, record] of children) {
@@ -377,7 +423,7 @@ export class Push {
 			} catch (cause) {
 				this.#fail([handle], cause);
 
-				return pending;
+				return { pending, stopped: true };
 			}
 
 			if (one === undefined) this.#succeed(handle);
@@ -387,10 +433,26 @@ export class Push {
 		for (const { id, delivery } of answers) {
 			const requestId = userAnswerRequest(id);
 			const settle = () => removeUserAnswer(this.#host.harness, id, context);
-			pending.push({ key: requestId, delivery, requestId, settle });
+			pending.push({ key: requestId, content: deliveryText(delivery), delivery, requestId, settle });
 		}
 
-		return pending;
+		return { pending, stopped: false };
+	}
+
+	/**
+	 * The push of the entry delivery `other`, which leaves its queue once it is sent, and which a Pi session keeps as sent
+	 * when it goes in a `reply`.
+	 */
+	#entryPending(other: EntryDelivery, reply: boolean): Pending {
+		const delivery: Delivery = { source: "entry", key: other.key, text: other.text };
+
+		return {
+			key: entryDeliveryKey(other),
+			content: deliveryText(delivery),
+			delivery,
+			requestId: deliveryRequest(other.key),
+			settle: () => this.#host.harness.commit((tx) => removeDelivery(tx, other.key, other.to, reply), context),
+		};
 	}
 
 	/**
@@ -410,32 +472,23 @@ export class Push {
 	}
 
 	/**
-	 * Delivers `pending` to `destination`, in order. In the reply of an `answers` request, each one settles once the
-	 * reply is written. As input, each one settles after its send, and the first that fails stops the others.
+	 * Sends `pushes` to the input `send` of their caller, in order. Each one settles after its send, and the first that
+	 * fails stops the others.
 	 */
-	async #deliver(caller: string, destination: Destination, pending: readonly Pending[]): Promise<void> {
-		switch (destination.kind) {
-			case "reply":
-				this.#reply(caller, pending);
+	async #push(send: (input: Input) => Promise<void>, pushes: readonly InputPush[]): Promise<void> {
+		for (const { key, content, requestId, settle } of pushes) {
+			// The caller is busy with the input before the child stops holding it, and a repeated push finds the first one.
+			try {
+				await send({ type: "input", content, whenBusy: "followUp", requestId });
+				await settle();
+			} catch (cause) {
+				this.#fail([key], cause);
 
-				for (const { key } of pending) this.#succeed(key);
-
+				// The later deliveries of this caller wait until this one is pushed, so they keep their order.
 				return;
-			case "input":
-				for (const { key, delivery, requestId, settle } of pending) {
-					// The caller is busy with the input before the child stops holding it, and a repeated push finds the first one.
-					try {
-						await destination.send({ type: "input", content: deliveryText(delivery), whenBusy: "followUp", requestId });
-						await settle();
-					} catch (cause) {
-						this.#fail([key], cause);
+			}
 
-						// The later deliveries of this caller wait until this one is pushed, so they keep their order.
-						return;
-					}
-
-					this.#succeed(key);
-				}
+			this.#succeed(key);
 		}
 	}
 
@@ -487,19 +540,41 @@ export class Push {
 
 	/** The input of `caller` when it is a conversation of the host. It resumes an ended conversation. */
 	async #input(caller: string, entries: readonly Entry[]): Promise<((input: Input) => Promise<void>) | undefined> {
-		if (caller === String(this.#host.root.id)) return (await target(this.#host, { kind: "agent" })).send;
+		const found = await this.#found(caller, entries);
+
+		if (found === undefined) return undefined;
+
+		return async (input) => {
+			await beforeInput(this.#host, found);
+			await found.send(input);
+		};
+	}
+
+	/** The conversation of `caller` when it is a conversation of the host, with its input and its writes. */
+	async #found(caller: string, entries: readonly Entry[]): Promise<HostedInput | undefined> {
+		if (caller === String(this.#host.root.id)) return target(this.#host, { kind: "agent" });
 		const parent = conversationEntry(entries, caller);
 
-		if (parent !== undefined) return (await childTarget(this.#host, ...parent)).send;
+		if (parent !== undefined) return childTarget(this.#host, ...parent);
 		const inspected = await library.inspect(this.#host.place, caller, context);
 
 		if (inspected === undefined) return undefined;
 
-		return (input) => inspected.input(input, context);
+		return {
+			conversation: inspected.conversation,
+			send: (input) => inspected.input(input, context),
+			write: async (write) => {
+				await inspected.conversation.submit(write, context);
+			},
+		};
 	}
 
-	/** Replies to the open `answers` request of `caller` with `pending`, which settles once the reply is written. */
+	/**
+	 * Replies to the open `answers` request of `caller` with `pending`, in order. Each one settles once the reply is
+	 * written.
+	 */
 	#reply(caller: string, pending: readonly Pending[]): void {
+		for (const { key } of pending) this.#succeed(key);
 		const listener = this.#listeners.get(caller);
 
 		if (listener === undefined) return;
@@ -553,6 +628,7 @@ export class Push {
 
 		return {
 			key: handle,
+			content: deliveryText(delivery),
 			delivery,
 			requestId: pushRequest(handle, read),
 			settle: () => markRead(this.#host.harness, handle, read, main),
@@ -568,14 +644,19 @@ function userAnswerRequest(id: number): string {
 	return `user-answer:${id}`;
 }
 
+/** The key of the entry delivery `delivery` in the sweeps: its key is unique only for its conversation. */
+function entryDeliveryKey(delivery: EntryDelivery): string {
+	return `${deliveryRequest(delivery.key)} to ${delivery.to}`;
+}
+
 /**
  * Whether `change` can end a turn or change a record: a live document without a run or retired, the `ChildRecords`
- * document, or the queue of the user answers.
+ * document, the queue of the user answers, or the queue of the entry deliveries.
  */
 function endsTurn(change: CommitChange): boolean {
 	if (change.type !== "document") return false;
 
-	if (change.record.kind === ChildRecords.definition.kind || change.record.kind === USER_ANSWERS_KIND) return true;
+	if ([ChildRecords.definition.kind, USER_ANSWERS_KIND, DELIVERIES_KIND].includes(change.record.kind)) return true;
 
 	if (change.record.kind !== LiveDoc.definition.kind) return false;
 

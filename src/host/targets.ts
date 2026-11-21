@@ -1,8 +1,9 @@
 /**
  * The targets of the host's requests: the children by handle, the project agent, and the conversations of the children
- * library by ID, with their info.
+ * library by ID, with their info, and the passive user entries that the host writes to them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as durable from "@earendil-works/pi-durable";
 import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
 import {
@@ -125,6 +126,16 @@ export function agentTurn(place: Place, root: Conversation): Turn {
 }
 
 export type Found = Awaited<ReturnType<typeof target>>;
+
+/** What a passive user entry holds: its kind, the text that the model reads, and its data. */
+export type PassiveEntry = { readonly kind: string; readonly text: string; readonly data?: JsonValue | undefined };
+
+/** The passive user entry `entry`: one user message, which starts no turn. */
+export function passiveEntry({ kind, text, data }: PassiveEntry): durable.EntryDraft {
+	const model = [{ role: "user", content: text, timestamp: Date.now() }] as const;
+
+	return data === undefined ? { kind, model } : { kind, model, data };
+}
 
 /** The options of a child's `send`, which a target that is not a child does not take. */
 export type SendOptions = Parameters<Child["send"]>[2];

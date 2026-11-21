@@ -10,6 +10,8 @@ export function deliveryText(delivery: Delivery): string {
 			return `the user answered ask ${delivery.ask}\n\n${delivery.text}`;
 		case "parley":
 			return `the user answered the parley ${delivery.parley}\n\n${delivery.text}`;
+		case "entry":
+			return delivery.text;
 	}
 }
 

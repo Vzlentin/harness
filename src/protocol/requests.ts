@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 40;
+export const PROTOCOL_VERSION = 41;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -633,8 +633,8 @@ export type UserDelivery =
 	| { readonly source: "parley"; readonly parley: string; readonly asks: number[]; readonly text: string };
 
 /**
- * What the host pushes to a caller: the answers of a child, as `wait` gives them, or its error when `failed`, or the
- * answers of the user to the asks of the caller.
+ * What the host pushes to a caller: the answers of a child, as `wait` gives them, or its error when `failed`, the
+ * answers of the user to the asks of the caller, or the text of a delivery of an entry, with its key.
  */
 export type Delivery =
 	| {
@@ -644,7 +644,8 @@ export type Delivery =
 			readonly text: string;
 			readonly failed: boolean;
 	  }
-	| UserDelivery;
+	| UserDelivery
+	| { readonly source: "entry"; readonly key: string; readonly text: string };
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };

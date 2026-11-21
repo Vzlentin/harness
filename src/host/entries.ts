@@ -1,7 +1,7 @@
 /**
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
- * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, the
- * request types that it serves and the version of its protocol to the host.
+ * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
+ * hook, a handler of the answered asks, the request types that it serves and the version of its protocol to the host.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -23,7 +23,7 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { createChildren, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
-import type { AskList } from "../protocol/project.ts";
+import type { Ask, AskList } from "../protocol/project.ts";
 import { Json } from "../protocol/requests.ts";
 import type { ClassifierKey } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
@@ -55,6 +55,43 @@ const CatchUpHook = Type.Object({
 });
 
 export type CatchUpHook = Static<typeof CatchUpHook>;
+
+/**
+ * The entry that an input hook writes: `key` names it in the request ID `input:<hook kind>:<key>`, so a repeat adds
+ * nothing; `kind` is the kind of the entry, `text` its words for the model, and `data` its data.
+ */
+export const InputWrite = Type.Object({
+	key: Type.String({ minLength: 1 }),
+	kind: Type.String({ minLength: 1 }),
+	text: Type.String(),
+	data: Type.Optional(Json),
+});
+
+export type InputWrite = Static<typeof InputWrite>;
+
+/**
+ * What an input hook gets before an input: the ID of the conversation, the ID of the newest head marker of its context
+ * (a compaction or a reset), and `write`, which writes at most one passive user entry before the input.
+ */
+export type InputHookCall = {
+	readonly conversation: string;
+	readonly head: string | undefined;
+	readonly write: (write: InputWrite) => Promise<void>;
+};
+
+/** The input hook of an entry, which runs before each input of a hosted conversation. `kind` names it. */
+const InputHook = Type.Object({
+	kind: Type.String({ minLength: 1 }),
+	run: Type.Unsafe<(call: InputHookCall) => Promise<void>>(Type.Function([Type.Unknown()], Type.Unknown())),
+});
+
+export type InputHook = Static<typeof InputHook>;
+
+/** An answered ask that the handler of an entry gets: its key `answer:<n>`, and the ask with its answer. */
+export type AnsweredAskEvent = { readonly key: string; readonly ask: Ask };
+
+/** The handler of the answered asks of an entry. */
+export type AnsweredAskHandler = (event: AnsweredAskEvent, options: { readonly signal: AbortSignal }) => Promise<void>;
 
 /** A request line of a type that an entry serves: a JSON object with its type. */
 export const EntryLine = Type.Intersect([Type.Object({ type: Type.String() }), Type.Record(Type.String(), Json)]);
@@ -106,13 +143,18 @@ export type EntryRequest = Static<typeof EntryRequest>;
 const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) });
 
 /**
- * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, the
- * request types that it serves, the version of its protocol, and `close`.
+ * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
+ * input hook, its handler of the answered asks, the request types that it serves, the version of its protocol, and
+ * `close`.
  */
 const EntryResult = Type.Object({
 	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
 	tasks: Type.Optional(Type.Unsafe<readonly AnyTask[]>(Type.Array(Type.Unknown()))),
 	catchUp: Type.Optional(CatchUpHook),
+	input: Type.Optional(InputHook),
+	answeredAsk: Type.Optional(
+		Type.Unsafe<AnsweredAskHandler>(Type.Function([Type.Unknown(), Type.Unknown()], Type.Unknown())),
+	),
 	requests: Type.Optional(Type.Array(EntryRequest)),
 	protocol: Type.Optional(EntryProtocol),
 	close: Type.Unsafe<() => Promise<void>>(Type.Function([], Type.Unknown())),
@@ -121,13 +163,16 @@ const EntryResult = Type.Object({
 export type Entry = Static<typeof EntryResult>;
 
 /**
- * The entries that the host loaded, as one: their extensions, tasks and catch-up hooks in load order, their request
- * types by type, the versions of their protocols by name, the event bus that they share, and `close`.
+ * The entries that the host loaded, as one: their extensions, tasks, catch-up hooks and input hooks in load order, the
+ * handler of the answered asks of at most one entry, their request types by type, the versions of their protocols by
+ * name, the event bus that they share, and `close`.
  */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
 	readonly tasks: readonly AnyTask[];
 	readonly catchUps: readonly CatchUpHook[];
+	readonly inputHooks: readonly InputHook[];
+	readonly answeredAsk: AnsweredAskHandler | undefined;
 	readonly requests: ReadonlyMap<string, EntryRequest>;
 	readonly versions: Readonly<Record<string, number>>;
 	readonly events: EventBus;
@@ -157,7 +202,22 @@ export type EntryHandles = {
 	/** Writes a warning to the host's log. */
 	readonly warn: (cause: unknown) => void;
 	readonly classifier: EntryClassifier;
+	/**
+	 * Sends `text` once for each `key` to `to`: as input to a hosted conversation (the project agent, a child or a library
+	 * conversation), or in the reply to the `answers` request of a Pi session. It throws until the host is open, and for
+	 * another `to`.
+	 */
+	readonly deliver: (delivery: EntryDelivery) => Promise<void>;
 };
+
+/** A delivery of an entry: the text that goes to the conversation or Pi session `to` once for the key `key`. */
+export const EntryDelivery = Type.Object({
+	key: Type.String({ minLength: 1 }),
+	to: Type.String({ minLength: 1 }),
+	text: Type.String({ minLength: 1 }),
+});
+
+export type EntryDelivery = Static<typeof EntryDelivery>;
 
 /** What the host gives the default export of an entry. */
 type EntryOptions = EntryHandles & {
@@ -180,8 +240,8 @@ const Manifest = Type.Object({
  * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, then the entries of
  * `entries.json` (see `readEntries`), with the children library `children` and the host's `handles`, in one shared
  * event bus, as one entry whose `close()` closes each of them and passes its errors to `handles.warn`. When an entry
- * fails to load, returns an invalid result, gives the kind of catch-up hook, a request type or the protocol name of an
- * earlier entry, or serves a request type of `coreTypes`, which the host owns, the entries loaded before it close.
+ * fails to load, returns an invalid result, gives the kind of catch-up hook or input hook, a request type or the protocol
+ * name of an earlier entry, gives a handler of the answered asks when an earlier entry gave one, or serves a request type of `coreTypes`, which the host owns, the entries loaded before it close.
  * Missing packages are skipped, not installed, and so is an entry module of `entries.json` that does not exist, such as
  * one of an uninstalled package, with a warning. A package or an entry that it skips is a degraded state in
  * `handles.degraded` for the life of the host.
@@ -230,7 +290,7 @@ export async function loadEntries(
 
 	const events = createEventBus();
 	const entries: Entry[] = [];
-	/** The module of each catch-up hook kind, request type and protocol name. */
+	/** The module of each catch-up hook kind, input hook kind, request type and protocol name, and of the ask handler. */
 	const owners = new Map<string, string>();
 	const requests = new Map<string, EntryRequest>();
 	const versions: Record<string, number> = {};
@@ -257,6 +317,10 @@ export async function loadEntries(
 
 			if (kind !== undefined) claim(owners, module, "give the catch-up hook", kind);
 
+			if (result.input !== undefined) claim(owners, module, "give the input hook", result.input.kind);
+
+			if (result.answeredAsk !== undefined) claim(owners, module, "give the handler of the", "answered asks");
+
 			for (const request of result.requests ?? []) {
 				if (coreTypes.has(request.type)) {
 					throw new Error(`The entry ${module} serves the request type ${request.type}, which the host owns`);
@@ -280,6 +344,8 @@ export async function loadEntries(
 		extensions: entries.flatMap((entry) => entry.extensions),
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
 		catchUps: entries.flatMap((entry) => (entry.catchUp === undefined ? [] : [checkedHook(entry.catchUp)])),
+		inputHooks: entries.flatMap((entry) => entry.input ?? []),
+		answeredAsk: entries.find((entry) => entry.answeredAsk !== undefined)?.answeredAsk,
 		requests,
 		versions,
 		events,

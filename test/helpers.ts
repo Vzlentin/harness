@@ -531,6 +531,7 @@ export type TestSettings = {
 	readonly defaultProvider?: string;
 	readonly defaultModel?: string;
 	readonly packages?: readonly string[];
+	readonly compaction?: { readonly keepRecentTokens: number };
 };
 
 /** Writes Pi's global settings of the tests: no retry, and `settings`. */

@@ -275,6 +275,16 @@ describe("entry load errors", () => {
 		expect(existsSync(`${first}.closed`)).toBe(true);
 	});
 
+	it("refuses two entries that give a handler of the answered asks", async () => {
+		const source = `export default () => ({ extensions: [], answeredAsk: async () => {}, close: async () => {} });\n`;
+		const first = await entryModule("first-asks", source);
+		const second = await entryModule("second-asks", source);
+
+		expect(await startError("dup-asks", { first, second })).toBe(
+			`The entries ${first} and ${second} both give the handler of the answered asks`,
+		);
+	});
+
 	it("refuses a request type with both a handler and a watch", async () => {
 		const both = await entryModule(
 			"both-entry",

@@ -42,6 +42,14 @@ import { registerRules } from "./rules.ts";
 import { registerTodo } from "./todo.ts";
 import { registerVisualCopy } from "./visual-copy.ts";
 
+/** The type of the Pi message of each source of a delivery. */
+const CUSTOM_TYPES: Record<protocol.Delivery["source"], string> = {
+	child: "subagent-answer",
+	ask: "user-answer",
+	parley: "user-answer",
+	entry: "entry-delivery",
+};
+
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
 	readonly answers: typeof answers;
@@ -106,7 +114,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	const deliver = (delivery: protocol.Delivery): void => {
 		pi.sendMessage(
 			{
-				customType: delivery.source === "child" ? "subagent-answer" : "user-answer",
+				customType: CUSTOM_TYPES[delivery.source],
 				content: [{ type: "text", text: protocol.deliveryText(delivery) }],
 				display: true,
 				details: delivery,

@@ -17,7 +17,7 @@ import { Json } from "../protocol/requests.ts";
 import { boundedReplay } from "./checkpoint.ts";
 import type { Degraded } from "./degraded.ts";
 import type { CatchUpHook, CatchUpPart } from "./entries.ts";
-import type { Found } from "./targets.ts";
+import { type Found, passiveEntry } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 const execGit = promisify(execFile);
@@ -233,8 +233,11 @@ async function runCatchUp(host: CatchUpHost, write: WriteEntry, requestId: strin
 
 /** Writes the planned entry `entry`, then removes it from the `harness.seen` document. */
 async function writePlanned(host: CatchUpHost, write: WriteEntry, entry: PlannedEntry): Promise<void> {
-	const model = [{ role: "user", content: entry.text, timestamp: Date.now() }] as const;
-	await write({ type: "write", requestId: entry.requestId, entry: { kind: ENTRY_KIND, model, data: entry.data } });
+	await write({
+		type: "write",
+		requestId: entry.requestId,
+		entry: passiveEntry({ kind: ENTRY_KIND, text: entry.text, data: entry.data }),
+	});
 
 	await host.harness.commit(async (tx) => {
 		const doc = await tx.doc(Seen, host.root.id);
