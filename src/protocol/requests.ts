@@ -52,7 +52,7 @@ import type { ViewChange } from "./view-change.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 38;
+export const PROTOCOL_VERSION = 39;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -386,9 +386,10 @@ export const RequestLine = Type.Union([
 	}),
 	/**
 	 * Replies with the digest of `caller`, the messages out that wait and its held actions, when it changed since the
-	 * last digest of the caller, and records it as given. A Pi session sends it before each turn.
+	 * last digest of the caller or when `head`, the ID of the newest compaction of its context, is new, and records it as
+	 * given. A Pi session sends it before each turn, with the ID of its newest compaction entry as `head`.
 	 */
-	Type.Object({ type: Type.Literal("digest"), caller: Type.String() }),
+	Type.Object({ type: Type.Literal("digest"), caller: Type.String(), head: Type.Optional(Type.String()) }),
 	/** Saves `text` as a memory of the project agent, and replies with the `Saved as #<N>.` line of OptMem. */
 	Type.Object({ type: Type.Literal("memory"), action: Type.Literal("note"), text: Type.String() }),
 	/** Replies with the memories of the project agent that match the regex `pattern`. */

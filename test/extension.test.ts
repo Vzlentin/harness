@@ -41,7 +41,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
-import { request } from "../src/client/client.ts";
+import { connect, request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
 import { memoryTool } from "../src/memory-tool.ts";
@@ -513,9 +513,13 @@ const AgentStartMessage = Type.Object({
 	message: Type.Object({ customType: Type.String(), content: Type.String(), display: Type.Boolean() }),
 });
 
-/** The custom message that the `before_agent_start` handlers give the session `session` with no UI, if one does. */
+/**
+ * The custom message that the `before_agent_start` handlers give the session `session` with no UI, if one does. The
+ * branch of the session has `branch`.
+ */
 async function agentStartMessage(
 	registered: Registered,
+	branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]> = [],
 ): Promise<Static<typeof AgentStartMessage>["message"] | undefined> {
 	const selectedTools: string[] = [];
 	// SAFETY: the extension reads only the selected tools and the sections of the options.
@@ -530,8 +534,8 @@ async function agentStartMessage(
 	} as const;
 
 	const ctx: Pick<ExtensionContext, "hasUI"> & {
-		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
-	} = { hasUI: false, sessionManager: { getSessionId: () => "session" } };
+		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getBranch">;
+	} = { hasUI: false, sessionManager: { getSessionId: () => "session", getBranch: () => branch } };
 
 	let message: Static<typeof AgentStartMessage>["message"] | undefined;
 
@@ -1214,7 +1218,49 @@ describe("the Pi extension", () => {
 		expect(await agentStartMessage(registered)).toMatchObject({
 			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
 		});
+
+		// A compaction of the session cut the digest from its context, so the next turn gets it again, once.
+		const compacted = [
+			{
+				type: "compaction",
+				id: "compaction-1",
+				parentId: null,
+				timestamp: "",
+				summary: "",
+				firstKeptEntryId: "",
+				tokensBefore: 0,
+			},
+		] as const;
+
+		expect(await agentStartMessage(registered, [...compacted])).toMatchObject({
+			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
+		});
+		expect(await agentStartMessage(registered, [...compacted])).toBeUndefined();
 	});
+
+	it("starts the host of the project for the digest of a turn when no host runs", async () => {
+		host = await startHost();
+		await request({ type: "item", action: "add", caller: "cli", title: "Pi" }, { start: false });
+		await host.close();
+		host = undefined;
+		const registered = await load();
+		let pid: number | undefined;
+
+		try {
+			expect(await agentStartMessage(registered)).toMatchObject({
+				content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
+			});
+			const client = await connect({ start: false, project: MAIN_PROJECT });
+			client?.close();
+			pid = client?.pid;
+			expect(pid).toBeGreaterThan(0);
+			expect(pid).not.toBe(process.pid);
+		} finally {
+			if (pid !== undefined && pid > 0 && pid !== process.pid) process.kill(pid, "SIGTERM");
+		}
+
+		await until(() => !existsSync(statePaths(MAIN_PROJECT).socket));
+	}, 30_000);
 
 	it("lists the rules with /rules, open first, and makes the change that the user picks, or with no UI only prints them", async () => {
 		host = await startHost();

@@ -126,7 +126,10 @@ export type Base = Omit<TaskHost, "signal"> &
 		 * The storage of the harness: its entry lookup gives the thread of the source of an older rule, its reads of tasks
 		 * and conversations give the tree, and its scan of documents gives the items.
 		 */
-		readonly storage: Pick<Storage, "entry" | "task" | "scanTasks" | "scanConversations" | "scanDocuments">;
+		readonly storage: Pick<
+			Storage,
+			"entry" | "task" | "scanTasks" | "scanConversations" | "scanDocuments" | "findLatestHeadMarker"
+		>;
 	};
 
 export type Handler = Base &
@@ -188,7 +191,7 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 		case "message":
 			return message(request, handler);
 		case "digest":
-			return digest(request.caller, handler);
+			return digest(request.caller, request.head, handler);
 		case "rule":
 			return rule(request, handler);
 		case "memory":
@@ -376,9 +379,9 @@ function message(request: Extract<Request, { type: "message" }>, handler: Handle
 	}
 }
 
-/** The digest of `caller` when it changed since its last one, recorded as given. */
-async function digest(caller: string, handler: Handler): Promise<Replies["digest"]> {
-	const next = await nextDigest(handler, caller);
+/** The digest of `caller` when it changed since its last one or `head` is new, recorded as given. */
+async function digest(caller: string, head: string | undefined, handler: Handler): Promise<Replies["digest"]> {
+	const next = await nextDigest(handler, caller, head);
 
 	if (next === undefined) return {};
 	await recordDigest(handler.harness, caller, next);

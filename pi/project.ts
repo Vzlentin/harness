@@ -8,8 +8,9 @@ import type { Harness } from "./index.ts";
 
 /**
  * Registers the tools of the store of the project, whose caller is the session ID. Before each turn, the session gets
- * its digest from a host that runs, as a custom message `harness-digest`, when the digest changed since its last one,
- * and the decided rules of the project as the system prompt section `RULES_SECTION`.
+ * its digest from the host, which it starts when none runs, as a custom message `harness-digest`, when the digest
+ * changed since its last one or the session has a newer compaction since then, and the decided rules of the project as
+ * the system prompt section `RULES_SECTION`.
  */
 export function registerProject(
 	pi: ExtensionAPI,
@@ -35,11 +36,17 @@ export function registerProject(
 		}),
 	);
 
-	// The digest does not start a host: a session with no host gets its digest once a host runs.
+	// The digest starts the host, so a first turn and a turn after the host exited get the board.
 	pi.on("before_agent_start", async (_event, ctx) => {
 		try {
 			const caller = ctx.sessionManager.getSessionId();
-			const reply = await client.request({ type: "digest", caller }, { start: false });
+			// The newest compaction cut the earlier digests from the context, so a new one gives the digest again.
+			const head = ctx.sessionManager.getBranch().findLast((entry) => entry.type === "compaction")?.id;
+
+			const request =
+				head === undefined ? ({ type: "digest", caller } as const) : ({ type: "digest", caller, head } as const);
+
+			const reply = await client.request(request, { start: true });
 
 			if (reply?.text === undefined) return undefined;
 

@@ -2,8 +2,9 @@
  * The digest of each agent, in this order: the line `board of <project>: <n> open`; up to 10 lines `○ <id> <title>`,
  * the open items with no open need (no `needs` edge to an open item), in ID order; one `+<n> later` line for the open
  * items that it does not show; one `waiting on:` line with the messages out of the project that wait; and one `held:`
- * line with the held actions of the agent. An agent gets it only when it changed since its last digest, so it reads a
- * thread or an item only when it needs the words.
+ * line with the held actions of the agent. An agent gets it only when it changed since its last digest, or when its
+ * context lost the last one: after a new head of its context, a head marker of a hosted conversation (a compaction or a
+ * reset) or a compaction entry of a Pi session. So it reads a thread or an item only when it needs the words.
  */
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -30,15 +31,22 @@ const BOARD_CAP = 10;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
-/** The last digest of each caller: how many digests it got, and the text of the last one. */
-type DigestRecord = { count: number; text: string };
+/**
+ * The last digest of each caller: how many digests it got, the text of the last one, and the ID of the newest head of
+ * its context when it got it.
+ */
+type DigestRecord = { count: number; text: string; head?: string };
 
 const Digests = sessionDoc<{ callers: Record<string, DigestRecord> }>("harness.digests", () => ({ callers: {} }));
 
-/** A digest that a caller gets: its text, the IDs of its messages and held actions, and its request ID. */
+/**
+ * A digest that a caller gets: its text, the IDs of its messages and held actions, its request ID, and the head of its
+ * context.
+ */
 export type Digest = {
 	readonly text: string;
 	readonly count: number;
+	readonly head: string | undefined;
 	readonly requestId: string;
 	readonly data: { readonly waits: number[]; readonly held: number[]; readonly items: number[] };
 };
@@ -46,19 +54,25 @@ export type Digest = {
 /** What the digest uses of the host. */
 export type DigestHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
-	readonly storage: Pick<Storage, "scanDocuments">;
+	readonly storage: Pick<Storage, "scanDocuments" | "findLatestHeadMarker">;
 	readonly project: string;
 	readonly degraded: Degraded;
 };
 
 /**
- * The digest of `caller` now, or `undefined` when its text is the text of its last digest, or when the caller never got
- * a digest and nothing waits, nothing is held and no item is open. The request ID `digest:<count>:<hash>` names its
- * count and its text.
+ * The digest of `caller` now, or `undefined` when its text and `head` are those of its last digest, or when the caller
+ * never got a digest and nothing waits, nothing is held and no item is open. `head` is the ID of the newest head of the
+ * context of the caller, so a new head gives the digest again. The request ID `digest:<count>:<hash>` names its count
+ * and its text.
  */
 export async function nextDigest(
-	host: { readonly harness: Pick<DocumentReader, "snapshot"> } & Pick<DigestHost, "storage" | "project">,
+	host: {
+		readonly harness: Pick<DocumentReader, "snapshot">;
+		readonly storage: Pick<Storage, "scanDocuments">;
+		readonly project: string;
+	},
 	caller: string,
+	head: string | undefined,
 ): Promise<Digest | undefined> {
 	const { harness } = host;
 
@@ -82,13 +96,14 @@ export async function nextDigest(
 
 	const text = [...shownBoard.lines, waitsLine(waiting, byId, names), heldLine(own)].join("\n");
 
-	if (last?.text === text) return undefined;
+	if (last?.text === text && last.head === head) return undefined;
 	const count = (last?.count ?? 0) + 1;
 	const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
 
 	return {
 		text,
 		count,
+		head,
 		requestId: `digest:${count}:${hash}`,
 		data: {
 			waits: waiting.map((out) => out.id),
@@ -101,13 +116,16 @@ export async function nextDigest(
 /** Records `digest` as the last digest of `caller`. */
 export async function recordDigest(harness: Pick<Harness, "commit">, caller: string, digest: Digest): Promise<void> {
 	await harness.commit(async (tx) => {
-		(await tx.doc(Digests)).callers[caller] = { count: digest.count, text: digest.text };
+		const { count, text, head } = digest;
+
+		(await tx.doc(Digests)).callers[caller] = head === undefined ? { count, text } : { count, text, head };
 	}, context);
 }
 
 /**
  * Writes the digest of the conversation of `target` to it, as a passive entry of the kind `harness.digest`, before
- * an input, then records it. The entry goes first, and its request ID makes a repeat after a crash add nothing. It
+ * an input, then records it. A new head marker of the conversation since its last digest, a compaction or a reset, gives
+ * the digest again. The entry goes first, and its request ID makes a repeat after a crash add nothing. It
  * never throws: a failure is a warning and the degraded state `digest-failed` of the conversation, which its next
  * digest that does not fail ends, and the input goes through.
  */
@@ -115,7 +133,8 @@ export async function writeDigest(host: DigestHost, target: Pick<Found, "convers
 	const caller = String(target.conversation.id);
 
 	await host.degraded.guard("digest-failed", caller, "digest: ", async () => {
-		const digest = await nextDigest(host, caller);
+		const marker = await host.storage.findLatestHeadMarker(target.conversation.id, undefined, context);
+		const digest = await nextDigest(host, caller, marker === undefined ? undefined : String(marker.id));
 
 		if (digest === undefined) return;
 		const model = [{ role: "user", content: digest.text, timestamp: Date.now() }] as const;
