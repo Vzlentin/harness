@@ -410,18 +410,38 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 
 		// The checks inside one request run at the boundary.
 		const badLines: [unknown, string][] = [
-			[{ type: "ask", action: "round", caller: "pi-1", asks: [] }, "Invalid ask request: asks is not valid"],
+			[
+				{ type: "ask", action: "round", caller: "pi-1", asks: [] },
+				"Invalid ask request: asks: must not have fewer than 1 items",
+			],
 			[
 				{ type: "ask", action: "round", caller: "pi-1", asks: [{ title: "Use `git`" }] },
-				"Invalid ask request: asks is not valid",
+				"Invalid ask request: asks/0/title: plain text, no backticks or **",
+			],
+			[
+				{
+					type: "ask",
+					action: "round",
+					caller: "pi-1",
+					asks: [
+						{
+							title: "T",
+							options: [
+								{ key: "a", label: "x" },
+								{ key: "b", label: "Use `git`" },
+							],
+						},
+					],
+				},
+				"Invalid ask request: asks/0/options/1/label: plain text, no backticks or **",
 			],
 			[
 				{ type: "ask", action: "round", caller: "pi-1", asks: [{ title: "T", options: OPTIONS, plan: "c" }] },
-				"Invalid ask request: asks is not valid",
+				"Invalid ask request: asks/0: must have unique option keys and a plan that is one of them",
 			],
 			[
 				{ type: "ask", action: "round", caller: "pi-1", asks: [{ title: "T", options: [OPTIONS[1], OPTIONS[1]] }] },
-				"Invalid ask request: asks is not valid",
+				"Invalid ask request: asks/0: must have unique option keys and a plan that is one of them",
 			],
 			[
 				{
@@ -431,24 +451,30 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 					parley: { slug: "Bad Slug", title: "T", goal: "G." },
 					asks: [{ title: "T" }],
 				},
-				"Invalid ask request: parley is not valid",
+				'Invalid ask request: parley/slug: must match pattern "^[a-z0-9]+(-[a-z0-9]+)*$"',
 			],
-			[{ type: "ask", action: "round", asks: [{ title: "T" }] }, "Invalid ask request: caller is required"],
+			[{ type: "ask", action: "round", asks: [{ title: "T" }] }, "Invalid ask request: caller: required"],
 			[
 				{ type: "ask", action: "drop", caller: "pi-1", id: call, slug: "checked", n: 1 },
-				"Invalid ask request: id is not allowed",
+				"Invalid ask request: id: not allowed",
 			],
-			[{ type: "ask", action: "read", slug: "checked" }, "Invalid ask request: n is required"],
-			[{ type: "ask", action: "note", caller: "pi-1", id: call }, "Invalid ask request: note is required"],
-			[{ type: "ask", action: "note", caller: "pi-1", id: call, note: "" }, "Invalid ask request: note is not valid"],
-			[{ type: "ask", action: "note", caller: "pi-1", id: call, note: "  " }, "Invalid ask request: note is not valid"],
+			[{ type: "ask", action: "read", slug: "checked" }, "Invalid ask request: n: required"],
+			[{ type: "ask", action: "note", caller: "pi-1", id: call }, "Invalid ask request: note: required"],
+			[
+				{ type: "ask", action: "note", caller: "pi-1", id: call, note: "" },
+				'Invalid ask request: note: must match pattern "\\S"',
+			],
+			[
+				{ type: "ask", action: "note", caller: "pi-1", id: call, note: "  " },
+				'Invalid ask request: note: must match pattern "\\S"',
+			],
 			[
 				{ type: "ask", action: "note", caller: "pi-1", id: call, slug: "checked", n: 1, note: "n" },
-				"Invalid ask request: id is not allowed",
+				"Invalid ask request: id: not allowed",
 			],
 			[
 				{ type: "ask", action: "answer", caller: "user", answers: [{ id: call, answer: "own" }] },
-				"Invalid ask request: label is required",
+				"Invalid ask request: answers/0/label: required",
 			],
 			[
 				{
@@ -460,11 +486,11 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 						{ id: call, answer: "b" },
 					],
 				},
-				"Invalid ask request: answers is not valid",
+				"Invalid ask request: answers: must answer each ask once",
 			],
 			[
 				{ type: "parley", action: "end", caller: "pi-1", slug: "signed", status: "open" },
-				"Invalid parley request: status is not valid",
+				"Invalid parley request: status: must be equal to constant",
 			],
 		];
 

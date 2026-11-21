@@ -145,18 +145,18 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 		}
 
 		const bad = [
-			[{ from: "agent:x", kind: "serves", to }, "from"],
-			[{ from: "run:2026", kind: "serves", to }, "from"],
-			[{ from: RUN, kind: "serves", to: "item:0" }, "to"],
-			[{ from: to, kind: "landed", to: "commit:3fa9c1e" }, "to"],
-			[{ from: "parley:Not-A-Slug", kind: "shapes", to }, "from"],
-			[{ from: RUN, kind: "blocks", to }, "kind"],
+			[{ from: "agent:x", kind: "serves", to }, 'from: must match pattern "^item:[1-9][0-9]*$"'],
+			[{ from: "run:2026", kind: "serves", to }, 'from: must match pattern "^item:[1-9][0-9]*$"'],
+			[{ from: RUN, kind: "serves", to: "item:0" }, 'to: must match pattern "^item:[1-9][0-9]*$"'],
+			[{ from: to, kind: "landed", to: "commit:3fa9c1e" }, 'to: must match pattern "^item:[1-9][0-9]*$"'],
+			[{ from: "parley:Not-A-Slug", kind: "shapes", to }, 'from: must match pattern "^item:[1-9][0-9]*$"'],
+			[{ from: RUN, kind: "blocks", to }, "kind: must be equal to one of the allowed values"],
 		] as const;
 
-		for (const [ends, field] of bad) {
+		for (const [ends, rule] of bad) {
 			for (const action of ["link", "unlink"]) {
 				const line = JSON.parse(JSON.stringify({ type: "item", action, caller: "cli", ...ends }));
-				await expect(send(line)).rejects.toThrow(`Invalid item request: ${field} is not valid`);
+				await expect(send(line)).rejects.toThrow(`Invalid item request: ${rule}`);
 			}
 		}
 	});
@@ -255,19 +255,28 @@ describe("the work items of the store", { timeout: 30_000 }, () => {
 
 	it("refuses a request whose fields are not valid", async () => {
 		const bad = [
-			[{ type: "item", action: "add", caller: "cli", title: " " }, "Invalid item request: title is not valid"],
-			[{ type: "item", action: "add", title: "x" }, "Invalid item request: caller is required"],
-			[{ type: "item", action: "set", caller: "cli", id: 1, title: "" }, "Invalid item request: title is not valid"],
+			[
+				{ type: "item", action: "add", caller: "cli", title: " " },
+				'Invalid item request: title: must match pattern "\\S"',
+			],
+			[{ type: "item", action: "add", title: "x" }, "Invalid item request: caller: required"],
+			[
+				{ type: "item", action: "set", caller: "cli", id: 1, title: "" },
+				'Invalid item request: title: must match pattern "\\S"',
+			],
 			[
 				{ type: "item", action: "set", caller: "cli", id: 1, state: "doing" },
-				"Invalid item request: state is not valid",
+				"Invalid item request: state: must be equal to one of the allowed values",
 			],
-			[{ type: "item", action: "set", caller: "cli", state: "done" }, "Invalid item request: id is required"],
-			[{ type: "item", action: "list", state: "doing" }, "Invalid item request: state is not valid"],
-			[{ type: "item", action: "read", id: 0 }, "Invalid item request: id is not valid"],
+			[{ type: "item", action: "set", caller: "cli", state: "done" }, "Invalid item request: id: required"],
+			[
+				{ type: "item", action: "list", state: "doing" },
+				"Invalid item request: state: must be equal to one of the allowed values",
+			],
+			[{ type: "item", action: "read", id: 0 }, "Invalid item request: id: must be >= 1"],
 			[
 				{ type: "item", action: "link", from: RUN, kind: "serves", to: "item:1" },
-				"Invalid item request: caller is required",
+				"Invalid item request: caller: required",
 			],
 		] as const;
 

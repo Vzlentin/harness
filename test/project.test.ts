@@ -316,20 +316,20 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		const { name: _name, ...noName } = newRule;
 
 		const badLines: readonly (readonly [Record<string, JsonValue>, string])[] = [
-			[noSource, "Invalid rule request: source is required"],
-			[noAuthor, "Invalid rule request: saidBy is required"],
-			[noName, "Invalid rule request: name is required"],
-			[{ ...newRule, name: " " }, "Invalid rule request: name is not valid"],
+			[noSource, "Invalid rule request: source: required"],
+			[noAuthor, "Invalid rule request: saidBy: required"],
+			[noName, "Invalid rule request: name: required"],
+			[{ ...newRule, name: " " }, 'Invalid rule request: name: must match pattern "\\S"'],
 			[
 				{ type: "rule", action: "set", caller: "cli", id: rule.id, value: "x", saidBy: "user" },
-				"Invalid rule request: source is required",
+				"Invalid rule request: source: required",
 			],
-			[{ ...newRule, status: "decided" }, "Invalid rule request: status is not allowed"],
-			[{ ...newRule, id: rule.id, status: "retired" }, "Invalid rule request: status is not allowed"],
-			[{ type: "rule", action: "decide", caller: "cli" }, "Invalid rule request: id is required"],
+			[{ ...newRule, status: "decided" }, "Invalid rule request: status: not allowed"],
+			[{ ...newRule, id: rule.id, status: "retired" }, "Invalid rule request: status: not allowed"],
+			[{ type: "rule", action: "decide", caller: "cli" }, "Invalid rule request: id: required"],
 			[
 				{ type: "rule", action: "create", caller: "cli", name: "x", kind: "domain" },
-				"Invalid rule request: value is required",
+				"Invalid rule request: value: required",
 			],
 			[{ type: "term", action: "list" }, "Unknown request: term"],
 			[
@@ -341,8 +341,11 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				{ type: "part", action: "add", caller: "cli", kind: "table", path: "x.md", rules: [], terms: [] },
 				"Unknown request: part",
 			],
-			[{ type: "thread", action: "add", topic: "No one", persons: [] }, "Invalid thread request: persons is not valid"],
-			[{ type: "person", action: "add", name: " " }, "Invalid person request: name is not valid"],
+			[
+				{ type: "thread", action: "add", topic: "No one", persons: [] },
+				"Invalid thread request: persons: must not have fewer than 1 items",
+			],
+			[{ type: "person", action: "add", name: " " }, 'Invalid person request: name: must match pattern "\\S"'],
 		];
 
 		// The request types refuse these lines, so they go through JSON.
@@ -750,7 +753,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				],
 				[
 					() => send<"message">(JSON.parse(JSON.stringify({ ...sentLine, state: "draft" })), project),
-					"Invalid message request: state is not valid",
+					"Invalid message request: state: must be equal to constant",
 				],
 				[
 					() => send({ type: "thread", action: "join", id: thread.id, person: rufin.id }, project),
@@ -873,7 +876,7 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				"Unknown message: 999999",
 			);
 			await expect(send(JSON.parse(JSON.stringify({ ...mark, state: "answered" })), project)).rejects.toThrow(
-				"Invalid message request: state is not valid",
+				"Invalid message request: state: must be equal to one of the allowed values",
 			);
 		} finally {
 			await outbox.close();

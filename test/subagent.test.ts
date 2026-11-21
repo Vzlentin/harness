@@ -488,7 +488,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Note kind"]));
 		await cli(["wait", handle]);
 		const note = { type: "note", requestId: "kind", handle, text: "Bad", kind: "pi.user" } as const;
-		await expect(request(note, { start: false })).rejects.toThrow("Invalid note request: kind is not valid");
+		await expect(request(note, { start: false })).rejects.toThrow(
+			'Invalid note request: kind: must match pattern "^(?!pi\\.|harness\\.typed$)"',
+		);
 	});
 
 	it("queues a follow-up for a busy child", async () => {
@@ -666,7 +668,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		// Both targets at once: the type refuses it, so the line goes through JSON.
 		const both = JSON.parse(JSON.stringify({ type: "stop", caller: "cli", handle: own.handle, conversation: own.id }));
-		await expect(request(both, { start: false })).rejects.toThrow("Invalid stop request: conversation is not allowed");
+		await expect(request(both, { start: false })).rejects.toThrow("Invalid stop request: conversation: not allowed");
 	});
 
 	it("lets a child spawn a child, but not a third level, with agentDepthLimit 2", async () => {
@@ -907,7 +909,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				prompt: "Nowhere",
 			};
 
-			expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: cwd is required");
+			expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: cwd: required");
 			expect(await client.request({ type: "list", caller })).toEqual([]);
 		} finally {
 			client.close();
@@ -916,7 +918,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a request line that does not match the protocol", async () => {
 		expect(await rawError(JSON.stringify({ type: "nope" }))).toBe("Unknown request: nope");
-		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Invalid status request: handle is required");
+		expect(await rawError(JSON.stringify({ type: "status" }))).toBe("Invalid status request: handle: required");
 		expect(await rawError("[]")).toBe("Invalid request");
 
 		const spawn = {
@@ -932,17 +934,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 			prompt: "Huge",
 		};
 
-		expect(await rawError(JSON.stringify(spawn))).toBe("Invalid spawn request: thinking is not valid");
+		expect(await rawError(JSON.stringify(spawn))).toBe(
+			"Invalid spawn request: thinking: must be equal to one of the allowed values",
+		);
 
 		const note = { type: "note", requestId: "pi-kind", handle: "abc123", text: "Bad", kind: "pi.x" };
-		expect(await rawError(JSON.stringify(note))).toBe("Invalid note request: kind is not valid");
+		expect(await rawError(JSON.stringify(note))).toBe(
+			'Invalid note request: kind: must match pattern "^(?!pi\\.|harness\\.typed$)"',
+		);
 
 		const conversationNote = { type: "note", requestId: "pi-kind", conversation: "c1", text: "Bad", kind: "pi.x" };
-		expect(await rawError(JSON.stringify(conversationNote))).toBe("Invalid note request: kind is not valid");
+		expect(await rawError(JSON.stringify(conversationNote))).toBe(
+			'Invalid note request: kind: must match pattern "^(?!pi\\.|harness\\.typed$)"',
+		);
 
 		const typedNote = { type: "note", requestId: "typed-kind", handle: "abc123", text: "Go", kind: TYPED_KIND };
-		expect(await rawError(JSON.stringify(typedNote))).toBe("Invalid note request: kind is not valid");
-		expect(await rawError(JSON.stringify({ type: "watch" }))).toBe("Invalid watch request: handle is required");
+		expect(await rawError(JSON.stringify(typedNote))).toBe(
+			'Invalid note request: kind: must match pattern "^(?!pi\\.|harness\\.typed$)"',
+		);
+		expect(await rawError(JSON.stringify({ type: "watch" }))).toBe("Invalid watch request: handle: required");
 	});
 
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {

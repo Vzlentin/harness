@@ -333,7 +333,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 		// Both targets at once: the type refuses it, so the line goes through JSON.
 		const both = JSON.parse(JSON.stringify({ type: "watch", handle: AGENT_HANDLE, conversation: ids.child }));
-		await expect(request(both, { start: false })).rejects.toThrow("Invalid watch request: conversation is not allowed");
+		await expect(request(both, { start: false })).rejects.toThrow("Invalid watch request: conversation: not allowed");
 
 		// `configure` takes only a handle, and refuses a `conversation` key.
 		const configure = JSON.parse(
@@ -341,7 +341,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		);
 
 		await expect(request(configure, { start: false })).rejects.toThrow(
-			"Invalid configure request: conversation is not allowed",
+			"Invalid configure request: conversation: not allowed",
 		);
 	});
 

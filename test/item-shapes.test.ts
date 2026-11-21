@@ -64,7 +64,7 @@ describe("the shapes edge of a round and of a contract", { timeout: 30_000 }, ()
 			`Item ${done.id} is done: an edge shapes cannot go to it`,
 		);
 		const bare = { type: "ask", action: "round", caller: "pi-1", item: done.id, asks: [{ title: "Bare" }] };
-		await expect(send(JSON.parse(JSON.stringify(bare)))).rejects.toThrow("Invalid ask request: parley is required");
+		await expect(send(JSON.parse(JSON.stringify(bare)))).rejects.toThrow("Invalid ask request: parley: required");
 
 		expect(await openAsks()).toEqual(before);
 		expect((await read(done.id)).edges).toEqual([]);

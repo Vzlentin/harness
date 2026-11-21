@@ -201,11 +201,14 @@ export type HeldAction = Static<typeof HeldAction>;
 /** The input of a new held action. */
 export type HeldInput = Pick<HeldAction, "requestId" | "agent" | "tool" | "command" | "rule" | "reason">;
 
+/** The rule of a plain text, as a request error and the parley tool give it. */
+export const PLAIN_RULE = "plain text, no backticks or **";
+
 /**
  * A plain text: at least one character that is not white space, with no backtick and no `**`, as the parley skill
  * checks it.
  */
-const Plain = Type.String({ pattern: "^(?![\\s\\S]*(`|\\*\\*))[\\s\\S]*\\S" });
+const Plain = Type.String({ pattern: "^(?![\\s\\S]*(`|\\*\\*))[\\s\\S]*\\S", description: PLAIN_RULE });
 
 /** A list of plain texts that is not empty. */
 const Plains = Type.Array(Plain, { minItems: 1 });

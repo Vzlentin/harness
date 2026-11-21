@@ -151,15 +151,17 @@ describe("todo lists", { timeout: 30_000 }, () => {
 
 		// The request types refuse these lines, so they go through JSON.
 		const badState = JSON.parse(JSON.stringify({ type: "todo", ...own, action: "set", id: 1, state: "finished" }));
-		await expect(send(badState)).rejects.toThrow("Invalid todo request: state is not valid");
-		await expect(send({ ...badState, handle: AGENT_HANDLE })).rejects.toThrow(
-			"Invalid todo request: state is not valid",
+		await expect(send(badState)).rejects.toThrow(
+			"Invalid todo request: state: must be equal to one of the allowed values",
 		);
-		await expect(send({ ...badState, id: 0, state: "done" })).rejects.toThrow("Invalid todo request: id is not valid");
+		await expect(send({ ...badState, handle: AGENT_HANDLE })).rejects.toThrow(
+			"Invalid todo request: state: must be equal to one of the allowed values",
+		);
+		await expect(send({ ...badState, id: 0, state: "done" })).rejects.toThrow("Invalid todo request: id: must be >= 1");
 		const noText = JSON.parse(JSON.stringify({ type: "todo", ...own, action: "add" }));
-		await expect(send(noText)).rejects.toThrow("Invalid todo request: text is required");
+		await expect(send(noText)).rejects.toThrow("Invalid todo request: text: required");
 		const twoTargets = JSON.parse(JSON.stringify({ type: "todo", ...own, action: "list", handle: "agent", key: "x" }));
-		await expect(send(twoTargets)).rejects.toThrow("Invalid todo request: key is not allowed");
+		await expect(send(twoTargets)).rejects.toThrow("Invalid todo request: key: not allowed");
 
 		await expect(set(own, { id: 99, state: "done" })).rejects.toThrow("Unknown todo: 99");
 		await expect(add(own, " \n")).rejects.toThrow("The text of a todo is empty");

@@ -1134,7 +1134,7 @@ describe("the Pi extension", () => {
 		);
 		await expect(tools.get("parley")?.call({ action: "note", ask: loneId })).rejects.toThrow("note requires note");
 		await expect(tools.get("parley")?.call({ action: "note", ask: loneId, note: "  " })).rejects.toThrow(
-			"Invalid ask request: note is not valid",
+			'Invalid ask request: note: must match pattern "\\S"',
 		);
 		expect(await request({ type: "ask", action: "read", id: loneId }, { start: false })).toMatchObject({
 			note: "alone",

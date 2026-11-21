@@ -19,9 +19,9 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
-import { Value } from "typebox/value";
+import { Pointer, Value } from "typebox/value";
 import { childContext, PI_TRUST, type ResourcesReport } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
 import { projectToolsExtension } from "../project-tool.ts";
@@ -476,8 +476,8 @@ export async function runHost(options: {
 }
 
 /**
- * The request of a line from a client, checked against the protocol. A line that fails names its request type and the
- * first field that is wrong.
+ * The request of a line from a client, checked against the protocol. A line that fails names its request type, and the
+ * path and the rule of the first field that is wrong.
  */
 function parseRequest(line: string): Request {
 	const request: unknown = JSON.parse(line);
@@ -489,27 +489,44 @@ function parseRequest(line: string): Request {
 	// The branch of the request's type, and of its action when a branch has it, with the fewest errors names the field;
 	// on a tie, the first one wins.
 	const ofType = RequestLine.anyOf
-		.map((schema) => [...Value.Errors(schema, request)])
-		.filter((errors) => errors.every((error) => error.instancePath !== "/type"));
+		.map((schema) => ({ schema, errors: [...Value.Errors(schema, request)] }))
+		.filter(({ errors }) => errors.every((error) => error.instancePath !== "/type"));
 
-	const ofAction = ofType.filter((errors) => errors.every((error) => error.instancePath !== "/action"));
-	const [best] = (ofAction.length > 0 ? ofAction : ofType).sort((a, b) => a.length - b.length);
+	const ofAction = ofType.filter(({ errors }) => errors.every((error) => error.instancePath !== "/action"));
+	const [best] = (ofAction.length > 0 ? ofAction : ofType).sort((a, b) => a.errors.length - b.errors.length);
 
 	if (best === undefined) throw new Error(`Unknown request: ${request.type}`);
 
 	// SAFETY: Value.Check refused every branch, so each branch, and the best one, has at least one error.
-	const [error] = best as [TLocalizedValidationError, ...TLocalizedValidationError[]];
+	const [error] = best.errors as [TLocalizedValidationError, ...TLocalizedValidationError[]];
 
-	throw new Error(`Invalid ${request.type} request: ${requestError(error)}`);
+	throw new Error(`Invalid ${request.type} request: ${requestError(best.schema, error)}`);
 }
 
-/** The field of a request error, and what is wrong with it. */
-function requestError(error: TLocalizedValidationError): string {
-	if (error.keyword === "required") return `${error.params.requiredProperties[0]} is required`;
-	const field = error.instancePath.split("/")[1];
+/**
+ * The `<path>: <rule>` of a request error from the `schema` of its request branch. The path has no leading slash. The
+ * rule is `required` or `not allowed` for these keywords, else the description of the failing schema, else the
+ * message of typebox.
+ */
+function requestError(schema: TSchema, error: TLocalizedValidationError): string {
+	const path = error.instancePath.slice(1);
 
-	return error.keyword === "not" ? `${field} is not allowed` : `${field} is not valid`;
+	if (error.keyword === "required") {
+		const property = error.params.requiredProperties[0];
+
+		return `${path === "" ? property : `${path}/${property}`}: required`;
+	}
+
+	if (error.keyword === "not") return `${path}: not allowed`;
+
+	const failing: unknown = Pointer.Get(schema, error.schemaPath.slice(1));
+	const description = Value.Check(Described, failing) ? failing.description : error.message;
+
+	return `${path}: ${description}`;
 }
+
+/** A schema with a description. */
+const Described = Type.Object({ description: Type.String() });
 
 /** Waits for `promise`, or for `ms` at most. */
 async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {

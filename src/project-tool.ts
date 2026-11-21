@@ -40,6 +40,7 @@ import {
 	parleyText,
 	PersonList,
 	type PersonNames,
+	PLAIN_RULE,
 	PROJECT_EXTENSION,
 	personNames,
 	Rule,
@@ -185,16 +186,16 @@ export function projectToolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 			asks: Type.Optional(
 				Type.Array(
 					Type.Object({
-						title: Type.String({ pattern: "\\S" }),
+						title: Type.String({ pattern: "\\S", description: PLAIN_RULE }),
 						kind: Type.Optional(Type.Enum(ASK_KINDS)),
-						tension: Type.Optional(Type.String()),
+						tension: Type.Optional(Type.String({ description: PLAIN_RULE })),
 						options: Type.Optional(
 							Type.Array(
 								Type.Object({
 									key: Type.String({ description: "One lowercase letter" }),
-									label: Type.String(),
-									gains: Type.Optional(Type.Array(Type.String())),
-									costs: Type.Optional(Type.Array(Type.String())),
+									label: Type.String({ description: PLAIN_RULE }),
+									gains: Type.Optional(Type.Array(Type.String({ description: PLAIN_RULE }))),
+									costs: Type.Optional(Type.Array(Type.String({ description: PLAIN_RULE }))),
 								}),
 							),
 						),
