@@ -10,7 +10,7 @@ export type CopyResult =
 	| { kind: "image"; image: ImageRef; path: boolean };
 
 /** Gives the rows of an owner with the selection painted on them. */
-export type Paint = (layout: Layout, owner: Owner, lines: string[]) => string[];
+export type Paint = (layout: Layout, owner: Owner, lines: readonly string[]) => readonly string[];
 
 /** What y or Y copies. With `flash`, the view shows that paint for a moment before the copy. */
 export interface Copy {

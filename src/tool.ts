@@ -66,7 +66,7 @@ export function toolSchemas(typebox: Pick<typeof TypeBox, "Type">) {
 		),
 		cwd: text("spawn: the child's working directory; default yours"),
 		tools: texts(
-			"spawn: the only tools the child gets; default read, grep, find, ls, write, edit, bash, todo, codemode and the package tools",
+			"spawn: the only tools the child gets; default read, write, edit, bash, todo, codemode and the package tools",
 		),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),

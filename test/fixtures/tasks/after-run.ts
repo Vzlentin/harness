@@ -29,7 +29,7 @@ export default function afterRunEntry({ durable }: { readonly durable: typeof Du
 	const extension = durable.defineExtension({
 		name: "fixture.after-run",
 		tasks: [Wait],
-		hooks: [durable.hook(durable.GenerationTask, { afterRun: () => ({ tasks: [durable.runEndTask(Wait, null)] }) })],
+		hooks: [durable.hook(durable.GenerationTask, { afterRun: () => ({ tasks: [durable.hookTask(Wait, null)] }) })],
 	});
 
 	return { extensions: [extension], tasks: [], close: async () => {} };

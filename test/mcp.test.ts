@@ -162,6 +162,13 @@ describe("the MCP tools of hosted conversations", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain("- mcp__fixture: Echoes text");
 	});
 
+	it("gives each server a codemode namespace with its description and its tools", async () => {
+		const found = await runScript("Namespace", 'return JSON.stringify(await describeNamespace("mcp__fixture"));');
+
+		expect(found).toContain('"description":"Echoes text"');
+		expect(found).toContain("mcp__fixture__echo");
+	});
+
 	it("refuses a server whose config uses a value that Pi resolves", () => {
 		expect(warnings.join("")).toContain(
 			'server "resolved": headers "X-Token" uses ${VAR}, $VAR or !command, which the harness host does not resolve',

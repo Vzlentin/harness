@@ -145,7 +145,7 @@ export interface Layout {
 	width: number;
 	rows: Array<Rows | undefined>;
 	offsets: Map<MarkdownNode, number>;
-	owners: Array<{ owner: AssistantNode; lines: string[]; blocks: number[] }>;
+	owners: Array<{ owner: AssistantNode; lines: readonly string[]; blocks: number[] }>;
 	spans: Span[];
 }
 
@@ -243,7 +243,7 @@ export function contentWidth(tui: TUI): number {
 }
 
 /** /vc puts its own render on each owner, so the rows of an owner come from the class render. */
-export function baseRender(owner: Owner, width: number): string[] {
+export function baseRender(owner: Owner, width: number): readonly string[] {
 	// SAFETY: an owner is an instance of a Pi component class, whose prototype has its render.
 	const prototype = Object.getPrototypeOf(owner) as Node;
 
@@ -292,7 +292,7 @@ export function ownerRows(
 }
 
 /** Renders the Markdown with the patch on the node, then restores the node and clears its cache. */
-function probe(markdown: MarkdownNode, patch: Partial<MarkdownNode>, width: number): string[] {
+function probe(markdown: MarkdownNode, patch: Partial<MarkdownNode>, width: number): readonly string[] {
 	const saved = Object.keys(patch).map((key) => [key, Object.getOwnPropertyDescriptor(markdown, key)] as const);
 	Object.assign(markdown, patch);
 
@@ -439,7 +439,7 @@ function leadingSpaces(text: string): number {
 }
 
 /** The rows from the first line that shows text to the last one, or undefined when no line shows text. */
-function textRows(lines: string[]): Rows | undefined {
+function textRows(lines: readonly string[]): Rows | undefined {
 	const first = lines.findIndex((l) => !isBlank(l));
 
 	if (first === -1) return undefined;
@@ -558,7 +558,7 @@ function markdownLayout(markdown: MarkdownNode, width: number): MarkdownLayout {
 
 /** The inline code spans of the rendered lines, from the marks of their starts and ends, in the order of their rows. */
 function spanPositions(
-	lines: string[],
+	lines: readonly string[],
 	segments: Segment[],
 	tokens: Token[],
 	starts: Map<number, Position>,

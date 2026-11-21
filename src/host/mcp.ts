@@ -14,12 +14,8 @@ import {
 	section,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import {
-	CODEMODE_TOOL_NAME,
-	type CodemodeNamespace,
-	createCodemodeExtension,
-} from "@earendil-works/pi-durable/codemode";
-import { mcpNamespace } from "@earendil-works/pi-mcp";
+import { CODEMODE_TOOL_NAME, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { mcpNamespace, mcpServerSummary } from "@earendil-works/pi-mcp";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { configuredExposures, loadMcpConfig } from "./mcp-config.ts";
@@ -38,9 +34,8 @@ const DISCOVERY_GLOBALS = /\b(searchTools|describeNamespace|describeTool|ALL_TOO
 export class HostMcp {
 	readonly #servers: readonly McpServer[];
 	readonly #registry: Registry;
-	readonly #sandbox: CodemodeSandboxBase;
-	#extension: Extension;
-	#codemode: Codemode;
+	readonly #codemode: Extension;
+	readonly #extension: Extension;
 
 	constructor(options: {
 		readonly registry: Registry;
@@ -56,17 +51,28 @@ export class HostMcp {
 
 		for (const error of errors) warn(`MCP config: ${error}`);
 		this.#registry = registry;
-		this.#sandbox = sandbox;
-		this.#servers = servers.map(
-			(entry) => new McpServer(entry, { cwd, agentDir, models, warn, onChange: () => this.#publish() }),
-		);
-		this.#codemode = nextCodemode(undefined, sandbox, this.#namespaceList());
-		this.#extension = this.#mcpExtension();
+		this.#servers = servers.map((entry) => {
+			const server: McpServer = new McpServer(entry, {
+				cwd,
+				agentDir,
+				models,
+				warn,
+				onChange: () => this.#publish(server),
+			});
+
+			return server;
+		});
+		this.#codemode = createCodemodeExtension({ sandbox });
+		this.#extension = defineExtension({
+			name: MCP_EXTENSION,
+			sections: [section("mcp_servers", () => serversSection(this.#servers))],
+			wraps: [{ tool: CODEMODE_TOOL_NAME, wrap: (codemode: ToolRegistration) => this.#waitingCodemode(codemode) }],
+		});
 	}
 
-	/** The `codemode` extension, with a namespace for each server, and the extension of the MCP tools. */
+	/** The `codemode` extension, the extension of each server with its namespace and tools, and `harness-mcp`. */
 	get extensions(): readonly Extension[] {
-		return [this.#codemode.extension, this.#extension];
+		return [this.#codemode, ...this.#servers.map((server) => serverExtension(server)), this.#extension];
 	}
 
 	/** Connects the servers in the background. Call it once the extensions are installed. */
@@ -79,37 +85,12 @@ export class HostMcp {
 		await Promise.all(this.#servers.map((server) => server.close()));
 	}
 
-	/** Installs the extensions again with the current tools; `codemode` only when its namespaces changed. */
-	#publish(): void {
-		const codemode = nextCodemode(this.#codemode, this.#sandbox, this.#namespaceList());
-
-		if (codemode !== this.#codemode) {
-			this.#codemode = codemode;
-			this.#registry.install(codemode.extension);
-		}
-
-		this.#extension = this.#mcpExtension();
-		this.#registry.install(this.#extension);
-	}
-
-	#namespaceList(): CodemodeNamespace[] {
-		return this.#servers.map((server) => {
-			const namespace = mcpNamespace(server.name);
-			const description = server.entry.config.description?.trim();
-			const listed: CodemodeNamespace = { name: namespace, prefix: `${namespace}__` };
-			const described = description === undefined || description === "" ? listed : { ...listed, description };
-
-			return server.instructions === undefined ? described : { ...described, instructions: server.instructions };
-		});
-	}
-
-	#mcpExtension(): Extension {
-		return defineExtension({
-			name: MCP_EXTENSION,
-			tools: this.#servers.flatMap((server) => server.tools.map((tool) => mcpToolRegistration(server, tool))),
-			sections: [section("mcp_servers", () => serversSection(this.#servers))],
-			wraps: [{ tool: CODEMODE_TOOL_NAME, wrap: (codemode: ToolRegistration) => this.#waitingCodemode(codemode) }],
-		});
+	/**
+	 * Installs the extension of `server` again with its current tools and instructions. `harness-mcp` reads the servers
+	 * when it runs, so it stays as it is.
+	 */
+	#publish(server: McpServer): void {
+		this.#registry.install(serverExtension(server));
 	}
 
 	/** `codemode`, which first waits for the servers that the script names, as Pi does. */
@@ -126,8 +107,10 @@ export class HostMcp {
 				);
 
 				await Promise.all(reached.map((server) => server.ready(!all)));
+
 				// The tools of the script are those of the phase that started the call.
-				const known = new Set(api.registry.extension(MCP_EXTENSION)?.tools?.map((tool) => tool.name) ?? []);
+				const known = new Set(api.registry.tools().map(({ tool }) => tool.name));
+
 				const late = reached.filter((server) => server.tools.some((tool) => !known.has(tool.name)));
 
 				if (late.length > 0) {
@@ -146,18 +129,18 @@ export class HostMcp {
 	}
 }
 
-/** The `codemode` extension and the JSON of its namespaces. */
-type Codemode = { readonly key: string; readonly extension: Extension };
+/** The extension of one server: its codemode namespace, listed also before the server connects, and its tools. */
+function serverExtension(server: McpServer): Extension {
+	const description = mcpServerSummary(server.entry.config.description, server.instructions);
 
-/** `current` when its namespaces are `namespaces`, else a new `codemode` extension for them. */
-function nextCodemode(
-	current: Codemode | undefined,
-	sandbox: CodemodeSandboxBase,
-	namespaces: CodemodeNamespace[],
-): Codemode {
-	const key = JSON.stringify(namespaces);
-
-	return key === current?.key ? current : { key, extension: createCodemodeExtension({ sandbox, namespaces }) };
+	return defineExtension({
+		name: `${MCP_EXTENSION}/${mcpNamespace(server.name)}`,
+		namespace:
+			server.instructions === undefined
+				? { name: mcpNamespace(server.name), description }
+				: { name: mcpNamespace(server.name), description, instructions: server.instructions },
+		tools: server.tools.map((tool) => mcpToolRegistration(server, tool)),
+	});
 }
 
 /**
@@ -176,8 +159,7 @@ function serversSection(servers: readonly McpServer[]): string | undefined {
 	if (listed.length === 0) return undefined;
 
 	const lines = listed.map((server) => {
-		const text = server.entry.config.description?.trim() || server.instructions || "";
-		const first = (text.split("\n", 1)[0] ?? "").trim();
+		const first = mcpServerSummary(server.entry.config.description, server.instructions);
 		const summary = first.length > MAX_SUMMARY_CHARS ? `${first.slice(0, MAX_SUMMARY_CHARS - 1).trimEnd()}…` : first;
 		const head = `- ${mcpNamespace(server.name)}`;
 

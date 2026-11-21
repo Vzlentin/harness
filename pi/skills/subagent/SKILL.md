@@ -23,7 +23,7 @@ By default, the child uses the `subagentModel` (`<provider>/<model>`) and `subag
 
 ## Tools
 
-Without `tools`, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, `todo`, `thread`, `rule`, `parley`, `item`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
+Without `tools`, a child gets `read`, `write`, `edit`, `bash`, `subagent`, `todo`, `thread`, `rule`, `parley`, `item`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
 
 A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi session in its working directory does. It gets the project skills only when the project is trusted. Its `codemode` scripts can call the tools of the MCP servers in Pi's `mcp.json`, as `tools.mcp__<server>__<tool>(args)`. It gets no other Pi extensions, so put what it needs from them in the prompt. It also gets the decided rules of the project in its system prompt.
 
@@ -33,8 +33,8 @@ Only the user puts a rule in effect. With the `rule` tool, you add a rule as ope
 
 `tools` is an allowlist. An unknown name is an error. Common choices:
 
-- `["read", "grep", "find", "ls"]`: enforced read-only repository investigation.
-- `["read", "grep", "find", "ls", "bash"]`: investigation that may run tests or other commands; bash can modify files.
+- `["read"]`: enforced read-only repository investigation. The child reads only files whose paths it knows.
+- `["read", "bash"]`: investigation that searches the repository or runs tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
 Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end once their own todos are done. A subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "item": <id> }` with the ID of a work item) ends when that parley or item ends, once its own todos are done. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
@@ -85,7 +85,7 @@ For humans, not for you: the interactive `/subagent` command opens a child in Pi
 
 ```sh
 harness spawn --name implementation --prompt "Complete task"
-harness spawn --tools read,grep,find,ls,bash --file docs/spec.md --prompt "Investigate the failure"
+harness spawn --tools read,bash --file docs/spec.md --prompt "Investigate the failure"
 harness status <handle>
 harness list
 harness wait <handle>

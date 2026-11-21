@@ -277,6 +277,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			[["spawn", "--no-skills", "--prompt", "x"], "Unknown spawn argument: --no-skills\n"],
 			[["spawn", "--model", "nope", "--prompt", "x"], "Unknown model: faux/nope\n"],
 			[["spawn", "--tools", "read,web", "--prompt", "x"], "Unknown tool: web\n"],
+			[["spawn", "--tools", "read,grep", "--prompt", "x"], "Unknown tool: grep\n"],
+			[["spawn", "--tools", "find", "--prompt", "x"], "Unknown tool: find\n"],
+			[["spawn", "--tools", "ls", "--prompt", "x"], "Unknown tool: ls\n"],
 			[["status", "abcdef"], "Unknown subagent: abcdef\n"],
 			[["spawn", "--thinking", "huge", "--prompt", "x"], "Invalid thinking level: huge\n"],
 			[["spawn", "--thinking", "xhigh", "--prompt", "x"], "faux/faux-1 has no thinking level xhigh\n"],
@@ -316,9 +319,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
 		expect(seen?.tools).toEqual([
 			"read",
-			"grep",
-			"find",
-			"ls",
 			"write",
 			"edit",
 			"bash",
@@ -703,9 +703,6 @@ describe("subagent", { timeout: 30_000 }, () => {
 		);
 		expect(requests.get("Task:\nNest tool")?.tools).toEqual([
 			"read",
-			"grep",
-			"find",
-			"ls",
 			"write",
 			"edit",
 			"bash",

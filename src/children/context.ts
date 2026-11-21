@@ -6,11 +6,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
-	createFindTool,
-	createGrepTool,
-	createLsTool,
 	DefaultPackageManager,
 	formatSkillsForPrompt,
 	getAgentDir,
@@ -20,54 +16,11 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import {
-	defineExtension,
-	defineTool,
-	type Extension,
-	type PromptInput,
-	section,
-	type ToolRegistration,
-} from "@earendil-works/pi-durable";
+import { defineExtension, type Extension, type PromptInput, section } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { TSchema } from "typebox";
 import { errorMessage } from "../protocol/requests.ts";
 import { savedTrust, type TrustApi } from "../protocol/trust.ts";
 import { overlayOf, overlayRead, type Resources, withOverlay } from "./overlay-view.ts";
-
-/** The arguments that pi-durable gives to a tool with the parameter schema `T`. */
-type DurableArgs<T extends TSchema> = Parameters<ToolRegistration<T>["execute"]>[0];
-
-/** The part of a Pi coding agent tool that a durable tool needs. */
-type PiTool<T extends TSchema> = {
-	readonly name: string;
-	readonly description: string;
-	readonly parameters: T;
-	execute(
-		id: string,
-		args: DurableArgs<T>,
-		signal?: AbortSignal,
-	): Promise<{ readonly content: (TextContent | ImageContent)[] }>;
-};
-
-/** A Pi coding agent tool as a durable tool that runs in the calling conversation's directory. */
-function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegistration {
-	const { name, description, parameters } = create(".");
-
-	return defineTool({
-		name,
-		description,
-		parameters,
-		replay: "safe",
-		execute: async (args, api, context) => {
-			const { cwd } = await api.agent(context);
-
-			if (cwd === undefined) throw new Error(`${name} needs a working directory`);
-			const result = await create(cwd).execute(api.callId, args, context.abortSignal);
-
-			return { output: result.content };
-		},
-	});
-}
 
 /** The trust functions of the pi-coding-agent of this install. */
 export const PI_TRUST: TrustApi = {
@@ -179,15 +132,7 @@ async function inputResources(
 export function childContext(report: ResourcesReport): Extension {
 	return defineExtension({
 		name: "pi-subagent-context",
-		tools: [
-			overlayRead(),
-			piTool(createGrepTool),
-			piTool(createFindTool),
-			piTool(createLsTool),
-			createWriteTool(),
-			createEditTool(),
-			createBashTool(),
-		],
+		tools: [overlayRead(), createWriteTool(), createEditTool(), createBashTool()],
 		sections: [
 			section("rules", () => CHILD_RULES),
 			section("project_context", async (input, context) => {

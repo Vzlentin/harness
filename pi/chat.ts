@@ -8,9 +8,6 @@ import {
 	AssistantMessageComponent,
 	createBashToolDefinition,
 	createEditToolDefinition,
-	createFindToolDefinition,
-	createGrepToolDefinition,
-	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
 	getMarkdownTheme,
@@ -32,9 +29,6 @@ const RENDERERS = new Map<string, (cwd: string) => AnyDefinition>([
 	["bash", createBashToolDefinition],
 	["edit", createEditToolDefinition],
 	["write", createWriteToolDefinition],
-	["grep", createGrepToolDefinition],
-	["find", createFindToolDefinition],
-	["ls", createLsToolDefinition],
 ]);
 
 const DIAGNOSTICS = /^<harness>\n([\s\S]*)\n<\/harness>$/;

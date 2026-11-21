@@ -696,7 +696,7 @@ export class VisualCopy implements Component {
 	}
 
 	/** Marks each match in the message rows, and the current match in its own color. */
-	private highlight(owner: Owner, lines: string[]): string[] {
+	private highlight(owner: Owner, lines: readonly string[]): readonly string[] {
 		const rows = new Map<number, Array<Range & { style: Style }>>();
 
 		for (const match of this.matches) {
@@ -719,7 +719,7 @@ export class VisualCopy implements Component {
 		return result;
 	}
 
-	private decorate(owner: Owner, rendered: string[]): string[] {
+	private decorate(owner: Owner, rendered: readonly string[]): readonly string[] {
 		const layout = this.layout();
 		const lines = this.highlight(owner, rendered);
 
@@ -729,11 +729,11 @@ export class VisualCopy implements Component {
 	private paintBlocks(
 		layout: Layout,
 		owner: Owner,
-		lines: string[],
+		lines: readonly string[],
 		from: number,
 		to: number,
 		inner: boolean,
-	): string[] {
+	): readonly string[] {
 		let span: Rows | undefined;
 		let cursor: Rows | undefined;
 
