@@ -60,6 +60,10 @@ export type Harness = {
 
 const HARNESS_PACKAGE = "@vzlentin/harness";
 
+/** The `api` id of pi's virtual models, pi's `VIRTUAL_MODEL_API`, which pi does not export: a session that runs one
+ * dispatches each request to a physical model, which its assistant messages name. */
+const VIRTUAL_MODEL_API = "pi-virtual";
+
 const SESSION_TRUST_HINT =
 	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
@@ -256,11 +260,48 @@ function sessionScope(
 ): Pick<tool.ToolScope, "caller" | "provider" | "model" | "thinking" | "cwd"> {
 	return {
 		caller: ctx.sessionManager.getSessionId(),
-		provider: ctx.model?.provider,
-		model: ctx.model?.id,
-		thinking: pi.getThinkingLevel(),
+		...inheritedModel(pi, ctx),
 		cwd: ctx.cwd,
 	};
+}
+
+/**
+ * The model and thinking level that a spawn inherits from the session of `ctx`: its own model and Pi's thinking level,
+ * or, when it runs a pi virtual model, the physical model and thinking level of the latest response its branch records.
+ * A virtual model names no physical model the host could run, so a session that recorded no response inherits none, and
+ * the host picks `subagentModel` instead.
+ */
+function inheritedModel(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): Pick<tool.ToolScope, "provider" | "model" | "thinking"> {
+	if (ctx.model?.api !== VIRTUAL_MODEL_API) {
+		return { provider: ctx.model?.provider, model: ctx.model?.id, thinking: pi.getThinkingLevel() };
+	}
+
+	const branch = [...ctx.sessionManager.getBranch()];
+
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+
+		if (entry?.type !== "message") continue;
+
+		// As pi's findLatestResponse: a failed or aborted request can name the virtual model; a completed response
+		// names the physical model it dispatched to.
+		if (
+			entry.message.role === "assistant" &&
+			entry.message.stopReason !== "error" &&
+			entry.message.stopReason !== "aborted"
+		) {
+			return {
+				provider: entry.message.provider,
+				model: entry.message.model,
+				thinking: entry.message.thinkingLevel ?? pi.getThinkingLevel(),
+			};
+		}
+	}
+
+	return { provider: undefined, model: undefined, thinking: pi.getThinkingLevel() };
 }
 
 /** Whether the session of `ctx` has a result of the `subagent` tool or of the `parley` tool. */
