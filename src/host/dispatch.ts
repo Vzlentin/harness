@@ -433,7 +433,10 @@ function parley(request: Extract<Request, { type: "parley" }>, handler: Handler)
 		case "take":
 			return handler.harness.commit((tx) => takeParley(tx, request.slug, request.caller), context);
 		case "end":
-			return handler.harness.commit((tx) => endParley(tx, request.slug, request.status, request.caller), context);
+			return handler.harness.commit(
+				(tx) => endParley(tx, request.slug, request.status, request.caller, handler.items),
+				context,
+			);
 		case "read":
 			return readParley(handler.harness, request.slug, context);
 		case "list":
@@ -450,7 +453,10 @@ async function item(request: Extract<Request, { type: "item" }>, handler: Handle
 		case "add":
 			return stageItem(handler, await handler.harness.commit((tx) => addItem(tx, request, request.caller), context));
 		case "set":
-			return stageItem(handler, await handler.harness.commit((tx) => setItem(tx, request, request.caller), context));
+			return stageItem(
+				handler,
+				await handler.harness.commit((tx) => setItem(tx, request, request.caller, handler.items), context),
+			);
 		case "list": {
 			const items = await readItems(handler.harness, handler.storage, request.state ?? "open", context);
 

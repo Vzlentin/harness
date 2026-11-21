@@ -4,7 +4,8 @@
  * the session, and each thread is an ownerless conversation whose entries are its messages, and the edits and deletes
  * of its messages, which a read applies in order. The states of the messages out are in the outbox, a document of the
  * session, because an entry cannot change. The requests of the host change them with these functions, each in its own
- * commit. A round and a contract also write the `shapes` edge of their parley to a work item.
+ * commit. A round and a contract also write the `shapes` edge of their parley to a work item, and a contract that
+ * shapes an open item does not end.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
@@ -56,9 +57,10 @@ import {
 import type { StoreFile } from "../protocol/store-file.ts";
 import { type Todo, todoLine } from "../protocol/todo.ts";
 import type { ItemIndex } from "./item-index.ts";
-import { itemForContract, writeEdge } from "./items.ts";
+import { itemForContract, openContractItems, writeEdge } from "./items.ts";
 import {
 	Asks,
+	endContract,
 	foldMessage,
 	known,
 	knownAuthor,
@@ -694,16 +696,28 @@ export async function takeParley(tx: Tx, slug: string, by: string): Promise<Parl
 	return { parley: Value.Clone(parley), asks: parleyAsks(asks, parley.id) };
 }
 
-/** Ends the contract `slug` with the status `status` for the caller `by`, and gives the parley. */
-export async function endParley(tx: Tx, slug: string, status: ParleyEnd, by: string): Promise<Parley> {
+/**
+ * Ends the contract `slug` with the status `status` for the caller `by`, and gives the parley. A contract that shapes
+ * an open item fails: the close of its last item ends it. `items` gives the items that the contract shapes.
+ */
+export async function endParley(
+	tx: Tx,
+	slug: string,
+	status: ParleyEnd,
+	by: string,
+	items: Pick<ItemIndex, "itemsOf">,
+): Promise<Parley> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const parley = knownParley(parleys, slug);
 
 	if (parley.status !== "contract") throw new Error(`Parley ${slug} is ${parley.status}: only a contract ends`);
-	const ended: Parley = { ...parley, status, at: Date.now(), by };
-	parleys[parleys.indexOf(parley)] = ended;
+	const open = await openContractItems(tx, slug, items);
 
-	return Value.Clone(ended);
+	if (open.length > 0) {
+		throw new Error(`Parley ${slug} shapes open items ${open.join(", ")}: close them, and the contract ends`);
+	}
+
+	return endContract(parleys, parley, status, by);
 }
 
 /** The parleys, in ID order. */

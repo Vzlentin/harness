@@ -17,6 +17,7 @@ import {
 	round,
 	send,
 	setUp,
+	contractItem,
 	spawnAs,
 	spawnWithId,
 	startHost,
@@ -110,7 +111,10 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 			serves: { kind: "contract", slug: "serve-contract" },
 		});
 		const todo = await addTodo(handle, "Save to the vault");
-		await send({ type: "parley", action: "end", caller: "pi-1", slug: "serve-contract", status: "done" });
+		await setItem(await contractItem("serve-contract"), "done");
+		expect(await send({ type: "parley", action: "read", slug: "serve-contract" })).toMatchObject({
+			parley: { status: "done", by: "cli" },
+		});
 		await sleep(300);
 		expect(await stateOf(handle)).toBe("idle");
 
@@ -299,7 +303,7 @@ describe("an agent ends when what it serves ends", { timeout: 30_000 }, () => {
 		await expect(spawn({ item: 999 })).rejects.toThrow("Unknown item: 999");
 		const parley = await framed("serve-ended");
 		await sign(parley);
-		await send({ type: "parley", action: "end", caller: "pi-1", slug: "serve-ended", status: "dropped" });
+		await setItem(await contractItem("serve-ended"), "dropped");
 		await expect(spawn({ parley: "serve-ended" })).rejects.toThrow(
 			"Parley serve-ended is dropped: an agent cannot serve it",
 		);

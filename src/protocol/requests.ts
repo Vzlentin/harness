@@ -462,7 +462,10 @@ export const RequestLine = Type.Union([
 	 * and its asks.
 	 */
 	Type.Object({ type: Type.Literal("parley"), action: Type.Literal("take"), caller: Type.String(), slug: Slug }),
-	/** Ends the contract `slug` as `done` or `dropped`, and replies with the parley. */
+	/**
+	 * Ends the contract `slug` as `done` or `dropped`, and replies with the parley. A contract that shapes an open item
+	 * does not end: the close of its last open item ends it.
+	 */
 	Type.Object({
 		type: Type.Literal("parley"),
 		action: Type.Literal("end"),
@@ -483,7 +486,7 @@ export const RequestLine = Type.Union([
 	}),
 	/**
 	 * Changes the fields that it gives of the item `id`, and replies with it. A change to `done` fails while a run that
-	 * serves the item is live.
+	 * serves the item is live. A change to `done` or `dropped` ends each contract that shapes the item and no open item.
 	 */
 	Type.Object({
 		type: Type.Literal("item"),

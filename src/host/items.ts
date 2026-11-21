@@ -4,7 +4,8 @@
  * its child in the commit that creates the child. A round of asks writes the `shapes` edge of its parley, and the commit
  * that makes a parley a contract gives it an item when it shapes none. A load of a store file writes its items, with their
  * edges and the counter. It also gives whether a run is live: the stage of an item reads it,
- * and a live run refuses a change of its item to `done`.
+ * and a live run refuses a change of its item to `done`. A change of an item to `done` or `dropped` ends each contract
+ * that shapes it and no open item, and the end of a contract reads the open items that it shapes.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { ConversationId, TaskId, TaskRecord, Tx } from "@earendil-works/pi-durable";
@@ -22,7 +23,7 @@ import {
 import type { Ask, Parley } from "../protocol/project.ts";
 import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
-import { Asks, knownParley, Parleys } from "./project-docs.ts";
+import { Asks, endContract, knownParley, Parleys } from "./project-docs.ts";
 import { type StartedTaskIds, StartedTasks } from "./tasks.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
@@ -55,9 +56,16 @@ export async function loadItems(tx: Tx, items: readonly WorkItem[], last: number
 
 /**
  * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item. A change to
- * `done` fails while a run that serves the item is live.
+ * `done` fails while a run that serves the item is live. A change to `done` or `dropped` ends each contract that shapes
+ * the item and no open item: `done` when one item that it shapes is done, else `dropped`. `items` gives the items that
+ * a contract shapes.
  */
-export async function setItem(tx: Tx, change: ItemSet, by: string): Promise<WorkItem> {
+export async function setItem(
+	tx: Tx,
+	change: ItemSet,
+	by: string,
+	items: Pick<ItemIndex, "itemsOf">,
+): Promise<WorkItem> {
 	const item = await itemDraft(tx, change.id);
 
 	if (change.state === "done") await refuseLiveRun(tx, item);
@@ -70,7 +78,19 @@ export async function setItem(tx: Tx, change: ItemSet, by: string): Promise<Work
 	item.at = Date.now();
 	item.by = by;
 
+	if (change.state === "done" || change.state === "dropped") await endContracts(tx, item, by, items);
+
 	return Value.Clone(item);
+}
+
+/**
+ * The IDs of the open items that the contract `slug` shapes in `tx`, in ID order. `items` gives the items with an edge
+ * from the parley, and an item counts only while its document still has the edge `shapes`.
+ */
+export async function openContractItems(tx: Tx, slug: string, items: Pick<ItemIndex, "itemsOf">): Promise<number[]> {
+	const work = await contractItems(tx, slug, items.itemsOf(`parley:${slug}`));
+
+	return work.filter((item) => item.state === "open").map((item) => item.id);
 }
 
 /**
@@ -209,6 +229,42 @@ async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
 			throw new Error(`Item ${item.id} cannot be done: run ${run} serves it and is live`);
 		}
 	}
+}
+
+/**
+ * Ends each contract with an edge to `item`, a closed item, for the caller `by` when the contract shapes no open item:
+ * `done` when one item that it shapes is done, else `dropped`. `items` gives the other items that a contract shapes.
+ */
+async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<void> {
+	const { parleys: slugs } = itemEnds(item);
+
+	if (slugs.length === 0) return;
+	const parleys = (await tx.doc(Parleys)).parleys;
+
+	for (const slug of new Set(slugs)) {
+		const parley = parleys.find((found) => found.slug === slug);
+
+		if (parley?.status !== "contract") continue;
+		const ids = new Set([...items.itemsOf(`parley:${slug}`), item.id]);
+		const work = await contractItems(tx, slug, [...ids]);
+
+		if (work.some((found) => found.state === "open")) continue;
+		endContract(parleys, parley, work.some((found) => found.state === "done") ? "done" : "dropped", by);
+	}
+}
+
+/** The drafts of the items of `ids` in `tx` whose document has the edge `parley:<slug> shapes`. */
+async function contractItems(tx: Tx, slug: string, ids: readonly number[]): Promise<WorkItem[]> {
+	const end = `parley:${slug}`;
+	const work: WorkItem[] = [];
+
+	for (const id of ids) {
+		const item = await itemDraft(tx, id);
+
+		if (item.edges.some((edge) => edge.from === end && edge.kind === "shapes")) work.push(item);
+	}
+
+	return work;
 }
 
 /** The `at` of the seed of a missing item, which no stored item has. */

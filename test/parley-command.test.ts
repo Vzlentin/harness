@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
-import { cli, setUp, startHost, tearDown } from "./helpers.ts";
+import { cli, setUp, startHost, tearDown, unlinkContract } from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -112,6 +112,7 @@ describe("harness parley show", { timeout: 30_000 }, () => {
 		for (const status of ["done", "dropped"] as const) {
 			const slug = `ended-${status}`;
 			await contract(slug);
+			await unlinkContract(slug);
 			await send({ type: "parley", action: "end", caller: "pi-1", slug, status });
 
 			const result = await cli(["parley", "show", slug]);

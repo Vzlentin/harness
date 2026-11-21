@@ -1,10 +1,11 @@
 /**
  * The parts of the store of the project that its modules share: the documents of the session, the entries of a message
  * and of its edits and deletes, the fold that applies them, the persons, the parleys, the asks, the lookup of an object
- * by its ID, and the lookup of a parley by its slug.
+ * by its ID, the lookup of a parley by its slug, and the end of a contract.
  */
 import type { ConversationId, Cursor, EntryId, EntryRecord, JsonObject, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import {
 	type AskList,
 	ASKS_KIND,
@@ -14,6 +15,7 @@ import {
 	MESSAGE_KIND,
 	type Message,
 	type Parley,
+	type ParleyEnd,
 	type ParleyList,
 	PARLEYS_KIND,
 	type PersonList,
@@ -107,6 +109,22 @@ export function known<T extends { readonly id: number }>(items: readonly T[], id
 	if (item === undefined) throw new Error(`Unknown ${name}: ${id}`);
 
 	return item;
+}
+
+/**
+ * Ends the contract `parley` of `parleys` with the status `status` for the caller `by`: it replaces the parley in place,
+ * and gives a copy of the ended parley.
+ */
+export function endContract(
+	parleys: Parley[],
+	parley: Readonly<Extract<Parley, { design_sense: string }>>,
+	status: ParleyEnd,
+	by: string,
+): Parley {
+	const ended: Parley = { ...parley, status, at: Date.now(), by };
+	parleys[parleys.indexOf(parley)] = ended;
+
+	return Value.Clone(ended);
 }
 
 /** The parley `slug` of `parleys`. A slug of no parley fails with `Unknown parley: <slug>`. */

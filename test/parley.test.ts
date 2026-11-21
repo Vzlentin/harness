@@ -13,7 +13,7 @@ import {
 	ParleyList,
 } from "../src/protocol/project.ts";
 import type { Request } from "../src/protocol/requests.ts";
-import { answer, framed, OPTIONS, round, send, setUp, startHost, tearDown } from "./helpers.ts";
+import { answer, framed, OPTIONS, round, send, setUp, startHost, tearDown, unlinkContract } from "./helpers.ts";
 
 let host: Host | undefined;
 
@@ -274,7 +274,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 		expect(written.parleys).toMatchObject([{ parley: { slug: "one-write", status: "contract" } }]);
 	});
 
-	it("ends a contract as done or dropped, and not an open parley", async () => {
+	it("ends a contract that shapes no item as done or dropped, and not an open parley", async () => {
 		for (const status of ["done", "dropped"] as const) {
 			const slug = `ends-${status}`;
 			const { call, readBack } = await framed(slug);
@@ -285,6 +285,7 @@ describe("asks and parleys", { timeout: 30_000 }, () => {
 				{ id: call, answer: "a" },
 				{ id: readBack, answer: "ok" },
 			]);
+			await unlinkContract(slug);
 
 			const ended = Value.Parse(Parley, await send(end));
 			expect(ended).toMatchObject({ slug, status, by: "pi-1" });

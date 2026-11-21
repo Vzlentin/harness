@@ -41,6 +41,7 @@ import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
@@ -713,6 +714,23 @@ export async function framed(slug: string): Promise<{ call: number; readBack: nu
 	if (call === undefined || readBack === undefined) throw new Error("no asks");
 
 	return { call, readBack };
+}
+
+/** The ID of the first open item that the parley `slug` shapes, as `item list` gives it. */
+export async function contractItem(slug: string): Promise<number> {
+	const { items } = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
+	const end = `parley:${slug}`;
+	const item = items.find((found) => found.edges.some((edge) => edge.from === end && edge.kind === "shapes"));
+
+	if (item === undefined) throw new Error(`no item shaped by ${slug}`);
+
+	return item.id;
+}
+
+/** Removes the edge of the parley `slug` to its open item, so the contract shapes no item. */
+export async function unlinkContract(slug: string): Promise<void> {
+	const to = `item:${await contractItem(slug)}`;
+	await send({ type: "item", action: "unlink", caller: "cli", from: `parley:${slug}`, kind: "shapes", to });
 }
 
 /** The state of the child `handle` of the main host, or nothing when no host runs. */
