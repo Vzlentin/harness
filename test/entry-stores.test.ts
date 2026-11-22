@@ -13,8 +13,8 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { EntryOptions } from "../src/host/entries.ts";
 import type { Host } from "../src/host/run.ts";
+import { type Ask, AskList } from "../src/protocol/asks.ts";
 import { setEntry } from "../src/protocol/entries.ts";
-import { type Ask, AskList } from "../src/protocol/project.ts";
 import { askGroup } from "../src/protocol/requests.ts";
 import { root, send, setUp, startHost, tearDown, until } from "./helpers.ts";
 

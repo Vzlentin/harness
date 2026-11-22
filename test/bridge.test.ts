@@ -207,21 +207,6 @@ threading.Thread(target=late).start()`,
 		expect(todo).toContain('"action"');
 	});
 
-	it("gives the structured result of the item tool to a cell", async () => {
-		const cell = "Task:\nBridge item";
-
-		cells.set(cell, [
-			`import json
-added = await tools.item(action="add", title="Bridge item")
-read = await tools.item(action="read", id=added["value"]["id"])
-print(json.dumps([added["action"], added["value"]["title"], added["value"]["stage"], read["action"], read["value"]["edges"]]))`,
-		]);
-		await spawnAs("bridge-item", cell, { notify: false });
-		await until(() => cellResults.get(cell)?.length === 1);
-
-		expect(cellResults.get(cell)).toEqual(['["add", "Bridge item", "inbox", "read", []]\n']);
-	});
-
 	it("runs the calls of asyncio.gather at the same time", async () => {
 		const done = join(root, "home", "gather-b-done");
 		const gate = Promise.withResolvers<void>();

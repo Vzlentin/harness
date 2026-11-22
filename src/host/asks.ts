@@ -25,7 +25,7 @@ import {
 	ASKS_KIND,
 	askTransition,
 	knownAsk,
-} from "../protocol/project.ts";
+} from "../protocol/asks.ts";
 import {
 	type AnswerAuthorOf,
 	askGroup,

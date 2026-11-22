@@ -2,7 +2,7 @@
  * The checks of the labels of a new worker: the check of a label kind, and the check of a list of labels with the checks
  * of the entries.
  */
-import { refParts } from "../protocol/item.ts";
+import { refParts } from "../protocol/worker-labels.ts";
 
 /** The check of the labels of one kind, which throws the reason when it refuses `label`. */
 export type LabelCheck = (label: string) => Promise<void>;

@@ -26,7 +26,7 @@ beforeAll(async () => {
 	storage = await openNodeSqliteStorage(join(root, "targets.sqlite"));
 	harness = await Harness.open(storage, { models, registry }, context);
 	harness.resume();
-	place = { store: harness, models, registry: registry.snapshot() };
+	place = { store: harness, models, registry: registry.snapshot(), uninherited: [] };
 	owner = { kind: "detached", root: await harness.root(context) };
 });
 

@@ -13,7 +13,7 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import { connect, HostUnreachableError, request } from "../client/client.ts";
+import { connect, HostUnreachableError, request, requestEntry } from "../client/client.ts";
 import { Mirror, type MirrorStatus, type MirrorTarget } from "../client/mirror.ts";
 import {
 	inboxOf,
@@ -24,11 +24,11 @@ import {
 	type UsageTotals,
 	usageTotals,
 } from "../client/view-state.ts";
+import { PageAnswer, Slug } from "../protocol/asks.ts";
 import { cliCaller } from "../protocol/env.ts";
 import { childTitle } from "../protocol/labels.ts";
-import { PageAnswer, Slug } from "../protocol/project.ts";
 import { checkProject, MAIN_PROJECT, readProjects } from "../protocol/projects.ts";
-import { type ChildInfo, errorMessage, type Replies, type Request } from "../protocol/requests.ts";
+import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
 import { AGENT_HANDLE, parseTarget, targetRef } from "../protocol/target.ts";
 import { addSend, PAGES, readPage } from "./pages.ts";
 
@@ -199,7 +199,9 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 				res,
 				() => asksOf(url),
 				({ project, parley }) =>
-					refusedAsBad(hostReply({ type: "parley", action: "read", slug: parley }, project, start)),
+					refusedAsBad(
+						hostReply(requestEntry({ type: "parley", action: "read", slug: parley }, { start, project }), project),
+					),
 			);
 		case "POST /api/inspect/answers":
 			return answer(
@@ -207,7 +209,10 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 				() => answersOf(req),
 				({ project, answers }) =>
 					refusedAsBad(
-						hostReply({ type: "ask", action: "answer", caller: PAGE_CALLER, answers, user: true }, project, start),
+						hostReply(
+							request({ type: "ask", action: "answer", caller: PAGE_CALLER, answers, user: true }, { start, project }),
+							project,
+						),
 					),
 			);
 		default:
@@ -424,7 +429,7 @@ async function abortOf(req: IncomingMessage): Promise<HostRequest> {
 
 /** Sends `sent` to its host. It throws as `hostReply` does. */
 async function toHost(sent: HostRequest, start: boolean): Promise<{ ok: true }> {
-	await hostReply(sent.request, sent.project, start);
+	await hostReply(request(sent.request, { start, project: sent.project }), sent.project);
 
 	return { ok: true };
 }
@@ -446,19 +451,15 @@ async function answersOf(req: IncomingMessage) {
 }
 
 /**
- * The reply of the host of `project` to `sent`. It throws the refusal of the host as an `Error`, a
- * `HostUnreachableError` when no host answers, and a `HostNotRunning` when no host runs and `start` is false.
+ * The reply of a host, sent to the host of `project`. It throws the refusal of the host as an `Error`, a
+ * `HostUnreachableError` when no host answers, and a `HostNotRunning` when no host runs and `start` was false.
  */
-async function hostReply<T extends Request["type"]>(
-	sent: Extract<Request, { type: T }>,
-	project: string,
-	start: boolean,
-): Promise<Replies[T]> {
-	const reply = await request(sent, { start, project });
+async function hostReply<R>(reply: Promise<R | undefined>, project: string): Promise<R> {
+	const replied = await reply;
 
-	if (reply === undefined) throw new HostNotRunning(`The harness host of ${project} is not running`);
+	if (replied === undefined) throw new HostNotRunning(`The harness host of ${project} is not running`);
 
-	return reply;
+	return replied;
 }
 
 /**

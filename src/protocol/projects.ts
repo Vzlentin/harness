@@ -19,17 +19,13 @@ const COMMANDS = [
 	"list",
 	"query",
 	"tree",
-	"parley",
-	"rule",
 	"todo",
-	"item",
 	"attach",
 	"host",
 	"create",
 	"projects",
 	"inspect",
 	"page",
-	"store",
 ] as const;
 
 /** A command of the `harness` CLI. */

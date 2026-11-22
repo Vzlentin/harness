@@ -1,9 +1,9 @@
 /** The `@vzlentin/harness/protocol` entry: what the CLI, Pi and the host agree, and the files of a host. */
+export * from "./asks.ts";
+
+export * from "./degraded.ts";
+
 export * from "./env.ts";
-
-export * from "./gate.ts";
-
-export * from "./item.ts";
 
 export * from "./labels.ts";
 
@@ -11,18 +11,14 @@ export * from "./lines.ts";
 
 export * from "./paths.ts";
 
-export * from "./project.ts";
-
-export * from "./project-watch.ts";
-
 export * from "./requests.ts";
-
-export * from "./store-file.ts";
 
 export * from "./target.ts";
 
 export * from "./todo.ts";
 
 export * from "./tree.ts";
+
+export * from "./typed.ts";
 
 export * from "./worker-labels.ts";

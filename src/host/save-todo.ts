@@ -5,7 +5,7 @@
  */
 import { statSync } from "node:fs";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
-import type { Ask } from "../protocol/project.ts";
+import type { Ask } from "../protocol/asks.ts";
 import type { Todo } from "../protocol/todo.ts";
 import { knownSession } from "./sessions.ts";
 import { library } from "./targets.ts";

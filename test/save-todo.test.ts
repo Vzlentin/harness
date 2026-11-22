@@ -1,18 +1,21 @@
 import { symlink } from "node:fs/promises";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
-import { Ask } from "../src/protocol/project.ts";
+import { type CallerTodoList, readCallerTodos, readTodos } from "../src/host/todo.ts";
+import { Ask } from "../src/protocol/asks.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
-import type { StoreFile } from "../src/protocol/store-file.ts";
 import type { Todo } from "../src/protocol/todo.ts";
 import {
 	answer,
-	framed,
 	listenAnswers,
+	models,
 	OPTIONS,
-	readStores,
 	root,
 	round,
 	send,
@@ -65,12 +68,30 @@ async function knownSession(caller: string): Promise<() => void> {
 	return () => answers.listener.close();
 }
 
-/** The lists of the stores of the main project, which a program reads while its host is down. The host starts again. */
-async function downLists(): Promise<StoreFile> {
+/** The lists of the store of the main project: the list of the project agent, and the list of each caller. */
+type StoreLists = { readonly todos: readonly Todo[]; readonly callerTodos: readonly CallerTodoList[] };
+
+/** The lists of the store of the main project, which a program reads while its host is down. The host starts again. */
+async function downLists(): Promise<StoreLists> {
 	await host?.close();
 
 	try {
-		return await readStores(MAIN_PROJECT);
+		const storage = await openNodeSqliteStorage(join(statePaths(MAIN_PROJECT).dir, "durable.sqlite"));
+
+		const harness = await Harness.open(
+			storage,
+			{ models, registry: createRegistry(), readOnly: true },
+			BACKGROUND_CONTEXT,
+		);
+
+		try {
+			const agent = { kind: "conversation", id: ROOT_CONVERSATION_ID } as const;
+			const { todos } = await readTodos(harness, agent, BACKGROUND_CONTEXT);
+
+			return { todos, callerTodos: await readCallerTodos(harness, storage, BACKGROUND_CONTEXT) };
+		} finally {
+			await harness.close(BACKGROUND_CONTEXT);
+		}
 	} finally {
 		host = await startHost();
 	}
@@ -163,7 +184,7 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		});
 	});
 
-	it("ends the delivery of the answer with the line of the todo, in a parley and with no parley", async () => {
+	it("ends the delivery of the answer with the line of the todo", async () => {
 		const caller = "pi-told";
 		const warm = await ask(caller, "Warm up");
 		await answer([{ id: warm, answer: "a" }]);
@@ -177,19 +198,6 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 			expect(answers.deliveries[1]?.text).toMatch(
 				/^\d+ · Which note · your call · a · In the store\n○ 1 Save to the vault: Which note\n$/,
 			);
-
-			const frame = { slug: "told", title: "Told", goal: "Tell the todo." };
-
-			const framedAsks = [
-				{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" },
-				{ title: "The terms" },
-			] as const;
-
-			const asked = (await round(caller, frame, [...framedAsks])).parleys[0]?.asks[0]?.id;
-			await answer([{ slug: "told", n: 1, answer: "a" }]);
-			await until(() => answers.deliveries.length === 3);
-			expect(answers.deliveries[2]?.text).toMatch(/\[told\] ok\n○ 2 Save to the vault: Where\n$/);
-			expect((await todosOf(caller)).at(-1)).toMatchObject({ id: 2, ask: asked });
 		} finally {
 			answers.listener.close();
 		}
@@ -258,18 +266,12 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		expect(lists).not.toContain("pi-quiet");
 	});
 
-	it("is not added for an ask with a note, a read-back, or an asker with no list", async () => {
+	it("is not added for an ask with a note, or an asker with no list", async () => {
 		const { id: child } = await spawnWithId("save-none");
 		const noted = await ask(child, "Noted first");
 		await note(child, noted, "noted-first");
 		await answer([{ id: noted, answer: "a" }]);
 		expect(await todosOf(child)).toEqual([]);
-
-		const { call, readBack } = await framed("save-parley");
-		await send({ type: "parley", action: "take", caller: child, slug: "save-parley" });
-		await answer([{ id: call, answer: "a" }]);
-		await answer([{ id: readBack, answer: "ok" }]);
-		expect((await todosOf(child)).map((todo) => todo.ask)).toEqual([call]);
 
 		const run = await ask("workflows:r1", "From a run");
 		await answer([{ id: run, answer: "a" }]);

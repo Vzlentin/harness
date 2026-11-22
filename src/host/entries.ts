@@ -1,7 +1,7 @@
 /**
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
- * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
- * hook, a handler of the answered asks, a handler of the reports of the workers, a handler of the ended children, the
+ * entry is a module whose default export gets the host's handles, and gives extensions, the names of those that no
+ * child inherits, tasks, a catch-up hook, an input hook, a handler of the answered asks, a handler of the reports of the workers, a handler of the ended children, the
  * request types that it serves, the checks of its label kinds, the version of its protocol, its open and busy calls, the
  * handler of the `ask` requests and the list that `classify-todos` takes without `list` to the host.
  */
@@ -35,8 +35,8 @@ import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { createChildren, Input, Place } from "../children/library.ts";
+import type { AnswerAuthor, AnswerInput, Ask, AskInput, AskList } from "../protocol/asks.ts";
 import { readEntries } from "../protocol/entries.ts";
-import type { AnswerAuthor, AnswerInput, Ask, AskInput, AskList } from "../protocol/project.ts";
 import { type AnswerAuthorOf, type AskRequest, type GroupAnswers, Json, type Replies } from "../protocol/requests.ts";
 import type { Todo, TodoList } from "../protocol/todo.ts";
 import type { WorkerId, Worker } from "../protocol/worker-labels.ts";
@@ -205,7 +205,8 @@ export type AskHandler = (
 const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) });
 
 /**
- * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
+ * What the default export of an entry returns: its extensions, the names of those that no child inherits from the agent
+ * of its owner, the tasks that `start` runs, its catch-up hook, its
  * input hook, its handler of the answered asks, its handler of the reports, its handler of the ended children, the
  * request types that it serves, the checks of its label kinds, the version of its protocol, `open`, which the host
  * calls once the root conversation and the workers are there and before any task resumes, `busy`, which keeps the host
@@ -213,6 +214,7 @@ const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version
  */
 const EntryResult = Type.Object({
 	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
+	uninherited: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 	tasks: Type.Optional(Type.Unsafe<readonly AnyTask[]>(Type.Array(Type.Unknown()))),
 	catchUp: Type.Optional(CatchUpHook),
 	input: Type.Optional(InputHook),
@@ -236,7 +238,7 @@ const EntryResult = Type.Object({
 export type Entry = Static<typeof EntryResult>;
 
 /**
- * The entries that the host loaded, as one: their extensions, tasks, catch-up hooks, input hooks, handlers of the
+ * The entries that the host loaded, as one: their extensions, the names of those that no child inherits, tasks, catch-up hooks, input hooks, handlers of the
  * answered asks and handlers of the reports in load order, the handler of the `ask` requests and the list of
  * `classify-todos`, each of at most one entry, their request types by type, the checks of their labels by kind, the
  * versions of their protocols by name, the event bus that they share, `open`, which opens each entry in load order,
@@ -245,6 +247,7 @@ export type Entry = Static<typeof EntryResult>;
  */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
+	readonly uninherited: readonly string[];
 	readonly tasks: readonly AnyTask[];
 	readonly catchUps: readonly CatchUpHook[];
 	readonly inputHooks: readonly InputHook[];
@@ -366,8 +369,10 @@ export type EntryHandles = {
 	/** Pi's settings for the project directory, as the host reads them. */
 	readonly settings: SettingsManager;
 	/**
-	 * The scope of the tools of the hosted conversations: its `send` serves a typed request in this process, by the host
-	 * or by the entry of its type, with no check of its schema. A watch type needs a connection, and fails.
+	 * The scope of the tools of the hosted conversations: its `send` serves a request in this process. The host serves a
+	 * typed request of a core type with no check of its schema. The entry of its type serves a request of another type,
+	 * after the check of its schema. A type that no loaded entry serves fails with
+	 * `no loaded entry serves request type "<type>"`. A watch type needs a connection, and fails.
 	 */
 	readonly scope: DurableScope;
 	/**
@@ -574,6 +579,7 @@ export async function loadEntries(
 
 	return {
 		extensions: entries.flatMap((entry) => entry.extensions),
+		uninherited: entries.flatMap((entry) => entry.uninherited ?? []),
 		tasks: entries.flatMap((entry) => entry.tasks ?? []),
 		catchUps: entries.flatMap((entry) => (entry.catchUp === undefined ? [] : [checkedHook(entry.catchUp)])),
 		inputHooks: entries.flatMap((entry) => entry.input ?? []),

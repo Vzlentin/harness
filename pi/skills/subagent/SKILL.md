@@ -23,13 +23,9 @@ By default, the child uses the `subagentModel` (`<provider>/<model>`) and `subag
 
 ## Tools
 
-Without `tools`, a child gets `read`, `write`, `edit`, `bash`, `subagent`, `todo`, `thread`, `rule`, `parley`, `item`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
+Without `tools`, a child gets `read`, `write`, `edit`, `bash`, `subagent`, `todo`, `codemode`, and the tools of installed packages that declare `piDurable` entries. `bash` can modify files, so it is not a read-only capability.
 
-A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi session in its working directory does. It gets the project skills only when the project is trusted. Its `codemode` scripts can call the tools of the MCP servers in Pi's `mcp.json`, as `tools.mcp__<server>__<tool>(args)`. It gets no other Pi extensions, so put what it needs from them in the prompt. It also gets the decided rules of the project in its system prompt.
-
-When the project has decided conduct rules, the host gates each tool call that is not a read, for you and for each child. A call that breaks a rule does not run: it fails with `Held as action <id>: <reason>`. Read the reason, and do not call the same command again to get around it. When the user approves the action, a message tells you so: call the command again, and it runs one time.
-
-Only the user puts a rule in effect. With the `rule` tool, you add a rule as open, and change a rule that is still open. To change a decided rule, add a new rule with `replaces`. Do not run `harness rule decide`, `retire`, `edit`, `create` or `delete`: the gate holds each such command until the user approves it.
+A child gets the `AGENTS.md` or `CLAUDE.md` files and the user skills, as a Pi session in its working directory does. It gets the project skills only when the project is trusted. Its `codemode` scripts can call the tools of the MCP servers in Pi's `mcp.json`, as `tools.mcp__<server>__<tool>(args)`. It gets no other Pi extensions, so put what it needs from them in the prompt.
 
 `tools` is an allowlist. An unknown name is an error. Common choices:
 
@@ -37,7 +33,7 @@ Only the user puts a rule in effect. With the `rule` tool, you add a rule as ope
 - `["read", "bash"]`: investigation that searches the repository or runs tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
-Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end with it. A subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "item": <id> }` with the ID of a work item) gets the label of that work, and it is stopped with the children it spawned when that parley or item is done or dropped. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
+Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload`. When the spawning Pi session ends, they end 30 s later, and their busy work is aborted. When the subagent that spawned them ends, they end with it. With an entry that checks these labels, such as the projects entry, a subagent spawned with `serves` (`{ "parley": "<slug>" }` or `{ "item": <id> }` with the ID of a work item) gets the label of that work, and it is stopped with the children it spawned when that parley or item is done or dropped. Otherwise they run until you `stop` them. A stopped subagent keeps its conversation, and a `send` resumes it.
 
 ## Answers and wait
 

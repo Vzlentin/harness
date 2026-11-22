@@ -83,6 +83,16 @@ describe("projects", { timeout: 30_000 }, () => {
 		expect(await cli(["--version"])).toEqual({ code: 0, stdout: `${version}\n`, stderr: "" });
 	});
 
+	it("prints the usage for item, rule, parley and store, which are not commands", async () => {
+		const results = await Promise.all(
+			[["item", "list"], ["rule"], ["parley", "show", "x"], ["store", "load", "f"]].map((args) => cli(args)),
+		);
+
+		expect(results).toEqual(
+			results.map(() => expect.objectContaining({ code: 1, stderr: expect.stringMatching(/^Usage:/) })),
+		);
+	});
+
 	it("refuses a project with the name of a command", () => {
 		expect(() => addProject("spawn", dirA)).toThrow("A project cannot have the name spawn");
 		expect(existsSync(projectsPath())).toBe(false);
@@ -96,8 +106,6 @@ describe("projects", { timeout: 30_000 }, () => {
 			[["create", "todo", "--cwd", dirA], "A project cannot have the name todo"],
 			[["create", "page", "--cwd", dirA], "A project cannot have the name page"],
 			[["create", "tree", "--cwd", dirA], "A project cannot have the name tree"],
-			[["create", "parley", "--cwd", dirA], "A project cannot have the name parley"],
-			[["create", "item", "--cwd", dirA], "A project cannot have the name item"],
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];
 

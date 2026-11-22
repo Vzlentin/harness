@@ -9,7 +9,7 @@ import {
 } from "../src/host/keep-awake.ts";
 import { runHost } from "../src/host/run.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import { called, cli, gates, models, setUp, tearDown, until, watchProject } from "./helpers.ts";
+import { called, cli, degradedStates, gates, models, setUp, tearDown, until } from "./helpers.ts";
 
 /** A child that the fake system started: its arguments, its kills, and the listeners that a test can call. */
 type FakeChild = {
@@ -214,29 +214,26 @@ describe("the hold of a host", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("gives a watch the failed hold, which stays, with its warning", async () => {
+	it("gives the failed hold in the degraded states of the host, where it stays, with its warning", async () => {
 		const { fake, system, tickAt } = fakeSystem();
 		const stderr = vi.spyOn(process.stderr, "write");
 		const host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models, keepAwake: system });
 		const gate = Promise.withResolvers<void>();
 		gates.set("Task:\nAwake fails", gate);
-		const watch = await watchProject(MAIN_PROJECT);
 		const line = "caffeinate cannot start: spawn caffeinate ENOENT";
+		const failed = [{ kind: "awake-failed", line, since: expect.any(Number) }];
 
 		try {
+			expect(await degradedStates()).toEqual([]);
 			await cli(["spawn", "--prompt", "Awake fails"]);
 			await until(() => called("Task:\nAwake fails") === 1);
 			tickAt(0);
 			fake.children[0]?.listeners.get("error")?.(new Error("spawn caffeinate ENOENT"));
-			await until(() => watch.events.at(-1)?.degraded.length === 1);
-			expect(watch.events.at(-1)?.degraded).toEqual([{ kind: "awake-failed", line, since: expect.any(Number) }]);
+			await vi.waitFor(async () => expect(await degradedStates()).toEqual(failed));
 			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${line}\n`);
-
-			const again = await watchProject(MAIN_PROJECT);
-			again.socket.destroy();
-			expect(again.state.degraded).toEqual(watch.events.at(-1)?.degraded);
+			tickAt(5000);
+			expect(await degradedStates()).toEqual(failed);
 		} finally {
-			watch.socket.destroy();
 			stderr.mockRestore();
 			gate.resolve();
 			await host?.close();

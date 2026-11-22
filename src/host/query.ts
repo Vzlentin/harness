@@ -7,10 +7,10 @@ import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Conversation, ConversationId, Cursor, EntryRecord } from "@earendil-works/pi-durable";
 import { CLI_CALLER } from "../protocol/env.ts";
-import { userText } from "../protocol/gate.ts";
 import { MAX_QUERY, QUERY_CUT_LINE } from "../protocol/query.ts";
 import type { Replies, Request } from "../protocol/requests.ts";
 import type { Target } from "../protocol/target.ts";
+import { userText } from "../protocol/typed.ts";
 import { settingModel } from "./model-choice.ts";
 import { callerEntry, type TargetHost, targetConversation } from "./targets.ts";
 

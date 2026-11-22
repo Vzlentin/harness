@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	ClassifierApi,
 	ClassifierContext,
@@ -13,10 +14,12 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef } from "../src/protocol/target.ts";
 import { ClassifyReply, Todo } from "../src/protocol/todo.ts";
-import { cli, createProject, models, PROJECTS_MODULE, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
+import { entryTodos } from "./fixtures/classify-list.ts";
+import { cli, models, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const NO_CLASSIFIER = "No classifier: log in to typesafe or set todoClassifier";
 
@@ -90,20 +93,6 @@ async function send<T extends Request["type"]>(line: Extract<Request, { type: T 
 	return reply;
 }
 
-/** Adds the open item `title`, and gives its ID. */
-async function addItem(title: string): Promise<number> {
-	const item = await send({ type: "item", action: "add", caller: "cli", title });
-
-	if (!("id" in item)) throw new Error("no item");
-
-	return item.id;
-}
-
-/** Sets the state of the item `id` to `state`. */
-async function setItem(id: number, state: "done" | "dropped"): Promise<void> {
-	await send({ type: "item", action: "set", caller: "cli", id, state });
-}
-
 /** Adds the todo `text` to the list `list`, and gives its ID. */
 async function add(list: ListRef, text: string): Promise<number> {
 	const todo = await send({ type: "todo", caller: "cli", action: "add", ...list, text });
@@ -141,13 +130,14 @@ beforeAll(async () => {
 		}),
 	);
 
+	setEntry("classify-list", fileURLToPath(new URL("fixtures/classify-list.ts", import.meta.url)));
 	host = await startHost();
-
-	for (const title of ["Write the spec", "Decide the release name", "Archive librlm", "Write the spec"]) {
-		await addItem(title);
-	}
-
-	await setItem(3, "done");
+	entryTodos.push(
+		{ id: 1, text: "Write the spec", state: "open" },
+		{ id: 2, text: "Decide the release name", state: "open" },
+		{ id: 3, text: "Archive librlm", state: "done" },
+		{ id: 4, text: "Write the spec", state: "open" },
+	);
 	// The private list of the project agent is not asked about without a list.
 	await add({ handle: AGENT_HANDLE }, "Decide the agent todo");
 });
@@ -164,7 +154,7 @@ beforeEach(async () => {
 });
 
 describe("classify-todos", { timeout: 30_000 }, () => {
-	it("gives one answer for each open work item, with its title as its text, from one call for each", async () => {
+	it("gives one answer for each open todo of the list of the entry, from one call for each", async () => {
 		const answers = [
 			{ id: 1, needsYou: false },
 			{ id: 2, needsYou: true },
@@ -259,63 +249,17 @@ describe("classify-todos", { timeout: 30_000 }, () => {
 	});
 
 	it("fails with the error of the classifier", async () => {
-		const id = await addItem("Fail the classifier");
-		await expect(send({ type: "classify-todos", ids: [id] })).rejects.toThrow(
+		const child = await spawnAs("session-2", "Failed child", { notify: false });
+		const id = await add({ handle: child.handle }, "Fail the classifier");
+		await expect(send({ type: "classify-todos", list: { handle: child.handle }, ids: [id] })).rejects.toThrow(
 			"The classifier typesafe/jev-latest failed: overloaded",
 		);
-		await setItem(id, "dropped");
 	});
 
-	it("prints No open items for a sort without a target when no item is open", async () => {
-		const open = await send({ type: "item", action: "list" });
-
-		if (!("items" in open)) throw new Error("no items");
-
-		for (const item of open.items) await setItem(item.id, "dropped");
+	it("prints No open items for a sort without a target when the list of the entry has no open todo", async () => {
+		for (const todo of entryTodos) todo.state = "dropped";
 		expect(await classifyTodos()).toEqual({ answers: [] });
 		expect(await cli(["todo", "sort"])).toEqual({ code: 0, stdout: "No open items\n", stderr: "" });
 		expect(asked).toEqual([]);
-	});
-});
-
-describe("the list of classify-todos of an entry", { timeout: 30_000 }, () => {
-	it("asks about the open todos of the list that an entry gives, on a host without the projects entry", async () => {
-		const project = "classify-entry";
-		const module = join(root, "list-entry.mjs");
-
-		await writeFile(
-			module,
-			`export default () => ({
-	extensions: [],
-	classifyList: async () => [
-		{ id: 7, text: "Decide the color", state: "open" },
-		{ id: 8, text: "Paint the wall", state: "done" },
-		{ id: 9, text: "Paint the door", state: "open" },
-	],
-	close: async () => {},
-});
-`,
-		);
-
-		const file = join(root, "config", "harness", "entries.json");
-		await mkdir(join(root, "config", "harness"), { recursive: true });
-		await writeFile(file, JSON.stringify({ list: module }));
-		await createProject(project);
-
-		const listed = await startHost(project).finally(() =>
-			writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE })),
-		);
-
-		try {
-			const reply = await request({ type: "classify-todos" }, { start: false, project });
-			expect(reply).toEqual({
-				answers: [
-					{ id: 7, needsYou: true },
-					{ id: 9, needsYou: false },
-				],
-			});
-		} finally {
-			await listed.close();
-		}
 	});
 });

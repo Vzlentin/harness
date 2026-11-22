@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as durable from "@earendil-works/pi-durable";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { request } from "../src/client/client.ts";
+import { request, requestEntry } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
-import type { Replies, Request } from "../src/protocol/requests.ts";
+import { type EntryRequestLine, type Replies, type Request, RequestLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { todoTool } from "../src/tool.ts";
 import {
@@ -58,23 +60,28 @@ async function listOf(handle: string): Promise<Replies["todo"]> {
  * `reached`, an `add` reaches the harness host, then calls `reached`, and the call never finishes.
  */
 function openTodoHost(store: string, reached?: () => void): Promise<Harness> {
-	const tool = todoTool(
-		durable,
-		{ Type },
-		{
-			caller: async (api) => `durable-todo:${api.conversationId}`,
-			send: async (message, signal) => {
-				const reply = await request(message, { start: false, signal });
+	function send<T extends Request["type"]>(
+		message: Extract<Request, { type: T }>,
+		signal: AbortSignal,
+	): Promise<Replies[T]>;
+	function send(message: EntryRequestLine, signal: AbortSignal): Promise<JsonValue>;
+	async function send(
+		message: Request | EntryRequestLine,
+		signal: AbortSignal,
+	): Promise<Replies[Request["type"]] | JsonValue> {
+		const reply = Value.Check(RequestLine, message)
+			? await request(message, { start: false, signal })
+			: await requestEntry(message, { start: false, signal });
 
-				if (reply === undefined) throw new Error("no host");
+		if (reply === undefined) throw new Error("no host");
 
-				if (reached === undefined) return reply;
-				reached();
+		if (reached === undefined) return reply;
+		reached();
 
-				return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
-			},
-		},
-	);
+		return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+	}
+
+	const tool = todoTool(durable, { Type }, { caller: async (api) => `durable-todo:${api.conversationId}`, send });
 
 	return openDurableHost(store, [tool]);
 }

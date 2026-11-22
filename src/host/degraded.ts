@@ -2,7 +2,7 @@
  * The degraded states of a host: each one has a kind, a cause, a line for the user and the time of its start. A source
  * starts a state when its cause starts, and ends it when its cause ends.
  */
-import type { DegradedKind, DegradedState } from "../protocol/project.ts";
+import type { DegradedKind, DegradedState } from "../protocol/degraded.ts";
 import { errorMessage } from "../protocol/requests.ts";
 
 type Listener = () => void;

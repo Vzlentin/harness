@@ -3,12 +3,25 @@
  * `parley:<slug>` or `item:<id>`, the workers that a label gives, and the identity of a worker.
  */
 import { type Static, Type } from "typebox";
-import { LocalId, Slug } from "./project.ts";
+import { LocalId, Slug } from "./asks.ts";
 
 /** A label of a worker: its kind, the text before the first `:`, names the entry that checks it. */
 export const Label = Type.String({ minLength: 1 });
 
 export type Label = Static<typeof Label>;
+
+/** A reference or a label `<kind>:<value>`, cut at its first colon. */
+export type RefParts = { readonly kind: string; readonly value: string };
+
+/**
+ * The kind and the value of the reference or the label `ref`, `<kind>:<value>`. Without a colon, the kind is the whole
+ * text and the value is empty.
+ */
+export function refParts(ref: string): RefParts {
+	const colon = ref.indexOf(":");
+
+	return colon === -1 ? { kind: ref, value: "" } : { kind: ref.slice(0, colon), value: ref.slice(colon + 1) };
+}
 
 /** What a `spawn` names that the child serves: a parley by slug, or a work item by ID. */
 export const SpawnServes = Type.Union([

@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -14,8 +13,7 @@ import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
 import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
-import { type ItemArgs, runItemTool, sendAskNote, sendRuleChange, sendRuleList } from "./project-tool.ts";
-import { setEntry } from "./protocol/entries.ts";
+import { LocalId } from "./protocol/asks.ts";
 import {
 	cliCaller,
 	HARNESS_INSPECT_PORT,
@@ -25,18 +23,7 @@ import {
 	PI_REASONING_LEVEL,
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
-import { EdgeKind, ItemState } from "./protocol/item.ts";
 import { inspectPaths, pageDir } from "./protocol/paths.ts";
-import {
-	LocalId,
-	ParleyAsks,
-	parleyShowText,
-	Rule,
-	type RuleFilter,
-	RuleKind,
-	RuleStatus,
-	type RuleUserChange,
-} from "./protocol/project.ts";
 import {
 	addProject,
 	type CommandName,
@@ -54,14 +41,6 @@ import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolAr
 
 /** How long `harness page` waits for the inspect server that it starts. */
 const INSPECT_START_MS = 10_000;
-
-/** The name of the projects entry in `entries.json`. */
-const PROJECTS_ENTRY = "projects";
-
-/** The module of the projects entry: its source in a checkout, which runs from source, else its build. */
-const PROJECTS_MODULE = fileURLToPath(
-	new URL(import.meta.url.endsWith(".ts") ? "./projects/index.ts" : "./projects/index.js", import.meta.url),
-);
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -354,237 +333,6 @@ async function treeCommand(args: string[], project: string | undefined): Promise
 	);
 }
 
-/**
- * Prints the parley `slug` of the project as Markdown: its frame, its asks with their answers, and its contract. With
- * `--json`, prints the reply of the host as one JSON line. With `note`, records the note of an ask for the caller, and
- * prints the line of the ask.
- */
-async function parleyCommand(args: string[], project: string | undefined): Promise<void> {
-	const [action, slug, flag] = args;
-
-	if (action === "note") return noteCommand(args.slice(1), project);
-
-	const json = flag === "--json";
-
-	if (args.length !== (json ? 3 : 2) || action !== "show" || slug === undefined || slug.startsWith("--")) usage();
-	const reply = await request({ type: "parley", action: "read", slug }, { start: true, project });
-
-	if (!Value.Check(ParleyAsks, reply)) throw new Error("The host replied with no parley");
-	process.stdout.write(json ? `${JSON.stringify(reply)}\n` : parleyShowText(reply));
-}
-
-/** Runs `parley note [<slug>] <ask> <note>`: the ask is its number in the parley `slug`, else its ID. */
-async function noteCommand(args: string[], project: string | undefined): Promise<void> {
-	if (args.length !== 2 && args.length !== 3) usage();
-	const [slug, value, note] = args.length === 3 ? args : [undefined, ...args];
-
-	if (value === undefined || note === undefined) usage();
-	const n = Number(value);
-
-	if (!Value.Check(LocalId, n)) fail(`Invalid ask: ${value}`);
-	const { text } = await sendAskNote(slug, n, note, cliScope(project));
-
-	process.stdout.write(text);
-}
-
-/** The options of a command after its action, by name, and the words that are not options. */
-type CommandOptions = { readonly words: readonly string[]; readonly options: ReadonlyMap<string, string> };
-
-/** The options of `command` in `args`, each one of `known` at most once, and the words that are not options. */
-function commandOptions(command: string, known: readonly string[], args: string[]): CommandOptions {
-	const words: string[] = [];
-	const options = new Map<string, string>();
-
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i] ?? "";
-
-		if (!arg.startsWith("--")) {
-			words.push(arg);
-			continue;
-		}
-
-		if (!known.includes(arg) || options.has(arg)) fail(`Unknown ${command} argument: ${arg}`);
-		options.set(arg, valueAfter(args, i, arg));
-		i++;
-	}
-
-	return { words, options };
-}
-
-/** Prints the usage when `options` has an option that is not one of `allowed`. */
-function onlyOptions(options: CommandOptions["options"], allowed: readonly string[]): void {
-	if ([...options.keys()].some((option) => !allowed.includes(option))) usage();
-}
-
-function ruleId(value: string | undefined): number {
-	const id = Number(value);
-
-	if (!Value.Check(Rule.properties.id, id)) fail(`Invalid rule id: ${value}`);
-
-	return id;
-}
-
-function ruleKind(value: string | undefined): RuleKind | undefined {
-	if (value !== undefined && !Value.Check(RuleKind, value)) fail(`Invalid rule kind: ${value}`);
-
-	return value;
-}
-
-function ruleStatus(value: string | undefined): RuleStatus | undefined {
-	if (value !== undefined && !Value.Check(RuleStatus, value)) fail(`Invalid rule status: ${value}`);
-
-	return value;
-}
-
-/**
- * The change of a rule by the user from the arguments of `rule`, or the filter of `rule list`. The action is the first
- * argument, `list` when there is none, and the options come after it.
- */
-function ruleArgs(args: string[]): RuleUserChange | { readonly action: "list"; readonly filter: RuleFilter } {
-	const [action = "list", ...after] = args;
-	const { words: rest, options } = commandOptions("rule", ["--name", "--kind", "--value", "--status"], after);
-
-	switch (action) {
-		case "list": {
-			onlyOptions(options, ["--kind", "--status"]);
-
-			if (rest.length !== 0) usage();
-			const kind = ruleKind(options.get("--kind"));
-			const status = ruleStatus(options.get("--status"));
-
-			return { action, filter: { ...(kind && { kind }), ...(status && { status }) } };
-		}
-
-		case "decide":
-		case "retire":
-		case "delete":
-			onlyOptions(options, []);
-
-			if (rest.length !== 1) usage();
-
-			return { action, id: ruleId(rest[0]) };
-		case "edit": {
-			onlyOptions(options, ["--name", "--kind", "--value"]);
-
-			if (rest.length !== 1) usage();
-			const name = options.get("--name");
-			const kind = ruleKind(options.get("--kind"));
-			const value = options.get("--value");
-
-			return { action, id: ruleId(rest[0]), ...(name && { name }), ...(kind && { kind }), ...(value && { value }) };
-		}
-
-		case "create": {
-			onlyOptions(options, ["--name", "--kind", "--value"]);
-			const name = options.get("--name");
-			const kind = ruleKind(options.get("--kind"));
-			const value = options.get("--value");
-
-			if (rest.length !== 0 || name === undefined || kind === undefined || value === undefined) usage();
-
-			return { action, name, kind, value };
-		}
-
-		default:
-			usage();
-	}
-}
-
-/** Lists the rules of the project, or makes a change of a rule as the user, and prints the lines. */
-async function ruleCommand(args: string[], project: string | undefined): Promise<void> {
-	const call = ruleArgs(args);
-	const scope = cliScope(project);
-
-	const { text } = call.action === "list" ? await sendRuleList(call.filter, scope) : await sendRuleChange(call, scope);
-
-	process.stdout.write(text);
-}
-
-function itemState(value: string): ItemState {
-	if (!Value.Check(ItemState, value)) fail(`Invalid item state: ${value}`);
-
-	return value;
-}
-
-function edgeKind(value: string): EdgeKind {
-	if (!Value.Check(EdgeKind, value)) fail(`Invalid edge kind: ${value}`);
-
-	return value;
-}
-
-/**
- * The call of the `item` tool from the arguments of `item`. The action is the first argument, `list` when there is
- * none, and the options come after it.
- */
-function itemArgs(args: string[]): ItemArgs {
-	const [action = "list", ...after] = args;
-	const { words: rest, options } = commandOptions("item", ["--state", "--title", "--text"], after);
-	const text = options.get("--text");
-
-	switch (action) {
-		case "list": {
-			onlyOptions(options, ["--state"]);
-
-			if (rest.length !== 0) usage();
-			const state = options.get("--state");
-
-			return state === undefined ? { action } : { action, state: itemState(state) };
-		}
-
-		case "add": {
-			onlyOptions(options, ["--text"]);
-
-			if (rest.length === 0) usage();
-			const add = { action, title: rest.join(" ") } as const;
-
-			return text === undefined ? add : { ...add, text };
-		}
-
-		case "set": {
-			onlyOptions(options, ["--title", "--text"]);
-			const [id, state, ...extra] = rest;
-
-			if (id === undefined || extra.length !== 0 || (state === undefined && options.size === 0)) usage();
-			let call: ItemArgs = { action, id: itemId(id) };
-			const title = options.get("--title");
-
-			if (state !== undefined) call = { ...call, state: itemState(state) };
-
-			if (title !== undefined) call = { ...call, title };
-
-			return text === undefined ? call : { ...call, text };
-		}
-
-		case "show": {
-			onlyOptions(options, []);
-			const [id] = rest;
-
-			if (rest.length !== 1 || id === undefined) usage();
-
-			return { action: "read", id: itemId(id) };
-		}
-
-		case "link": {
-			onlyOptions(options, []);
-			const [from, kind, to] = rest;
-
-			if (rest.length !== 3 || from === undefined || kind === undefined || to === undefined) usage();
-
-			return { action, from, kind: edgeKind(kind), to };
-		}
-
-		default:
-			usage();
-	}
-}
-
-/** Runs `item` as a call of the `item` tool, and prints its output. */
-async function itemCommand(args: string[], project: string | undefined): Promise<void> {
-	const { text } = await runItemTool(itemArgs(args), cliScope(project));
-
-	process.stdout.write(text);
-}
-
 /** Adds the project `name` with the real path of `dir` to `projects.json`. */
 function createCommand(args: string[]): void {
 	const [name, option, dir] = args;
@@ -601,28 +349,12 @@ function projectsCommand(args: string[]): void {
 	process.stdout.write(`${MAIN_PROJECT}\n`);
 }
 
-/** Loads a store file into the empty store of the project while no host runs, and prints the count of each list. */
-async function storeCommand(args: string[], project: string | undefined): Promise<void> {
-	const [action, file, ...rest] = args;
-
-	if (action !== "load" || file === undefined || rest.length !== 0) usage();
-	const name = projectOf(project, process.env, process.cwd());
-	const { loadStore } = await import("./projects/store-load.ts");
-	const { ENTRY_ASKS } = await import("./host/asks.ts");
-	const { ENTRY_TODOS } = await import("./host/todo-lists.ts");
-	const counts = await loadStore(name, file, { asks: ENTRY_ASKS, todos: ENTRY_TODOS });
-
-	for (const [key, count] of Object.entries(counts)) process.stdout.write(`${key}: ${count}\n`);
-}
-
 /**
  * Runs the host of `project` in this process with Pi's models. It exits at once when another host runs. The project
  * comes only from `--project`, not from the env: a host can start from a child's shell of another project.
  */
 async function hostCommand(args: string[], project: string): Promise<void> {
 	if (args.length !== 0) usage();
-	// The host loads the projects entry through `entries.json`, as any entry.
-	setEntry(PROJECTS_ENTRY, PROJECTS_MODULE);
 
 	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } =
 		await import("@earendil-works/pi-coding-agent");
@@ -983,35 +715,12 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		list: toolCommand(["  harness list"], listArgs),
 		query: { usage: ["  harness query (<handle> | --conversation <id>) <question>"], run: queryCommand },
 		tree: { usage: ["  harness tree [--json]"], run: treeCommand },
-		parley: {
-			usage: ["  harness parley show <slug> [--json]", "  harness parley note [<slug>] <ask> <note>"],
-			run: parleyCommand,
-		},
-		rule: {
-			usage: [
-				"  harness rule [list [--kind <kind>] [--status <status>]]",
-				"  harness rule (decide | retire | delete) <id>",
-				"  harness rule edit <id> [--name <name>] [--kind <kind>] [--value <text>]",
-				"  harness rule create --name <name> --kind <kind> --value <text>",
-			],
-			run: ruleCommand,
-		},
 		todo: {
 			usage: [
 				"  harness todo [list | add <text> | set <id> <state> [--text <text>] | sort]",
 				"    [--handle <handle> | --conversation <id> | --task <key>]",
 			],
 			run: todoCommand,
-		},
-		item: {
-			usage: [
-				"  harness item [list [--state <state>]]",
-				"  harness item add <title> [--text <text>]",
-				"  harness item set <id> [<state>] [--title <title>] [--text <text>]",
-				"  harness item show <id>",
-				"  harness item link <from> <kind> <to>",
-			],
-			run: itemCommand,
 		},
 		attach: {
 			usage: ["  harness attach (<handle> | --conversation <id>) [--side]"],
@@ -1032,7 +741,6 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			],
 			run: pageCommand,
 		},
-		store: { usage: ["  harness store load <file>"], run: storeCommand },
 		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },
 		projects: { usage: ["  harness projects"], run: projectsCommand },

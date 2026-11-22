@@ -5,7 +5,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { copyJson } from "@earendil-works/chord/json";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -29,17 +29,17 @@ import type { Place } from "../children/library.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
 import {
-	type CoreRequest,
-	CoreRequestLine,
+	type EntryRequestLine,
 	errorMessage,
 	HOST_CLOSING,
 	type Replies,
 	type Reply,
 	type Request,
+	RequestLine,
 	STORE_LOCK_WAIT_MS,
 } from "../protocol/requests.ts";
 import { savedTrust } from "../protocol/trust.ts";
-import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
+import { type DurableScope, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { AskEventDispatcher } from "./ask-events.ts";
 import { ENTRY_ASKS } from "./asks.ts";
@@ -117,7 +117,7 @@ const CORE_PASSIVE = {
 	whoami: active,
 	rename: active,
 	stop: active,
-} satisfies { readonly [T in CoreRequest["type"]]: (request: Extract<CoreRequest, { type: T }>) => boolean };
+} satisfies { readonly [T in Request["type"]]: (request: Extract<Request, { type: T }>) => boolean };
 
 /** The request types that the host owns. */
 const CORE_TYPES: ReadonlySet<string> = new Set(Object.keys(CORE_PASSIVE));
@@ -129,7 +129,7 @@ const CORE_TYPES: ReadonlySet<string> = new Set(Object.keys(CORE_PASSIVE));
 function isPassive(line: Line): boolean {
 	if (line.kind === "entry") return line.served.passive(line.request);
 	// SAFETY: the rule of the type of the request takes that request.
-	const rule = CORE_PASSIVE[line.request.type] as (request: CoreRequest) => boolean;
+	const rule = CORE_PASSIVE[line.request.type] as (request: Request) => boolean;
 
 	return rule(line.request);
 }
@@ -183,7 +183,7 @@ export async function runHost(options: {
 	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
-	// The degraded states of the host, which `watch-project` gives; each source also writes its warning to `host.log`.
+	// The degraded states of the host, which the entries get as a handle; each source also writes its warning to `host.log`.
 	const degraded = new Degraded(warn);
 
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
@@ -196,6 +196,8 @@ export async function runHost(options: {
 	let workerHost: WorkerHost | undefined;
 	// The push of the answers and the inputs, once the harness is open.
 	let openPush: Push | undefined;
+	// The names of the extensions that no child inherits, once the entries are loaded.
+	let uninherited: readonly string[] = [];
 
 	const openWorkerHost = () => {
 		if (workerHost === undefined) throw new Error("The host is not open yet");
@@ -213,13 +215,27 @@ export async function runHost(options: {
 		get registry() {
 			return registry.snapshot();
 		},
+		get uninherited() {
+			return uninherited;
+		},
 	};
 
 	let base: Base;
 	// The scope of the tools: a child calls the host in this process, not through the socket, so a long `wait` cannot
 	// hold up the requests of a connection. Its caller is its conversation ID, which the depth limit, the owner checks
 	// and the default list of todos key on.
-	const send: Send = (request, signal) => sendInProcess(request, { ...base, signal }, entries.requests);
+	function send<T extends Request["type"]>(
+		request: Extract<Request, { type: T }>,
+		signal: AbortSignal,
+	): Promise<Replies[T]>;
+	function send(request: EntryRequestLine, signal: AbortSignal): Promise<JsonValue>;
+	function send(
+		request: Request | EntryRequestLine,
+		signal: AbortSignal,
+	): Promise<Replies[Request["type"]] | JsonValue> {
+		return sendInProcess(request, { ...base, signal }, entries.requests);
+	}
+
 	const scope: DurableScope = { caller: async (api) => String(api.conversationId), send };
 
 	const handles: EntryHandles = {
@@ -261,6 +277,8 @@ export async function runHost(options: {
 			throw cause;
 		},
 	);
+
+	uninherited = entries.uninherited;
 
 	const envs = new ConversationEnvs(project, projectCwd);
 	// The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The registry
@@ -357,8 +375,8 @@ export async function runHost(options: {
 		lock.close();
 	};
 
-	// The entries open before any task resumes: the projects entry gives the children of an old store the labels of
-	// their items there, and stops the workers of the work that ended.
+	// The entries open before any task resumes: an entry can label or stop the workers of an old store before they
+	// resume, such as the projects entry.
 	try {
 		await entries.open({ harness, root, storage });
 	} catch (error) {
@@ -570,45 +588,30 @@ export async function runHost(options: {
 function parseLine(line: string, served: ReadonlyMap<string, EntryRequest>): Line {
 	const request: unknown = JSON.parse(line);
 
-	if (Value.Check(CoreRequestLine, request)) return { kind: "core", request };
+	if (Value.Check(RequestLine, request)) return { kind: "core", request };
 
 	if (!Value.Check(EntryLine, request)) throw new Error("Invalid request");
 
 	return entryLine(request, served);
 }
 
-/**
- * Serves `request` in this process with `handleLine`: a request of a core type, or a request of an entry type with the
- * entry that serves it. As for a core type, a typed request of a tool needs no check of its schema. A watch needs a
- * connection, and fails.
- */
-function sendInProcess<T extends Request["type"]>(
-	request: Extract<Request, { type: T }>,
-	handler: Base & { readonly signal: AbortSignal },
-	served: ReadonlyMap<string, EntryRequest>,
-): Promise<Replies[T]>;
-async function sendInProcess(
-	request: Request,
-	handler: Base & { readonly signal: AbortSignal },
-	served: ReadonlyMap<string, EntryRequest>,
-): Promise<Replies[Request["type"]]> {
-	const reply = await handleLine(inProcessLine(request, served), handler);
-
-	// SAFETY: the entry that serves the type of the request gives the reply of that type, as the clients of the socket
-	// read it.
-	return reply as Replies[Request["type"]];
+/** Whether `request` has a type that the host serves itself. */
+function isCore(request: Request | EntryRequestLine): request is Request {
+	return CORE_TYPES.has(request.type);
 }
 
-/** The line of `request`, of a core type or of the type of an entry, with no check of the schema of the entry. */
-function inProcessLine(request: Request, served: ReadonlyMap<string, EntryRequest>): Line {
-	if (isCore(request)) return { kind: "core", request };
-	const entry = servedEntry(request.type, served);
-	// The line that the socket would carry: the tools send typed requests, which the host does not check again.
-	const line = copyJson(request, { omitUndefinedProperties: true });
-
-	if (!Value.Check(EntryLine, line)) throw new Error(`Invalid ${request.type} request`);
-
-	return { kind: "entry", request: line, served: entry };
+/**
+ * Serves `request` in this process with `handleLine`: a request of a core type as is, since a typed request of a tool
+ * needs no check of its schema, and a request of another type by the entry of its type, after the check of its schema,
+ * as a line of the socket. A type that no loaded entry serves fails with `no loaded entry serves request type "<type>"`.
+ * A watch needs a connection, and fails.
+ */
+function sendInProcess(
+	request: Request | EntryRequestLine,
+	handler: Base & { readonly signal: AbortSignal },
+	served: ReadonlyMap<string, EntryRequest>,
+): Promise<Replies[Request["type"]] | JsonValue> {
+	return handleLine(isCore(request) ? { kind: "core", request } : entryLine(request, served), handler);
 }
 
 /** The entry that serves the request type `type`. It throws `no loaded entry serves request type "<type>"` without one. */
@@ -618,11 +621,6 @@ function servedEntry(type: string, served: ReadonlyMap<string, EntryRequest>): E
 	if (entry === undefined) throw new Error(`no loaded entry serves request type "${type}"`);
 
 	return entry;
-}
-
-/** Whether `request` is of a type that the host owns. */
-function isCore(request: Request): request is CoreRequest {
-	return CORE_TYPES.has(request.type);
 }
 
 /**
@@ -635,7 +633,7 @@ function entryLine(request: EntryLine, served: ReadonlyMap<string, EntryRequest>
 	const { type } = request;
 
 	// No entry serves a type that the host owns.
-	if (CORE_TYPES.has(type)) throw new Error(`Invalid ${type} request: ${branchError(CoreRequestLine.anyOf, request)}`);
+	if (CORE_TYPES.has(type)) throw new Error(`Invalid ${type} request: ${branchError(RequestLine.anyOf, request)}`);
 	const entry = servedEntry(type, served);
 
 	if (!Value.Check(entry.schema, request)) {

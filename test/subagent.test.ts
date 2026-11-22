@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
@@ -19,18 +20,25 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createChildren } from "../src/children/library.ts";
-import { type Client, connect, request } from "../src/client/client.ts";
+import { type Client, connect, request, requestEntry } from "../src/client/client.ts";
 import subagentEntry from "../src/host/durable-entry.ts";
 import { Push } from "../src/host/push.ts";
 import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { library } from "../src/host/targets.ts";
-import { TYPED_KIND } from "../src/protocol/gate.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
-import { type ChildInfo, PROTOCOL_VERSION } from "../src/protocol/requests.ts";
+import { projectDir } from "../src/protocol/projects.ts";
+import {
+	type ChildInfo,
+	type EntryRequestLine,
+	PROTOCOL_VERSION,
+	type Replies,
+	type Request,
+	RequestLine,
+} from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { TYPED_KIND } from "../src/protocol/typed.ts";
 import { runTool, sendToHost, subagentTool, type ToolArgs } from "../src/tool.ts";
 import {
 	aborted,
@@ -41,13 +49,14 @@ import {
 	calls,
 	cli,
 	contexts,
+	DEGRADED_MODULE,
+	degradedStates,
 	gates,
 	handleOf,
 	inputAgent,
 	models,
 	openDurableHost,
 	openWatch,
-	PROJECTS_MODULE,
 	reports,
 	requests,
 	root,
@@ -59,10 +68,20 @@ import {
 	tearDown,
 	textOf,
 	toolWaits,
-	watchProject,
 	until,
 	untilIdleAfterBusy,
 } from "./helpers.ts";
+
+/** The options of a `vi.waitFor` on the degraded states: up to 10 s, as `until`. */
+const WAIT = { timeout: 10_000, interval: 50 };
+
+/** The tools of the projects entry, which no child gets by default. */
+const PROJECT_TOOLS = ["thread", "rule", "parley", "item", "memory"];
+
+/** The names of `tools` that are tools of the projects entry. */
+function projectTools(tools: readonly string[] | undefined): string[] {
+	return (tools ?? []).filter((name) => PROJECT_TOOLS.includes(name));
+}
 
 /** The form of `Conversation.submit()` that the library uses, so a spy on it has the types of that form. */
 type ContextSubmit = { submit(draft: SubmissionDraft, context: Context): Promise<Submission> };
@@ -77,20 +96,24 @@ function openDurable(store: string): Promise<Harness> {
  * `hangSpawn`, a spawn reaches the harness host, but the tool call never finishes.
  */
 function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
-	const tool = subagentTool(
-		durable,
-		{ Type },
-		{
-			caller: async (api) => `durable-test:${api.conversationId}`,
-			send: async (message, signal) => {
-				const reply = await request(message, { start: true, signal });
+	function send<T extends Request["type"]>(
+		message: Extract<Request, { type: T }>,
+		signal: AbortSignal,
+	): Promise<Replies[T]>;
+	function send(message: EntryRequestLine, signal: AbortSignal): Promise<JsonValue>;
+	async function send(
+		message: Request | EntryRequestLine,
+		signal: AbortSignal,
+	): Promise<Replies[Request["type"]] | JsonValue> {
+		if (!Value.Check(RequestLine, message)) return requestEntry(message, { start: true, signal });
+		const reply = await request(message, { start: true, signal });
 
-				if (!hangSpawn || message.type !== "spawn") return reply;
+		if (!hangSpawn || message.type !== "spawn") return reply;
 
-				return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
-			},
-		},
-	);
+		return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+	}
+
+	const tool = subagentTool(durable, { Type }, { caller: async (api) => `durable-test:${api.conversationId}`, send });
 
 	return openDurableHost(store, [tool]);
 }
@@ -318,19 +341,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain("Use the read tool to load a skill's file");
 		expect(seen?.system).not.toContain("<name>local</name>");
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
-		expect(seen?.tools).toEqual([
-			"read",
-			"write",
-			"edit",
-			"bash",
-			"subagent",
-			"todo",
-			"codemode",
-			"thread",
-			"rule",
-			"parley",
-			"item",
-		]);
+		expect(seen?.tools).toEqual(["read", "write", "edit", "bash", "subagent", "todo", "codemode"]);
+		expect(projectTools(requests.get("Task:\nContext")?.tools)).toEqual([]);
 
 		// Once `/trust` saves the decision, the next request loads the project skill.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
@@ -702,18 +714,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Tool subagent is not available\n`,
 			),
 		);
-		expect(requests.get("Task:\nNest tool")?.tools).toEqual([
-			"read",
-			"write",
-			"edit",
-			"bash",
-			"todo",
-			"codemode",
-			"thread",
-			"rule",
-			"parley",
-			"item",
-		]);
+		expect(requests.get("Task:\nNest tool")?.tools).toEqual(["read", "write", "edit", "bash", "todo", "codemode"]);
+		expect(projectTools(requests.get("Task:\nNest tool")?.tools)).toEqual([]);
 		expect(called("Task:\nNest tool")).toBe(2);
 	});
 
@@ -1091,8 +1093,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const writes = vi.spyOn(process.stderr, "write");
 		const warnings = () => writes.mock.calls.filter(([text]) => String(text).includes(warning)).length;
 		const client = await connect({ start: false });
-		const watch = await watchProject(MAIN_PROJECT);
-		const failed = () => watch.events.at(-1)?.degraded.filter((state) => state.kind === "push-failed");
+		const failed = async () => (await degradedStates()).filter((state) => state.kind === "push-failed");
 
 		try {
 			if (client === undefined) throw new Error("no host");
@@ -1121,7 +1122,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			expect(warnings()).toBe(1);
 			await until(() => warnings() === 2);
-			expect(failed()).toEqual([
+			expect(await failed()).toEqual([
 				{ kind: "push-failed", line: `The push of ${handle} failed: ${warning}`, since: expect.any(Number) },
 			]);
 
@@ -1129,9 +1130,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await store.commit(async (tx) => {
 				delete (await tx.doc(ChildRecords)).children[handle];
 			}, BACKGROUND_CONTEXT);
-			await until(() => failed()?.length === 0);
+			await vi.waitFor(async () => expect(await failed()).toEqual([]), WAIT);
 		} finally {
-			watch.socket.destroy();
 			client?.close();
 			writes.mockRestore();
 			await store.commit(async (tx) => {
@@ -1289,7 +1289,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const id = await idOf(parent);
 		const conversation = store.conversation.bind(store);
 		const snapshot = store.snapshot.bind(store);
-		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const place = { store, models, registry: durable.createRegistry().snapshot(), uninherited: [] };
 		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
 		const ids = new Map<string, ConversationId | undefined>();
 		const pushed: string[] = [];
@@ -1387,7 +1387,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const handle = handleOf(await cli(["spawn", "--prompt", "Closed later"]));
 		await cli(["wait", handle]);
 		const id = (await store.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[handle]?.conversationId;
-		const place = { store, models, registry: durable.createRegistry().snapshot() };
+		const place = { store, models, registry: durable.createRegistry().snapshot(), uninherited: [] };
 		const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
 		const child = await createChildren(durable).find(place, owner, { id: String(id) }, BACKGROUND_CONTEXT);
 		await child?.close(BACKGROUND_CONTEXT);
@@ -1939,7 +1939,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				JSON.stringify({ type: "list", caller: "cli" }),
 			]);
 
-			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid, entries: { projects: 1 } } });
+			expect(hello).toEqual({ ok: true, value: { version: PROTOCOL_VERSION, pid, entries: {} } });
 			expect(list).toMatchObject({ ok: true });
 		}
 	});
@@ -1955,30 +1955,28 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const entries = join(root, "config", "harness", "entries.json");
 		const module = join(root, "gone", "entry.ts");
 		await mkdir(join(root, "config", "harness"), { recursive: true });
-		await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE, gone: module }));
+		await writeFile(entries, JSON.stringify({ degraded: DEGRADED_MODULE, gone: module }));
 		process.env.XDG_STATE_HOME = join(root, "state-gone");
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
 		try {
 			const gone = await startHost();
-			const watch = await watchProject(MAIN_PROJECT);
-			watch.socket.destroy();
+			const degraded = await degradedStates();
 			await gone.close();
 			const line = `The entry gone has no module at ${module}; the host skips it`;
 			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${line}\n`);
-			expect(watch.state.degraded).toEqual([{ kind: "entry-skipped", line, since: expect.any(Number) }]);
+			expect(degraded).toEqual([{ kind: "entry-skipped", line, since: expect.any(Number) }]);
 
 			// A host that starts with no such entry has no such state.
-			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
+			await writeFile(entries, JSON.stringify({ degraded: DEGRADED_MODULE }));
 			const again = await startHost();
-			const clean = await watchProject(MAIN_PROJECT);
-			clean.socket.destroy();
+			const clean = await degradedStates();
 			await again.close();
-			expect(clean.state.degraded).toEqual([]);
+			expect(clean).toEqual([]);
 		} finally {
 			stderr.mockRestore();
 			process.env.XDG_STATE_HOME = join(root, "state");
-			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
+			await writeFile(entries, JSON.stringify({ degraded: DEGRADED_MODULE }));
 		}
 	});
 
@@ -1996,7 +1994,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			);
 		} finally {
 			process.env.XDG_STATE_HOME = join(root, "state");
-			await writeFile(entries, JSON.stringify({ projects: PROJECTS_MODULE }));
+			await writeFile(entries, JSON.stringify({ degraded: DEGRADED_MODULE }));
 		}
 	});
 
@@ -2037,8 +2035,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 		try {
 			const packages = await startHost();
-			const watch = await watchProject(MAIN_PROJECT);
-			watch.socket.destroy();
+			const degraded = await degradedStates();
 			await packages.close();
 
 			const lines = [
@@ -2050,7 +2047,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				expect.arrayContaining(lines.map((line) => `warning: ${line}\n`)),
 			);
 			expect(
-				watch.state.degraded.map(({ kind, line }) => ({ kind, line })).toSorted((a, b) => a.line.localeCompare(b.line)),
+				degraded.map(({ kind, line }) => ({ kind, line })).toSorted((a, b) => a.line.localeCompare(b.line)),
 			).toEqual(
 				lines.map((line) => ({ kind: "package-skipped", line })).toSorted((a, b) => a.line.localeCompare(b.line)),
 			);
@@ -2058,10 +2055,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 			// A host that starts with no bad package has no such state.
 			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
 			const again = await startHost();
-			const clean = await watchProject(MAIN_PROJECT);
-			clean.socket.destroy();
+			const clean = await degradedStates();
 			await again.close();
-			expect(clean.state.degraded).toEqual([]);
+			expect(clean).toEqual([]);
 		} finally {
 			stderr.mockRestore();
 			process.env.XDG_STATE_HOME = join(root, "state");
@@ -2076,8 +2072,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const trust = join(root, "agent", "trust.json");
 		const saved = existsSync(trust) ? readFileSync(trust, "utf8") : undefined;
 		const stderr = vi.spyOn(process.stderr, "write");
-		const watch = await watchProject(MAIN_PROJECT);
-		const failed = () => watch.events.at(-1)?.degraded.filter((state) => state.kind === "resources-failed");
+		const failed = async () => (await degradedStates()).filter((state) => state.kind === "resources-failed");
 
 		try {
 			// A trust file that is not JSON makes the trust of the directory, and so its load, fail.
@@ -2100,8 +2095,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 			if (spawned === undefined) throw new Error("no host");
 			await answerOf(spawned.handle);
-			await until(() => failed()?.length === 1);
-			const [state] = failed() ?? [];
+			await vi.waitFor(async () => expect(await failed()).toHaveLength(1), WAIT);
+			const [state] = await failed();
 			expect(state?.line).toMatch(new RegExp(`^${dir}: .+; no project instructions or skills$`));
 			expect(stderr.mock.calls.map(([text]) => String(text))).toContain(`warning: ${state?.line}\n`);
 
@@ -2119,9 +2114,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			} as const;
 
 			await request(line, { start: false });
-			await until(() => failed()?.length === 0);
+			await vi.waitFor(async () => expect(await failed()).toEqual([]), WAIT);
 		} finally {
-			watch.socket.destroy();
 			stderr.mockRestore();
 			await (saved === undefined ? rm(trust, { force: true }) : writeFile(trust, saved));
 		}
@@ -2427,7 +2421,7 @@ async function olderChildrenStore(
 	);
 
 	const owner = { kind: "detached", root: await store.root(BACKGROUND_CONTEXT) } as const;
-	const place = { store, models, registry: registry.snapshot() };
+	const place = { store, models, registry: registry.snapshot(), uninherited: [] };
 	const spec = { root: caller, provider: "faux", model: "faux-1", cwd: root };
 	const child = await library.open(place, owner, `v${version}:child`, spec, BACKGROUND_CONTEXT);
 

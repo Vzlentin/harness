@@ -12,8 +12,8 @@ import type {
 	LiveState,
 	UsageState,
 } from "@earendil-works/pi-durable";
-import { TYPED_KIND } from "../protocol/gate.ts";
 import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
+import { TYPED_KIND } from "../protocol/typed.ts";
 
 /** The document of the kind `kind` in `view`, if the conversation has it: a built-in one, or the list of todos. */
 function docOf<T extends JsonObject>(view: ConversationView, kind: string): T | undefined {

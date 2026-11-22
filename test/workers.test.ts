@@ -7,19 +7,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { EntryOptions } from "../src/host/entries.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
-import { GateReply } from "../src/protocol/gate.ts";
-import { StagedItem } from "../src/protocol/item.ts";
-import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { Todo } from "../src/protocol/todo.ts";
 import type { SpawnServes, Worker } from "../src/protocol/worker-labels.ts";
 import {
-	aborted,
-	answer,
-	answerOf,
 	called,
 	cli,
-	contractItem,
-	framed,
 	gates,
 	handleOf,
 	openWatch,
@@ -32,9 +24,7 @@ import {
 	stateOf,
 	tearDown,
 	until,
-	untilContract,
 	untilState,
-	watchProject,
 } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
@@ -59,8 +49,8 @@ const shared: Shared = { reports: [], ended: [] };
 Object.assign(globalThis, { harnessLabels: shared });
 
 /**
- * The entry of the tests: it checks the label kind `fix`, and refuses `fix:no`. It keeps each report, and throws for a
- * report with the reference `throw:me`, and each ended child.
+ * The entry of the tests: it checks the label kinds `fix`, `item` and `parley`, and refuses `fix:no`. It keeps each
+ * report, and throws for a report with the reference `throw:me`, and each ended child.
  */
 const LABELS_ENTRY = `export default function labelsEntry(handles) {
 	globalThis.harnessLabels.handles = handles;
@@ -73,6 +63,8 @@ const LABELS_ENTRY = `export default function labelsEntry(handles) {
 					if (label === "fix:no") throw new Error("The fixture refuses fix:no");
 				},
 			},
+			{ kind: "item", check: async () => {} },
+			{ kind: "parley", check: async () => {} },
 		],
 		reported: async (event) => {
 			globalThis.harnessLabels.reports.push(event);
@@ -118,15 +110,6 @@ async function addTodo(handle: string, text: string): Promise<number> {
 
 async function setTodo(handle: string, id: number, state: "done" | "dropped"): Promise<void> {
 	await send({ type: "todo", caller: "cli", action: "set", handle, id, state });
-}
-
-/** Adds the open item `title`, and gives its ID. */
-async function addItem(title: string): Promise<number> {
-	return Value.Parse(StagedItem, await send({ type: "item", action: "add", caller: "cli", title })).id;
-}
-
-async function setItem(id: number, state: "done" | "dropped"): Promise<StagedItem> {
-	return Value.Parse(StagedItem, await send({ type: "item", action: "set", caller: "cli", id, state }));
 }
 
 /** Sends `message` to the child `handle` of `caller`, with no push of its answers. */
@@ -186,35 +169,6 @@ async function commitsDuring(run: () => Promise<void>): Promise<number> {
 	return commits;
 }
 
-/** Holds a call of `agent`: a change of a rule by an agent is held with no question to the classifier. */
-async function holdCall(agent: string, requestId: string): Promise<number> {
-	const gated = {
-		type: "gate",
-		requestId,
-		caller: agent,
-		tool: "bash",
-		arguments: { command: "harness rule decide 1" },
-		messages: [],
-	} as const;
-
-	const reply = Value.Parse(GateReply, await send(gated));
-
-	if (reply.runs) throw new Error("the gate let the call run");
-
-	return reply.held.id;
-}
-
-/** The held action `id`, as a watch of the project gives it. */
-async function heldAction(id: number) {
-	const watch = await watchProject(MAIN_PROJECT);
-
-	try {
-		return watch.state.held.find((held) => held.id === id);
-	} finally {
-		watch.socket.destroy();
-	}
-}
-
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -253,29 +207,6 @@ describe("the end of a child", { timeout: 30_000 }, () => {
 		if (worker?.kind !== "agent") throw new Error("no agent");
 		await handles().stop(worker);
 		expect(shared.ended).toContain(worker.conversation);
-	});
-
-	it("drops the held actions of a child that a stop request ends, and keeps those of a live child", async () => {
-		const stopped = await spawnWithId("held-stop-session");
-		const kept = await spawnWithId("held-kept-session");
-		const dropped = await holdCall(stopped.id, "held-stop-call");
-		const held = await holdCall(kept.id, "held-kept-call");
-
-		await send({ type: "stop", caller: "held-stop-session", handle: stopped.handle });
-		expect(await heldAction(dropped)).toMatchObject({ state: "dropped", by: stopped.id });
-		expect(await heldAction(held)).toMatchObject({ state: "held" });
-	});
-
-	it("drops at the next start the held actions of a child that ended with no end event after its hold", async () => {
-		const agent = await spawnWithId("held-start-session");
-		await send({ type: "stop", caller: "held-start-session", handle: agent.handle });
-		// The gate holds a call of an agent that ended: no end comes after it, as for an end while the host was down.
-		const held = await holdCall(agent.id, "held-start-call");
-		expect(await heldAction(held)).toMatchObject({ state: "held" });
-
-		await host?.close();
-		host = await startHost();
-		expect(await heldAction(held)).toMatchObject({ state: "dropped", by: agent.id });
 	});
 });
 
@@ -397,31 +328,11 @@ describe("the workers of a label", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a spawn and a start with the reason of the check of a label, and leaves no child and no task", async () => {
-		const parley = await framed("worker-ended");
-		await answer([
-			{ id: parley.call, answer: "a" },
-			{ id: parley.readBack, answer: "ok" },
-		]);
-		await untilContract("worker-ended");
-		await setItem(await contractItem("worker-ended"), "dropped");
-		const done = await addItem("Already done");
-		await setItem(done, "done");
-
 		const caller = "refused-session";
 		const labelled = (labels: string[]) => spawnAs(caller, `Task:\n${labels.join(" ")}`, { notify: false, labels });
 
-		const serving = (serves: SpawnServes) =>
-			spawnAs(caller, `Task:\n${JSON.stringify(serves)}`, { notify: false, serves });
-
 		await expect(labelled(["fix:no"])).rejects.toThrow("The fixture refuses fix:no");
 		await expect(labelled(["other:1"])).rejects.toThrow('no loaded entry checks the label kind "other"');
-		await expect(serving({ parley: "nope" })).rejects.toThrow("Unknown parley: nope");
-		await expect(serving({ item: 999 })).rejects.toThrow("Unknown item: 999");
-		await expect(labelled(["item:x"])).rejects.toThrow("Unknown item: x");
-		await expect(serving({ parley: "worker-ended" })).rejects.toThrow(
-			"Parley worker-ended is dropped: an agent cannot serve it",
-		);
-		await expect(labelled([`item:${done}`])).rejects.toThrow(`Item ${done} is done: an agent cannot serve it`);
 		expect(await send({ type: "list", caller })).toEqual([]);
 
 		const start = { type: "start", kind: "fixture.ask" } as const;
@@ -429,102 +340,27 @@ describe("the workers of a label", { timeout: 30_000 }, () => {
 		await expect(
 			send({ ...start, key: "refused-fix", input: { cwd: root, prompt: "Refused fix" }, labels: ["fix:no"] }),
 		).rejects.toThrow("The fixture refuses fix:no");
-		await expect(
-			send({ ...start, key: "refused-item", input: { cwd: root, prompt: "Refused item", serves: { item: done } } }),
-		).rejects.toThrow(`Item ${done} is done: an agent cannot serve it`);
 		await expect(send({ type: "task", key: "refused-fix" })).rejects.toThrow("Unknown task: refused-fix");
-		await expect(send({ type: "task", key: "refused-item" })).rejects.toThrow("Unknown task: refused-item");
 	});
 
-	it("gives a task the label of the serves of its input, which refuses done while it is live", async () => {
-		const item = await addItem("Task item");
-		const gate = await startTask("item-task", "Item task", { serves: { item } });
-		expect(await handles().workers(`item:${item}`)).toEqual([{ kind: "task", key: "item-task", state: "running" }]);
-		expect(await send({ type: "item", action: "read", id: item })).toMatchObject({ stage: "building" });
-		await expect(setItem(item, "done")).rejects.toThrow(
-			`Item ${item} cannot be done: task item-task serves it and is live`,
-		);
+	it("gives a task the label of the serves of its input", async () => {
+		const gate = await startTask("item-task", "Item task", { serves: { item: 5 } });
+		expect(await handles().workers("item:5")).toEqual([{ kind: "task", key: "item-task", state: "running" }]);
 
 		gate.resolve();
 		expect(await send({ type: "wait-task", key: "item-task" })).toMatchObject({ status: "terminal" });
-		expect(await setItem(item, "done")).toMatchObject({ state: "done", stage: "done" });
-	});
-});
-
-describe("the end of the work stops its workers", { timeout: 30_000 }, () => {
-	it("stops a busy agent of an item with open todos, and its child, at once when the item is done", async () => {
-		const item = await addItem("Busy item");
-		const agent = await spawnWithId("busy-item-session", { serves: { item } });
-		const child = (await spawnAs(agent.id, "Task:\nBusy item child", { notify: false })).handle;
-		await untilState(child, "idle");
-		await addTodo(agent.handle, "Open work");
-		gates.set("Busy item work", Promise.withResolvers());
-		await sendTo("busy-item-session", agent.handle, "Busy item work");
-		await until(() => called("Busy item work") === 1);
-		expect(await send({ type: "status", handle: agent.handle })).toMatchObject({
-			state: "busy",
-			labels: [`item:${item}`],
-		});
-
-		await setItem(item, "done");
-		expect(await stateOf(agent.handle)).toBe("ended");
-		expect(await stateOf(child)).toBe("ended");
-		expect(aborted.has("Busy item work")).toBe(true);
-	});
-
-	it("drops the held actions of a worker that the end of its item stops, by that worker", async () => {
-		const item = await addItem("Held item");
-		const agent = await spawnWithId("held-item-session", { serves: { item } });
-		const held = await holdCall(agent.id, "held-item-call");
-
-		await setItem(item, "done");
-		expect(await stateOf(agent.handle)).toBe("ended");
-		expect(await heldAction(held)).toMatchObject({ state: "dropped", by: agent.id });
-	});
-
-	it("keeps the agent of an open parley at its contract, and stops it when the contract ends", async () => {
-		const parley = await framed("worker-parley");
-		const agent = await spawnWithId("parley-session", { serves: { parley: "worker-parley" } });
-		expect(await send({ type: "status", handle: agent.handle })).toMatchObject({ labels: ["parley:worker-parley"] });
-
-		await answer([
-			{ id: parley.call, answer: "a" },
-			{ id: parley.readBack, answer: "ok" },
-		]);
-		await untilContract("worker-parley");
-		await sleep(300);
-		expect(await stateOf(agent.handle)).toBe("idle");
-
-		await setItem(await contractItem("worker-parley"), "done");
-		expect(await stateOf(agent.handle)).toBe("ended");
-	});
-
-	it("stops at the next start a worker that a message resumed after the end of its item", async () => {
-		const item = await addItem("Resumed item");
-		const agent = await spawnWithId("resumed-session", { serves: { item } });
-		await setItem(item, "done");
-		expect(await stateOf(agent.handle)).toBe("ended");
-
-		await sendTo("resumed-session", agent.handle, "After the end");
-		expect(await answerOf(agent.handle)).toBe("Answer to After the end");
-		expect(await stateOf(agent.handle)).toBe("idle");
-
-		await host?.close();
-		host = await startHost();
-		expect(await stateOf(agent.handle)).toBe("ended");
 	});
 
 	it("shows the labels of a child in the reply and the events of a watch", async () => {
-		const item = await addItem("Watched item");
-		const { handle } = await spawnAs("watch-session", "Task:\nWatched", { notify: false, serves: { item } });
+		const { handle } = await spawnAs("watch-session", "Task:\nWatched", { notify: false, serves: { item: 6 } });
 		await untilState(handle, "idle");
 		const watched = await openWatch({ kind: "child", handle });
 
 		try {
-			expect(watched.child.labels).toEqual([`item:${item}`]);
+			expect(watched.child.labels).toEqual(["item:6"]);
 			await addTodo(handle, "Watched todo");
 			await until(() => watched.lines.length > 0);
-			expect(watched.lines.at(-1)?.child.labels).toEqual([`item:${item}`]);
+			expect(watched.lines.at(-1)?.child.labels).toEqual(["item:6"]);
 		} finally {
 			watched.client.close();
 		}
@@ -538,79 +374,52 @@ describe("the end of the work stops its workers", { timeout: 30_000 }, () => {
 			"Unknown spawn argument: --todo",
 		);
 
-		await framed("worker-cli");
 		const byParley = handleOf(await cli(["spawn", "--parley", "worker-cli", "--prompt", "Served by the CLI"]));
-		const item = await addItem("Served by the CLI");
-		const byItem = handleOf(await cli(["spawn", "--item", String(item), "--prompt", "Environment"]));
+		const byItem = handleOf(await cli(["spawn", "--item", "7", "--prompt", "Environment"]));
 		const listed = new Map((await send({ type: "list", caller: "cli" })).map((child) => [child.handle, child.labels]));
 		expect(listed.get(byParley)).toEqual(["parley:worker-cli"]);
-		expect(listed.get(byItem)).toEqual([`item:${item}`]);
-		expect(Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item })).edges).toEqual([]);
+		expect(listed.get(byItem)).toEqual(["item:7"]);
 	});
 });
 
 describe("a report of the result references of a worker", { timeout: 30_000 }, () => {
-	it("lands a commit on the item of a task, sets the item done, and keeps the reporter live", async () => {
-		const item = await addItem("Reported item");
-		const gate = await startTask("report-task", "Report task", { labels: [`item:${item}`] });
+	it("keeps the references of a task, gives them to the entries, and keeps the reporter live", async () => {
+		const gate = await startTask("report-task", "Report task", { labels: ["fix:reported"] });
 		const refs = [COMMIT, "note:result"];
 
 		expect(await send({ type: "report", caller: "report-caller", key: "report-task", refs })).toEqual({ refs });
-		const read = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }));
-		expect(read.state).toBe("done");
-		expect(read.edges).toEqual([
-			{ from: `item:${item}`, kind: "landed", to: COMMIT, at: expect.any(Number), by: "report-caller" },
-		]);
 		expect(await send({ type: "task", key: "report-task" })).toMatchObject({ refs });
 		const { nodes } = await send({ type: "tree" });
 		expect(nodes.find((node) => node.id === "task:report-task")).toMatchObject({ kind: "run", refs });
 		expect(shared.reports.at(-1)).toEqual({
 			worker: { kind: "task", key: "report-task" },
-			labels: [`item:${item}`],
+			labels: ["fix:reported"],
 			refs,
 			caller: "report-caller",
 		});
 
 		await sleep(300);
-		expect(await handles().workers(`item:${item}`)).toEqual([{ kind: "task", key: "report-task", state: "running" }]);
+		expect(await handles().workers("fix:reported")).toEqual([{ kind: "task", key: "report-task", state: "running" }]);
 		gate.resolve();
 		expect(await send({ type: "wait-task", key: "report-task" })).toMatchObject({ status: "terminal", refs });
 	});
 
-	it("writes one edge for a repeated report, and keeps a dropped item dropped", async () => {
-		const item = await addItem("Twice reported");
-		const gate = await startTask("twice-task", "Twice task", { labels: [`item:${item}`] });
+	it("keeps a repeated reference once, and gives the entries the references of the report as sent", async () => {
+		const gate = await startTask("twice-task", "Twice task", { labels: ["fix:twice"] });
 		const report = { type: "report", caller: "cli", key: "twice-task" } as const;
 		await send({ ...report, refs: [COMMIT] });
 		expect(await send({ ...report, refs: [COMMIT, COMMIT] })).toEqual({ refs: [COMMIT] });
 		expect(shared.reports.at(-1)).toMatchObject({ refs: [COMMIT, COMMIT] });
-		const twice = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }));
-		expect(twice.state).toBe("done");
-		expect(twice.edges).toHaveLength(1);
 		gate.resolve();
-
-		const dropped = await addItem("Dropped then reported");
-		const late = await startTask("dropped-task", "Dropped task", { labels: [`item:${dropped}`] });
-		await setItem(dropped, "dropped");
-		await send({ type: "report", caller: "cli", key: "dropped-task", refs: [COMMIT] });
-		const read = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: dropped }));
-		expect(read.state).toBe("dropped");
-		expect(read.edges.map((edge) => edge.to)).toEqual([COMMIT]);
-		late.resolve();
 	});
 
-	it("stores the references of a task with no item label, and changes no item", async () => {
-		const item = await addItem("Untouched item");
+	it("stores the references of a task with no label", async () => {
 		const bare = await startTask("bare-task", "Bare task");
-		const fixed = await startTask("fixed-task", "Fixed task", { labels: ["fix:report"] });
 
 		await send({ type: "report", caller: "cli", key: "bare-task", refs: [COMMIT] });
-		await send({ type: "report", caller: "cli", key: "fixed-task", refs: [COMMIT] });
 		expect(await send({ type: "task", key: "bare-task" })).toMatchObject({ refs: [COMMIT] });
-		expect(shared.reports.at(-1)).toMatchObject({ labels: ["fix:report"] });
-		expect(await send({ type: "item", action: "read", id: item })).toMatchObject({ state: "open", edges: [] });
+		expect(shared.reports.at(-1)).toMatchObject({ labels: [] });
 		bare.resolve();
-		fixed.resolve();
 	});
 
 	it("takes a child by handle or as the caller, refuses another caller, and fails with the handler of the entry", async () => {

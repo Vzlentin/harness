@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
@@ -10,21 +11,23 @@ import { addAsks } from "../src/host/asks.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { runHost } from "../src/host/run.ts";
-import { setEntry } from "../src/protocol/entries.ts";
+import { AskList } from "../src/protocol/asks.ts";
+import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { AskList } from "../src/protocol/project.ts";
 import { PROTOCOL_VERSION } from "../src/protocol/requests.ts";
 import {
+	answerOf,
 	createProject,
 	models,
 	openDurableHost,
-	PROJECTS_MODULE,
+	requests,
 	root,
 	send,
 	setUp,
 	spawnAs,
 	startHost,
+	startHostProcess,
 	tearDown,
 	until,
 } from "./helpers.ts";
@@ -32,7 +35,31 @@ import {
 const PROJECT = "entries";
 const TYPEBOX = import.meta.resolve("typebox");
 
+/** The module of the entry that relays a request through the `send` of the scope. */
+const SCOPE_RELAY_MODULE = fileURLToPath(new URL("fixtures/scope-relay.ts", import.meta.url));
+
 let host: Host | undefined;
+
+/** An entry with two extensions, each with one tool, and the second one uninherited. */
+const UNINHERITED_ENTRY = `import { Type } from ${JSON.stringify(TYPEBOX)};
+export default function uninheritedEntry({ durable }) {
+	const tool = (name) => durable.defineTool({
+		name,
+		description: name,
+		parameters: Type.Object({}),
+		replay: "safe",
+		execute: async () => ({ output: [{ type: "text", text: name }] }),
+	});
+	return {
+		extensions: [
+			durable.defineExtension({ name: "fixture-kept", tools: [tool("fixture_kept")] }),
+			durable.defineExtension({ name: "fixture-own", tools: [tool("fixture_own")] }),
+		],
+		uninherited: ["fixture-own"],
+		close: async () => {},
+	};
+}
+`;
 
 /** The entry of the tests, with requests of each kind and the protocol `fixture` at version 3. */
 const FIXTURE_ENTRY = `import { Type } from ${JSON.stringify(TYPEBOX)};
@@ -174,8 +201,8 @@ const ChildrenV6 = durable.defineDoc<durable.JsonObject>({
 });
 
 /**
- * Starts a host of a new project with only the entries `entries`, by name, and gives it. `entries.json` then has only
- * the projects entry again.
+ * Starts a host of a new project with only the entries `entries`, by name, and gives it. `entries.json` then has its
+ * entries from before again.
  */
 async function startWith(project: string, entries: Record<string, string>): Promise<Host> {
 	await createProject(project);
@@ -185,17 +212,16 @@ async function startWith(project: string, entries: Record<string, string>): Prom
 
 /**
  * Starts a host of the project `project` with only the entries `entries`, by name, and gives it. `entries.json` then
- * has only the projects entry again.
+ * has its entries from before again.
  */
 async function restartWith(project: string, entries: Record<string, string>): Promise<Host> {
-	const file = join(root, "config", "harness", "entries.json");
-	await mkdir(join(root, "config", "harness"), { recursive: true });
-	await writeFile(file, JSON.stringify(entries));
+	const before = readEntries();
+	await writeFile(entriesPath(), JSON.stringify(entries));
 
 	try {
 		return await startHost(project);
 	} finally {
-		await writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE }));
+		await writeFile(entriesPath(), JSON.stringify(before));
 	}
 }
 
@@ -226,7 +252,7 @@ afterAll(async () => {
 describe("entry requests", () => {
 	it("gives the protocol versions of the entries in the hello reply", async () => {
 		expect(await exchange(PROJECT, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
-			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: { projects: 1, fixture: 3 } } },
+			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: { fixture: 3 } } },
 		]);
 	});
 
@@ -348,17 +374,11 @@ describe("entry load errors", () => {
 		);
 	});
 
-	it("refuses an entry that checks a label kind of the projects entry, and two entries that check the same kind", async () => {
-		const labels = (kind: string) =>
-			`export default () => ({ extensions: [], labels: [{ kind: ${JSON.stringify(kind)}, check: async () => {} }], close: async () => {} });\n`;
+	it("refuses two entries that check the same label kind", async () => {
+		const labels = `export default () => ({ extensions: [], labels: [{ kind: "fix", check: async () => {} }], close: async () => {} });\n`;
+		const first = await entryModule("first-label", labels);
+		const second = await entryModule("second-label", labels);
 
-		const first = await entryModule("first-label", labels("fix"));
-		const item = await entryModule("item-label", labels("item"));
-		const second = await entryModule("second-label", labels("fix"));
-
-		expect(await startError("host-label", { projects: PROJECTS_MODULE, item })).toBe(
-			`The entries ${PROJECTS_MODULE} and ${item} both check the label kind item`,
-		);
 		expect(await startError("dup-label", { first, second })).toBe(
 			`The entries ${first} and ${second} both check the label kind fix`,
 		);
@@ -381,6 +401,65 @@ describe("entry load errors", () => {
 	});
 });
 
+describe("the harness host process", { timeout: 30_000 }, () => {
+	it("writes no projects entry in entries.json", async () => {
+		const project = "host-process";
+		await createProject(project);
+		const client = await startHostProcess(project);
+		client.close();
+
+		try {
+			expect(client.pid).not.toBe(process.pid);
+			expect(readEntries()).not.toHaveProperty("projects");
+		} finally {
+			process.kill(client.pid, "SIGTERM");
+			await until(() => !existsSync(statePaths(project).socket));
+		}
+	});
+});
+
+describe("the scope of the entries", () => {
+	it("serves a request of an entry type in the process with send, checks it against the schema of the entry, and refuses a type that no entry serves", async () => {
+		const project = "scope-relay";
+		const relaying = await startWith(project, { relay: SCOPE_RELAY_MODULE });
+
+		try {
+			const relays = [
+				{ type: "fixture.relay", to: "fixture.shout", text: "hi" },
+				{ type: "fixture.relay", to: "fixture.shout", text: "" },
+				{ type: "fixture.relay", to: "item", text: "hi" },
+			];
+
+			expect(await exchange(project, relays, 3)).toEqual([
+				{ ok: true, value: { shout: "HI" } },
+				{
+					ok: true,
+					value: { error: "Invalid fixture.shout request: text: must not have fewer than 1 characters" },
+				},
+				{ ok: true, value: { error: 'no loaded entry serves request type "item"' } },
+			]);
+		} finally {
+			await relaying.close();
+		}
+	});
+});
+
+describe("the uninherited extensions of an entry", () => {
+	it("gives a child the other extensions of the entry, and not the uninherited ones", async () => {
+		const project = "uninherited";
+		const opened = await startWith(project, { own: await entryModule("uninherited-entry", UNINHERITED_ENTRY) });
+
+		try {
+			const child = await spawnAs("uninherited", "Uninherited child", { notify: false, project });
+			await answerOf(child.handle, project);
+			const tools = requests.get("Uninherited child")?.tools.filter((name) => name.startsWith("fixture_"));
+			expect(tools).toEqual(["fixture_kept"]);
+		} finally {
+			await opened.close();
+		}
+	});
+});
+
 describe("the open and busy calls of an entry", () => {
 	it("opens the entry once with the root conversation and the store of the host", async () => {
 		const project = "seams-open";
@@ -399,13 +478,13 @@ describe("the open and busy calls of an entry", () => {
 	it("keeps the host from its idle exit while the entry is busy", async () => {
 		const project = "seams-busy";
 		const dir = await createProject(project);
-		const file = join(root, "config", "harness", "entries.json");
-		await writeFile(file, JSON.stringify({ seams: await entryModule("seams-entry", SEAMS_ENTRY) }));
+		const before = readEntries();
+		await writeFile(entriesPath(), JSON.stringify({ seams: await entryModule("seams-entry", SEAMS_ENTRY) }));
 		seams.busy = true;
 
 		// The host exits once it had no connection and no activity for 300 ms, and the entry is not busy.
 		const idle = await runHost({ project, cwd: dir, models, idleExitMs: 300 }).finally(() =>
-			writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE })),
+			writeFile(entriesPath(), JSON.stringify(before)),
 		);
 
 		if (idle === undefined) throw new Error("no host");
@@ -437,10 +516,12 @@ describe("a host without the projects entry", () => {
 		await bare?.close();
 	});
 
-	it("gives no projects version in the hello reply, and refuses a request of the project with the error that names its type", async () => {
+	it("serves a spawn and its wait, and refuses a request of the projects with the error that names its type", async () => {
 		expect(await exchange(project, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
 			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: {} } },
 		]);
+		const child = await spawnAs("bare-spawn", "Bare child", { notify: false, project });
+		expect(await answerOf(child.handle, project)).toBe("Answer to Bare child");
 		expect(await exchange(project, [{ type: "item", action: "list" }], 1)).toEqual([
 			{ ok: false, error: 'no loaded entry serves request type "item"' },
 		]);
@@ -518,7 +599,8 @@ describe("a host without the projects entry", () => {
 			const children = Object.fromEntries(
 				Object.entries(Value.Clone(state).children).map(([handle, { labels: _labels, ...record }]) => [
 					handle,
-					{ ...record, ...served[handle] },
+					// A child of an earlier test serves its spawner.
+					{ ...record, ...(served[handle] ?? { serves: { kind: "spawner" } }) },
 				]),
 			);
 

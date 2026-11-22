@@ -1,8 +1,7 @@
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
-import { Value } from "typebox/value";
 import { describe, expect, it } from "vite-plus/test";
 import { isValidRunName } from "../src/protocol/labels.ts";
-import { PROTOCOL_VERSION, RequestLine, THINKING_LEVELS } from "../src/protocol/requests.ts";
+import { THINKING_LEVELS } from "../src/protocol/requests.ts";
 
 describe("THINKING_LEVELS", () => {
 	it("has pi-ai's thinking levels, in pi-ai's order", () => {
@@ -31,31 +30,5 @@ describe("isValidRunName", () => {
 		expect(isValidRunName("a".repeat(65))).toBe(false);
 		expect(isValidRunName(" a")).toBe(false);
 		expect(isValidRunName("a ")).toBe(false);
-	});
-});
-
-describe("the memory request", () => {
-	it("takes one line for each action of the memory tool, and the snapshot, in protocol 43", () => {
-		expect(PROTOCOL_VERSION).toBe(43);
-
-		for (const line of [
-			{ type: "memory", action: "note", text: "The user drinks tea." },
-			{ type: "memory", action: "recall", pattern: "tea" },
-			{ type: "memory", action: "zoom", block: "0-1" },
-			{ type: "memory", action: "snapshot" },
-		]) {
-			expect(Value.Check(RequestLine, line)).toBe(true);
-		}
-	});
-
-	it("refuses an action without its field, and an unknown action", () => {
-		for (const line of [
-			{ type: "memory", action: "note" },
-			{ type: "memory", action: "recall" },
-			{ type: "memory", action: "zoom" },
-			{ type: "memory", action: "forget", text: "tea" },
-		]) {
-			expect(Value.Check(RequestLine, line)).toBe(false);
-		}
 	});
 });

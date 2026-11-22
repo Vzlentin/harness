@@ -1,18 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Children, Place } from "../src/children/library.ts";
 import { connect, request } from "../src/client/client.ts";
-import { addAsks, answerAsks, ENTRY_ASKS } from "../src/host/asks.ts";
+import { addAsks, answerAsks } from "../src/host/asks.ts";
 import type { Host } from "../src/host/run.ts";
-import { readParley, writeAnswers } from "../src/projects/parleys.ts";
-import { ProjectStore } from "../src/projects/project-store.ts";
 import { setEntry } from "../src/protocol/entries.ts";
-import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
@@ -21,22 +18,22 @@ import {
 	answer,
 	called,
 	contexts,
-	framed,
 	inputAgent,
 	openDurableHost,
 	root,
 	round,
-	send,
 	setSettings,
 	setUp,
 	spawnAs,
 	startHost,
 	tearDown,
 	until,
-	untilContract,
 } from "./helpers.ts";
 
 const TYPEBOX = import.meta.resolve("typebox");
+
+/** The module of the entry that serves the parley asks. */
+const PARLEY_ASKS_MODULE = fileURLToPath(new URL("fixtures/parley-asks.ts", import.meta.url));
 
 /** What the entry of the tests shares with them, through `globalThis`, since it runs in this process. */
 type Shared = {
@@ -178,13 +175,6 @@ async function answeredAsk(title: string): Promise<number> {
 	await answer([{ id, answer: "own", label: "Yes", words: ["yes"] }]);
 
 	return id;
-}
-
-/** The IDs of the items that the parley `slug` shapes. */
-async function itemsOfParley(slug: string): Promise<number[]> {
-	const { items } = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
-
-	return items.filter((item) => item.edges.some((edge) => edge.from === `parley:${slug}`)).map((item) => item.id);
 }
 
 /** Runs `write` on the store of the main host while the host is closed, and starts the host again. */
@@ -329,65 +319,6 @@ describe("the answered asks", { timeout: 30_000 }, () => {
 		await until(() => keysOf(failed).length === 2);
 		expect(keysOf(later)).toHaveLength(1);
 	});
-});
-
-describe("the contract of a read-back", { timeout: 30_000 }, () => {
-	it("comes from the event of the answer, also when the host stops between the answer and the event", async () => {
-		const { call, readBack } = await framed("offline-sign");
-		let open: string | undefined;
-
-		await offline(async (harness) => {
-			const answers = [
-				{ id: call, answer: "a" },
-				{ id: readBack, answer: "ok" },
-			];
-
-			const store = ProjectStore.open(statePaths(MAIN_PROJECT).dir, 0);
-
-			try {
-				await harness.commit(
-					(tx) => writeAnswers(tx, store, ENTRY_ASKS, answers, "user", { kind: "user" }, NO_ROOT),
-					BACKGROUND_CONTEXT,
-				);
-				open = (await readParley(harness, store, ENTRY_ASKS, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
-			} finally {
-				store.close();
-			}
-		});
-
-		expect(open).toBe("open");
-		const contract = await untilContract("offline-sign");
-		expect(contract.parley.by).toBe("user");
-		expect(await itemsOfParley("offline-sign")).toHaveLength(1);
-
-		await restart();
-		expect(await untilContract("offline-sign")).toEqual(contract);
-		expect(await itemsOfParley("offline-sign")).toHaveLength(1);
-	});
-
-	it("is made once when the same event comes again after a restart", async () => {
-		const hung = Promise.withResolvers<void>();
-		const { call, readBack } = await framed("hung-sign");
-		shared.handle = async (event) => (event.ask.id === readBack ? hung.promise : undefined);
-
-		await answer([
-			{ id: call, answer: "a" },
-			{ id: readBack, answer: "ok" },
-		]);
-		await until(() => keysOf(readBack).length === 1);
-		// The entry gets the event after the reaction of the parleys.
-		const contract = await untilContract("hung-sign");
-		expect(await itemsOfParley("hung-sign")).toHaveLength(1);
-
-		shared.handle = async () => {};
-
-		await restart();
-		await until(() => keysOf(readBack).length === 2);
-		const [key, again] = keysOf(readBack);
-		expect(again).toBe(key);
-		expect(await untilContract("hung-sign")).toEqual(contract);
-		expect(await itemsOfParley("hung-sign")).toHaveLength(1);
-	});
 
 	it("does not stop an answer of an ask whose parley the store does not have", async () => {
 		let id = 0;
@@ -475,6 +406,31 @@ describe("the deliveries of an entry", { timeout: 30_000 }, () => {
 		});
 
 		expect(third).toEqual([{ source: "entry", key: "later", text: "Later to the session" }]);
+	});
+});
+
+// The entry of this part serves every `ask` request of the host from then on, so the part comes last.
+describe("the ask handler of an entry", { timeout: 30_000 }, () => {
+	it("serves a round with a parley frame, which a host with no such handler refuses", async () => {
+		const parley = { slug: "fixture-plan", title: "Fixture plan", goal: "Reach the entry." };
+		const asks = [{ title: "Where" }, { title: "When" }];
+		await expect(round("pi-parley", parley, asks)).rejects.toThrow("no loaded entry serves parley asks");
+
+		setEntry("parley-asks", PARLEY_ASKS_MODULE);
+		await restart();
+
+		expect(await round("pi-parley", parley, asks)).toMatchObject({
+			parleys: [
+				{
+					parley: { slug: "fixture-plan", title: "Fixture plan", status: "open", by: "pi-parley" },
+					asks: [
+						{ title: "Where", state: "open", asker: "pi-parley", parley: { n: 1 } },
+						{ title: "When", state: "open", asker: "pi-parley", parley: { n: 2 } },
+					],
+				},
+			],
+			asks: [],
+		});
 	});
 });
 

@@ -25,7 +25,6 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
-import { MEMORY_EXTENSION } from "../protocol/project.ts";
 import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 import { complete, createAnswers } from "./respond.ts";
@@ -62,6 +61,8 @@ export type Place = {
 	readonly models: Models;
 	/** The tools that `Spec.tools` names resolve among, by name; the last of a name wins. */
 	readonly registry: RegistrySnapshot;
+	/** The names of the extensions that no child inherits from the agent of its owner. */
+	readonly uninherited: readonly string[];
 };
 
 /**
@@ -857,20 +858,23 @@ export function createChildren(durable: typeof Durable): Children {
 
 				if (spec.instructions !== undefined) change = { ...change, instructions: spec.instructions };
 				await durable.configure(tx, child.id, change);
-				// The child keeps the extensions of the owner's agent and selects the answer extension too.
-				// No child, at any depth, gets the memory of the project agent: neither its tool nor its section.
+				// The child keeps the extensions of the owner's agent, but not the uninherited ones, and selects the answer
+				// extension too.
 				const agent = await tx.doc(durable.AgentDoc, child.id);
 				const answerName = answers.extension.name;
 				const selection = agent.extensions;
+				const { uninherited } = place;
 
 				if (Array.isArray(selection)) {
-					const kept = selection.filter((name) => name !== MEMORY_EXTENSION);
+					const kept = selection.filter((name) => !uninherited.includes(name));
 					agent.extensions = kept.includes(answerName) ? kept : [...kept, answerName];
+				} else if (uninherited.length === 0) {
+					agent.extensions = { ...selection, add: [...new Set([...(selection?.add ?? []), answerName])] };
 				} else {
 					agent.extensions = {
 						...selection,
 						add: [...new Set([...(selection?.add ?? []), answerName])],
-						remove: [...new Set([...(selection?.remove ?? []), MEMORY_EXTENSION])],
+						remove: [...new Set([...(selection?.remove ?? []), ...uninherited])],
 					};
 				}
 

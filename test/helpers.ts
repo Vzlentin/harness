@@ -1,8 +1,7 @@
 import { execFile } from "node:child_process";
-import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createConnection, type Socket } from "node:net";
+import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -31,7 +30,6 @@ import {
 	createRegistry,
 	type Extension,
 	Harness,
-	ROOT_CONVERSATION_ID,
 	type SettledSubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -40,21 +38,13 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
-import { type Client, connect, request } from "../src/client/client.ts";
-import { ENTRY_ASKS } from "../src/host/asks.ts";
+import { type Client, connect, request, requestEntry } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
-import { ENTRY_TODOS } from "../src/host/todo-lists.ts";
-import { PROJECT_STORE_FILE, ProjectStore } from "../src/projects/project-store.ts";
-import { readStoreFile } from "../src/projects/store-file.ts";
+import { AskWrite } from "../src/protocol/asks.ts";
+import { DegradedState } from "../src/protocol/degraded.ts";
 import { setEntry } from "../src/protocol/entries.ts";
-import { ItemList } from "../src/protocol/item.ts";
-import { onLines } from "../src/protocol/lines.ts";
-import { statePaths } from "../src/protocol/paths.ts";
-import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
-import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, Delivery, Replies, Request, WatchLine } from "../src/protocol/requests.ts";
-import type { StoreFile } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 import type { SpawnServes } from "../src/protocol/worker-labels.ts";
@@ -457,34 +447,6 @@ export async function projectHost(name: string): Promise<Host> {
 }
 
 /**
- * The lists of the two stores of `project` as a store file, as a program reads them while no host writes: the lists of
- * `project.sqlite`, empty when it does not exist, and of `durable.sqlite`.
- */
-export async function readStores(project: string): Promise<StoreFile> {
-	const { dir } = statePaths(project);
-	const storage = await openNodeSqliteStorage(join(dir, "durable.sqlite"));
-
-	const harness = await Harness.open(
-		storage,
-		{ models: createModels(), registry: createRegistry(), readOnly: true },
-		BACKGROUND_CONTEXT,
-	);
-
-	const store = existsSync(join(dir, PROJECT_STORE_FILE)) ? ProjectStore.open(dir, 5_000) : undefined;
-
-	try {
-		return await readStoreFile(harness, storage, ROOT_CONVERSATION_ID, {
-			store,
-			asks: ENTRY_ASKS,
-			todos: ENTRY_TODOS,
-		});
-	} finally {
-		store?.close();
-		await harness.close(BACKGROUND_CONTEXT);
-	}
-}
-
-/**
  * Connects to the host process of `project` and starts it when no host listens, as a command does. When the started host
  * is still starting after the 10 s of `connect`, as on a loaded machine, it waits up to 10 s more until the host listens.
  */
@@ -512,40 +474,16 @@ export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> 
 	);
 }
 
-/** One line of a project watch: the reply, or an event. */
-const ProjectWatchLine = Type.Union([
-	Type.Object({ ok: Type.Literal(true), value: ProjectState }),
-	Type.Object({ event: ProjectEvent }),
-]);
+/** The reply of `fixture.degraded`, the request of the `degraded` entry that `setUp` sets. */
+const DegradedReply = Type.Object({ degraded: Type.Array(DegradedState) });
 
-/**
- * A `watch-project` request of `project` on a socket of its own: its socket, the state of the reply, and the events
- * that came so far.
- */
-export async function watchProject(
-	project: string,
-): Promise<{ socket: Socket; state: ProjectState; events: ProjectEvent[] }> {
-	const socket = createConnection(statePaths(project).socket);
-	await once(socket, "connect");
-	const replies: ProjectState[] = [];
-	const events: ProjectEvent[] = [];
+/** The degraded states of the host of `project`, which must run, as the `degraded` entry of `setUp` gives them. */
+export async function degradedStates(project = MAIN_PROJECT): Promise<DegradedState[]> {
+	const reply = await requestEntry({ type: "fixture.degraded" }, { start: false, project });
 
-	onLines(socket, (line) => {
-		const parsed: unknown = JSON.parse(line);
+	if (reply === undefined) throw new Error("no host");
 
-		if (!Value.Check(ProjectWatchLine, parsed)) throw new Error(`not a line of a project watch: ${line.slice(0, 200)}`);
-
-		if ("ok" in parsed) replies.push(parsed.value);
-		else events.push(parsed.event);
-	});
-
-	socket.write(`${JSON.stringify({ type: "watch-project" })}\n`);
-	await until(() => replies.length > 0);
-	const [state] = replies;
-
-	if (state === undefined) throw new Error("no reply");
-
-	return { socket, state, events };
+	return Value.Parse(DegradedReply, reply).degraded;
 }
 
 /** Polls `check` for up to 10 s. */
@@ -737,60 +675,11 @@ export async function answer(
 	return Value.Parse(AskWrite, await send({ type: "ask", action: "answer", caller: "user", answers, user: true }));
 }
 
-/** The options of the call of `framed`. */
+/** The options of an ask with two options: `a`, with its gains and its costs, and `b`. */
 export const OPTIONS = [
 	{ key: "a", label: "In the store", gains: ["One writer"], costs: ["A protocol bump"] },
 	{ key: "b", label: "In files" },
 ];
-
-/** A parley `slug` with one call, its design sense and a read-back: the IDs of its call and of its read-back. */
-export async function framed(slug: string): Promise<{ call: number; readBack: number }> {
-	const written = await round(
-		"pi-1",
-		{ slug, title: "Where asks live", goal: "Pick the place.", design_sense: "One writer." },
-		[{ title: "Where", kind: "your call", options: OPTIONS, plan: "a" }, { title: "These are the terms" }],
-	);
-
-	const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
-
-	if (call === undefined || readBack === undefined) throw new Error("no asks");
-
-	return { call, readBack };
-}
-
-/**
- * Waits until the parley `slug` of the host of `project`, the main project by default, is a contract, and gives it with
- * its asks: the event of the answered read-back makes the contract after the answer.
- */
-export async function untilContract(slug: string, project?: string): Promise<ParleyAsks> {
-	return vi.waitFor(
-		async () => {
-			const read = Value.Parse(ParleyAsks, await send({ type: "parley", action: "read", slug }, project));
-
-			if (read.parley.status !== "contract") throw new Error(`Parley ${slug} is ${read.parley.status}`);
-
-			return read;
-		},
-		{ timeout: 10_000 },
-	);
-}
-
-/** The ID of the first open item that the parley `slug` shapes, as `item list` gives it. */
-export async function contractItem(slug: string): Promise<number> {
-	const { items } = Value.Parse(ItemList, await send({ type: "item", action: "list" }));
-	const end = `parley:${slug}`;
-	const item = items.find((found) => found.edges.some((edge) => edge.from === end && edge.kind === "shapes"));
-
-	if (item === undefined) throw new Error(`no item shaped by ${slug}`);
-
-	return item.id;
-}
-
-/** Removes the edge of the parley `slug` to its open item, so the contract shapes no item. */
-export async function unlinkContract(slug: string): Promise<void> {
-	const to = `item:${await contractItem(slug)}`;
-	await send({ type: "item", action: "unlink", caller: "cli", from: `parley:${slug}`, kind: "shapes", to });
-}
 
 /** The state of the child `handle` of the main host, or nothing when no host runs. */
 export async function stateOf(handle: string): Promise<string | undefined> {
@@ -908,12 +797,12 @@ export async function setUp(): Promise<void> {
 
 	faux.setResponses(Array.from({ length: 500 }, () => respond));
 	models.setProvider(faux.provider);
-	// The host loads the projects entry, as `harness host` sets it.
-	setEntry("projects", PROJECTS_MODULE);
+	// The host loads the `degraded` entry, which gives the tests the degraded states.
+	setEntry("degraded", DEGRADED_MODULE);
 }
 
-/** The module of the projects entry, which `setUp` sets in `entries.json`. */
-export const PROJECTS_MODULE = fileURLToPath(new URL("../src/projects/index.ts", import.meta.url));
+/** The module of the `degraded` entry, which `setUp` sets in `entries.json`. */
+export const DEGRADED_MODULE = fileURLToPath(new URL("fixtures/degraded.ts", import.meta.url));
 
 /**
  * Makes `values` the environment of this process. It changes `process.env` in place, so `os.homedir()` also reads the

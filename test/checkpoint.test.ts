@@ -16,7 +16,7 @@ import { ChildRecords } from "../src/host/records.ts";
 import { AgentState } from "../src/host/targets.ts";
 import { addListTodo, CallerTodos, ConversationTodos, linkOwner, TaskTodos } from "../src/host/todo-lists.ts";
 import { queueAnswers, readUserAnswers, USER_ANSWERS_KIND } from "../src/host/user-answers.ts";
-import { ASKS_KIND } from "../src/protocol/project.ts";
+import { ASKS_KIND } from "../src/protocol/asks.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND } from "../src/protocol/todo.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";
 

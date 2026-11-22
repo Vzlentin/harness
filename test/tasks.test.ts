@@ -2,8 +2,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect, request } from "../src/client/client.ts";
 import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
@@ -25,8 +23,7 @@ import {
 	gates,
 	logLines,
 	models,
-	PROJECTS_MODULE,
-	requests,
+	DEGRADED_MODULE,
 	root,
 	setSettings,
 	setUp,
@@ -111,7 +108,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 	it("sets an entry in entries.json once", () => {
 		expect(setEntry("fixture", join(FIXTURE, "ask.ts"))).toBe(false);
-		expect(readEntries()).toEqual({ projects: PROJECTS_MODULE, fixture: join(FIXTURE, "ask.ts") });
+		expect(readEntries()).toEqual({ degraded: DEGRADED_MODULE, fixture: join(FIXTURE, "ask.ts") });
 	});
 
 	it("starts a task once per key and waits for its outcome", async () => {
@@ -152,44 +149,6 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		);
 		await expect(taskRequest("task", "nope")).rejects.toThrow("Unknown task: nope");
 		await expect(taskRequest("wait-task", "nope")).rejects.toThrow("Unknown task: nope");
-	});
-
-	it("leaves the store tools out of a library child whose setup removes the project extension, but not the rules", async () => {
-		const store = ["thread", "rule", "parley", "item"];
-		const rule = { type: "rule", action: "create", caller: "cli", name: "fixture", kind: "domain" } as const;
-		const created = await request({ ...rule, value: "The fixture asks." }, { start: false });
-
-		if (created === undefined || "rules" in created) throw new Error("no rule");
-
-		const run = async (key: string, noStore: boolean) => {
-			const prompt = `Fixture codemode tools ${key}`;
-			await request({ type: "start", kind: KIND, key, input: { cwd: root, prompt, noStore } }, { start: false });
-			const { outcome } = await taskRequest("wait-task", key);
-
-			const result = outcome?.status === "completed" ? outcome.result : null;
-
-			if (!Value.Check(Type.String(), result)) throw new Error(`No text result: ${JSON.stringify(outcome)}`);
-			// The script prints the names of the tools that codemode scripts can call, on the last line.
-			const scripts = result.trim().split("\n").at(-1)?.split(" ") ?? [];
-
-			return { tools: requests.get(prompt)?.tools ?? [], system: requests.get(prompt)?.system ?? "", scripts };
-		};
-
-		try {
-			const without = await run("no-store", true);
-			expect(without.system).toContain(`<project_rules>`);
-			expect(without.system).toContain(`${created.id} fixture (domain): The fixture asks.`);
-			expect(without.tools).toEqual(expect.arrayContaining(["subagent", "todo", "codemode"]));
-			expect(without.tools.filter((tool) => store.includes(tool))).toEqual([]);
-			expect(without.scripts).toEqual(expect.arrayContaining(["subagent", "todo"]));
-			expect(without.scripts.filter((tool) => store.includes(tool))).toEqual([]);
-
-			const withStore = await run("with-store", false);
-			expect(withStore.tools).toEqual(expect.arrayContaining(store));
-			expect(withStore.scripts).toEqual(expect.arrayContaining(store));
-		} finally {
-			await request({ type: "rule", action: "retire", caller: "cli", id: created.id }, { start: false });
-		}
 	});
 
 	it("opens a library child with its own model and the caller's level, whatever the subagent settings give", async () => {

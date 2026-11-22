@@ -11,13 +11,12 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
-import { TYPED_KIND } from "../protocol/gate.ts";
-import type { AnswerAuthor } from "../protocol/project.ts";
+import type { AnswerAuthor } from "../protocol/asks.ts";
 import {
 	type AnswerAuthorOf,
 	type AskRequest,
 	type ChildInfo,
-	type CoreRequest,
+	type Request,
 	PROTOCOL_VERSION,
 	type Replies,
 	ThinkingLevel,
@@ -25,6 +24,7 @@ import {
 } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protocol/target.ts";
 import type { Todo } from "../protocol/todo.ts";
+import { TYPED_KIND } from "../protocol/typed.ts";
 import { workerLabels } from "../protocol/worker-labels.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
 import { plainAsk } from "./asks.ts";
@@ -122,11 +122,11 @@ export type Handler = Base &
  * Handles `request`. Each target is parsed once with `parseTarget`: here, or in `todoOwner` for the list target of
  * `todo`, which can also be a task key or none.
  */
-export function handleRequest<T extends CoreRequest["type"]>(
-	request: Extract<CoreRequest, { type: T }>,
+export function handleRequest<T extends Request["type"]>(
+	request: Extract<Request, { type: T }>,
 	handler: Handler,
 ): Promise<Replies[T]>;
-export async function handleRequest(request: CoreRequest, handler: Handler): Promise<Replies[CoreRequest["type"]]> {
+export async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
 	switch (request.type) {
 		case "hello":
 			return hello(request, handler.entryVersions);
@@ -185,18 +185,18 @@ export async function handleRequest(request: CoreRequest, handler: Handler): Pro
 
 /** A request line: a core request, or a line of a type that an entry serves, with that type. */
 export type Line =
-	| { readonly kind: "core"; readonly request: CoreRequest }
+	| { readonly kind: "core"; readonly request: Request }
 	| { readonly kind: "entry"; readonly request: EntryLine; readonly served: EntryRequest };
 
 /** Handles `line`: a core request here, and a request of an entry type by the entry that serves it. */
-export function handleLine(line: Line, handler: Handler): Promise<Replies[CoreRequest["type"]] | JsonValue> {
+export function handleLine(line: Line, handler: Handler): Promise<Replies[Request["type"]] | JsonValue> {
 	if (line.kind === "core") return handleRequest(line.request, handler);
 
 	return serveEntryRequest(line.served, line.request, handler.signal, handler.connection);
 }
 
 function hello(
-	request: Extract<CoreRequest, { type: "hello" }>,
+	request: Extract<Request, { type: "hello" }>,
 	entries: Readonly<Record<string, number>>,
 ): Replies["hello"] {
 	if (request.version !== PROTOCOL_VERSION && request.external !== true) {
@@ -206,7 +206,7 @@ function hello(
 	return { version: PROTOCOL_VERSION, pid: process.pid, entries };
 }
 
-async function send(request: Extract<CoreRequest, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
+async function send(request: Extract<Request, { type: "send" }>, handler: Handler): Promise<Replies["send"]> {
 	const { handle, requestId, notify } = request;
 	const record = await ownRecord(handler.harness, handle, request.caller);
 
@@ -223,7 +223,7 @@ async function send(request: Extract<CoreRequest, { type: "send" }>, handler: Ha
 }
 
 async function input(
-	request: Extract<CoreRequest, { type: "input" }>,
+	request: Extract<Request, { type: "input" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<Replies["input"]> {
@@ -236,10 +236,7 @@ async function input(
 	return sendTo(ref.kind === "conversation" ? { ...request, followUp: false } : request, found, handler.harness);
 }
 
-async function answers(
-	request: Extract<CoreRequest, { type: "answers" }>,
-	handler: Handler,
-): Promise<Replies["answers"]> {
+async function answers(request: Extract<Request, { type: "answers" }>, handler: Handler): Promise<Replies["answers"]> {
 	if (handler.connection === undefined) throw new Error("answers needs a connection");
 	await handler.sessions.listen(request.caller, handler.connection.socket);
 
@@ -258,7 +255,7 @@ function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
 	return serveTreeWatch(handler, handler.connection);
 }
 
-async function start(request: Extract<CoreRequest, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
+async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
 	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
 	// for the agent, the task still starts: its children may name their own.
 	await handler.agent().catch(() => undefined);
@@ -267,7 +264,7 @@ async function start(request: Extract<CoreRequest, { type: "start" }>, handler: 
 }
 
 /** Adds, sets or lists the todos of the list that `request` targets. */
-async function todo(request: Extract<CoreRequest, { type: "todo" }>, handler: Handler): Promise<Replies["todo"]> {
+async function todo(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<Replies["todo"]> {
 	const owner = await todoOwner(request, handler);
 
 	switch (request.action) {
@@ -285,7 +282,7 @@ async function todo(request: Extract<CoreRequest, { type: "todo" }>, handler: Ha
  * a child by handle, or the caller. A caller that is a conversation of the host has the list of its conversation. The
  * project agent needs no set-up, and a child by handle needs no check of its caller.
  */
-async function todoOwner(request: Extract<CoreRequest, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
+async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
 	if (request.key !== undefined || request.handle !== undefined || request.conversation !== undefined) {
 		return listOwner(request, handler);
 	}
@@ -334,7 +331,7 @@ function ask(request: AskRequest, handler: Handler): Promise<Replies["ask"]> {
  * error for any list.
  */
 async function classify(
-	request: Extract<CoreRequest, { type: "classify-todos" }>,
+	request: Extract<Request, { type: "classify-todos" }>,
 	handler: Handler,
 ): Promise<Replies["classify-todos"]> {
 	const model = await classifierModel(handler.settings, handler.place.models, "todoClassifier", handler.degraded);
@@ -354,7 +351,7 @@ function entryList(handler: Handler): Promise<readonly Todo[]> {
 	return handler.classifyList();
 }
 
-async function list(request: Extract<CoreRequest, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
+async function list(request: Extract<Request, { type: "list" }>, handler: Handler): Promise<Replies["list"]> {
 	const state = await handler.harness.snapshot(ChildRecords, context);
 
 	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
@@ -373,7 +370,7 @@ async function whoami(caller: string, handler: Handler): Promise<Replies["whoami
 	return handle === undefined ? {} : { handle };
 }
 
-async function rename(request: Extract<CoreRequest, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
+async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
 	await ownRecord(handler.harness, request.handle, request.caller);
 	await renameRecord(handler.harness, request.handle, request.name);
 
@@ -384,7 +381,7 @@ async function rename(request: Extract<CoreRequest, { type: "rename" }>, handler
  * Stops the child of `request` with the children it spawned. For `cli`, a target with no record, the project agent or a
  * conversation such as a session of a task, has its turn aborted and stays.
  */
-async function stop(request: Extract<CoreRequest, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
+async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
 	const ref = parseTarget(request);
 	const entry = await stoppedEntry(handler, ref, request.caller);
 
@@ -396,7 +393,7 @@ async function stop(request: Extract<CoreRequest, { type: "stop" }>, handler: Ha
 	return record.name === undefined ? { handle } : { handle, name: record.name };
 }
 
-async function spawnChild(request: Extract<CoreRequest, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
+async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler: Handler): Promise<ChildInfo> {
 	const { harness, place } = handler;
 	let handle = await spawnedHandle(harness, request.requestId);
 
@@ -461,11 +458,11 @@ async function spawnChild(request: Extract<CoreRequest, { type: "spawn" }>, hand
 
 /**
  * Sends the input of `request` to `found`. The verb comes from the conversation's own turn, so a child that only its
- * children hold is prompted. The entry of an `input` has the kind `TYPED_KIND`, which the gate reads as the words of
+ * children hold is prompted. The entry of an `input` has the kind `TYPED_KIND`, which an entry reads as the words of
  * the user; the entry of a `send` stays `pi.user`.
  */
 async function sendTo(
-	request: Extract<CoreRequest, { type: "send" | "input" }>,
+	request: Extract<Request, { type: "send" | "input" }>,
 	found: Pick<Found, "conversation" | "info"> & {
 		readonly send: (input: Input, options?: SendOptions) => Promise<void>;
 	},
@@ -488,7 +485,7 @@ async function sendTo(
 
 /** Writes the note of `request` to its target. A note starts no turn, so its reply has no verb. */
 async function noteTo(
-	request: Extract<CoreRequest, { type: "note" }>,
+	request: Extract<Request, { type: "note" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<{ child: ChildInfo }> {
@@ -505,10 +502,7 @@ function sendVerb(busy: boolean, followUp: boolean): string {
 	return !busy ? "Prompted" : followUp ? "Queued follow-up for" : "Steered";
 }
 
-async function waitChild(
-	request: Extract<CoreRequest, { type: "wait" }>,
-	handler: Handler,
-): Promise<{ answer: string }> {
+async function waitChild(request: Extract<Request, { type: "wait" }>, handler: Handler): Promise<{ answer: string }> {
 	const record = await childRecord(handler.harness, request.handle);
 	const child = await childOf(handler, record);
 	const timeout = AbortSignal.timeout(request.timeout * 1000);
@@ -551,7 +545,7 @@ type SpawnSettings = {
  * The provider and the model of a spawn: those of the request when it gives either one, else `setting`. A missing part
  * comes from the caller.
  */
-function spawnModel(request: Extract<CoreRequest, { type: "spawn" }>, setting: SpawnSettings["model"]): ModelChoice {
+function spawnModel(request: Extract<Request, { type: "spawn" }>, setting: SpawnSettings["model"]): ModelChoice {
 	const chosen: { readonly provider?: string | undefined; readonly model?: string | undefined } =
 		request.provider !== undefined || request.model !== undefined ? request : (setting ?? {});
 
@@ -600,7 +594,7 @@ async function abortTarget(ref: Target, handler: Handler): Promise<{ readonly fo
 }
 
 async function configureChild(
-	request: Extract<CoreRequest, { type: "configure" }>,
+	request: Extract<Request, { type: "configure" }>,
 	ref: Target,
 	handler: Handler,
 ): Promise<ChildInfo> {

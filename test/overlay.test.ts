@@ -111,7 +111,7 @@ beforeAll(async () => {
 	);
 
 	harness.resume();
-	place = { store: harness, models, registry: registry.snapshot() };
+	place = { store: harness, models, registry: registry.snapshot(), uninherited: [] };
 	owner = { kind: "detached", root: await harness.root(context) };
 	setEntry("fixture", FIXTURE);
 	host = await startHost();

@@ -311,7 +311,7 @@ export function mountInspect(container, target, { onTitle } = {}) {
 	function entryNode(entry, { calls, paired }) {
 		const message = entry.model?.[0];
 
-		// `harness.typed` is the kind of an input that the user typed (`TYPED_KIND` in `src/protocol/gate.ts`).
+		// `harness.typed` is the kind of an input that the user typed (`TYPED_KIND` in `src/protocol/typed.ts`).
 		if ((entry.kind === "pi.user" || entry.kind === "harness.typed") && message?.role === "user") {
 			return el("div", "message user", contentText(message.content));
 		}

@@ -3,12 +3,14 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { onLines } from "../protocol/lines.ts";
 import { cliPath, statePaths } from "../protocol/paths.ts";
 import { MAIN_PROJECT, projectOf } from "../protocol/projects.ts";
 import {
+	type EntryRequestLine,
 	errorMessage,
 	HOST_CLOSING,
 	PROTOCOL_VERSION,
@@ -145,15 +147,28 @@ export class Client {
 	}
 
 	request<T extends Request["type"]>(request: Extract<Request, { type: T }>): Promise<Replies[T]> {
+		return this.#send<Replies[T]>(request);
+	}
+
+	/**
+	 * Sends `request`, of a type that an entry serves, such as `parley` of the projects entry, and gives the value of its
+	 * reply, which the caller checks. Without an entry that serves its type, the host refuses it.
+	 */
+	requestEntry(request: EntryRequestLine): Promise<JsonValue> {
+		return this.#send<JsonValue>(request);
+	}
+
+	/** Writes `line`, and gives the value of its reply, `R`, in the order of the requests. */
+	#send<R>(line: { readonly type: string }): Promise<R> {
 		if (this.#ended) return Promise.reject(new HostUnreachableError(HOST_CLOSED));
 
 		const reply = Promise.withResolvers<unknown>();
 		this.#pending.push(reply);
-		this.#socket.write(`${JSON.stringify(request)}\n`);
+		this.#socket.write(`${JSON.stringify(line)}\n`);
 
-		// SAFETY: the host answers each request line in order with the value of `Replies` for its type, and `connect`
-		// refuses a host of another protocol version.
-		return reply.promise as Promise<Replies[T]>;
+		// SAFETY: the host answers each request line in order with the value of `Replies` for its type, `connect` refuses a
+		// host of another protocol version, and the value of the reply to a request of an entry is JSON, which `R` is.
+		return reply.promise as Promise<R>;
 	}
 
 	/**
@@ -257,6 +272,27 @@ export async function request<T extends Request["type"]>(
 	request: OneShot<T>,
 	options: ConnectOptions,
 ): Promise<Replies[T] | undefined> {
+	return oneShot(options, (client) => client.request(request));
+}
+
+/**
+ * Sends `request`, of a type that an entry serves, as `request` does a request of the host, and gives the value of its
+ * reply, which the caller checks. It is undefined when no host listens and `start` is false.
+ */
+export function requestEntry(
+	request: EntryRequestLine,
+	options: ConnectOptions & { readonly start: true },
+): Promise<JsonValue>;
+export function requestEntry(request: EntryRequestLine, options: ConnectOptions): Promise<JsonValue | undefined>;
+export async function requestEntry(request: EntryRequestLine, options: ConnectOptions): Promise<JsonValue | undefined> {
+	return oneShot(options, (client) => client.requestEntry(request));
+}
+
+/**
+ * Connects as `connect` does, runs `send` on the client, and closes the connection. It is undefined when no host
+ * listens and `start` is false. When `signal` aborts, it rejects with the abort reason, and the host stops the request.
+ */
+async function oneShot<R>(options: ConnectOptions, send: (client: Client) => Promise<R>): Promise<R | undefined> {
 	const { signal } = options;
 	const client = await connect(options);
 
@@ -267,7 +303,7 @@ export async function request<T extends Request["type"]>(
 	try {
 		signal?.throwIfAborted();
 
-		return await client.request(request);
+		return await send(client);
 	} finally {
 		signal?.removeEventListener("abort", abort);
 		client.close();

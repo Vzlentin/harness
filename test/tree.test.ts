@@ -9,7 +9,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
-import { StagedItem } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
@@ -433,15 +432,13 @@ describe("tree", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("gives the labels of a child in its node, and sends the node to a watch when the end of its item stops it", async () => {
-		const project = "item-node";
-		const host = await projectHost(project);
+	it("gives the labels of a child in its node, and sends the node to a watch when a stop ends it", async () => {
+		const project = "labels-node";
+		const host = await projectHostWith(project, join(dirname(FIXTURE), "fix-labels.ts"));
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const added = await send({ type: "item", action: "add", caller: "cli", title: "Node item" }, project);
-			const { id } = Value.Parse(StagedItem, added);
-			const child = await spawnAs(AGENT_CALLER, "Item child", { notify: false, project, serves: { item: id } });
+			const child = await spawnAs(AGENT_CALLER, "Labeled child", { notify: false, project, labels: ["fix:7"] });
 			await answerOf(child.handle, project);
 			watch = await openTreeWatch(project);
 			const { events } = watch;
@@ -453,11 +450,11 @@ describe("tree", { timeout: 60_000 }, () => {
 				name: child.handle,
 				state: "idle",
 				todos: [],
-				labels: [`item:${id}`],
+				labels: ["fix:7"],
 			};
 
 			expect(watch.nodes.find((found) => found.id === child.handle)).toEqual(node);
-			await send({ type: "item", action: "set", caller: "cli", id, state: "done" }, project);
+			await send({ type: "stop", caller: AGENT_CALLER, handle: child.handle }, project);
 			await until(() => events.length > 0);
 			expect(events).toEqual([{ nodes: [{ ...node, state: "ended" }] }]);
 		} finally {

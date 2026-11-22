@@ -14,12 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { System } from "../pi/clipboard.ts";
 import type { CopyResult } from "../pi/copy-choice.ts";
 import { registerVisualCopy } from "../pi/visual-copy.ts";
-import { request } from "../src/client/client.ts";
-import type { Host } from "../src/host/run.ts";
 import * as protocol from "../src/protocol/index.ts";
-import type { Request } from "../src/protocol/requests.ts";
-import * as tool from "../src/tool.ts";
-import { root, setUp, startHost, tearDown } from "./helpers.ts";
+import { root, setUp, tearDown } from "./helpers.ts";
 
 const style = (code: number) => (text: string) => `\x1b[${code}m${text}\x1b[39m`;
 
@@ -121,39 +117,11 @@ type Done = (result: CopyResult | undefined) => void;
 
 type Factory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: Done) => Component;
 
-let host: Host | undefined;
-
-/** The requests that the extension sent to the host, in order. */
-const sent: Request[] = [];
-
-/** The error of each request to the host, when the host is unreachable for a test. */
-let failure: Error | undefined;
-
-/** With `threadOnly`, a thread read gives the thread without its messages, as a broken host would. */
-let threadOnly = false;
-
-const sendToHost: tool.Send = async (message, signal) => {
-	sent.push(message);
-
-	if (failure !== undefined) throw failure;
-	const reply = await tool.sendToHost(message, signal);
-
-	if (threadOnly) Reflect.deleteProperty(reply, "messages");
-
-	return reply;
-};
-
 beforeEach(async () => {
 	await setUp();
-	host = await startHost();
-	sent.length = 0;
-	failure = undefined;
-	threadOnly = false;
 });
 
 afterEach(async () => {
-	await host?.close();
-	host = undefined;
 	await tearDown();
 });
 
@@ -187,8 +155,6 @@ async function visualCopy(system: System, owners: readonly Component[], keys: re
 
 	const ctx = {
 		mode: "tui",
-		signal: undefined,
-		sessionManager: { getSessionId: () => "session" },
 		ui: {
 			notify: (message: string, type?: string) => {
 				notes.push({ message, type });
@@ -202,44 +168,15 @@ async function visualCopy(system: System, owners: readonly Component[], keys: re
 		},
 	};
 
-	// SAFETY: /vc uses only these functions of Pi and these modules of the harness, from `src/` in place of `dist/`. The
-	// classes of `src/` are not those of `dist/` for the type check, so the harness goes as `never`.
-	registerVisualCopy(pi as ExtensionAPI, { protocol, tool: { ...tool, sendToHost } } as never, system);
+	// SAFETY: /vc uses only these functions of Pi and the protocol module of the harness, from `src/` in place of `dist/`.
+	// The classes of `src/` are not those of `dist/` for the type check, so the harness goes as `never`.
+	registerVisualCopy(pi as ExtensionAPI, { protocol } as never, system);
 
 	if (command === undefined) throw new Error("no /vc command");
 	// SAFETY: /vc reads only these fields of the context.
 	await command.handler("", ctx as never);
 
 	return notes;
-}
-
-/** The marks that the extension sent. */
-function marks(): Request[] {
-	return sent.filter((message) => message.type === "message" && message.action === "mark");
-}
-
-/** Adds a thread with Sam and a draft to Sam with `text`, and gives the thread ID and the draft ID. */
-async function addDraft(text: string): Promise<{ thread: number; draft: number }> {
-	await request({ type: "person", action: "add", name: "Sam" }, { start: false });
-	const thread = await request({ type: "thread", action: "add", topic: "Build", persons: [1] }, { start: false });
-
-	if (thread === undefined || !("id" in thread)) throw new Error("no thread");
-
-	const draft = await request(
-		{ type: "message", action: "log", caller: "cli", thread: thread.id, from: "user", direction: "out", text },
-		{ start: false },
-	);
-
-	if (draft === undefined) throw new Error("no draft");
-
-	return { thread: thread.id, draft: draft.id };
-}
-
-/** The states of the messages of the thread. */
-async function states(thread: number): Promise<string[]> {
-	const reply = await request({ type: "thread", action: "read", id: thread }, { start: false });
-
-	return reply !== undefined && "messages" in reply ? reply.messages.map((message) => message.state) : [];
 }
 
 const PLATFORMS: readonly [string, NodeJS.Platform, string][] = [
@@ -271,7 +208,6 @@ describe("/vc", () => {
 		]);
 		expect(copied).toEqual([]);
 		expect(notes).toEqual([{ message: "Copied image", type: "info" }]);
-		expect(sent).toEqual([]);
 	});
 
 	it("copies an image with wl-copy on Wayland", async () => {
@@ -301,62 +237,5 @@ describe("/vc", () => {
 			},
 		]);
 		expect(script).toMatch(/^\$InputFile = 'C:\\Temp\\picture\.png'\n/);
-	});
-
-	it("marks sent a draft that a text copy holds", async () => {
-		const { thread, draft } = await addDraft("Hi Sam, the build is green.");
-		const { system, copied } = testSystem("darwin", "24.0.0");
-
-		const notes = await visualCopy(
-			system,
-			[new Assistant("Here is the reply:\n\nHi Sam,\nthe build is green.")],
-			["y"],
-		);
-
-		expect(copied).toEqual(["Hi Sam,\nthe build is green."]);
-		expect(marks()).toEqual([{ type: "message", action: "mark", caller: "session", message: draft, state: "sent" }]);
-		expect(notes).toEqual([
-			{ message: "Copied 2 lines: Hi Sam,", type: "info" },
-			{ message: `Draft ${draft} marked sent`, type: "info" },
-		]);
-		expect(await states(thread)).toEqual(["sent"]);
-	});
-
-	it("marks no draft for a copy of another text", async () => {
-		const { thread } = await addDraft("Hi Sam, the build is green.");
-		const { system } = testSystem("darwin", "24.0.0");
-		const notes = await visualCopy(system, [new Assistant("Hi Sam, the build is red.")], ["y"]);
-
-		expect(sent.map((message) => message.type)).toEqual(["thread", "thread"]);
-		expect(marks()).toEqual([]);
-		expect(notes).toEqual([{ message: "Copied 1 line: Hi Sam, the build is red.", type: "info" }]);
-		expect(await states(thread)).toEqual(["draft"]);
-	});
-
-	it("warns when it cannot read the drafts, and keeps the copy", async () => {
-		failure = new Error("host down");
-		const { system, copied } = testSystem("darwin", "24.0.0");
-		const notes = await visualCopy(system, [new Assistant("Hello")], ["y"]);
-
-		expect(copied).toEqual(["Hello"]);
-		expect(notes).toEqual([
-			{ message: "Copied 1 line: Hello", type: "info" },
-			{ message: "Could not read the drafts: host down", type: "warning" },
-		]);
-	});
-
-	it("warns when a thread read gives no messages, and marks no draft", async () => {
-		const { thread } = await addDraft("Hello");
-		threadOnly = true;
-		const { system, copied } = testSystem("darwin", "24.0.0");
-		const notes = await visualCopy(system, [new Assistant("Hello")], ["y"]);
-
-		expect(copied).toEqual(["Hello"]);
-		expect(marks()).toEqual([]);
-		expect(notes).toEqual([
-			{ message: "Copied 1 line: Hello", type: "info" },
-			{ message: "Could not read the drafts: The host replied with no messages", type: "warning" },
-		]);
-		expect(await states(thread)).toEqual(["draft"]);
 	});
 });

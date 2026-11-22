@@ -80,10 +80,6 @@
 			"types": "./dist/host/lock.d.ts",
 			"default": "./dist/host/lock.js"
 		},
-		"./memory-tool": {
-			"types": "./dist/memory-tool.d.ts",
-			"default": "./dist/memory-tool.js"
-		},
 		"./mirror": {
 			"types": "./dist/client/mirror.d.ts",
 			"default": "./dist/client/mirror.js"
@@ -99,10 +95,6 @@
 		"./passes": {
 			"types": "./dist/host/passes.d.ts",
 			"default": "./dist/host/passes.js"
-		},
-		"./project-tool": {
-			"types": "./dist/project-tool.d.ts",
-			"default": "./dist/project-tool.js"
 		},
 		"./projects": {
 			"types": "./dist/protocol/projects.d.ts",

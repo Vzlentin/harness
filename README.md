@@ -56,12 +56,10 @@ harness send <handle> "Focus on error handling"
 harness query <handle> "Which files did it change?"  # ask a model about its transcript
 harness attach <handle>     # open it in Pi
 harness inspect <handle>    # open it in a browser, at the URL that it prints
-harness page <folder> --slug <slug>  # serve a page with harness inspect, which it starts when none runs; its Send posts to you, or answers the asks of parley <slug>
+harness page <folder> --slug <slug>  # serve a page with harness inspect, which it starts when none runs; its Send posts to you
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
 harness tree                # print the agents and the runs of the project, with their todos
-harness rule list           # the rules of the project (rule decide|retire|delete <id>, rule edit, rule create)
-harness store load <file>   # load a store file into the empty store of a project, with its host down
 harness main                # open the agent of the main project in Pi
 ```
 
@@ -70,20 +68,12 @@ type to it. Without a project, it asks for one. `pi --harness <project>` starts 
 
 In Pi, `/todo <text>` adds a todo to the session's list. `/todo` alone asks for the text.
 
-Each agent of the host, the project agent or a child, gets the decided rules of the project in its system prompt at its next request.
-
-In Pi, `/vc` (or `ctrl+shift+y`) selects a block of the agent messages, such as a code block, and copies it. A copy
-that holds a draft of a thread marks that draft sent.
+In Pi, `/vc` (or `ctrl+shift+y`) selects a block of the agent messages, such as a code block, and copies it.
 
 When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
 
-The project agent gets its memory in its system prompt, and keeps it with its `memory` tool. The host does the
-compressions of OptMem in the background, with the model of `memoryModel` in Pi's settings, else `subagentModel`, else
-Pi's default model. Subagents get no memory tool and no memory section.
-
-When a project has decided conduct rules, a gate holds each tool call of its agents that breaks one, until you
-approve it. The gate also holds each bash call of an agent that decides, retires, edits, creates or deletes a rule,
-such as `harness rule decide 3`, with no model call. The classifier of the gate is `gateClassifier` in Pi's settings (default `openrouter/typesafe/jev-1.14`).
+The rules, the gate, the parleys, the work items, the digest and the memory of the project agent come from the
+projects entry, a separate package. A host without it runs the agents with none of them.
 
 Before your input, the agent of a project gets a short catch-up: the workflows runs that ended and the new commits on
 the default branch since its last input.

@@ -1,16 +1,24 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Agent, Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type * as TypeBox from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { request } from "./client/client.ts";
+import { request, requestEntry } from "./client/client.ts";
 import { CUT_LINE, MAX_ANSWER } from "./protocol/answer-cut.ts";
 import { childLine, isValidRunName, runDisplayName } from "./protocol/labels.ts";
 import { MAX_QUERY, QUERY_CUT_LINE } from "./protocol/query.ts";
-import { CHILD_STATES, type Replies, type Request, THINKING_LEVELS } from "./protocol/requests.ts";
+import {
+	CHILD_STATES,
+	type EntryRequestLine,
+	type Replies,
+	type Request,
+	RequestLine,
+	THINKING_LEVELS,
+} from "./protocol/requests.ts";
 import type { ListTarget, TargetRef } from "./protocol/target.ts";
 import { TODO_MARKS, TODO_STATES, type Todo, type TodoList, todoLine } from "./protocol/todo.ts";
 
@@ -128,14 +136,33 @@ export type ToolArgs = Static<Schemas["parameters"]>;
 /** The result of a call: the text for the model, the same as the CLI output, and the host's reply for programs. */
 export type ToolResult = { readonly text: string; readonly data: Static<Schemas["output"]> };
 
-/** Sends one request to the host and gives its reply. */
+/** Sends one request of a core type to the host and gives its reply. */
 export type Send = <T extends Request["type"]>(
 	request: Extract<Request, { type: T }>,
 	signal: AbortSignal,
 ) => Promise<Replies[T]>;
 
+/**
+ * Sends one request of a type that an entry serves, and gives the value of its reply, which the caller checks. The
+ * entry checks the request against the schema of its type. A type that no loaded entry serves fails with
+ * `no loaded entry serves request type "<type>"`.
+ */
+export type SendEntry = (request: EntryRequestLine, signal: AbortSignal) => Promise<JsonValue>;
+
 /** Sends through the host's socket, and starts the host when none runs. */
-export const sendToHost: Send = (message, signal) => request(message, { start: true, signal });
+export function sendToHost<T extends Request["type"]>(
+	message: Extract<Request, { type: T }>,
+	signal: AbortSignal,
+): Promise<Replies[T]>;
+export function sendToHost(message: EntryRequestLine, signal: AbortSignal): Promise<JsonValue>;
+export function sendToHost(
+	message: Request | EntryRequestLine,
+	signal: AbortSignal,
+): Promise<Replies[Request["type"]] | JsonValue> {
+	if (Value.Check(RequestLine, message)) return request(message, { start: true, signal });
+
+	return requestEntry(message, { start: true, signal });
+}
 
 /** What a tool call gets from its adapter. */
 export type ToolScope = {
@@ -338,7 +365,8 @@ export type DurableScope = {
 	 * of the project keeps it as the writer of each object that a call writes.
 	 */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;
-	readonly send: Send;
+	/** Sends a request of a core type with its typed reply, or a request of a type that an entry serves. */
+	readonly send: Send & SendEntry;
 };
 
 /**
