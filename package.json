@@ -20,10 +20,6 @@
 			"types": "./dist/client/answers.d.ts",
 			"default": "./dist/client/answers.js"
 		},
-		"./asks": {
-			"types": "./dist/host/asks.d.ts",
-			"default": "./dist/host/asks.js"
-		},
 		"./bridge": {
 			"types": "./dist/bridge/index.d.ts",
 			"default": "./dist/bridge/index.js"
@@ -132,10 +128,6 @@
 			"types": "./dist/host/todo.d.ts",
 			"default": "./dist/host/todo.js"
 		},
-		"./todo-lists": {
-			"types": "./dist/host/todo-lists.d.ts",
-			"default": "./dist/host/todo-lists.js"
-		},
 		"./tool": {
 			"types": "./dist/tool.d.ts",
 			"default": "./dist/tool.js"
@@ -143,10 +135,6 @@
 		"./trust": {
 			"types": "./dist/protocol/trust.d.ts",
 			"default": "./dist/protocol/trust.js"
-		},
-		"./user-answers": {
-			"types": "./dist/host/user-answers.d.ts",
-			"default": "./dist/host/user-answers.js"
 		},
 		"./view-state": {
 			"types": "./dist/client/view-state.d.ts",

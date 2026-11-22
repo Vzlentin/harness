@@ -7,7 +7,7 @@ import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Children, Place } from "../src/children/library.ts";
 import { connect, request } from "../src/client/client.ts";
-import { addAsks, answerAsks, askGroup } from "../src/host/asks.ts";
+import { addAsks, answerAsks, ENTRY_ASKS } from "../src/host/asks.ts";
 import type { Host } from "../src/host/run.ts";
 import { readParley, writeAnswers } from "../src/projects/parleys.ts";
 import { setEntry } from "../src/protocol/entries.ts";
@@ -15,7 +15,7 @@ import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
-import type { Delivery } from "../src/protocol/requests.ts";
+import { askGroup, type Delivery } from "../src/protocol/requests.ts";
 import {
 	answer,
 	called,
@@ -341,8 +341,11 @@ describe("the contract of a read-back", { timeout: 30_000 }, () => {
 				{ id: readBack, answer: "ok" },
 			];
 
-			await harness.commit((tx) => writeAnswers(tx, answers, "user", { kind: "user" }, NO_ROOT), BACKGROUND_CONTEXT);
-			open = (await readParley(harness, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
+			await harness.commit(
+				(tx) => writeAnswers(tx, ENTRY_ASKS, answers, "user", { kind: "user" }, NO_ROOT),
+				BACKGROUND_CONTEXT,
+			);
+			open = (await readParley(harness, ENTRY_ASKS, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
 		});
 
 		expect(open).toBe("open");

@@ -119,11 +119,11 @@ export default function projects(options: EntryOptions): Entry {
 		// commits first, so the observers and the passes after it read it current with each commit. A worker of work that
 		// ended, such as one that a message resumed, stops at each start.
 		open: async ({ harness, root, storage }) => {
-			await migrateTodos(harness, root.id);
+			await migrateTodos(harness, options.todos, root.id);
 			await migrateLabels(harness, storage, options.labelChild);
 			const items = await ItemIndex.open(harness, storage);
 			const path = statePaths(project).store;
-			const storeFile = storeFilePasses({ harness, storage, root, path, warn });
+			const storeFile = storeFilePasses({ harness, storage, root, asks: options.asks, path, warn });
 			opened = { harness, root, storage, items, storeFile };
 			await stopEndedWork(host());
 		},

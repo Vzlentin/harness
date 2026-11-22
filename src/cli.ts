@@ -607,7 +607,9 @@ async function storeCommand(args: string[], project: string | undefined): Promis
 	if (action !== "load" || file === undefined || rest.length !== 0) usage();
 	const name = projectOf(project, process.env, process.cwd());
 	const { loadStore } = await import("./projects/store-load.ts");
-	const counts = await loadStore(name, file);
+	const { ENTRY_ASKS } = await import("./host/asks.ts");
+	const { ENTRY_TODOS } = await import("./host/todo-lists.ts");
+	const counts = await loadStore(name, file, { asks: ENTRY_ASKS, todos: ENTRY_TODOS });
 
 	for (const [key, count] of Object.entries(counts)) process.stdout.write(`${key}: ${count}\n`);
 }

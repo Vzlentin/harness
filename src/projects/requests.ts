@@ -5,10 +5,15 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Input } from "../children/library.ts";
-import type { AnswerAuthorOf, AskRequest } from "../host/asks.ts";
 import type { EntryHandles, EntryOpen } from "../host/entries.ts";
 import { approvedText } from "../protocol/gate.ts";
-import { errorMessage, type ProjectRequest, type Replies } from "../protocol/requests.ts";
+import {
+	type AnswerAuthorOf,
+	type AskRequest,
+	errorMessage,
+	type ProjectRequest,
+	type Replies,
+} from "../protocol/requests.ts";
 import { nextDigest, recordDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
 import { readItemBothWays, readItems } from "./item-docs.ts";
@@ -55,6 +60,7 @@ export type ProjectsHost = Pick<
 	| "warn"
 	| "classifier"
 	| "openAsks"
+	| "asks"
 	| "liveWorkers"
 	| "workers"
 	| "labelledTasks"
@@ -119,22 +125,22 @@ export async function projectAsk(
 ): Promise<Replies["ask"]> {
 	switch (request.action) {
 		case "round":
-			return host.harness.commit((tx) => writeRound(tx, request, request.caller), context);
+			return host.harness.commit((tx) => writeRound(tx, host.asks, request, request.caller), context);
 		case "answer": {
 			const author = await authorOf(request);
 
 			return host.harness.commit(
-				(tx) => writeAnswers(tx, request.answers, request.caller, author, host.root.id),
+				(tx) => writeAnswers(tx, host.asks, request.answers, request.caller, author, host.root.id),
 				context,
 			);
 		}
 
 		case "drop":
-			return host.harness.commit((tx) => dropAskRef(tx, request, request.caller), context);
+			return host.harness.commit((tx) => dropAskRef(tx, host.asks, request, request.caller), context);
 		case "note":
-			return host.harness.commit((tx) => noteAskRef(tx, request, request.note, request.caller), context);
+			return host.harness.commit((tx) => noteAskRef(tx, host.asks, request, request.note, request.caller), context);
 		case "read":
-			return readAsk(host.harness, request, context);
+			return readAsk(host.harness, host.asks, request, context);
 		case "list":
 			return host.openAsks();
 	}
@@ -212,7 +218,7 @@ async function parley(
 ): Promise<Replies["parley"]> {
 	switch (request.action) {
 		case "take":
-			return host.harness.commit((tx) => takeParley(tx, request.slug, request.caller), context);
+			return host.harness.commit((tx) => takeParley(tx, host.asks, request.slug, request.caller), context);
 		case "end": {
 			const ended = await host.harness.commit(
 				(tx) => endParley(tx, request.slug, request.status, request.caller, host.items),
@@ -225,7 +231,7 @@ async function parley(
 		}
 
 		case "read":
-			return readParley(host.harness, request.slug, context);
+			return readParley(host.harness, host.asks, request.slug, context);
 		case "list":
 			return readParleys(host.harness, context);
 	}

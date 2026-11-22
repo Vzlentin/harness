@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import * as ai from "@earendil-works/pi-ai";
 import type { ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult } from "@earendil-works/pi-ai";
@@ -18,23 +19,33 @@ import {
 	type EventBus,
 	type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AnyTask, CommitChange, Conversation, Extension, Harness, Storage } from "@earendil-works/pi-durable";
+import type {
+	AnyTask,
+	CommitChange,
+	Conversation,
+	ConversationId,
+	DocumentReader,
+	Extension,
+	Harness,
+	Storage,
+	Tx,
+} from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { createChildren, Input, Place } from "../children/library.ts";
 import { readEntries } from "../protocol/entries.ts";
-import type { Ask, AskList } from "../protocol/project.ts";
-import { Json, type Replies } from "../protocol/requests.ts";
-import type { Todo } from "../protocol/todo.ts";
+import type { AnswerAuthor, AnswerInput, Ask, AskInput, AskList } from "../protocol/project.ts";
+import { type AnswerAuthorOf, type AskRequest, type GroupAnswers, Json, type Replies } from "../protocol/requests.ts";
+import type { Todo, TodoList } from "../protocol/todo.ts";
 import type { WorkerId, Worker } from "../protocol/worker-labels.ts";
 import type { DurableScope } from "../tool.ts";
-import type { AnswerAuthorOf, AskRequest } from "./asks.ts";
 import type { ClassifierKey } from "./classify.ts";
 import type { Degraded } from "./degraded.ts";
 import type { LabelCheck } from "./label-checks.ts";
 import type { ConnectionWatchOptions } from "./store-watch.ts";
+import type { CallerTodoList } from "./todo-lists.ts";
 
 type ChildrenLibrary = ReturnType<typeof createChildren>;
 
@@ -250,6 +261,72 @@ export type EntryClassifier = {
 	): Promise<ClassifierResult["answers"]>;
 };
 
+/** A new ask: its question, and the parley that it serves when it serves one, as data that the host does not read. */
+export type NewAsk = { readonly input: AskInput; readonly parley?: NonNullable<Ask["parley"]> };
+
+/** The answer of the ask `id`. */
+export type AskAnswer = Extract<AnswerInput, { readonly id: number }>;
+
+/**
+ * The asks of the store. The writes take the `Tx` of a commit of the entry, so they go in one commit with the writes
+ * of the entry. They need no open host.
+ */
+export type EntryAsks = {
+	/** Every ask, in ID order. */
+	readonly read: (reader: Pick<DocumentReader, "snapshot">, context: Context) => Promise<AskList>;
+	/** Every ask in `tx`, in ID order. The writes of the asks in `tx` change the list. */
+	readonly inCommit: (tx: Tx) => Promise<readonly Ask[]>;
+	/** Adds an open ask for each of `asks`, asked at `at` by the caller `by`, each with the next ID, and gives them. */
+	readonly add: (tx: Tx, asks: readonly NewAsk[], by: string, at: number) => Promise<Ask[]>;
+	/**
+	 * Writes the answers `answers` of `author` for the caller `by`, and gives the answered asks, in the order of
+	 * `answers`. The asks of `confirms` take `own` and `ok`, and get no todo `Save to the vault`; the other answered
+	 * asks get one in the list of their asker, where `root` is the project agent. The same commit queues the deliveries
+	 * that `group` makes of the answered asks whose asker is not `by`, and one event for each answered ask.
+	 */
+	readonly answer: (
+		tx: Tx,
+		answers: readonly AskAnswer[],
+		confirms: ReadonlySet<number>,
+		by: string,
+		author: AnswerAuthor,
+		root: ConversationId,
+		group: GroupAnswers,
+	) => Promise<Ask[]>;
+	/** Drops the open ask `id` for the caller `by`, and gives it. An ask that is not open fails. */
+	readonly drop: (tx: Tx, id: number, by: string) => Promise<Ask>;
+	/**
+	 * Sets `note`, the ID of a note in the vault, on the ask `id` for its asker `by`, and gives the ask. The note sets
+	 * the todo `Save to the vault` of the ask to done.
+	 */
+	readonly note: (tx: Tx, id: number, note: string, by: string) => Promise<Ask>;
+	/**
+	 * Makes the caller `by` the asker of each open ask of `ids`, and removes the answers of the asks of `ids` that wait
+	 * to go to their askers.
+	 */
+	readonly take: (tx: Tx, ids: readonly number[], by: string) => Promise<void>;
+	/** Adds the asks of a store file, with their IDs, to the asks of `tx`. */
+	readonly load: (tx: Tx, asks: readonly Ask[]) => Promise<void>;
+};
+
+/** The lists of todos of the store. They need no open host. */
+export type EntryTodos = {
+	/** Whether `reader` has a list of the conversation `id`. A read of a list in a commit creates a missing list. */
+	readonly has: (reader: Pick<DocumentReader, "snapshot">, id: ConversationId, context: Context) => Promise<boolean>;
+	/** The list of the conversation `id` in `tx`, which the commit writes with its changes. */
+	readonly draft: (tx: Tx, id: ConversationId) => Promise<TodoList>;
+	/**
+	 * Writes `todos` to the list of the root conversation `root` in `tx`, and the list of each caller of
+	 * `callerTodos`, also an empty one, into a store whose lists are empty.
+	 */
+	readonly load: (
+		tx: Tx,
+		root: ConversationId,
+		todos: readonly Todo[],
+		callerTodos: readonly CallerTodoList[],
+	) => Promise<void>;
+};
+
 /** The handles of the host that each entry gets, the same object for each. */
 export type EntryHandles = {
 	/** The state directory of the project. */
@@ -275,6 +352,8 @@ export type EntryHandles = {
 	readonly liveWorkers: () => Promise<ReadonlyMap<string, readonly Worker[]>>;
 	/** The open asks of the store. It throws until the host is open, as `place.store` does. */
 	readonly openAsks: () => Promise<AskList>;
+	readonly asks: EntryAsks;
+	readonly todos: EntryTodos;
 	/** The degraded states of the host. */
 	readonly degraded: Degraded;
 	/** Writes a warning to the host's log. */

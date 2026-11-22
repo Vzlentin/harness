@@ -550,6 +550,24 @@ describe("a host without the projects entry", () => {
 		}
 	});
 
+	it("refuses a record of version 6 with no serves with the path of the field", () => {
+		const record = { caller: "cli", createdAt: "2025-01-01", conversationId: 7, requests: [], read: 0 };
+		const { definition } = ChildRecords;
+
+		const migrate = (value: durable.JsonObject) => {
+			if (definition.migrate === undefined) throw new Error("no migration");
+
+			return definition.migrate(value, 6);
+		};
+
+		expect(() => migrate({ children: { a1: record }, requests: {} })).toThrow(
+			"subagent.children of version 6 is invalid: /children/a1 must have required properties serves",
+		);
+		expect(migrate({ children: { a1: { ...record, serves: { kind: "parley", slug: "old" } } }, requests: {} })).toEqual(
+			{ children: { a1: { ...record, labels: ["parley:old"] } }, requests: {} },
+		);
+	});
+
 	/** Runs `write` on the store of the host without the projects entry while it is closed, and starts it again. */
 	async function offline(write: (store: durable.Harness) => Promise<void>): Promise<void> {
 		await bare?.close();

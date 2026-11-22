@@ -1,12 +1,14 @@
 /**
- * The owners and the documents of the lists of todos, and the only writes that add a todo to a list. A todo with an `ask` gets its
- * link in the document `harness.save-todos` in the same call, so a note of the ask finds the list that holds it. The
- * package exports `todo.ts`, not this module, so no entry can write a todo with an `ask`.
+ * The owners and the documents of the lists of todos, the only writes that add a todo to a list, and the handle of the
+ * entries to the lists. A todo with an `ask` gets its link in the document `harness.save-todos` in the same call, so a
+ * note of the ask finds the list that holds it. The package exports `todo.ts`, not this module, so no entry can write a
+ * todo with an `ask`.
  */
 import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList } from "../protocol/todo.ts";
 import { boundedReplay } from "./checkpoint.ts";
+import type { EntryTodos } from "./entries.ts";
 
 /** Whose list: a conversation, a task, or a caller that is not a conversation of the host. */
 export type TodoOwner =
@@ -51,6 +53,13 @@ export const CallerTodos = durable.defineDocFamily<TodoList, null>({
 	initial: () => ({ todos: [] }),
 });
 
+/** The lists of todos of the store, as the entries get them. */
+export const ENTRY_TODOS: EntryTodos = {
+	has: async (reader, id, context) => (await reader.snapshot(ConversationTodos, id, context)) !== undefined,
+	draft: (tx, id) => tx.doc(ConversationTodos, id),
+	load: loadTodos,
+};
+
 /** The link of an ask to the owner of the list that holds its todo. */
 type Link = { ask: number; owner: TodoOwner };
 
@@ -90,7 +99,7 @@ export async function linkOwner(tx: Tx, ask: number): Promise<TodoOwner | undefi
  * Writes `todos` to the list of the root conversation `root` in `tx`, and the list of each caller of `callerTodos`, also
  * an empty one, into a store whose lists are empty.
  */
-export async function loadTodos(
+async function loadTodos(
 	tx: Tx,
 	root: ConversationId,
 	todos: readonly Todo[],

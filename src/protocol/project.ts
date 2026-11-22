@@ -341,6 +341,15 @@ export function askTransition(state: AskState, event: AskEvent): AskState | unde
 	}
 }
 
+/** The ask `id` of `asks`. An ID of no ask fails with `Unknown ask: <id>`. */
+export function knownAsk<T extends Ask>(asks: readonly T[], id: number): T {
+	const ask = asks.find((found) => found.id === id);
+
+	if (ask === undefined) throw new Error(`Unknown ask: ${id}`);
+
+	return ask;
+}
+
 /**
  * The two objects with `fields` and an ask on the wire: one with `id`, the ID of the ask, and one with `slug` and `n`,
  * the number of the ask in the parley `slug`. Each refuses the keys of the other, because an object schema accepts extra

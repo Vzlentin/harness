@@ -5,7 +5,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { readAsks } from "../host/asks.ts";
+import type { EntryAsks } from "../host/entries.ts";
 import { CommitPasses } from "../host/passes.ts";
 import { readCallerTodos, readTodos, todoListChange } from "../host/todo.ts";
 import { writeJsonFile } from "../protocol/json-file.ts";
@@ -37,6 +37,7 @@ export type StoreFileHost = {
 	readonly storage: Pick<Storage, "scanDocuments" | "entry">;
 	/** The root conversation, whose list is the list of the project. */
 	readonly root: Conversation;
+	readonly asks: Pick<EntryAsks, "read">;
 	/** The file, `store.json` in the state folder of the project. */
 	readonly path: string;
 	readonly warn: (cause: unknown) => void;
@@ -51,7 +52,7 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 		host.harness,
 		(change) => projectChange(change) || todoListChange(change, host.root.id) || itemChange(change),
 		() =>
-			readStoreFile(host.harness, host.storage, host.root.id)
+			readStoreFile(host.harness, host.storage, host.root.id, host.asks)
 				.then((file) => writeJsonFile(host.path, file))
 				.catch((cause: unknown) => host.warn(`Could not write ${host.path}: ${errorMessage(cause)}`)),
 	);
@@ -59,22 +60,23 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 
 /**
  * Every list of the file, as the store of `harness` has them now, with the list of the project from the root
- * conversation `root`. `storage`, the storage of `harness`, lists the items and the callers that have a list of todos,
+ * conversation `root`, and the asks from `asks`. `storage`, the storage of `harness`, lists the items and the callers that have a list of todos,
  * and gives the thread of the source of an older rule. A store with no counter of the IDs of items has `lastItem` 0.
  */
 export async function readStoreFile(
 	harness: Harness,
 	storage: Pick<Storage, "scanDocuments" | "entry">,
 	root: ConversationId,
+	asks: Pick<EntryAsks, "read">,
 ): Promise<StoreFile> {
-	const [persons, threads, rules, lastRule, held, parleys, asks] = await Promise.all([
+	const [persons, threads, rules, lastRule, held, parleys, asked] = await Promise.all([
 		readPersons(harness, context),
 		readThreads(harness, context),
 		readRules({ harness, storage }, {}, context),
 		readLastRuleId(harness, context),
 		readHeld(harness, context),
 		readParleys(harness, context),
-		readAsks(harness, context),
+		asks.read(harness, context),
 	]);
 
 	const stored = await Promise.all(
@@ -99,7 +101,7 @@ export async function readStoreFile(
 		lastRule,
 		held: held.held,
 		parleys: parleys.parleys,
-		asks: asks.asks,
+		asks: asked.asks,
 		todos: todos.todos,
 		callerTodos,
 		items: items.map((item) => Value.Clone(item)),

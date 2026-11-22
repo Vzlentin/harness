@@ -7,7 +7,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { readAsks } from "../host/asks.ts";
 import type { Degraded } from "../host/degraded.ts";
 import type { EntryHandles, EntryWatchOptions } from "../host/entries.ts";
 import { type StoreView, watchStore } from "../host/store-watch.ts";
@@ -40,7 +39,7 @@ const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND, HELD_K
  * stage or `needsYou` of any item.
  */
 export type ProjectHost = StageHost &
-	Pick<EntryHandles, "workersChange"> & {
+	Pick<EntryHandles, "workersChange" | "asks"> & {
 		readonly harness: Harness;
 		/**
 		 * The storage of `harness`, whose entry lookup gives the thread of the source of an older rule, and whose scan of
@@ -155,7 +154,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			readThreads(this.#host.harness, context),
 			readHeld(this.#host.harness, context),
 			readParleys(this.#host.harness, context),
-			readAsks(this.#host.harness, context),
+			this.#host.asks.read(this.#host.harness, context),
 		]);
 
 		const out = new Map(

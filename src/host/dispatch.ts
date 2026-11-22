@@ -14,6 +14,8 @@ import { type ModelChoice, resolveModel, subagentModel } from "../children/model
 import { TYPED_KIND } from "../protocol/gate.ts";
 import type { AnswerAuthor } from "../protocol/project.ts";
 import {
+	type AnswerAuthorOf,
+	type AskRequest,
 	type ChildInfo,
 	type CoreRequest,
 	PROTOCOL_VERSION,
@@ -25,7 +27,7 @@ import { AGENT_HANDLE, type ListRef, parseTarget, type Target } from "../protoco
 import type { Todo } from "../protocol/todo.ts";
 import { workerLabels } from "../protocol/worker-labels.ts";
 import { type CatchUpHost, catchUp } from "./agent.ts";
-import { type AnswerAuthorOf, type AskRequest, plainAsk } from "./asks.ts";
+import { plainAsk } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import type { AskHandler, EntryLine, EntryRequest, ReportedHandler } from "./entries.ts";
 import { serveEntryRequest } from "./entry-requests.ts";

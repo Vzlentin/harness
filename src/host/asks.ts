@@ -1,9 +1,9 @@
 /**
  * The asks of the store of the project, by ID: the questions that someone puts to the user, their answers, drops,
- * notes and takes, and their reads. An ask keeps the parley that it serves as data from its caller, which this module
- * does not read. The commit of an answer also adds the todos `Save to the vault`, queues the
- * deliveries of the answers for their askers, and queues one event for each answered ask. The plain asks serve the `ask`
- * requests of a host whose entries serve no parley asks.
+ * notes and takes, and their reads, and the handle of the entries to them. An ask keeps the parley that it serves as data
+ * from its caller, which this module does not read. The commit of an answer also adds the todos `Save to the vault`,
+ * queues the deliveries of the answers for their askers, and queues one event for each answered ask. The plain asks
+ * serve the `ask` requests of a host whose entries serve no parley asks.
  */
 import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
@@ -12,25 +12,31 @@ import {
 	type AnswerAuthor,
 	type AnswerInput,
 	type Ask,
-	askAnswerText,
-	type AskInput,
 	type AskList,
 	type AskOption,
 	type AskRef,
 	ASKS_KIND,
 	askTransition,
+	knownAsk,
 } from "../protocol/project.ts";
-import type { CoreRequest, Replies, UserDelivery } from "../protocol/requests.ts";
+import {
+	type AnswerAuthorOf,
+	askGroup,
+	type AskRequest,
+	type GroupAnswers,
+	type Replies,
+} from "../protocol/requests.ts";
 import { todoLine } from "../protocol/todo.ts";
 import { queueAskEvents } from "./ask-events.ts";
 import { boundedReplay } from "./checkpoint.ts";
+import type { AskAnswer, EntryAsks, NewAsk } from "./entries.ts";
 import { addSaveTodos, closeSaveTodo } from "./save-todo.ts";
-import { queueAnswers } from "./user-answers.ts";
+import { dropAnswers, queueAnswers } from "./user-answers.ts";
 
 /** The error of a request that frames a parley or names an ask by its number in a parley, on a host without parleys. */
 const NO_PARLEY_ASKS = "no loaded entry serves parley asks";
 
-export const Asks = defineDoc<AskList>({
+const Asks = defineDoc<AskList>({
 	kind: ASKS_KIND,
 	version: 1,
 	scope: "session",
@@ -38,44 +44,28 @@ export const Asks = defineDoc<AskList>({
 	initial: () => ({ asks: [] }),
 });
 
-/** The parley that an ask serves, and its number there: data of the caller, which this module does not read. */
-export type AskParley = NonNullable<Ask["parley"]>;
-
-/** A new ask: its question, and the parley that it serves when it serves one. */
-export type NewAsk = { readonly input: AskInput; readonly parley?: AskParley };
-
-/** The answer of the ask `id`. */
-export type AskAnswer = Extract<AnswerInput, { readonly id: number }>;
-
-/** One delivery of answers to `asker`: the IDs of the answered asks that it gives, and the delivery. */
-export type AnswerGroup = { readonly asker: string; readonly asks: readonly number[]; readonly delivery: UserDelivery };
-
-/**
- * The deliveries of the answered asks `answered`, which all have an asker other than the caller of the answer, in the
- * order of `answered`. Each ask is in one delivery.
- */
-export type GroupAnswers = (answered: readonly Ask[]) => AnswerGroup[];
-
-/** An `ask` request. */
-export type AskRequest = Extract<CoreRequest, { type: "ask" }>;
-
-/** The author of the answers of the `ask answer` request `request`, as the host works it out. */
-export type AnswerAuthorOf = (request: Extract<AskRequest, { action: "answer" }>) => Promise<AnswerAuthor>;
-
 /** An ask in the state `answered`. */
 type AnsweredAsk = Extract<Ask, { readonly state: "answered" }>;
 
 /** The fields of an ask without its state and its answer. */
 type AskBase = Omit<Extract<Ask, { readonly state: "open" }>, "state">;
 
-/** The ask `id` of `asks`. An ID of no ask fails with `Unknown ask: <id>`. */
-export function knownAsk<T extends Ask>(asks: readonly T[], id: number): T {
-	const ask = asks.find((found) => found.id === id);
-
-	if (ask === undefined) throw new Error(`Unknown ask: ${id}`);
-
-	return ask;
-}
+/** The asks of the store, as the entries get them. */
+export const ENTRY_ASKS: EntryAsks = {
+	read: readAsks,
+	inCommit: async (tx) => (await tx.doc(Asks)).asks,
+	add: addAsks,
+	answer: answerAsks,
+	drop: dropAsk,
+	note: noteAsk,
+	take: async (tx, ids, by) => {
+		await takeAsks(tx, ids, by);
+		await dropAnswers(tx, ids);
+	},
+	load: async (tx, asks) => {
+		(await tx.doc(Asks)).asks.push(...asks);
+	},
+};
 
 /** Adds an open ask for each of `asks`, asked at `at` by the caller `by`, each with the next ID, and gives them. */
 export async function addAsks(tx: Tx, asks: readonly NewAsk[], by: string, at: number): Promise<Ask[]> {
@@ -102,11 +92,6 @@ export async function addAsks(tx: Tx, asks: readonly NewAsk[], by: string, at: n
 	}
 
 	return written;
-}
-
-/** Adds the asks of a store file, with their IDs, to the asks of `tx`. */
-export async function loadAsks(tx: Tx, asks: readonly Ask[]): Promise<void> {
-	(await tx.doc(Asks)).asks.push(...asks);
 }
 
 /**
@@ -171,11 +156,6 @@ export async function answerAsks(
 	return written;
 }
 
-/** The delivery of the answered ask `ask` alone, to its asker. */
-export function askGroup(ask: Ask): AnswerGroup {
-	return { asker: ask.asker, asks: [ask.id], delivery: { source: "ask", ask: ask.id, text: askAnswerText(ask) } };
-}
-
 /** Drops the open ask `id` for the caller `by`, and gives it. An ask that is not open fails. */
 export async function dropAsk(tx: Tx, id: number, by: string): Promise<Ask> {
 	const asks = (await tx.doc(Asks)).asks;
@@ -205,7 +185,7 @@ export async function noteAsk(tx: Tx, id: number, note: string, by: string): Pro
 }
 
 /** Makes the caller `by` the asker of each open ask of `ids`. An ask that is not open does not change. */
-export async function takeAsks(tx: Tx, ids: readonly number[], by: string): Promise<void> {
+async function takeAsks(tx: Tx, ids: readonly number[], by: string): Promise<void> {
 	const at = Date.now();
 
 	for (const ask of (await tx.doc(Asks)).asks) {

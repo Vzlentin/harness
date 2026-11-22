@@ -42,7 +42,7 @@ import { savedTrust } from "../protocol/trust.ts";
 import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { AskEventDispatcher } from "./ask-events.ts";
-import { readOpenAsks } from "./asks.ts";
+import { ENTRY_ASKS, readOpenAsks } from "./asks.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
 import { askClassifier, classifierModel } from "./classify.ts";
@@ -59,6 +59,7 @@ import { type Connection, Push } from "./push.ts";
 import { ChildRecords, labelChild, OldChildRecordsError } from "./records.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
+import { ENTRY_TODOS } from "./todo-lists.ts";
 import { labelledTasks, liveWorkers, stopWorker, type WorkerHost, workers, workersChange } from "./workers.ts";
 
 /** The host exits after this long with no connection, no live task, no busy entry and no request. */
@@ -225,6 +226,8 @@ export async function runHost(options: {
 		},
 		liveWorkers: () => liveWorkers(openWorkerHost()),
 		openAsks: () => readOpenAsks(place.store, context),
+		asks: ENTRY_ASKS,
+		todos: ENTRY_TODOS,
 		degraded,
 		warn,
 		classifier: {

@@ -1,5 +1,5 @@
 /**
- * The parleys of the store of the project, on top of the asks of `asks.ts`: a round frames a parley and numbers its
+ * The parleys of the store of the project, on top of the asks of the host: a round frames a parley and numbers its
  * asks, an ask on the wire names its ask by ID or by its number in a parley, and the reply of a write gives each parley
  * that it touched with all of its asks. An answer groups the deliveries of a parley, and refuses the read-back `ok` of a
  * parley that cannot be a contract. The contract comes after the answer: `parleyReaction` makes it from the event of the
@@ -9,20 +9,7 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import {
-	type AnswerGroup,
-	answerAsks,
-	askGroup,
-	Asks,
-	addAsks,
-	dropAsk,
-	knownAsk,
-	noteAsk,
-	readAsks,
-	takeAsks,
-} from "../host/asks.ts";
-import type { AnsweredAskHandler } from "../host/entries.ts";
-import { dropAnswers } from "../host/user-answers.ts";
+import type { AnsweredAskHandler, EntryAsks } from "../host/entries.ts";
 import {
 	type AnswerAuthor,
 	type AnswerInput,
@@ -31,6 +18,7 @@ import {
 	type AskRound,
 	type AskWrite,
 	isReadBack,
+	knownAsk,
 	type Parley,
 	type ParleyAsks,
 	type ParleyEnd,
@@ -38,6 +26,7 @@ import {
 	type ParleyList,
 	parleyText,
 } from "../protocol/project.ts";
+import { type AnswerGroup, askGroup } from "../protocol/requests.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { contractItems, itemForContract, writeEdge } from "./items.ts";
 import { endContract, known, knownParley, Parleys } from "./project-docs.ts";
@@ -48,14 +37,14 @@ const context = BACKGROUND_CONTEXT;
 type OpenParley = Extract<Parley, { readonly status: "open" }>;
 
 /**
- * Writes the round `round` with the caller `by` as the asker of its asks, and gives the write: the parley with all of
+ * Writes the round `round` with the caller `by` as the asker of its asks, in `asks`, and gives the write: the parley with all of
  * its asks, or the new asks when they have no parley. With `round.parley`, a new slug makes an open parley, which needs
  * a title and a goal, and a known slug must be an open parley, whose fields the frame replaces. A round with no asks
  * must change a field of a known open parley. With `round.item`, the round also writes the edge
  * `parley:<slug> shapes item:<item>` with the checks of `item link`. The asks of a parley take the next numbers of that
  * parley.
  */
-export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<AskWrite> {
+export async function writeRound(tx: Tx, asks: EntryAsks, round: AskRound, by: string): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
 	const at = Date.now();
 
@@ -68,9 +57,9 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
 		await writeEdge(tx, { from: `parley:${parley.slug}`, kind: "shapes", to: `item:${round.item}` }, by);
 	}
 
-	const n = parley === undefined ? 0 : lastNumber((await tx.doc(Asks)).asks, parley.id);
+	const n = parley === undefined ? 0 : lastNumber(await asks.inCommit(tx), parley.id);
 
-	const written = await addAsks(
+	const written = await asks.add(
 		tx,
 		round.asks.map((input, index) =>
 			parley === undefined ? { input } : { input, parley: { id: parley.id, n: n + index + 1 } },
@@ -79,11 +68,11 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
 		at,
 	);
 
-	return writeReply(tx, parley === undefined ? [] : [parley.id], written);
+	return writeReply(tx, asks, parley === undefined ? [] : [parley.id], written);
 }
 
 /**
- * Writes the answers `answers` of `author` for the caller `by`, as `answerAsks` writes them, and gives the write: each
+ * Writes the answers `answers` of `author` for the caller `by`, as `asks.answer` writes them, and gives the write: each
  * parley of the answered asks, with all of its asks, and the answered asks with no parley. Each answer names its ask by
  * ID, or by its number in a parley, which must be open. The answer `ok` to the read-back of a parley, an ask of the
  * parley with no options, needs a parley that can be a contract once every answer is written: each other ask of the
@@ -93,13 +82,14 @@ export async function writeRound(tx: Tx, round: AskRound, by: string): Promise<A
  */
 export async function writeAnswers(
 	tx: Tx,
+	store: EntryAsks,
 	answers: readonly AnswerInput[],
 	by: string,
 	author: AnswerAuthor,
 	root: ConversationId,
 ): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
-	const asks = (await tx.doc(Asks)).asks;
+	const asks = await store.inCommit(tx);
 	const readBacks = new Set<number>();
 	const confirms = new Set<number>();
 
@@ -119,7 +109,7 @@ export async function writeAnswers(
 		return { ...answer, id: ask.id };
 	});
 
-	const written = await answerAsks(tx, byId, confirms, by, author, root, (answered) =>
+	const written = await store.answer(tx, byId, confirms, by, author, root, (answered) =>
 		groupAnswers(parleys, asks, answered),
 	);
 
@@ -129,31 +119,31 @@ export async function writeAnswers(
 		if ("refusal" in signed) throw new Error(signed.refusal);
 	}
 
-	return writeReply(tx, parleyIds(written), written);
+	return writeReply(tx, store, parleyIds(written), written);
 }
 
 /**
  * Drops the open ask of `ref` for the caller `by`, and gives the write: its parley with all of its asks, or the ask
  * when it has no parley. The ask of a parley that is not open does not change.
  */
-export async function dropAskRef(tx: Tx, ref: AskRef, by: string): Promise<AskWrite> {
+export async function dropAskRef(tx: Tx, asks: EntryAsks, ref: AskRef, by: string): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
-	const ask = resolveAsk(parleys, (await tx.doc(Asks)).asks, ref);
+	const ask = resolveAsk(parleys, await asks.inCommit(tx), ref);
 
 	if (ask.parley !== undefined) openParley(known(parleys, ask.parley.id, "parley"));
-	const dropped = await dropAsk(tx, ask.id, by);
+	const dropped = await asks.drop(tx, ask.id, by);
 
-	return writeReply(tx, parleyIds([dropped]), [dropped]);
+	return writeReply(tx, asks, parleyIds([dropped]), [dropped]);
 }
 
 /**
- * Sets `note` on the ask of `ref` for the caller `by`, as `noteAsk` does, and gives the ask. An ask of a parley that is
+ * Sets `note` on the ask of `ref` for the caller `by`, as `asks.note` does, and gives the ask. An ask of a parley that is
  * not open also takes a note.
  */
-export async function noteAskRef(tx: Tx, ref: AskRef, note: string, by: string): Promise<Ask> {
-	const ask = resolveAsk((await tx.doc(Parleys)).parleys, (await tx.doc(Asks)).asks, ref);
+export async function noteAskRef(tx: Tx, asks: EntryAsks, ref: AskRef, note: string, by: string): Promise<Ask> {
+	const ask = resolveAsk((await tx.doc(Parleys)).parleys, await asks.inCommit(tx), ref);
 
-	return noteAsk(tx, ask.id, note, by);
+	return asks.note(tx, ask.id, note, by);
 }
 
 /**
@@ -161,16 +151,14 @@ export async function noteAskRef(tx: Tx, ref: AskRef, note: string, by: string):
  * is open or a contract: a contract has no open ask, so its take changes no ask. The answers of the parley that wait in
  * the queue go: the reply has them, and no asker gets them after the take.
  */
-export async function takeParley(tx: Tx, slug: string, by: string): Promise<ParleyAsks> {
+export async function takeParley(tx: Tx, store: EntryAsks, slug: string, by: string): Promise<ParleyAsks> {
 	const parley = knownParley((await tx.doc(Parleys)).parleys, slug);
 
 	if (parley.status !== "contract") openParley(parley);
-	const asks = (await tx.doc(Asks)).asks;
-	const ids = parleyAsks(asks, parley.id).map((ask) => ask.id);
-	await takeAsks(tx, ids, by);
-	await dropAnswers(tx, ids);
+	const ids = parleyAsks(await store.inCommit(tx), parley.id).map((ask) => ask.id);
+	await store.take(tx, ids, by);
 
-	return { parley: Value.Clone(parley), asks: parleyAsks(asks, parley.id) };
+	return { parley: Value.Clone(parley), asks: parleyAsks(await store.inCommit(tx), parley.id) };
 }
 
 /**
@@ -205,27 +193,34 @@ export async function readParleys(reader: Pick<DocumentReader, "snapshot">, cont
 	return { parleys: Value.Clone(list?.parleys ?? []) };
 }
 
-/** The ask of `ref`, in any state. */
-export async function readAsk(reader: Pick<DocumentReader, "snapshot">, ref: AskRef, context: Context): Promise<Ask> {
+/** The ask of `ref` in `asks`, in any state. */
+export async function readAsk(
+	reader: Pick<DocumentReader, "snapshot">,
+	asks: EntryAsks,
+	ref: AskRef,
+	context: Context,
+): Promise<Ask> {
 	const { parleys } = await readParleys(reader, context);
 
-	return resolveAsk(parleys, (await readAsks(reader, context)).asks, ref);
+	return resolveAsk(parleys, (await asks.read(reader, context)).asks, ref);
 }
 
-/** The parley `slug` and its asks, in the order of their numbers. */
+/** The parley `slug` and its asks in `asks`, in the order of their numbers. */
 export async function readParley(
 	reader: Pick<DocumentReader, "snapshot">,
+	asks: EntryAsks,
 	slug: string,
 	context: Context,
 ): Promise<ParleyAsks> {
 	const parley = knownParley((await readParleys(reader, context)).parleys, slug);
 
-	return { parley, asks: parleyAsks((await readAsks(reader, context)).asks, parley.id) };
+	return { parley, asks: parleyAsks((await asks.read(reader, context)).asks, parley.id) };
 }
 
 /** What the reaction to the answered read-backs uses of the host. */
 export type ParleyReactionHost = {
 	readonly harness: Pick<Harness, "commit">;
+	readonly asks: Pick<EntryAsks, "inCommit">;
 	readonly items: Pick<ItemIndex, "itemsOf">;
 	readonly warn: (cause: unknown) => void;
 };
@@ -236,7 +231,7 @@ export type ParleyReactionHost = {
  * state at that time: a parley that is not open, and a read-back that is no longer answered `ok`, change nothing, so a
  * second event of the same answer does nothing. A parley that cannot be a contract at that time is a warning.
  */
-export function parleyReaction({ harness, items, warn }: ParleyReactionHost): AnsweredAskHandler {
+export function parleyReaction({ harness, asks: store, items, warn }: ParleyReactionHost): AnsweredAskHandler {
 	return async ({ ask }) => {
 		if (ask.parley === undefined || !isReadBack(ask)) return;
 		const { id } = ask.parley;
@@ -246,7 +241,7 @@ export function parleyReaction({ harness, items, warn }: ParleyReactionHost): An
 			const parley = parleys.find((found) => found.id === id);
 
 			if (parley?.status !== "open") return undefined;
-			const asks = (await tx.doc(Asks)).asks;
+			const asks = await store.inCommit(tx);
 			const current = asks.find((found) => found.id === ask.id);
 
 			if (current?.state !== "answered" || current.answer !== "ok") return undefined;
@@ -316,12 +311,17 @@ function groupAnswers(parleys: readonly Parley[], asks: readonly Ask[], answered
 }
 
 /**
- * The reply of a write: each parley of `ids`, once, in ID order, with all of its asks, and the asks of `written` with
- * no parley.
+ * The reply of a write: each parley of `ids`, once, in ID order, with all of its asks in `store`, and the asks of
+ * `written` with no parley.
  */
-async function writeReply(tx: Tx, ids: readonly number[], written: readonly Ask[]): Promise<AskWrite> {
+async function writeReply(
+	tx: Tx,
+	store: EntryAsks,
+	ids: readonly number[],
+	written: readonly Ask[],
+): Promise<AskWrite> {
 	const parleys = (await tx.doc(Parleys)).parleys;
-	const asks = (await tx.doc(Asks)).asks;
+	const asks = await store.inCommit(tx);
 	const changed = [...new Set(ids)].sort((a, b) => a - b);
 
 	return {

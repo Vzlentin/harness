@@ -5,7 +5,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
-import { ConversationTodos, draftOf } from "../host/todo-lists.ts";
+import type { EntryTodos } from "../host/entries.ts";
 import { moveTodos } from "../protocol/item-move.ts";
 import { ItemCounterDoc } from "./item-docs.ts";
 import { loadItems } from "./items.ts";
@@ -13,17 +13,17 @@ import { loadItems } from "./items.ts";
 const context = BACKGROUND_CONTEXT;
 
 /**
- * Moves the todos of the list of the root conversation `root` to items, once: it does nothing when the counter of the
+ * Moves the todos of the list of the root conversation `root` in `todos` to items, once: it does nothing when the counter of the
  * IDs of items exists. The lock of the host keeps other writers out between the check and the commit.
  */
-export async function migrateTodos(harness: Harness, root: ConversationId): Promise<void> {
+export async function migrateTodos(harness: Harness, todos: EntryTodos, root: ConversationId): Promise<void> {
 	if ((await harness.snapshot(ItemCounterDoc, context)) !== undefined) return;
 	// A read of a list in a commit creates a missing list, so the commit reads only a list that exists.
-	const hasList = (await harness.snapshot(ConversationTodos, root, context)) !== undefined;
+	const hasList = await todos.has(harness, root, context);
 
 	await harness.commit(async (tx) => {
 		const at = Date.now();
-		const list = hasList ? await draftOf(tx, { kind: "conversation", id: root }) : { todos: [] };
+		const list = hasList ? await todos.draft(tx, root) : { todos: [] };
 		const moved = moveTodos(list.todos, at);
 		list.todos = moved.todos;
 		await loadItems(tx, moved.items, moved.last);

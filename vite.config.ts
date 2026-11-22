@@ -12,6 +12,21 @@ function restrictImports(files: string[], ...patterns: ImportPattern[]): OxlintO
 	return { files, rules: { "no-restricted-imports": ["error", { patterns }] } };
 }
 
+/**
+ * An override that refuses, in `files`, the imports that match one of `patterns`, and the value imports of the modules
+ * `types`, with `message`. A negated entry of a group allows its imports for every pattern, so the modules `types` are
+ * paths, which the patterns do not change.
+ */
+function restrictImportsTypesOnly(
+	files: string[],
+	types: { readonly names: string[]; readonly message: string },
+	...patterns: ImportPattern[]
+): OxlintOverride {
+	const paths = types.names.map((name) => ({ name, allowTypeImports: true, message: types.message }));
+
+	return { files, rules: { "no-restricted-imports": ["error", { paths, patterns }] } };
+}
+
 // An override replaces the options of a rule, so the later overrides of `src/host/` repeat the pattern of `src/host/**`.
 const hostImports: ImportPattern = {
 	group: [
@@ -155,19 +170,26 @@ export default defineConfig({
 				},
 			),
 			restrictImports(["src/host/**"], hostImports, noProjects),
-			restrictImports(["src/projects/**"], {
-				group: [
-					"../**",
-					"!../protocol/**",
-					"!../children/**",
-					"!../tool.ts",
-					"!../project-tool.ts",
-					"!../memory-tool.ts",
-					...EXPORTED_HOST_MODULES.map((module) => `!../host/${module}.ts`),
-				],
-				message:
-					"projects/ imports only protocol/, children/, tool.ts, project-tool.ts, memory-tool.ts and the modules of host/ that the exports of package.json give.",
-			}),
+			restrictImportsTypesOnly(
+				["src/projects/**"],
+				{
+					names: ["../host/entries.ts", "../host/degraded.ts", "../host/label-checks.ts"],
+					message: "projects/ imports only the types of the entry API, of the degraded states and of the label checks.",
+				},
+				{
+					group: [
+						"../**",
+						"!../protocol/**",
+						"!../children/**",
+						"!../tool.ts",
+						"!../project-tool.ts",
+						"!../memory-tool.ts",
+						...EXPORTED_HOST_MODULES.map((module) => `!../host/${module}.ts`),
+					],
+					message:
+						"projects/ imports only protocol/, children/, tool.ts, project-tool.ts, memory-tool.ts and the modules of host/ that the exports of package.json give.",
+				},
+			),
 			restrictImports(["src/host/durable-entry.ts"], hostImports, noProjects, {
 				group: ["@earendil-works/*"],
 				allowTypeImports: true,

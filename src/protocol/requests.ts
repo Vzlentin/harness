@@ -6,8 +6,10 @@ import { type GateReply, ToolArguments, TYPED_KIND } from "./gate.ts";
 import { type Edge, EdgeInput, ItemAdd, type ItemList, ItemSet, ItemState, type StagedItem } from "./item.ts";
 import type { ProjectState } from "./project-watch.ts";
 import {
+	type AnswerAuthor,
 	AnswerInputs,
 	type Ask,
+	askAnswerText,
 	type AskList,
 	type AskWrite,
 	type DigestReply,
@@ -395,6 +397,12 @@ export const CoreRequestLine = Type.Union([
 
 export type CoreRequest = Static<typeof CoreRequestLine>;
 
+/** An `ask` request. */
+export type AskRequest = Extract<CoreRequest, { type: "ask" }>;
+
+/** The author of the answers of the `ask answer` request `request`, as the host works it out. */
+export type AnswerAuthorOf = (request: Extract<AskRequest, { action: "answer" }>) => Promise<AnswerAuthor>;
+
 /**
  * One request line of a type that the projects entry serves: the persons, threads, messages, digests, memory, rules,
  * parleys, items, gate, held actions and the watch of the project. The entry checks it with the branches of its type.
@@ -653,6 +661,20 @@ export type WatchLine = { readonly change: ViewChange; readonly child: ChildInfo
 export type UserDelivery =
 	| { readonly source: "ask"; readonly ask: number; readonly text: string }
 	| { readonly source: "parley"; readonly parley: string; readonly asks: number[]; readonly text: string };
+
+/** One delivery of answers to `asker`: the IDs of the answered asks that it gives, and the delivery. */
+export type AnswerGroup = { readonly asker: string; readonly asks: readonly number[]; readonly delivery: UserDelivery };
+
+/**
+ * The deliveries of the answered asks `answered`, which all have an asker other than the caller of the answer, in the
+ * order of `answered`. Each ask is in one delivery.
+ */
+export type GroupAnswers = (answered: readonly Ask[]) => AnswerGroup[];
+
+/** The delivery of the answered ask `ask` alone, to its asker. */
+export function askGroup(ask: Ask): AnswerGroup {
+	return { asker: ask.asker, asks: [ask.id], delivery: { source: "ask", ask: ask.id, text: askAnswerText(ask) } };
+}
 
 /**
  * What the host pushes to a caller: the answers of a child, as `wait` gives them, or its error when `failed`, the

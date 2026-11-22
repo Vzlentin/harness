@@ -8,8 +8,9 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { CommitChange, ConversationId, Cursor, DocumentReader, Harness, Tx } from "@earendil-works/pi-durable";
-import { Asks, loadAsks } from "../host/asks.ts";
+import type { EntryAsks } from "../host/entries.ts";
 import {
+	ASKS_KIND,
 	HELD_KIND,
 	type HeldAction,
 	type HeldInput,
@@ -72,7 +73,8 @@ const MESSAGE_KINDS: ReadonlySet<string> = new Set([MESSAGE_KIND, MESSAGE_EDIT_K
 /** The kinds of the documents of the project. A message is an entry, not a document; its state out is in the outbox. */
 const PROJECT_DOCS: ReadonlySet<string> = new Set([
 	RULES_KIND,
-	...[Persons, Threads, Held, Parleys, Asks, Outbox].map((doc) => doc.definition.kind),
+	ASKS_KIND,
+	...[Persons, Threads, Held, Parleys, Outbox].map((doc) => doc.definition.kind),
 ]);
 
 /** Whether `change` can change an object of the project: a message, or a document of the project. */
@@ -405,12 +407,12 @@ export function joinMessage(message: StoredMessage, states: ReadonlyMap<number, 
 }
 
 /**
- * Writes the lists of `file` in `tx`, into a store whose lists are empty. Each thread gets a new conversation and each
+ * Writes the lists of `file` in `tx`, with its asks in `asks`, into a store whose lists are empty. Each thread gets a new conversation and each
  * message a new entry, in file order, and the source of each rule gets the new ID of its message, and its thread the new
  * ID of the thread of that message. Each message out gets its state in the outbox, with its time as `written` and its
  * last change. `last` of the rules is the higher of the file and the store.
  */
-export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
+export async function loadLists(tx: Tx, asks: Pick<EntryAsks, "load">, file: StoreFile): Promise<void> {
 	const messageIds = new Map<number, { id: number; thread: number }>();
 	const threads = await tx.doc(Threads);
 	const outbox = await tx.doc(Outbox);
@@ -435,7 +437,7 @@ export async function loadLists(tx: Tx, file: StoreFile): Promise<void> {
 	await loadRules(tx, file.rules, file.lastRule, messageIds);
 	(await tx.doc(Held)).held.push(...file.held);
 	(await tx.doc(Parleys)).parleys.push(...file.parleys);
-	await loadAsks(tx, file.asks);
+	await asks.load(tx, file.asks);
 }
 
 function nextId(items: readonly { readonly id: number }[]): number {

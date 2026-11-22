@@ -5,8 +5,8 @@
 import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { type ConversationId, defineDoc, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
+import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
@@ -36,14 +36,6 @@ type RecordV4 = Omit<ChildRecord, "labels">;
 
 type ChildrenV4 = { children: Record<string, RecordV4>; requests: Record<string, string> };
 
-/**
- * A record of version 5 or 6: what the child served in place of its labels, such as its spawner, a parley or a contract
- * by slug, an item, or a todo of the list of the project, and the end of what it served.
- */
-type RecordV6 = RecordV4 & { serves: { kind: string; slug?: string }; servedEnd?: string };
-
-type ChildrenV6 = { children: Record<string, RecordV6>; requests: Record<string, string> };
-
 /** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
 export type ChildRequest = { id: string; notify: boolean };
 
@@ -69,8 +61,8 @@ const ChildrenV2 = Type.Object({
 	requests: Type.Record(Type.String(), Type.String()),
 });
 
-/** A record of version 3: a child that a kernel spawned through `rlm` has `kind: "rlm"`. */
-const RecordV3 = Type.Object({
+/** The fields of a record of version 4, which versions 3, 5 and 6 also have. */
+const RecordV4Fields = {
 	name: Type.Optional(Type.String()),
 	caller: Type.String(),
 	createdAt: Type.String(),
@@ -78,11 +70,28 @@ const RecordV3 = Type.Object({
 	requests: Type.Array(Type.Object({ id: Type.String(), notify: Type.Boolean() })),
 	read: Type.Number(),
 	pushed: Type.Optional(Type.String()),
-	kind: Type.Optional(Type.String()),
-});
+};
+
+/** A record of version 3: a child that a kernel spawned through `rlm` has `kind: "rlm"`. */
+const RecordV3 = Type.Object({ ...RecordV4Fields, kind: Type.Optional(Type.String()) });
 
 const ChildrenV3 = Type.Object({
 	children: Type.Record(Type.String(), RecordV3),
+	requests: Type.Record(Type.String(), Type.String()),
+});
+
+/**
+ * A record of version 5 or 6: what the child served in place of its labels, such as its spawner, a parley or a contract
+ * by slug, an item, or a todo of the list of the project, and the end of what it served.
+ */
+const RecordV6 = Type.Object({
+	...RecordV4Fields,
+	serves: Type.Object({ kind: Type.String(), slug: Type.Optional(Type.String()) }),
+	servedEnd: Type.Optional(Type.String()),
+});
+
+const ChildrenV6 = Type.Object({
+	children: Type.Record(Type.String(), RecordV6),
 	requests: Type.Record(Type.String(), Type.String()),
 });
 
@@ -103,25 +112,32 @@ export const ChildRecords = defineDoc<ChildrenState>({
 	migrate: (value, fromVersion) => {
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
 
-		if (fromVersion === 5 || fromVersion === 6) {
-			// SAFETY: a value of version 5 or 6 has the shape of version 7, except `serves` and `servedEnd` in place of
-			// `labels`.
-			return migrateV6(value as ChildrenV6);
-		}
+		if (fromVersion === 5 || fromVersion === 6) return migrateV6(parseRecords(ChildrenV6, value, fromVersion));
 
-		if (fromVersion === 2) return migrateV4(migrateV2(Value.Parse(ChildrenV2, value)));
+		if (fromVersion === 2) return migrateV4(migrateV2(parseRecords(ChildrenV2, value, fromVersion)));
 
 		// A record of version 4 is a record of version 3 without a kind.
-		return migrateV4(migrateV3(Value.Parse(ChildrenV3, value)));
+		return migrateV4(migrateV3(parseRecords(ChildrenV3, value, fromVersion)));
 	},
 });
+
+/**
+ * `value`, the records of version `version`, parsed with `schema`. A value that does not match fails with
+ * `subagent.children of version <version> is invalid: <path> <message>` for its first error.
+ */
+function parseRecords<S extends TSchema>(schema: S, value: JsonObject, version: number): Static<S> {
+	if (Value.Check(schema, value)) return Value.Parse(schema, value);
+	const [error] = Value.Errors(schema, value);
+
+	throw new Error(`subagent.children of version ${version} is invalid: ${error?.instancePath} ${error?.message}`);
+}
 
 /**
  * Gives each child of `state` the labels of what it served: `parley:<slug>` for a parley or a contract, and no label
  * for its spawner and for what the record does not name, a todo or an item. An entry adds the labels of what it keeps
  * elsewhere with `labelChild`.
  */
-function migrateV6(state: ChildrenV6): ChildrenState {
+function migrateV6(state: Static<typeof ChildrenV6>): ChildrenState {
 	const children = Object.fromEntries(
 		Object.entries(state.children).map(([handle, { serves, servedEnd: _servedEnd, ...record }]) => [
 			handle,
@@ -133,7 +149,7 @@ function migrateV6(state: ChildrenV6): ChildrenState {
 }
 
 /** The labels of what a record of version 5 or 6 served, `serves`: `parley:<slug>` for a parley or a contract. */
-function servedLabels(serves: RecordV6["serves"]): string[] {
+function servedLabels(serves: Static<typeof RecordV6>["serves"]): string[] {
 	const parley = serves.kind === "parley" || serves.kind === "contract";
 
 	return parley && serves.slug !== undefined ? [`parley:${serves.slug}`] : [];

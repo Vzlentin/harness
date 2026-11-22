@@ -7,6 +7,7 @@ import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { ConversationTodos } from "../src/host/todo-lists.ts";
 import { ItemCounterDoc, Items } from "../src/projects/item-docs.ts";
+import { LabelMove } from "../src/projects/label-migration.ts";
 import { ItemList, StagedItem } from "../src/protocol/item.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { AskWrite } from "../src/protocol/project.ts";
@@ -291,7 +292,7 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 		}
 	});
 
-	it("turns what each child of a store of version 6 served into its labels, and takes the serves edge of an agent", async () => {
+	it("turns what each child of a store of version 6 served into its labels, and takes the serves edge of an agent once", async () => {
 		await createProject(LABELS_PROJECT);
 		let host: Host | undefined = await startHost(LABELS_PROJECT);
 		const handles: string[] = [];
@@ -339,6 +340,8 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 
 			await store.commit(async (tx) => {
 				await tx.retireDoc(ChildRecords);
+				// A store of version 6 had no host that moved its edges.
+				await tx.retireDoc(LabelMove);
 
 				const stored = await tx.doc(Items, String(item), {
 					id: item,
@@ -385,8 +388,35 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 				expect(record).not.toHaveProperty("serves");
 				expect(record).not.toHaveProperty("servedEnd");
 			}
+
+			// After the move, a start reads no edge: an edge of a child that comes later stays, with no label.
+			const agent = `agent:${(await after.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[byParley]?.conversationId}`;
+
+			await after.commit(async (tx) => {
+				const stored = await tx.doc(Items, String(item), {
+					id: item,
+					title: "-",
+					state: "open",
+					edges: [],
+					at: 0,
+					by: "",
+				});
+
+				stored.edges.push({ from: agent, kind: "serves", to: `item:${item}`, at: 2, by: "late" });
+			}, BACKGROUND_CONTEXT);
 		} finally {
 			await after.close(BACKGROUND_CONTEXT);
+		}
+
+		host = await startHost(LABELS_PROJECT);
+
+		try {
+			expect((await send({ type: "status", handle: byParley }, LABELS_PROJECT)).labels).toEqual(["parley:old-open"]);
+			const read = Value.Parse(StagedItem, await send({ type: "item", action: "read", id: item }, LABELS_PROJECT));
+			expect(read.edges).toMatchObject([{ kind: "serves", by: "late" }]);
+		} finally {
+			await host.close();
+			host = undefined;
 		}
 	});
 });
