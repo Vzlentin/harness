@@ -22,7 +22,8 @@ import {
 } from "../protocol/project.ts";
 import { readItems } from "./item-docs.ts";
 import { sessionDoc } from "./project-docs.ts";
-import { type OutState, readHeld, readOutbox, readPersons, readThreads } from "./project.ts";
+import type { OutMessage, StoreReader } from "./project-store.ts";
+import { readHeld } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -55,6 +56,8 @@ export type Digest = {
 export type DigestHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
 	readonly storage: Pick<Storage, "scanDocuments">;
+	/** The project store, with the persons, the threads and the messages out. */
+	readonly store: StoreReader;
 	readonly project: string;
 	readonly degraded: Degraded;
 };
@@ -68,17 +71,18 @@ export async function nextDigest(
 	host: {
 		readonly harness: Pick<DocumentReader, "snapshot">;
 		readonly storage: Pick<Storage, "scanDocuments">;
+		readonly store: StoreReader;
 		readonly project: string;
 	},
 	caller: string,
 	head: string | undefined,
 ): Promise<Digest | undefined> {
-	const { harness } = host;
+	const { harness, store } = host;
+	const persons = { persons: store.persons() };
+	const threads = store.threads();
+	const outbox = store.outMessages();
 
-	const [persons, threads, outbox, held, open, digests] = await Promise.all([
-		readPersons(harness, context),
-		readThreads(harness, context),
-		readOutbox(harness, context),
+	const [held, open, digests] = await Promise.all([
 		readHeld(harness, context),
 		readItems(harness, host.storage, "open", context),
 		harness.snapshot(Digests, context),
@@ -90,7 +94,7 @@ export async function nextDigest(
 
 	if (last === undefined && waiting.length === 0 && own.length === 0 && open.length === 0) return undefined;
 	const names = personNames(persons);
-	const byId = new Map(threads.threads.map((thread) => [thread.id, thread]));
+	const byId = new Map(threads.map((thread) => [thread.id, thread]));
 	const shownBoard = board(host.project, open);
 
 	const text = [...shownBoard.lines, waitsLine(waiting, byId, names), heldLine(own)].join("\n");
@@ -171,11 +175,11 @@ function board(project: string, open: readonly Readonly<WorkItem>[]) {
 }
 
 /** `waiting on: <persons> (<topic>, sent <time>)` or `(<topic>, draft not sent)` for each message, or `none`. */
-function waitsLine(waiting: readonly OutState[], threads: ReadonlyMap<number, Thread>, names: PersonNames): string {
+function waitsLine(waiting: readonly OutMessage[], threads: ReadonlyMap<number, Thread>, names: PersonNames): string {
 	const items = waiting.map((out) => {
 		const thread = threads.get(out.thread);
 		const persons = (thread?.persons ?? []).map((id) => names.get(id) ?? `person ${id}`).join(", ");
-		const state = out.state === "sent" ? `sent ${shortTime(out.at)}` : "draft not sent";
+		const state = out.state === "sent" ? `sent ${shortTime(out.changed.at)}` : "draft not sent";
 
 		return `${persons} (${thread?.topic ?? `thread ${out.thread}`}, ${state})`;
 	});

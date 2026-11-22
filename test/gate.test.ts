@@ -22,6 +22,7 @@ import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { type GateHost, gateCall } from "../src/projects/gate.ts";
 import { changeRule } from "../src/projects/project-rules.ts";
+import { ProjectStore } from "../src/projects/project-store.ts";
 import { approveHeld, holdAction, readHeld } from "../src/projects/project.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
@@ -697,12 +698,14 @@ describe("gate", { timeout: 60_000 }, () => {
 	});
 
 	it("runs one of two calls of an approved command that read the held actions together, and holds the other", async () => {
-		const harness = await openDurableHost(join(await mkdtemp(join(root, "gate-race-")), "store.sqlite"), []);
+		const dir = await mkdtemp(join(root, "gate-race-"));
+		const harness = await openDurableHost(join(dir, "store.sqlite"), []);
+		const store = ProjectStore.open(dir, 0);
 		const push = "git push origin main";
 
 		try {
 			const fields = { action: "create", name: "go", kind: "conduct", value: "Push only with a go." } as const;
-			const rule = await harness.commit((tx) => changeRule(tx, fields, "cli"), BACKGROUND_CONTEXT);
+			const rule = store.write((tx) => changeRule(tx, fields, "cli"));
 
 			const call = { agent: "khan", tool: "bash", command: push, rule: rule.id, reason: "No go." };
 			const held = await harness.commit((tx) => holdAction(tx, { ...call, requestId: "call-1" }), BACKGROUND_CONTEXT);
@@ -732,6 +735,7 @@ describe("gate", { timeout: 60_000 }, () => {
 
 			const host: GateHost = {
 				harness: raced,
+				store,
 				classifier: {
 					model: (key) => settingClassifier(settings, models, key, degraded),
 					ask: (model, context, signal) => askClassifier(models, model, context, signal),
@@ -753,6 +757,7 @@ describe("gate", { timeout: 60_000 }, () => {
 				expect.objectContaining({ id: 2, state: "held", rule: rule.id }),
 			]);
 		} finally {
+			store.close();
 			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});
@@ -811,18 +816,21 @@ describe("gate", { timeout: 60_000 }, () => {
 	});
 
 	it("rejects a call whose signal aborts during the classify, holds nothing and starts no degraded state", async () => {
-		const harness = await openDurableHost(join(await mkdtemp(join(root, "gate-abort-")), "store.sqlite"), []);
+		const dir = await mkdtemp(join(root, "gate-abort-"));
+		const harness = await openDurableHost(join(dir, "store.sqlite"), []);
+		const store = ProjectStore.open(dir, 0);
 		const push = "git push origin main";
 
 		try {
 			const fields = { action: "create", name: "go", kind: "conduct", value: "Push only with a go." } as const;
-			await harness.commit((tx) => changeRule(tx, fields, "cli"), BACKGROUND_CONTEXT);
+			store.write((tx) => changeRule(tx, fields, "cli"));
 			const degraded = new Degraded(() => undefined);
 			const settings = SettingsManager.inMemory();
 			const abort = new AbortController();
 
 			const host: GateHost = {
 				harness,
+				store,
 				classifier: {
 					model: (key) => settingClassifier(settings, models, key, degraded),
 					// The stop of the agent aborts the signal, and the request of the classifier then fails.
@@ -840,6 +848,7 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect((await readHeld(harness, BACKGROUND_CONTEXT)).held).toEqual([]);
 			expect(degraded.list().map(({ kind }) => kind)).not.toContain("gate-classifier");
 		} finally {
+			store.close();
 			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});

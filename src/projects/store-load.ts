@@ -1,6 +1,6 @@
 /**
- * `harness store load <file>`: writes the lists and the items of a store file into the empty store of a project, while
- * no host runs.
+ * `harness store load <file>`: writes the lists and the items of a store file into the empty stores of a project
+ * (`durable.sqlite` and `project.sqlite`), while no host runs.
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import { statePaths } from "../protocol/paths.ts";
 import { STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from "../protocol/store-file.ts";
 import { loadItems } from "./items.ts";
+import { ProjectStore } from "./project-store.ts";
 import { loadLists } from "./project.ts";
 import { readStoreFile } from "./store-file.ts";
 
@@ -23,9 +24,11 @@ const context = BACKGROUND_CONTEXT;
 export type StoreLoadHandles = Pick<EntryHandles, "asks" | "todos">;
 
 /**
- * Writes the lists of the store file at `path` into the store of `project` in one commit, under the lock of the host,
- * with the asks and the lists of todos of `handles`, and gives the count of each list. It fails before it writes when the file is not a store file, when a host runs for
- * `project`, or when a list of the store is not empty.
+ * Writes the lists of the store file at `path` into the stores of `project`, under the lock of the host, with the asks
+ * and the lists of todos of `handles`, and gives the count of each list. The persons, the threads, the messages and the
+ * rules keep the IDs of the file. The two stores are written as one: the transaction of the project store stays open
+ * across the commit of `durable.sqlite`, and a commit that fails rolls it back. It fails before it writes when the file
+ * is not a store file, when a host runs for `project`, or when a list of the stores is not empty.
  */
 export async function loadStore(project: string, path: string, handles: StoreLoadHandles): Promise<StoreCounts> {
 	const file = parseStoreFile(path);
@@ -38,18 +41,23 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 	}
 
 	try {
-		const store = join(dir, "durable.sqlite");
+		const durable = join(dir, "durable.sqlite");
+		const store = ProjectStore.open(dir, STORE_LOCK_WAIT_MS);
 
-		// A read-only open recovers nothing, so a store that is not empty stays as it is.
-		const lists = await withHarness(store, true, (harness, storage) =>
-			readStoreFile(harness, storage, ROOT_CONVERSATION_ID, handles),
-		);
+		try {
+			// A read-only open recovers nothing, so a store that is not empty stays as it is.
+			const lists = await withHarness(durable, true, (harness, storage) =>
+				readStoreFile(harness, storage, ROOT_CONVERSATION_ID, { ...handles, store }),
+			);
 
-		if (Object.values(storeCounts(lists)).some((count) => count > 0)) {
-			throw new Error(`The store of ${project} is not empty: harness store load writes only into an empty store`);
+			if (Object.values(storeCounts(lists)).some((count) => count > 0)) {
+				throw new Error(`The store of ${project} is not empty: harness store load writes only into an empty store`);
+			}
+
+			await store.load(file, () => withHarness(durable, false, (harness) => writeFile(harness, handles, file)));
+		} finally {
+			store.close();
 		}
-
-		await withHarness(store, false, (harness) => writeFile(harness, handles, file));
 
 		return storeCounts(file);
 	} finally {
@@ -58,8 +66,9 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 }
 
 /**
- * Writes `file` in one commit, with the asks and the lists of todos of `handles`: the commit that creates the root conversation when the store has none. The commit always
- * writes the counter of the IDs of items, so the next start of a host does not move the loaded todos to items.
+ * Writes the lists of `file` that `durable.sqlite` keeps in one commit, with the asks and the lists of todos of
+ * `handles`: the commit that creates the root conversation when the store has none. The commit always writes the
+ * counter of the IDs of items, so the next start of a host does not move the loaded todos to items.
  */
 async function writeFile(harness: Harness, handles: StoreLoadHandles, file: StoreFile): Promise<void> {
 	const write = async (tx: Tx) => {

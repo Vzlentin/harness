@@ -44,36 +44,6 @@ function load(project: string, path: string) {
 	return cli(["--project", project, "store", "load", path]);
 }
 
-/**
- * `file` with the IDs of its threads and messages, and the sources and threads of its rules, put back to the IDs of
- * `before`, by thread and message order.
- */
-function idsOf(file: StoreFile, before: StoreFile): StoreFile {
-	const threads = new Map(file.threads.map((thread, index) => [thread.id, before.threads[index]?.id ?? -1]));
-	const messages = new Map<number, number>();
-
-	file.threads.forEach((thread, index) =>
-		thread.messages.forEach((message, at) => messages.set(message.id, before.threads[index]?.messages[at]?.id ?? -1)),
-	);
-
-	const thread = (id: number) => threads.get(id) ?? -1;
-	const message = (id: number) => messages.get(id) ?? -1;
-
-	return {
-		...file,
-		threads: file.threads.map((found) => ({
-			...found,
-			id: thread(found.id),
-			messages: found.messages.map((one) => ({ ...one, id: message(one.id), thread: thread(one.thread) })),
-		})),
-		rules: file.rules.map((rule) =>
-			rule.source === undefined || rule.thread === undefined
-				? rule
-				: { ...rule, source: message(rule.source), thread: thread(rule.thread) },
-		),
-	};
-}
-
 /** Fills each list of the store of `project`, whose host runs. */
 async function fill(project: string): Promise<void> {
 	const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
@@ -153,7 +123,7 @@ afterAll(async () => {
 });
 
 describe("harness store load", { timeout: 60_000 }, () => {
-	it("loads store.json into an empty store, maps the IDs of threads and messages, and refuses what it cannot load", async () => {
+	it("loads store.json into an empty store, keeps the IDs of threads, messages and rules, and refuses what it cannot load", async () => {
 		await createProject("load-source");
 		await createProject("load-target");
 		await createProject("load-new");
@@ -191,8 +161,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		// Into a store whose root conversation exists.
 		expect(await load("load-target", path)).toMatchObject({ code: 0, stderr: "" });
 		const loaded = await hostedFile("load-target");
-		expect(loaded.threads.map((thread) => thread.id)).not.toEqual(source.threads.map((thread) => thread.id));
-		expect(idsOf(loaded, source)).toEqual(source);
+		expect(loaded).toEqual(source);
 
 		// Into a store that never had a host, so the load creates its root conversation.
 		expect(await load("load-new", path)).toEqual({
@@ -202,20 +171,15 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			stderr: "",
 		});
 
-		expect(idsOf(await hostedFile("load-new"), source)).toEqual(source);
+		expect(await hostedFile("load-new")).toEqual(source);
 
-		// A rule that an older file gives with a source and no thread gets the new thread of its source message.
+		// A rule that an older file gives with a source and no thread gets the thread of its source message.
 		await createProject("load-old");
 		const old = join(root, "load-old.json");
 		const oldRules = source.rules.map((rule) => ({ ...rule, thread: undefined }));
 		await writeFile(old, JSON.stringify({ ...source, rules: oldRules }));
 		expect(await load("load-old", old)).toMatchObject({ code: 0, stderr: "" });
-		const oldLoaded = await hostedFile("load-old");
-		const [oldRule] = oldLoaded.rules;
-		const sourceThread = oldLoaded.threads.find((found) => found.messages.some((one) => one.id === oldRule?.source));
-		expect(oldRule?.thread).toBeDefined();
-		expect(oldRule?.thread).toBe(sourceThread?.id);
-		expect(idsOf(oldLoaded, source)).toEqual(source);
+		expect(await hostedFile("load-old")).toEqual(source);
 
 		// A store that is not empty stays as it is.
 		expect(await load("load-target", path)).toEqual({
@@ -313,7 +277,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		const path = join(root, "edit-source.json");
 		await writeFile(path, JSON.stringify(source));
 		expect(await load("edit-target", path)).toMatchObject({ code: 0, stderr: "" });
-		expect(idsOf(await hostedFile("edit-target"), source)).toEqual(source);
+		expect(await hostedFile("edit-target")).toEqual(source);
 	});
 
 	it("keeps the link of a loaded todo to its ask, so the note of the ask closes it", async () => {

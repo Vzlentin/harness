@@ -9,6 +9,7 @@ import type { Write } from "../src/children/library.ts";
 import { Degraded } from "../src/host/degraded.ts";
 import { beforeInput } from "../src/host/input-hooks.ts";
 import { digestHook } from "../src/projects/digest.ts";
+import { ProjectStore } from "../src/projects/project-store.ts";
 import { holdAction } from "../src/projects/project.ts";
 import { DigestReply } from "../src/protocol/project.ts";
 import { errorMessage } from "../src/protocol/requests.ts";
@@ -32,8 +33,10 @@ async function addItem(project: string, title: string): Promise<void> {
 
 describe("the digest", () => {
 	it("keeps a failed write as a degraded state, with its warning, until a digest of the conversation is written", async () => {
-		const storage = await openNodeSqliteStorage(join(await mkdtemp(join(root, "digest-")), "store.sqlite"));
+		const dir = await mkdtemp(join(root, "digest-"));
+		const storage = await openNodeSqliteStorage(join(dir, "store.sqlite"));
 		const harness = await Harness.open(storage, { models, registry: createRegistry() }, BACKGROUND_CONTEXT);
+		const store = ProjectStore.open(dir, 0);
 
 		try {
 			const conversation = await harness.root(BACKGROUND_CONTEXT);
@@ -42,7 +45,7 @@ describe("the digest", () => {
 			await harness.commit((tx) => holdAction(tx, call), BACKGROUND_CONTEXT);
 			const warnings: string[] = [];
 			const degraded = new Degraded((cause) => warnings.push(errorMessage(cause)));
-			const host = { harness, storage, project: "digest-failed", degraded };
+			const host = { harness, storage, store, project: "digest-failed", degraded };
 			const hooks = { storage, inputHooks: [digestHook(() => host)], degraded };
 
 			const failing = async () => {
@@ -64,13 +67,16 @@ describe("the digest", () => {
 			]);
 			expect(host.degraded.list()).toEqual([]);
 		} finally {
+			store.close();
 			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});
 
 	it("gives the same digest again after a compaction of the conversation, and after a reset", async () => {
-		const storage = await openNodeSqliteStorage(join(await mkdtemp(join(root, "digest-")), "store.sqlite"));
+		const dir = await mkdtemp(join(root, "digest-"));
+		const storage = await openNodeSqliteStorage(join(dir, "store.sqlite"));
 		const harness = await Harness.open(storage, { models, registry: createRegistry() }, BACKGROUND_CONTEXT);
+		const store = ProjectStore.open(dir, 0);
 
 		try {
 			const agent = { model: { provider: "faux", modelId: "faux-1" }, compaction: { keepRecentTokens: 0 } };
@@ -78,7 +84,7 @@ describe("the digest", () => {
 			const call = { requestId: "call-1", agent: String(conversation.id), tool: "bash", command: "ls", reason: "No." };
 			await harness.commit((tx) => holdAction(tx, call), BACKGROUND_CONTEXT);
 			const degraded = new Degraded(() => {});
-			const host = { harness, storage, project: "digest-head", degraded };
+			const host = { harness, storage, store, project: "digest-head", degraded };
 			const hooks = { storage, inputHooks: [digestHook(() => host)], degraded };
 			const written: string[] = [];
 
@@ -113,6 +119,7 @@ describe("the digest", () => {
 			expect(written.map((id) => id.split(":").at(-1))).toEqual(Array(3).fill(written[0]?.split(":").at(-1)));
 			expect(degraded.list()).toEqual([]);
 		} finally {
+			store.close();
 			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});

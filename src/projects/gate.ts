@@ -28,7 +28,7 @@ import {
 import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
-import { readStoredRules } from "./project-rules.ts";
+import type { ProjectStore } from "./project-store.ts";
 import { heldFor, holdAction, markSent, readHeld, runApproved, runsFor } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -68,6 +68,8 @@ const WRITES: ClassifierQuestion = {
 /** What the gate uses of the host. */
 export type GateHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
+	/** The project store, with the rules and the drafts. */
+	readonly store: Pick<ProjectStore, "rules" | "write">;
 	/** The classifier models of Pi's settings, for `gateClassifier`. */
 	readonly classifier: EntryClassifier;
 	readonly signal: AbortSignal;
@@ -96,7 +98,7 @@ export async function gateCall(request: Extract<Request, { type: "gate" }>, host
 
 	// A call that runs again, such as a gate of Pi after an approve, finds its drafts sent, and changes nothing.
 	if (reply.runs && drafts.length > 0) {
-		await host.harness.commit((tx) => markSent(tx, drafts, request.caller), context);
+		host.store.write((tx) => markSent(tx, drafts, request.caller));
 	}
 
 	return reply;
@@ -134,7 +136,7 @@ async function checkCall(
 		return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
 	}
 
-	const { rules } = await readStoredRules(harness, { kind: "conduct", status: "decided" }, context);
+	const rules = host.store.rules({ kind: "conduct", status: "decided" });
 
 	if (rules.length === 0) return RUNS;
 

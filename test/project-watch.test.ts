@@ -16,17 +16,14 @@ import { StagedItem } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
-import { Ask, AskWrite, type HeldAction, Message, Person, Rule, RULES_KIND, Thread } from "../src/protocol/project.ts";
+import { Ask, AskWrite, type HeldAction, Message, Person, Rule, Thread } from "../src/protocol/project.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import { cli, models, openDurableHost, readStoreFile, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
+import { cli, models, openDurableHost, root, setUp, tearDown, until, watchProject } from "./helpers.ts";
 
 /** The documents of the terms and of the parts of the vault, as an older version kept them in the store. */
 const OLD_TERMS = sessionDoc<{ terms: JsonValue[] }>("harness.terms", () => ({ terms: [] }));
 const OLD_PARTS = sessionDoc<{ parts: JsonValue[] }>("harness.parts", () => ({ parts: [] }));
-
-/** The document of the rules, as an older version kept it in the store: with no `last`. */
-const OLD_RULES = sessionDoc<{ rules: JsonValue[] }>(RULES_KIND, () => ({ rules: [] }));
 
 const NONE: ProjectEvent["removed"] = {
 	persons: [],
@@ -86,7 +83,7 @@ afterAll(async () => {
 });
 
 describe("watch-project", { timeout: 60_000 }, () => {
-	it("sends one event with the objects that each commit changed, and the messages that wait in each thread", async () => {
+	it("sends one event with the objects that each write changed, and the messages that wait in each thread", async () => {
 		const project = "watched";
 		const host = await projectHost(project);
 		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
@@ -161,7 +158,7 @@ describe("watch-project", { timeout: 60_000 }, () => {
 
 			expect(await next()).toEqual(event({ threads: [{ ...thread, last: draft.at, waits: [draft] }] }));
 
-			// A mark changes the outbox, not the entry of the message: the thread gives the message with its new state.
+			// A mark changes the state of the message: the thread gives the message with its new state.
 			const sent = Value.Parse(
 				Message,
 				await send({ type: "message", action: "mark", caller: "cli", message: draft.id, state: "sent" }, project),
@@ -307,94 +304,6 @@ describe("watch-project", { timeout: 60_000 }, () => {
 				degraded: [],
 			});
 			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules: [rule] });
-		} finally {
-			watch?.socket.destroy();
-			await host?.close();
-		}
-	});
-
-	it("never gives again the ID of a deleted rule of a store with no last ID", async () => {
-		const project = "no-last";
-		const dir = await mkdtemp(join(root, `${project}-`));
-		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
-		let host = await runHost({ project, cwd: dir, models });
-
-		try {
-			await host?.close();
-			const older = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
-			const fields = { kind: "domain", status: "decided", saidBy: "user", at: 1_000, by: "cli" };
-
-			await older.commit(async (tx) => {
-				const list = await tx.doc(OLD_RULES);
-				list.rules.push({ ...fields, id: 1, name: "a", value: "A." }, { ...fields, id: 2, name: "b", value: "B." });
-			}, BACKGROUND_CONTEXT);
-			await older.close(BACKGROUND_CONTEXT);
-
-			host = await runHost({ project, cwd: dir, models });
-			await send({ type: "rule", action: "delete", caller: "cli", id: 2 }, project);
-			const create = { type: "rule", action: "create", caller: "cli", name: "c", kind: "domain", value: "C." } as const;
-			expect(await send(create, project)).toMatchObject({ id: 3 });
-		} finally {
-			await host?.close();
-		}
-	});
-
-	it("gives the thread of the source of a rule that an older store wrote with no thread", async () => {
-		const project = "no-thread";
-		const dir = await mkdtemp(join(root, `${project}-`));
-		expect((await cli(["create", project, "--cwd", dir])).code).toBe(0);
-		let host = await runHost({ project, cwd: dir, models });
-		let watch: Awaited<ReturnType<typeof watchProject>> | undefined;
-
-		try {
-			const sam = Value.Parse(Person, await send({ type: "person", action: "add", name: "Sam" }, project));
-
-			const thread = Value.Parse(
-				Thread,
-				await send({ type: "thread", action: "add", topic: "Scope", persons: [sam.id] }, project),
-			);
-
-			const said = Value.Parse(
-				Message,
-				await send(
-					{
-						type: "message",
-						action: "log",
-						caller: "cli",
-						thread: thread.id,
-						from: "user",
-						direction: "out",
-						text: "45 and 54.",
-					},
-					project,
-				),
-			);
-
-			await host?.close();
-			const older = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
-			const fields = { kind: "domain", status: "decided", saidBy: "user", at: 1_000, by: "cli" };
-
-			await older.commit(async (tx) => {
-				const list = await tx.doc(OLD_RULES);
-				list.rules.push(
-					{ ...fields, id: 1, name: "scope", value: "45 and 54.", source: said.id },
-					{ ...fields, id: 2, name: "user", value: "Ask first." },
-				);
-			}, BACKGROUND_CONTEXT);
-			await older.close(BACKGROUND_CONTEXT);
-
-			host = await runHost({ project, cwd: dir, models });
-
-			const rules = [
-				{ ...fields, id: 1, name: "scope", value: "45 and 54.", source: said.id, thread: thread.id },
-				{ ...fields, id: 2, name: "user", value: "Ask first." },
-			];
-
-			expect(await send({ type: "rule", action: "list" }, project)).toEqual({ rules });
-			watch = await watchProject(project);
-			expect(watch.state.rules).toEqual(rules);
-			await until(() => readStoreFile(project)?.rules.length === 2);
-			expect(readStoreFile(project)?.rules).toEqual(rules);
 		} finally {
 			watch?.socket.destroy();
 			await host?.close();

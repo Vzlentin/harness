@@ -1,5 +1,6 @@
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -7,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { WorkItem } from "../src/protocol/item.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import {
 	DigestReply,
 	MESSAGE_STATES,
@@ -63,6 +65,20 @@ async function projectHost(name: string): Promise<Host> {
 	if (started === undefined) throw new Error("no host");
 
 	return started;
+}
+
+/** The rows of `sql` in `project.sqlite` of `project`, read with a read-only connection, as plain objects. */
+function storeRows(project: string, sql: string): Record<string, SQLOutputValue>[] {
+	const db = new DatabaseSync(join(statePaths(project).dir, "project.sqlite"), { readOnly: true });
+
+	try {
+		return db
+			.prepare(sql)
+			.all()
+			.map((row) => ({ ...row }));
+	} finally {
+		db.close();
+	}
 }
 
 /** Logs the message `text` in the thread `thread` of `project`, from `from`, at `at`, and gives it. */
@@ -373,8 +389,6 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 		await expect(send({ ...log, from: 99 })).rejects.toThrow("Unknown person: 99");
 		await expect(send({ type: "thread", action: "read", id: 999_999 })).rejects.toThrow("Unknown thread: 999999");
 		await expect(send({ ...rule2, source: 999_999 })).rejects.toThrow("Unknown message: 999999");
-		// A conversation ID is not a message.
-		await expect(send({ ...rule2, source: thread.id })).rejects.toThrow(`Unknown message: ${thread.id}`);
 		await expect(send({ ...rule2, saidBy: 99, source: message.id })).rejects.toThrow("Unknown person: 99");
 		await expect(send({ ...rule2, source: message.id, replaces: 99 })).rejects.toThrow("Unknown rule: 99");
 		await expect(
@@ -702,6 +716,21 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				messages: [draft, asked, earlier],
 			});
 
+			// Each object is one row of its table, and the edit changed the row of the message in its place.
+			expect(storeRows(project, "SELECT id, name FROM person")).toEqual([sam, rufin]);
+			expect(storeRows(project, "SELECT id, topic, last FROM thread")).toEqual([
+				{ id: thread.id, topic: "Scope", last: draft.at },
+			]);
+			expect(storeRows(project, "SELECT thread, person FROM thread_person ORDER BY rowid")).toEqual([
+				{ thread: thread.id, person: sam.id },
+				{ thread: thread.id, person: rufin.id },
+			]);
+			expect(storeRows(project, "SELECT id, person, state, at, text FROM message ORDER BY rowid")).toEqual([
+				{ id: draft.id, person: null, state: "draft", at: 2_000, text: draft.text },
+				{ id: asked.id, person: sam.id, state: "received", at: 1_000, text: asked.text },
+				{ id: sent.id, person: null, state: "sent", at: 1_500, text: "Type 56 as well." },
+			]);
+
 			// A message out that gets a person as its author becomes a message in, and a message in that gets the user a draft.
 			const turnedIn = await send({ ...edit, message: draft.id, text: draft.text, from: rufin.id }, project);
 			expect(turnedIn).toEqual({ ...draft, from: rufin.id, direction: "in", state: "received", by: "editor" });
@@ -781,6 +810,12 @@ describe("the store of the project", { timeout: 30_000 }, () => {
 				thread: { thread: { ...joined, last: asked.at }, messages: [turnedOut] },
 				rules: { rules: [unsourced] },
 			});
+
+			// A delete removes the row of the message, and the retired rule keeps its row with no source.
+			expect(storeRows(project, "SELECT id FROM message")).toEqual([{ id: turnedOut.id }]);
+			expect(storeRows(project, "SELECT id, status, source, thread FROM rule")).toEqual([
+				{ id: rule.id, status: "retired", source: null, thread: null },
+			]);
 
 			await edits?.close();
 			edits = await runHost({ project, cwd: dir, models });

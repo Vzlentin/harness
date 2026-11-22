@@ -32,7 +32,8 @@ import {
 	writeAnswers,
 	writeRound,
 } from "./parleys.ts";
-import { changeRule, readRules, setRule } from "./project-rules.ts";
+import { changeRule, setRule } from "./project-rules.ts";
+import type { ProjectStore } from "./project-store.ts";
 import {
 	addPerson,
 	addThread,
@@ -43,9 +44,7 @@ import {
 	joinThread,
 	logMessage,
 	markMessage,
-	readPersons,
 	readThread,
-	readThreads,
 } from "./project.ts";
 import { afterTurn, stopWork } from "./work-workers.ts";
 
@@ -75,6 +74,8 @@ export type ProjectsHost = Pick<
 		readonly models: Models;
 		/** The memory of the project agent, for the `memory` requests. */
 		readonly memory: HostMemory;
+		/** The persons, the threads, the messages and the rules. */
+		readonly store: ProjectStore;
 	};
 
 /** A request of a type of the project that gets a reply: every type but the watch `watch-project`. */
@@ -147,41 +148,38 @@ export async function projectAsk(
 	}
 }
 
-function person(request: Extract<ProjectRequest, { type: "person" }>, host: ProjectsHost): Promise<Replies["person"]> {
+function person(request: Extract<ProjectRequest, { type: "person" }>, { store }: ProjectsHost): Replies["person"] {
 	switch (request.action) {
 		case "add":
-			return host.harness.commit((tx) => addPerson(tx, request), context);
+			return store.write((tx) => addPerson(tx, request));
 		case "list":
-			return readPersons(host.harness, context);
+			return { persons: store.persons() };
 	}
 }
 
-function thread(request: Extract<ProjectRequest, { type: "thread" }>, host: ProjectsHost): Promise<Replies["thread"]> {
+function thread(request: Extract<ProjectRequest, { type: "thread" }>, { store }: ProjectsHost): Replies["thread"] {
 	switch (request.action) {
 		case "add":
-			return host.harness.commit((tx) => addThread(tx, request), context);
+			return store.write((tx) => addThread(tx, request));
 		case "list":
-			return readThreads(host.harness, context);
+			return { threads: store.threads() };
 		case "read":
-			return readThread(host.harness, request.id, context);
+			return readThread(store, request.id);
 		case "join":
-			return host.harness.commit((tx) => joinThread(tx, request), context);
+			return store.write((tx) => joinThread(tx, request));
 	}
 }
 
-function message(
-	request: Extract<ProjectRequest, { type: "message" }>,
-	host: ProjectsHost,
-): Promise<Replies["message"]> {
+function message(request: Extract<ProjectRequest, { type: "message" }>, { store }: ProjectsHost): Replies["message"] {
 	switch (request.action) {
 		case "log":
-			return host.harness.commit((tx) => logMessage(tx, request, request.caller), context);
+			return store.write((tx) => logMessage(tx, request, request.caller));
 		case "mark":
-			return host.harness.commit((tx) => markMessage(tx, request, request.caller), context);
+			return store.write((tx) => markMessage(tx, request, request.caller));
 		case "edit":
-			return host.harness.commit((tx) => editMessage(tx, request, request.caller), context);
+			return store.write((tx) => editMessage(tx, request, request.caller));
 		case "delete":
-			return host.harness.commit((tx) => deleteMessage(tx, request, request.caller), context);
+			return store.write((tx) => deleteMessage(tx, request));
 	}
 }
 
@@ -195,12 +193,12 @@ async function digest(caller: string, head: string | undefined, host: ProjectsHo
 	return { text: next.text };
 }
 
-function rule(request: Extract<ProjectRequest, { type: "rule" }>, host: ProjectsHost): Promise<Replies["rule"]> {
+function rule(request: Extract<ProjectRequest, { type: "rule" }>, { store }: ProjectsHost): Replies["rule"] {
 	switch (request.action) {
 		case "set":
-			return host.harness.commit((tx) => setRule(tx, request, request.caller), context);
+			return store.write((tx) => setRule(tx, request, request.caller));
 		case "list":
-			return readRules(host, request, context);
+			return { rules: store.rules(request) };
 		case "decide":
 		case "retire":
 		case "delete":
@@ -208,7 +206,7 @@ function rule(request: Extract<ProjectRequest, { type: "rule" }>, host: Projects
 		case "create": {
 			const { type: _, caller, ...change } = request;
 
-			return host.harness.commit((tx) => changeRule(tx, change, caller), context);
+			return store.write((tx) => changeRule(tx, change, caller));
 		}
 	}
 }
