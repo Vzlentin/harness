@@ -42,7 +42,7 @@ import { savedTrust } from "../protocol/trust.ts";
 import { type DurableScope, type Send, subagentTool, todoTool } from "../tool.ts";
 import { setUpAgent } from "./agent.ts";
 import { AskEventDispatcher } from "./ask-events.ts";
-import { ENTRY_ASKS, readOpenAsks } from "./asks.ts";
+import { ENTRY_ASKS } from "./asks.ts";
 import { BASH_TIMEOUT_SECONDS, bashTimeoutExtension } from "./bash-timeout.ts";
 import { serveBridge } from "./bridge.ts";
 import { askClassifier, classifierModel } from "./classify.ts";
@@ -225,7 +225,6 @@ export async function runHost(options: {
 			await tell?.(input);
 		},
 		liveWorkers: () => liveWorkers(openWorkerHost()),
-		openAsks: () => readOpenAsks(place.store, context),
 		asks: ENTRY_ASKS,
 		todos: ENTRY_TODOS,
 		degraded,

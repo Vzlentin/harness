@@ -123,7 +123,17 @@ export default function projects(options: EntryOptions): Entry {
 			await migrateLabels(harness, storage, options.labelChild);
 			const items = await ItemIndex.open(harness, storage);
 			const path = statePaths(project).store;
-			const storeFile = storeFilePasses({ harness, storage, root, asks: options.asks, path, warn });
+
+			const storeFile = storeFilePasses({
+				harness,
+				storage,
+				root,
+				asks: options.asks,
+				todos: options.todos,
+				path,
+				warn,
+			});
+
 			opened = { harness, root, storage, items, storeFile };
 			await stopEndedWork(host());
 		},

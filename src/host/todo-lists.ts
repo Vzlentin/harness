@@ -9,6 +9,7 @@ import * as durable from "@earendil-works/pi-durable";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList } from "../protocol/todo.ts";
 import { boundedReplay } from "./checkpoint.ts";
 import type { EntryTodos } from "./entries.ts";
+import { readCallerTodos, readTodos, todoListChange } from "./todo.ts";
 
 /** Whose list: a conversation, a task, or a caller that is not a conversation of the host. */
 export type TodoOwner =
@@ -57,6 +58,9 @@ export const CallerTodos = durable.defineDocFamily<TodoList, null>({
 export const ENTRY_TODOS: EntryTodos = {
 	has: async (reader, id, context) => (await reader.snapshot(ConversationTodos, id, context)) !== undefined,
 	draft: (tx, id) => tx.doc(ConversationTodos, id),
+	read: (reader, id, context) => readTodos(reader, { kind: "conversation", id }, context),
+	callers: readCallerTodos,
+	changed: todoListChange,
 	load: loadTodos,
 };
 

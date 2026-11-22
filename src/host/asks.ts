@@ -53,6 +53,7 @@ type AskBase = Omit<Extract<Ask, { readonly state: "open" }>, "state">;
 /** The asks of the store, as the entries get them. */
 export const ENTRY_ASKS: EntryAsks = {
 	read: readAsks,
+	open: readOpenAsks,
 	inCommit: async (tx) => (await tx.doc(Asks)).asks,
 	add: addAsks,
 	answer: answerAsks,

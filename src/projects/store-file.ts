@@ -5,9 +5,8 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import type { EntryAsks } from "../host/entries.ts";
+import type { EntryAsks, EntryTodos } from "../host/entries.ts";
 import { CommitPasses } from "../host/passes.ts";
-import { readCallerTodos, readTodos, todoListChange } from "../host/todo.ts";
 import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { type FileMessage, STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
@@ -27,6 +26,9 @@ import {
 
 const context = BACKGROUND_CONTEXT;
 
+/** What the file uses of the lists of todos. */
+type StoreFileTodos = Pick<EntryTodos, "read" | "callers" | "changed">;
+
 /** What the file uses of the host. */
 export type StoreFileHost = {
 	readonly harness: Harness;
@@ -38,6 +40,7 @@ export type StoreFileHost = {
 	/** The root conversation, whose list is the list of the project. */
 	readonly root: Conversation;
 	readonly asks: Pick<EntryAsks, "read">;
+	readonly todos: StoreFileTodos;
 	/** The file, `store.json` in the state folder of the project. */
 	readonly path: string;
 	readonly warn: (cause: unknown) => void;
@@ -50,9 +53,9 @@ export type StoreFileHost = {
 export function storeFilePasses(host: StoreFileHost): CommitPasses {
 	return new CommitPasses(
 		host.harness,
-		(change) => projectChange(change) || todoListChange(change, host.root.id) || itemChange(change),
+		(change) => projectChange(change) || host.todos.changed(change, host.root.id) || itemChange(change),
 		() =>
-			readStoreFile(host.harness, host.storage, host.root.id, host.asks)
+			readStoreFile(host.harness, host.storage, host.root.id, host)
 				.then((file) => writeJsonFile(host.path, file))
 				.catch((cause: unknown) => host.warn(`Could not write ${host.path}: ${errorMessage(cause)}`)),
 	);
@@ -60,14 +63,18 @@ export function storeFilePasses(host: StoreFileHost): CommitPasses {
 
 /**
  * Every list of the file, as the store of `harness` has them now, with the list of the project from the root
- * conversation `root`, and the asks from `asks`. `storage`, the storage of `harness`, lists the items and the callers that have a list of todos,
- * and gives the thread of the source of an older rule. A store with no counter of the IDs of items has `lastItem` 0.
+ * conversation `root`, the asks from `asks` and the lists of todos from `todos`. `storage`, the storage of `harness`,
+ * lists the items and the callers that have a list of todos, and gives the thread of the source of an older rule. A
+ * store with no counter of the IDs of items has `lastItem` 0.
  */
 export async function readStoreFile(
 	harness: Harness,
 	storage: Pick<Storage, "scanDocuments" | "entry">,
 	root: ConversationId,
-	asks: Pick<EntryAsks, "read">,
+	{
+		asks,
+		todos: lists,
+	}: { readonly asks: Pick<EntryAsks, "read">; readonly todos: Pick<StoreFileTodos, "read" | "callers"> },
 ): Promise<StoreFile> {
 	const [persons, threads, rules, lastRule, held, parleys, asked] = await Promise.all([
 		readPersons(harness, context),
@@ -85,8 +92,8 @@ export async function readStoreFile(
 
 	// The outbox is read after the messages, so that each message out that they have has its state there.
 	const outbox = new Map((await readOutbox(harness, context)).map((out) => [out.id, out]));
-	const todos = await readTodos(harness, { kind: "conversation", id: root }, context);
-	const callerTodos = await readCallerTodos(harness, storage, context);
+	const todos = await lists.read(harness, root, context);
+	const callerTodos = await lists.callers(harness, storage, context);
 	const items = await allItems(harness, storage, context);
 	const counter = await harness.snapshot(ItemCounterDoc, context);
 

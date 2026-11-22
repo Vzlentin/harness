@@ -7,7 +7,8 @@
  * that shapes it and no open item, and the end of a contract reads the open items that it shapes. A report of a commit
  * by a worker of an item writes its `landed` edge and sets the item `done`, with no refusal for a live run.
  */
-import type { Tx } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { DocumentReader, Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { EntryHandles } from "../host/entries.ts";
 import {
@@ -28,6 +29,8 @@ import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { endContract, knownParley, Parleys } from "./project-docs.ts";
 
+const context = BACKGROUND_CONTEXT;
+
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
 const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;
 
@@ -42,12 +45,19 @@ export type ItemWorkers = {
 };
 
 /** What the read of the workers of an item uses of the host. */
-export type ItemWorkersHost = Pick<EntryHandles, "labelledTasks" | "workers" | "openAsks">;
+export type ItemWorkersHost = Pick<EntryHandles, "labelledTasks" | "workers" | "asks"> & {
+	readonly harness: Pick<DocumentReader, "snapshot">;
+};
 
 /** The workers of the item `id`, as the host has them now. */
 export async function readItemWorkers(host: ItemWorkersHost, id: number): Promise<ItemWorkers> {
 	const label = `item:${id}`;
-	const [tasks, workers, { asks }] = await Promise.all([host.labelledTasks(), host.workers(label), host.openAsks()]);
+
+	const [tasks, workers, { asks }] = await Promise.all([
+		host.labelledTasks(),
+		host.workers(label),
+		host.asks.open(host.harness, context),
+	]);
 
 	return { tasks: tasks.get(label) ?? [], workers, asks };
 }

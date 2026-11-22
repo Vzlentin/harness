@@ -274,6 +274,8 @@ export type AskAnswer = Extract<AnswerInput, { readonly id: number }>;
 export type EntryAsks = {
 	/** Every ask, in ID order. */
 	readonly read: (reader: Pick<DocumentReader, "snapshot">, context: Context) => Promise<AskList>;
+	/** The open asks, in ID order. */
+	readonly open: (reader: Pick<DocumentReader, "snapshot">, context: Context) => Promise<AskList>;
 	/** Every ask in `tx`, in ID order. The writes of the asks in `tx` change the list. */
 	readonly inCommit: (tx: Tx) => Promise<readonly Ask[]>;
 	/** Adds an open ask for each of `asks`, asked at `at` by the caller `by`, each with the next ID, and gives them. */
@@ -315,6 +317,16 @@ export type EntryTodos = {
 	readonly has: (reader: Pick<DocumentReader, "snapshot">, id: ConversationId, context: Context) => Promise<boolean>;
 	/** The list of the conversation `id` in `tx`, which the commit writes with its changes. */
 	readonly draft: (tx: Tx, id: ConversationId) => Promise<TodoList>;
+	/** The list of the conversation `id`, empty when it has none. */
+	readonly read: (reader: Pick<DocumentReader, "snapshot">, id: ConversationId, context: Context) => Promise<TodoList>;
+	/** The list of each caller that has one, by caller, which the scan of `storage`, the storage of `reader`, finds. */
+	readonly callers: (
+		reader: Pick<DocumentReader, "snapshot">,
+		storage: Pick<Storage, "scanDocuments">,
+		context: Context,
+	) => Promise<CallerTodoList[]>;
+	/** Whether `change`, a change of a commit, can change the list of the conversation `id` or the list of a caller. */
+	readonly changed: (change: CommitChange, id: ConversationId) => boolean;
 	/**
 	 * Writes `todos` to the list of the root conversation `root` in `tx`, and the list of each caller of
 	 * `callerTodos`, also an empty one, into a store whose lists are empty.
@@ -350,8 +362,6 @@ export type EntryHandles = {
 	readonly tell: (caller: string, input: Input) => Promise<void>;
 	/** The live workers of each label. It throws until the host is open. */
 	readonly liveWorkers: () => Promise<ReadonlyMap<string, readonly Worker[]>>;
-	/** The open asks of the store. It throws until the host is open, as `place.store` does. */
-	readonly openAsks: () => Promise<AskList>;
 	readonly asks: EntryAsks;
 	readonly todos: EntryTodos;
 	/** The degraded states of the host. */

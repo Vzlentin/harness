@@ -59,7 +59,6 @@ export type ProjectsHost = Pick<
 	| "degraded"
 	| "warn"
 	| "classifier"
-	| "openAsks"
 	| "asks"
 	| "liveWorkers"
 	| "workers"
@@ -142,7 +141,7 @@ export async function projectAsk(
 		case "read":
 			return readAsk(host.harness, host.asks, request, context);
 		case "list":
-			return host.openAsks();
+			return host.asks.open(host.harness, context);
 	}
 }
 

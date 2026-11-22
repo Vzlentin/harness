@@ -37,12 +37,6 @@ let host: Host | undefined;
 /** The entry of the tests, with requests of each kind and the protocol `fixture` at version 3. */
 const FIXTURE_ENTRY = `import { Type } from ${JSON.stringify(TYPEBOX)};
 export default function fixtureEntry(handles) {
-	let beforeOpen = "no error";
-	try {
-		handles.openAsks();
-	} catch (error) {
-		beforeOpen = error.message;
-	}
 	const classifier = async () => {
 		try {
 			await handles.classifier.model("todoClassifier");
@@ -67,8 +61,6 @@ export default function fixtureEntry(handles) {
 				passive: () => true,
 				handle: async () => ({
 					stateDir: handles.stateDir,
-					beforeOpen,
-					asks: await handles.openAsks(),
 					classifier: await classifier(),
 					degraded: handles.degraded.list().map((state) => state.kind),
 				}),
@@ -260,14 +252,12 @@ describe("entry requests", () => {
 		]);
 	});
 
-	it("gives the entries the state directory, the open asks once the host is open, and the classifier", async () => {
+	it("gives the entries the state directory and the classifier", async () => {
 		expect(await exchange(PROJECT, [{ type: "fixture.handles" }], 1)).toEqual([
 			{
 				ok: true,
 				value: {
 					stateDir: statePaths(PROJECT).dir,
-					beforeOpen: "The host is not open yet",
-					asks: { asks: [] },
 					classifier: "No classifier: log in to typesafe or set todoClassifier",
 					degraded: ["no-classifier"],
 				},

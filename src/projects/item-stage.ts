@@ -19,7 +19,7 @@ const context = BACKGROUND_CONTEXT;
  * What the stage reads of the host: the store, the open asks, the started tasks of each label, and the live workers of
  * each label.
  */
-export type StageHost = Pick<EntryHandles, "openAsks" | "labelledTasks" | "liveWorkers"> & {
+export type StageHost = Pick<EntryHandles, "asks" | "labelledTasks" | "liveWorkers"> & {
 	readonly harness: Pick<DocumentReader, "snapshot">;
 };
 
@@ -61,7 +61,7 @@ export async function stageItem(host: StageHost, item: WorkItem): Promise<Staged
 async function readInputs(host: StageHost): Promise<StageInputs> {
 	const [{ parleys }, { asks }, { held }, tasks, workers] = await Promise.all([
 		readParleys(host.harness, context),
-		host.openAsks(),
+		host.asks.open(host.harness, context),
 		readHeld(host.harness, context),
 		host.labelledTasks(),
 		host.liveWorkers(),

@@ -42,7 +42,7 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 
 		// A read-only open recovers nothing, so a store that is not empty stays as it is.
 		const lists = await withHarness(store, true, (harness, storage) =>
-			readStoreFile(harness, storage, ROOT_CONVERSATION_ID, handles.asks),
+			readStoreFile(harness, storage, ROOT_CONVERSATION_ID, handles),
 		);
 
 		if (Object.values(storeCounts(lists)).some((count) => count > 0)) {
