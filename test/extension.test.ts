@@ -1,25 +1,15 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
-import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import type {
-	ClassifierApi,
-	ClassifierContext,
-	ClassifierModel,
-	ClassifierOptions,
-	ClassifierResult,
-	ToolCall,
-} from "@earendil-works/pi-ai";
-import { createProvider } from "@earendil-works/pi-ai/models";
+import type { ToolCall } from "@earendil-works/pi-ai";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
 	type AgentToolResult,
-	type BeforeAgentStartEvent,
 	createEventBus,
 	type EventBus,
 	type ExtensionAPI,
@@ -27,51 +17,25 @@ import {
 	type ExtensionContext,
 	type ExtensionHandler,
 	type ExtensionWidgetOptions,
-	type NormalizedBuildSystemPromptOptions,
 	type SessionEntry,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type Theme,
-	type ToolCallEvent,
-	type ToolCallEventResult,
 	type WidgetPlacement,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { type Static, Type } from "typebox";
-import { Value } from "typebox/value";
+import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type extension from "../pi/index.ts";
-import { connect, request } from "../src/client/client.ts";
+import { request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
-import { memoryTool } from "../src/memory-tool.ts";
-import { projectTools } from "../src/project-tool.ts";
-import { GateReply } from "../src/protocol/gate.ts";
-import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { Message, Rule } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
-import { PROTOCOL_VERSION, versionMismatch } from "../src/protocol/requests.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
-import { installMemo, memoCalls, readState, seed } from "./fake-memo.ts";
-import {
-	calls,
-	drawWidget,
-	gates,
-	models,
-	rawReply,
-	root,
-	setSettings,
-	setUp,
-	spawnAs,
-	startHost,
-	tearDown,
-	until,
-	untilState,
-} from "./helpers.ts";
+import { drawWidget, gates, rawReply, root, setUp, spawnAs, startHost, tearDown, untilState } from "./helpers.ts";
 
 const run = promisify(execFile);
-const LoggedMessage = Type.Object({ action: Type.Literal("log"), value: Message });
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FAUX = { provider: "faux", model: "faux-1" };
 
@@ -94,13 +58,12 @@ type Definition = {
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
 /** An event of Pi that the tests give to the extension's handlers. */
-type PiEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent | ToolCallEvent;
+type PiEvent = SessionStartEvent | SessionShutdownEvent;
 
 /**
- * An event handler that the extension gives to `pi.on`; the tests call those of `session_start`, `session_shutdown`,
- * `before_agent_start` and `tool_call`.
+ * An event handler that the extension gives to `pi.on`; the tests call those of `session_start` and `session_shutdown`.
  */
-type Handler = ExtensionHandler<PiEvent, ToolCallEventResult>;
+type Handler = ExtensionHandler<PiEvent>;
 
 /**
  * A registered tool: its description, its schemas, its execution mode, a call with `args` that gives its text, and the
@@ -159,9 +122,6 @@ let modules: string;
 let subagentExtension: typeof extension;
 let host: Host | undefined;
 
-/** A fake host of `main`, which a test closes or `afterEach` closes. */
-let fake: Server | undefined;
-
 beforeAll(async () => {
 	modules = join(realpathSync(await mkdtemp(join(tmpdir(), "harness-extension-"))), "node_modules");
 	const harness = join(modules, "@vzlentin", "harness");
@@ -198,37 +158,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	await closeFake();
 	await host?.close();
 	host = undefined;
 	await tearDown();
 });
-
-/**
- * Starts a fake host of `main` that answers `hello` with the protocol version `version` and the PID 7, and each other
- * request with the error `Invalid request`.
- */
-async function startFake(version: number): Promise<void> {
-	const { socket } = statePaths(MAIN_PROJECT);
-	await mkdir(dirname(socket), { recursive: true });
-	fake = createServer((connection: Socket) => {
-		onLines(connection, (line) => {
-			const reply = line.includes('"type":"hello"')
-				? { ok: true, value: { version, pid: 7 } }
-				: { ok: false, error: "Invalid request" };
-
-			connection.write(`${JSON.stringify(reply)}\n`);
-		});
-	});
-	await new Promise<void>((resolve) => fake?.listen(socket, resolve));
-}
-
-async function closeFake(): Promise<void> {
-	const server = fake;
-	fake = undefined;
-
-	if (server !== undefined) await new Promise((resolve) => server.close(resolve));
-}
 
 /** The context of a tool call: the fields that the tool reads for `list`. */
 function toolContext(): ToolContext {
@@ -491,64 +424,6 @@ async function kernelStart(registered: Registered): Promise<KernelStarting> {
 	return starting;
 }
 
-/** The sections of the system prompt after the `before_agent_start` handlers, for a session with `selectedTools`. */
-async function agentStartSections(registered: Registered, selectedTools: string[]): Promise<Record<string, string>> {
-	const sections: Record<string, string> = {};
-	// SAFETY: the extension reads only the selected tools and the sections of the options.
-	const systemPromptOptions = { selectedTools, sections } as NormalizedBuildSystemPromptOptions;
-
-	await sessionEvent(registered, {
-		type: "before_agent_start",
-		messageType: "user",
-		prompt: "Hello",
-		systemPrompt: "",
-		systemPromptOptions,
-	});
-
-	return sections;
-}
-
-/** The result of a `before_agent_start` handler that gives the session a custom message. */
-const AgentStartMessage = Type.Object({
-	message: Type.Object({ customType: Type.String(), content: Type.String(), display: Type.Boolean() }),
-});
-
-/**
- * The custom message that the `before_agent_start` handlers give the session `session` with no UI, if one does. The
- * branch of the session has `branch`.
- */
-async function agentStartMessage(
-	registered: Registered,
-	branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]> = [],
-): Promise<Static<typeof AgentStartMessage>["message"] | undefined> {
-	const selectedTools: string[] = [];
-	// SAFETY: the extension reads only the selected tools and the sections of the options.
-	const systemPromptOptions = { selectedTools, sections: {} } as NormalizedBuildSystemPromptOptions;
-
-	const event = {
-		type: "before_agent_start",
-		messageType: "user",
-		prompt: "Hello",
-		systemPrompt: "",
-		systemPromptOptions,
-	} as const;
-
-	const ctx: Pick<ExtensionContext, "hasUI"> & {
-		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getBranch">;
-	} = { hasUI: false, sessionManager: { getSessionId: () => "session", getBranch: () => branch } };
-
-	let message: Static<typeof AgentStartMessage>["message"] | undefined;
-
-	for (const handler of registered.handlers.get("before_agent_start") ?? []) {
-		// SAFETY: the handlers of `before_agent_start` read only these fields of the context.
-		const result: unknown = await handler(event, ctx as ExtensionContext);
-
-		if (Value.Check(AgentStartMessage, result)) message = result.message;
-	}
-
-	return message;
-}
-
 /** The start of a kernel of the Pi session: it runs the startup code in its argument, and binds `tools` and `ToolError`. */
 const KERNEL_START = [
 	"import asyncio, json, sys",
@@ -588,140 +463,23 @@ const LATE_SCRIPT = [
 	"    print(error)",
 ].join("\n");
 
-/** The result of a `tool_call` handler that refuses the call. */
-const Refused = Type.Object({ block: Type.Literal(true), reason: Type.String() });
-
-/** The states that the classifier of the gate got, in order. */
-const gateStates: unknown[] = [];
-
-/** The classifier of the gate: every command writes, and breaks the rule 1. */
-async function classifyGate(
-	model: ClassifierModel<ClassifierApi>,
-	context: ClassifierContext,
-	_options?: ClassifierOptions,
-): Promise<ClassifierResult> {
-	gateStates.push(context.state);
-
-	const result = {
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		timestamp: Date.now(),
-		stopReason: "stop",
-	} as const;
-
-	if (context.questions.writes !== undefined) {
-		return { ...result, answers: { writes: { type: "bool", probability: 0.9 } } };
-	}
-
-	return { ...result, answers: { rule: { type: "choice", choice: "1", probabilities: { 1: 1 }, confidence: 1 } } };
-}
-
-/** The classifier model of `gateClassifier` by default, with `classifyGate`. */
-function gateClassifier(): ClassifierModel<ClassifierApi> {
-	return {
-		type: "classifier",
-		id: "typesafe/jev-1.14",
-		name: "Jev",
-		api: "test-gate",
-		provider: "openrouter",
-		baseUrl: "http://gate.test",
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 4096,
-	};
-}
-
-/**
- * Calls the `tool_call` handlers of the extension for the call `call`, in the session `session`, whose branch has the
- * user messages `one` to `four`, a custom entry, and three custom messages that the user did not type: the delivered
- * answers of a child and of the user, and a digest. With `answer`, the session has a UI whose confirm
- * prompts go to `prompts` and get `answer`, and whose notifications go to `notes`. It gives the refusal, or nothing
- * when the call runs.
- */
-async function toolCall(
-	registered: Registered,
-	call: { readonly toolName: string; readonly input: Record<string, string>; readonly id: string },
-	answer?: boolean,
-	prompts: string[] = [],
-	notes: string[] = [],
-): Promise<Static<typeof Refused> | undefined> {
-	type Branch = ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
-
-	const user = (id: string, content: string | { type: "text"; text: string }[]): Branch[number] => ({
-		type: "message",
-		id,
-		parentId: null,
-		timestamp: "",
-		message: { role: "user", content, timestamp: 0 },
-	});
-
-	const custom = (id: string, customType: string, content: string): Branch[number] => ({
-		type: "custom_message",
-		id,
-		parentId: null,
-		timestamp: "",
-		customType,
-		content,
-		display: true,
-	});
-
-	const branch: Branch = [
-		user("one", "one"),
-		user("two", "two"),
-		MIRROR,
-		user("three", "three"),
-		custom("answer", "subagent-answer", "An answer of a child"),
-		user("four", [{ type: "text", text: "four" }]),
-		custom("user-answer", "user-answer", "An answer of the user to an ask"),
-		custom("digest", "harness-digest", "A digest of the store"),
-	];
-
-	const ctx: Pick<ExtensionContext, "hasUI" | "signal"> & {
-		readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId" | "getBranch">;
-		readonly ui: Pick<ExtensionContext["ui"], "confirm" | "notify">;
-	} = {
-		hasUI: answer !== undefined,
-		signal: undefined,
-		sessionManager: { getSessionId: () => "session", getBranch: () => branch },
-		ui: {
-			confirm: async (title: string, message: string) => {
-				prompts.push(`${title}\n${message}`);
-
-				return answer === true;
-			},
-			notify: (message: string) => {
-				notes.push(message);
-			},
-		},
-	};
-
-	const event = { type: "tool_call", toolCallId: call.id, toolName: call.toolName, input: call.input } as const;
-	let result: ToolCallEventResult | undefined;
-
-	for (const handler of registered.handlers.get("tool_call") ?? []) {
-		// SAFETY: the gate reads only these fields of the context.
-		result = (await handler(event, ctx as ExtensionContext)) ?? result;
-	}
-
-	return result === undefined ? undefined : Value.Parse(Refused, result);
-}
-
 describe("the Pi extension", () => {
 	it("uses its harness dependency without a harness on PATH", async () => {
 		host = await startHost();
 		const registered = await load();
 
 		expect(registered.tools.get("subagent")?.description).toBe(TOOL_DESCRIPTION);
-		expect(registered.tools.get("item")?.description).not.toContain("board:");
-		expect(registered.tools.get("parley")?.description).toContain(
-			"makes the parley a contract a moment after the answer, and adds a work item with the title of the parley when the contract shapes no item: read the parley to see them.",
-		);
-
-		expect(registered.tools.get("parley")?.description).toContain(
-			"It takes only a contract that shapes no open item: the change of the last open item of a contract to done or dropped ends the contract.",
-		);
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
+	});
+
+	it("gives the session no tool, command, section or gate of the store of the project or of the memory", async () => {
+		const registered = await load();
+
+		expect(registered.handlers.get("before_agent_start")).toBeUndefined();
+		expect(registered.handlers.get("tool_call")).toBeUndefined();
+
+		for (const name of ["thread", "rule", "parley", "item", "memory"]) expect(registered.tools.has(name)).toBe(false);
+		expect(registered.commands.has("rules")).toBe(false);
 	});
 
 	it("registers /vc and its shortcut", async () => {
@@ -1065,278 +823,6 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets);
 	});
 
-	it("gives the thread, rule, parley and item tools of the host, on the store of the project", async () => {
-		host = await startHost();
-		const registered = await load();
-
-		const expected = projectTools({ Type }, (tool) => ({
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters,
-			outputSchema: tool.output,
-			executionMode: "sequential",
-		}));
-
-		for (const { name, ...tool } of expected) expect(registered.tools.get(name)).toMatchObject(tool);
-		expect(expected.map((tool) => tool.name)).toEqual(["thread", "rule", "parley", "item"]);
-		expect(registered.tools.has("term")).toBe(false);
-		expect(registered.tools.has("part")).toBe(false);
-
-		const person = await request({ type: "person", action: "add", name: "Sam" }, { start: false });
-		const thread = await request({ type: "thread", action: "add", topic: "Pi", persons: [1] }, { start: false });
-
-		if (person === undefined || thread === undefined || !("id" in thread)) throw new Error("no host");
-		const tools = registered.tools;
-		const at = Date.UTC(2026, 10, 12);
-		const logged = await tools.get("thread")?.call({ action: "log", thread: thread.id, from: 1, at, text: "Hello" });
-		const source = Value.Parse(LoggedMessage, tools.get("thread")?.structured[0]).value.id;
-		expect(logged).toBe(`${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`);
-		const rule = { action: "set", name: "hello", kind: "conduct", value: "Say hello.", saidBy: 1, source };
-
-		expect(await tools.get("rule")?.call(rule)).toBe(
-			`1 hello (conduct, open): Say hello. [said by Sam (1) in message ${source}]\n`,
-		);
-		await expect(tools.get("rule")?.call({ action: "set", id: 1, value: "Say hi.", saidBy: 1 })).rejects.toThrow(
-			"set requires source",
-		);
-
-		const asks = [
-			{ title: "Where", kind: "your call", options: [{ key: "a", label: "Here" }], plan: "a", view: "Here" },
-		];
-
-		expect(await tools.get("parley")?.call({ action: "round", slug: "pi", title: "Pi asks", goal: "Ask.", asks })).toBe(
-			"pi · open · Pi asks\n1 · Where · your call · open · plan a · Here\n  a · Here\n[pi] 1a\n",
-		);
-		expect(await tools.get("parley")?.call({ action: "read", slug: "pi", ask: 1 })).toBe(
-			"1 · Where · your call · open · plan a · Here\nHere\n",
-		);
-		await expect(tools.get("parley")?.call({ action: "end", slug: "pi", status: "done" })).rejects.toThrow(
-			"Parley pi is open",
-		);
-		// The asker records the vault note of an ask, by its number in its parley or by its ID.
-		expect(await tools.get("parley")?.call({ action: "note", slug: "pi", ask: 1, note: "20261115-pi" })).toBe(
-			"1 · Where · your call · open · plan a · Here\n",
-		);
-		expect(tools.get("parley")?.structured.at(-1)).toMatchObject({
-			action: "note",
-			value: { note: "20261115-pi", asker: "session", by: "session", parley: { n: 1 } },
-		});
-		// A round with item writes the edge shapes from its parley; item needs slug.
-		const item = await request({ type: "item", action: "add", caller: "cli", title: "Pi" }, { start: false });
-
-		if (item === undefined || !("id" in item)) throw new Error("no item");
-		await tools.get("parley")?.call({ action: "round", slug: "pi", item: item.id, asks: [{ title: "More" }] });
-		expect(await request({ type: "item", action: "read", id: item.id }, { start: false })).toMatchObject({
-			edges: [{ from: "parley:pi", kind: "shapes", to: `item:${item.id}`, by: "session" }],
-		});
-		await expect(
-			tools.get("parley")?.call({ action: "round", item: item.id, asks: [{ title: "Lost" }] }),
-		).rejects.toThrow("round requires slug");
-		const lone = await tools.get("parley")?.call({ action: "round", asks: [{ title: "Alone" }] });
-		const loneId = Number(lone?.split(" ")[0]);
-		expect(await tools.get("parley")?.call({ action: "note", ask: loneId, note: "alone" })).toBe(
-			`${loneId} · Alone · open\n`,
-		);
-		expect(tools.get("parley")?.structured.at(-1)).toMatchObject({
-			action: "note",
-			value: { id: loneId, note: "alone" },
-		});
-		await expect(tools.get("parley")?.call({ action: "note", slug: "pi", note: "n" })).rejects.toThrow(
-			"note requires ask",
-		);
-		await expect(tools.get("parley")?.call({ action: "note", ask: loneId })).rejects.toThrow("note requires note");
-		await expect(tools.get("parley")?.call({ action: "note", ask: loneId, note: "  " })).rejects.toThrow(
-			'Invalid ask request: note: must match pattern "\\S"',
-		);
-		expect(await request({ type: "ask", action: "read", id: loneId }, { start: false })).toMatchObject({
-			note: "alone",
-		});
-		// The item tool gives the text of each action, and its reply as the structured result.
-		const items = tools.get("item");
-		const added = await items?.call({ action: "add", title: "Ship Pi", text: "All of it." });
-		const id = Number(added?.split(" ")[1]);
-		expect(added).toBe(`○ ${id} inbox Ship Pi\n`);
-		expect(await items?.call({ action: "set", id, title: "Ship the Pi side" })).toBe(
-			`○ ${id} inbox Ship the Pi side\n`,
-		);
-		const run = "run:20261120T172928-841433af";
-		expect(await items?.call({ action: "link", from: run, kind: "serves", to: `item:${id}` })).toBe(
-			`${run} serves item:${id}\n`,
-		);
-		expect(await items?.call({ action: "read", id })).toBe(
-			`○ ${id} inbox Ship the Pi side\nAll of it.\n${run} serves item:${id}\n`,
-		);
-		expect(await items?.call({ action: "list" })).toContain(`○ ${id} inbox Ship the Pi side\n`);
-		expect(await items?.call({ action: "set", id, state: "dropped" })).toBe(`✗ ${id} dropped Ship the Pi side\n`);
-		expect(await items?.call({ action: "list", state: "dropped" })).toBe(`✗ ${id} dropped Ship the Pi side\n`);
-		expect(
-			items?.structured.map((result) => Value.Parse(Type.Object({ action: Type.String() }), result).action),
-		).toEqual(["add", "set", "link", "read", "list", "set", "list"]);
-		expect(items?.structured[2]).toEqual({
-			action: "link",
-			value: { from: run, kind: "serves", to: `item:${id}`, at: expect.any(Number), by: "session" },
-		});
-		expect(items?.structured.at(-1)).toMatchObject({
-			action: "list",
-			value: { items: [{ id, state: "dropped", stage: "dropped", needsYou: false, by: "session" }] },
-		});
-		await expect(items?.call({ action: "link", from: "nope", kind: "serves", to: `item:${id}` })).rejects.toThrow(
-			"Invalid item reference: nope",
-		);
-
-		// The answers of the parley tool are the answers of the agent of the session.
-		await tools.get("parley")?.call({ action: "answer", slug: "pi", answers: [{ ask: 1, answer: "a" }] });
-		expect(await request({ type: "ask", action: "read", slug: "pi", n: 1 }, { start: false })).toMatchObject({
-			state: "answered",
-			by: "session",
-			author: { kind: "agent", caller: "session" },
-		});
-		expect(await tools.get("thread")?.call({ action: "read", thread: thread.id })).toBe(
-			`${thread.id} Pi with Sam (1): last message 2026-11-12T00:00:00.000Z\n${source} 2026-11-12T00:00:00.000Z Sam (1) (received): Hello\n`,
-		);
-		// The host keeps the session ID as the caller of each write.
-		expect(await request({ type: "rule", action: "list" }, { start: false })).toMatchObject({
-			rules: [{ id: 1, name: "hello", saidBy: 1, source, by: "session" }],
-		});
-		expect(await request({ type: "thread", action: "read", id: thread.id }, { start: false })).toMatchObject({
-			thread: { last: at },
-			messages: [{ id: source, text: "Hello", by: "session" }],
-		});
-
-		// Before a turn, the session gets its digest when it changed, and a mark of the draft changes it.
-		expect(await agentStartMessage(registered)).toMatchObject({
-			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
-		});
-		expect(await agentStartMessage(registered)).toBeUndefined();
-		await tools.get("thread")?.call({ action: "draft", thread: thread.id, text: "Hi Sam" });
-		const draft = Value.Parse(Type.Object({ value: Message }), tools.get("thread")?.structured.at(-1)).value;
-		expect(await agentStartMessage(registered)).toEqual({
-			customType: "harness-digest",
-			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: Sam (Pi, draft not sent)\nheld: none",
-			display: false,
-		});
-		expect(await agentStartMessage(registered)).toBeUndefined();
-		expect(await tools.get("thread")?.call({ action: "mark", message: draft.id, state: "dropped" })).toMatch(
-			new RegExp(`^${draft.id} \\S+ user \\(dropped\\): Hi Sam\n$`),
-		);
-		await expect(tools.get("thread")?.call({ action: "mark", message: draft.id })).rejects.toThrow(
-			"mark requires state",
-		);
-		expect(await agentStartMessage(registered)).toMatchObject({
-			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
-		});
-
-		// A compaction of the session cut the digest from its context, so the next turn gets it again, once.
-		const compacted = [
-			{
-				type: "compaction",
-				id: "compaction-1",
-				parentId: null,
-				timestamp: "",
-				summary: "",
-				firstKeptEntryId: "",
-				tokensBefore: 0,
-			},
-		] as const;
-
-		expect(await agentStartMessage(registered, [...compacted])).toMatchObject({
-			content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
-		});
-		expect(await agentStartMessage(registered, [...compacted])).toBeUndefined();
-	});
-
-	it("starts the host of the project for the digest of a turn when no host runs", async () => {
-		host = await startHost();
-		await request({ type: "item", action: "add", caller: "cli", title: "Pi" }, { start: false });
-		await host.close();
-		host = undefined;
-		const registered = await load();
-		let pid: number | undefined;
-
-		try {
-			expect(await agentStartMessage(registered)).toMatchObject({
-				content: "board of main: 1 open\n○ 1 Pi\nwaiting on: none\nheld: none",
-			});
-			const client = await connect({ start: false, project: MAIN_PROJECT });
-			client?.close();
-			pid = client?.pid;
-			expect(pid).toBeGreaterThan(0);
-			expect(pid).not.toBe(process.pid);
-		} finally {
-			if (pid !== undefined && pid > 0 && pid !== process.pid) process.kill(pid, "SIGTERM");
-		}
-
-		await until(() => !existsSync(statePaths(MAIN_PROJECT).socket));
-	}, 30_000);
-
-	it("lists the rules with /rules, open first, and makes the change that the user picks, or with no UI only prints them", async () => {
-		host = await startHost();
-		const registered = await load();
-		const create = { type: "rule", action: "create", caller: "cli", kind: "domain" } as const;
-		await request({ ...create, name: "done", value: "Done." }, { start: false });
-		await request({ ...create, name: "gone", value: "Gone." }, { start: false });
-		await request({ type: "rule", action: "retire", caller: "cli", id: 2 }, { start: false });
-		await request({ type: "person", action: "add", name: "Sam" }, { start: false });
-		const thread = await request({ type: "thread", action: "add", topic: "Rules", persons: [1] }, { start: false });
-		const log = { type: "message", action: "log", caller: "cli", from: 1, direction: "in", text: "Hi" } as const;
-
-		if (thread === undefined || !("id" in thread)) throw new Error("no host");
-		const said = await request({ ...log, thread: thread.id }, { start: false });
-		const set = { type: "rule", action: "set", caller: "cli", saidBy: 1, source: said?.id ?? 0 } as const;
-		await request({ ...set, name: "ask", kind: "conduct", value: "Ask first." }, { start: false });
-
-		const lines = [
-			`3 ask (conduct, open): Ask first. [said by Sam (1) in message ${said?.id}]`,
-			"1 done (domain, decided): Done. [said by user]",
-			"2 gone (domain, retired): Gone. [said by user]",
-		];
-
-		const written: unknown[][] = [];
-		const write = vi.spyOn(process.stdout, "write").mockImplementation((...args) => written.push(args) > 0);
-		const quiet = { hasUI: false, sessionManager: { getSessionId: () => "session" }, ui: {} };
-
-		try {
-			// SAFETY: with no UI, the handler of `/rules` reads only these fields of the context.
-			await registered.commands.get("rules")?.handler("", quiet as Parameters<Command["handler"]>[1]);
-		} finally {
-			write.mockRestore();
-		}
-
-		expect(written).toEqual([[lines.map((line) => `${line}\n`).join("")]]);
-		expect(await request({ type: "rule", action: "list", status: "open" }, { start: false })).toMatchObject({
-			rules: [{ id: 3 }],
-		});
-
-		const options: string[][] = [];
-
-		const ctx = {
-			hasUI: true,
-			sessionManager: { getSessionId: () => "session" },
-			ui: {
-				select: async (_title: string, items: string[]) => {
-					options.push(items);
-
-					return items.includes("Decide") ? "Decide" : lines[0];
-				},
-				notify: (message: string, type?: string) => {
-					registered.notifications.push({ message, type });
-				},
-			},
-		};
-
-		// SAFETY: for a decide, the handler of `/rules` reads only these fields of the context.
-		await registered.commands.get("rules")?.handler("", ctx as Parameters<Command["handler"]>[1]);
-		expect(options).toEqual([
-			["New rule", ...lines],
-			["Decide", "Retire", "Edit", "Delete"],
-		]);
-		const decided = `3 ask (conduct, decided): Ask first. [said by Sam (1) in message ${said?.id}]`;
-		expect(registered.notifications).toEqual([{ message: decided, type: "info" }]);
-		expect(await request({ type: "rule", action: "list", status: "decided" }, { start: false })).toMatchObject({
-			rules: [{ id: 1 }, { id: 3, by: "session" }],
-		});
-	});
-
 	it("shows the todos of the session while one is open or doing, at once after a call, only on a change, and nothing without a host", async () => {
 		const registered = await load();
 		const quiet = noWidgets();
@@ -1382,240 +868,5 @@ describe("the Pi extension", () => {
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, widgets, true);
 		expect(widgets.todos).toMatchObject({ sets: 1, removals: 1 });
 		expect(widgets.subagents).toMatchObject({ sets: 1, removals: 1 });
-	});
-
-	it("gives the session the decided rules of the project as a section, and none with no decided rule or a failed list", async () => {
-		host = await startHost();
-		const registered = await load();
-		const create = { type: "rule", action: "create", caller: "cli", kind: "domain" } as const;
-		await request({ ...create, name: "gone", value: "Gone." }, { start: false });
-		await request({ type: "rule", action: "retire", caller: "cli", id: 1 }, { start: false });
-		await request({ type: "person", action: "add", name: "Sam" }, { start: false });
-		const thread = await request({ type: "thread", action: "add", topic: "Rules", persons: [1] }, { start: false });
-		const log = { type: "message", action: "log", caller: "cli", from: 1, direction: "in", text: "Hi" } as const;
-
-		if (thread === undefined || !("id" in thread)) throw new Error("no host");
-		const said = await request({ ...log, thread: thread.id }, { start: false });
-		const set = { type: "rule", action: "set", caller: "cli", saidBy: 1, source: said?.id ?? 0 } as const;
-		await request({ ...set, name: "open", kind: "domain", value: "Not yet." }, { start: false });
-
-		expect(await agentStartSections(registered, ["read"])).toEqual({});
-
-		await request({ ...create, name: "done", value: "Done." }, { start: false });
-
-		expect(await agentStartSections(registered, ["read"])).toEqual({
-			project_rules:
-				"A rule is what a person of the project said that each agent follows (conduct) or knows as true (domain); only the user puts a rule in effect. Propose a rule with the `rule` tool, and never write a rule into `AGENTS.md`.\n3 done (domain): Done.",
-		});
-
-		await host?.close();
-		host = undefined;
-		await startFake(PROTOCOL_VERSION);
-
-		expect(await agentStartSections(registered, ["read"])).toEqual({});
-	});
-
-	it("gives the session the memory tool and one memory snapshot of the host for the session", async () => {
-		const tea = "The user drinks tea.";
-		const paris = "The user lives in Paris.";
-		await setSettings({ memoryModel: "faux/faux-2" });
-		await installMemo();
-		await seed({ notes: [tea, paris], pending: ["0-1"] });
-		host = await startHost();
-		const registered = await load();
-		const tool = registered.tools.get("memory");
-
-		expect(tool).toMatchObject(memoryTool({ Type }, ({ description, parameters }) => ({ description, parameters })));
-		const section = { memory: `# Memory, oldest first\n#0 2026-11-15 ${tea}\n#1 2026-11-15 ${paris}` };
-		expect(await agentStartSections(registered, ["read"])).toEqual(section);
-
-		const before = calls.length;
-		expect(await tool?.call({ action: "note", text: "The user has a cat." })).toBe("Saved as #2.");
-		await until(() => readState().pending.length === 0);
-		expect(
-			calls
-				.slice(before)
-				.filter((call) => call.prompt.startsWith("Compress memories"))
-				.map(({ provider, model, thinking }) => ({ provider, model, thinking })),
-		).toEqual([{ provider: "faux", model: "faux-2", thinking: "low" }]);
-		expect(await tool?.call({ action: "recall", pattern: "tea" })).toBe(`#0 2026-11-15 ${tea}\n1 matches.\n`);
-
-		// The session keeps its first snapshot.
-		expect(await agentStartSections(registered, ["read"])).toEqual(section);
-		expect(memoCalls().filter((call) => call.args[0] === "wake")).toHaveLength(1);
-	});
-
-	it("fails the memory tool with the error of the host, and gives no memory section, when no host answers", async () => {
-		await startFake(PROTOCOL_VERSION + 1);
-		const old = await load();
-		const mismatch = new Error(versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7));
-
-		await expect(old.tools.get("memory")?.call({ action: "recall", pattern: "tea" })).rejects.toThrow(mismatch);
-		expect(await agentStartSections(old, ["read"])).toEqual({});
-
-		await closeFake();
-		await startFake(PROTOCOL_VERSION);
-		const registered = await load();
-		const tool = registered.tools.get("memory");
-
-		await expect(tool?.call({ action: "note", text: "A note." })).rejects.toThrow(new Error("Invalid request"));
-		await expect(tool?.call({ action: "note" })).rejects.toThrow(new Error("note requires text"));
-		expect(await agentStartSections(registered, ["read"])).toEqual({});
-	});
-
-	it("gives no section about the tools of a cell to a session, also with the ipython tool", async () => {
-		// A host that refuses every request, so the memory snapshot of the first turn starts no host.
-		await startFake(PROTOCOL_VERSION);
-		const registered = await load();
-
-		expect(await agentStartSections(registered, ["read", "ipython"])).toEqual({});
-		expect(await agentStartSections(registered, ["read", "bash"])).toEqual({});
-	});
-
-	it("gates each tool call of the session that is not a read, and asks the user about a held call with a UI", async () => {
-		host = await startHost();
-		models.setProvider(
-			createProvider({
-				id: "openrouter",
-				auth: { apiKey: { name: "Test key", resolve: async () => ({ auth: {} }) } },
-				models: [gateClassifier()],
-				classifiers: { "test-gate": { classify: classifyGate } },
-			}),
-		);
-		gateStates.length = 0;
-		const registered = await load();
-		const person = await request({ type: "person", action: "add", name: "Sam" }, { start: false });
-		const thread = await request({ type: "thread", action: "add", topic: "Go", persons: [1] }, { start: false });
-
-		if (person === undefined || thread === undefined || !("id" in thread)) throw new Error("no host");
-
-		const said = await request(
-			{ type: "message", action: "log", caller: "cli", thread: thread.id, from: "user", direction: "in", text: "Ask." },
-			{ start: false },
-		);
-
-		const rule = Value.Parse(
-			Rule,
-			await request(
-				{
-					type: "rule",
-					action: "set",
-					caller: "cli",
-					name: "ask",
-					kind: "conduct",
-					value: "Ask first.",
-					saidBy: "user",
-					source: said?.id ?? 0,
-				},
-				{ start: false },
-			),
-		);
-
-		await request({ type: "rule", action: "decide", caller: "user", id: rule.id }, { start: false });
-
-		const reason = `It breaks rule ${rule.id} ask: Ask first.`;
-		const push = { toolName: "bash", input: { command: "git push" } };
-
-		/** The reply of the gate to the call `id` again, as a hook that runs again gets it. */
-		const again = async (id: string) =>
-			Value.Parse(
-				GateReply,
-				await request(
-					{ type: "gate", requestId: id, caller: "session", tool: "bash", arguments: push.input, messages: [] },
-					{ start: false },
-				),
-			);
-
-		expect(
-			await toolCall(registered, { toolName: "read", input: { path: "README.md" }, id: "read-1" }),
-		).toBeUndefined();
-		expect(gateStates).toEqual([]);
-
-		// No refuses the call, and drops the held action.
-		const prompts: string[] = [];
-		expect(await toolCall(registered, { ...push, id: "call-1" }, false, prompts)).toEqual({
-			block: true,
-			reason: `Held as action 1: ${reason}`,
-		});
-		expect(prompts).toEqual([`Held action 1\ngit push\n\n${reason}`]);
-		expect(await again("call-1")).toMatchObject({
-			runs: false,
-			held: { id: 1, state: "dropped", agent: "session", by: "session" },
-		});
-		expect(gateStates.at(-1)).toEqual({ action: "git push", last_user_messages: ["two", "three", "four"] });
-
-		// Yes approves the held action, and the call runs, once.
-		expect(await toolCall(registered, { ...push, id: "call-2" }, true, prompts)).toBeUndefined();
-		expect(prompts).toHaveLength(2);
-		expect(await again("call-2")).toEqual({ runs: true });
-		expect(await again("call-3")).toMatchObject({ runs: false, held: { id: 3, state: "held" } });
-
-		// Without a UI, the call is refused, and the action stays held.
-		expect(await toolCall(registered, { ...push, id: "call-4" })).toEqual({
-			block: true,
-			reason: `Held as action 4: ${reason}`,
-		});
-		expect(prompts).toHaveLength(2);
-		expect(await again("call-4")).toMatchObject({ runs: false, held: { id: 4, state: "held" } });
-	});
-
-	it("asks one time with a UI when the host does not answer, then runs the calls with no gate", async () => {
-		await startFake(PROTOCOL_VERSION + 1);
-		const mismatch = versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7);
-		const push = { toolName: "bash", input: { command: "git push" } };
-
-		// No refuses the call, and the next call asks again.
-		const refused = await load();
-		const prompts: string[] = [];
-		expect(await toolCall(refused, { ...push, id: "no-1" }, false, prompts)).toEqual({ block: true, reason: mismatch });
-		expect(await toolCall(refused, { ...push, id: "no-2" }, false, prompts)).toEqual({ block: true, reason: mismatch });
-		expect(prompts).toHaveLength(2);
-
-		// Yes runs the calls at the same time and the later calls, after one prompt.
-		const registered = await load();
-		const asked: string[] = [];
-		const calls = ["yes-1", "yes-2", "yes-3"].map((id) => toolCall(registered, { ...push, id }, true, asked));
-		expect(await Promise.all(calls)).toEqual([undefined, undefined, undefined]);
-		expect(await toolCall(registered, { ...push, id: "yes-4" }, true, asked)).toBeUndefined();
-		expect(asked).toEqual([
-			`The harness host does not answer\n${mismatch}\n\nRun the tool calls of this session with no gate until the host answers?`,
-		]);
-	});
-
-	it("refuses a call without a UI when the host does not answer", async () => {
-		await startFake(PROTOCOL_VERSION + 1);
-		const registered = await load();
-
-		expect(await toolCall(registered, { toolName: "bash", input: { command: "ls" }, id: "call-1" })).toEqual({
-			block: true,
-			reason: `The harness host does not answer, and this session has no UI to let it run with no gate: ${versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7)}`,
-		});
-	});
-
-	it("gates the calls again, with one note, when the host answers again", async () => {
-		await startFake(PROTOCOL_VERSION + 1);
-		const registered = await load();
-		const push = { toolName: "bash", input: { command: "git push" } };
-		const notes: string[] = [];
-
-		expect(await toolCall(registered, { ...push, id: "call-1" }, true, [], notes)).toBeUndefined();
-		await closeFake();
-		host = await startHost();
-
-		expect(await toolCall(registered, { ...push, id: "call-2" }, true, [], notes)).toBeUndefined();
-		expect(notes).toEqual(["harness: the host answers again; the gate is back"]);
-		expect(await toolCall(registered, { ...push, id: "call-3" }, true, [], notes)).toBeUndefined();
-		expect(notes).toHaveLength(1);
-	});
-
-	it("refuses a call with the error that the host replies, with no prompt", async () => {
-		await startFake(PROTOCOL_VERSION);
-		const registered = await load();
-		const prompts: string[] = [];
-
-		expect(
-			await toolCall(registered, { toolName: "bash", input: { command: "ls" }, id: "call-1" }, true, prompts),
-		).toEqual({ block: true, reason: "Invalid request" });
-		expect(prompts).toEqual([]);
 	});
 });
