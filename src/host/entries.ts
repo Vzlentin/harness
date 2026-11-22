@@ -1,7 +1,8 @@
 /**
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
  * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
- * hook, a handler of the answered asks, a handler of the reports of the workers, the request types that it serves, the
+ * hook, a handler of the answered asks, a handler of the reports of the workers, a handler of the ended children, the
+ * request types that it serves, the
  * checks of its label kinds, the version of its protocol, its open and busy calls, the handler of the `ask` requests and
  * the list that `classify-todos` takes without `list` to the host.
  */
@@ -130,6 +131,15 @@ export type ReportedEvent = {
  */
 export type ReportedHandler = (event: ReportedEvent) => Promise<void>;
 
+/** A child of the host that ended, by its conversation ID, which the handler of an entry gets. */
+export type AgentEndedEvent = { readonly conversation: string };
+
+/**
+ * The handler of the ended children of an entry. It runs after each end of a child, at least once for each end, and
+ * also for a child that already ended, so it must do nothing for an end that it already handled.
+ */
+export type AgentEndedHandler = (event: AgentEndedEvent) => Promise<void>;
+
 /** A request line of a type that an entry serves: a JSON object with its type. */
 export const EntryLine = Type.Intersect([Type.Object({ type: Type.String() }), Type.Record(Type.String(), Json)]);
 
@@ -196,7 +206,8 @@ const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version
 
 /**
  * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
- * input hook, its handler of the answered asks, its handler of the reports, the request types that it serves, the checks
+ * input hook, its handler of the answered asks, its handler of the reports, its handler of the ended children, the
+ * request types that it serves, the checks
  * of its label kinds, the version of its protocol, `open`, which the host calls once the root conversation and the
  * workers are there and before any task resumes, `busy`, which keeps the host from its idle exit, the handler of the
  * `ask` requests, the list of `classify-todos` without `list`, and `close`.
@@ -210,6 +221,7 @@ const EntryResult = Type.Object({
 		Type.Unsafe<AnsweredAskHandler>(Type.Function([Type.Unknown(), Type.Unknown()], Type.Unknown())),
 	),
 	reported: Type.Optional(Type.Unsafe<ReportedHandler>(Type.Function([Type.Unknown()], Type.Unknown()))),
+	agentEnded: Type.Optional(Type.Unsafe<AgentEndedHandler>(Type.Function([Type.Unknown()], Type.Unknown()))),
 	requests: Type.Optional(Type.Array(EntryRequest)),
 	labels: Type.Optional(Type.Array(LabelKind)),
 	protocol: Type.Optional(EntryProtocol),
@@ -229,7 +241,8 @@ export type Entry = Static<typeof EntryResult>;
  * answered asks and handlers of the reports in load order, the handler of the `ask` requests and the list of
  * `classify-todos`, each of at most one entry, their request types by type, the checks of their labels by kind, the
  * versions of their protocols by name, the event bus that they share, `open`, which opens each entry in load order,
- * `busy`, true while an entry is busy, and `close`.
+ * `agentEnded`, which gives an ended child to the handler of each entry in load order, `busy`, true while an entry is
+ * busy, and `close`.
  */
 export type LoadedEntries = {
 	readonly extensions: readonly Extension[];
@@ -241,6 +254,8 @@ export type LoadedEntries = {
 	readonly ask: AskHandler | undefined;
 	readonly classifyList: (() => Promise<readonly Todo[]>) | undefined;
 	open(opened: EntryOpen): Promise<void>;
+	/** Gives the child `conversation` that ended to the handler of each entry. A handler that throws is a warning. */
+	readonly agentEnded: (conversation: string) => Promise<void>;
 	busy(): boolean;
 	readonly requests: ReadonlyMap<string, EntryRequest>;
 	readonly labelChecks: ReadonlyMap<string, LabelCheck>;
@@ -390,6 +405,8 @@ export type EntryHandles = {
 	 * before the spawn checked them. It throws until the host is open.
 	 */
 	readonly labelChild: (conversation: string, label: string) => Promise<boolean>;
+	/** Whether the conversation `conversation` is a child of the host that ended. It throws until the host is open. */
+	readonly endedChild: (conversation: string) => Promise<boolean>;
 	/**
 	 * Stops `worker`: a child with the children that it spawned, or a task. A worker that already ended is left as it is.
 	 * It throws until the host is open.
@@ -556,6 +573,9 @@ export async function loadEntries(
 		classifyList: entries.find((entry) => entry.classifyList !== undefined)?.classifyList,
 		open: async (opened) => {
 			for (const entry of entries) await entry.open?.(opened);
+		},
+		agentEnded: async (conversation) => {
+			for (const entry of entries) await entry.agentEnded?.({ conversation }).catch(warn);
 		},
 		busy: () => entries.some((entry) => entry.busy?.() === true),
 		requests,

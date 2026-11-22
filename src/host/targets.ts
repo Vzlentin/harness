@@ -53,6 +53,14 @@ export type TargetHost = {
 	readonly agent: () => Promise<Conversation>;
 };
 
+/**
+ * What the end of children uses of the host: the targets, and `agentEnded`, which gets the conversation ID of each child
+ * that an end closed.
+ */
+export type EndHost = Pick<TargetHost, "harness" | "place" | "owner"> & {
+	readonly agentEnded: (conversation: string) => Promise<void>;
+};
+
 /** The request ID of the project agent's newest input, which its `error` state comes from. */
 export const AgentState = defineDoc<{ lastRequest: string | null }>({
 	kind: "harness.agent",
@@ -288,10 +296,11 @@ export async function refuseEnded(child: Child): Promise<void> {
 /**
  * Ends the children of `records` and the children they spawned, and marks the requests of the records of the ended
  * children read, so that they hold no caller. With `keepAnswers`, the records of `records` stay unread, so their callers
- * still get their answers. The records stay, so a `send` resumes a child. A repeat finishes an end.
+ * still get their answers. The records stay, so a `send` resumes a child. Then `host.agentEnded` gets each ended child.
+ * A repeat finishes an end.
  */
 export async function endChildren(
-	host: Pick<TargetHost, "harness" | "place" | "owner">,
+	host: EndHost,
 	records: readonly ChildRecord[],
 	options: { readonly keepAnswers: boolean },
 ): Promise<void> {
@@ -303,11 +312,15 @@ export async function endChildren(
 		for (const id of await child.close(context)) ended.add(String(id));
 	}
 
+	const read = new Set(ended);
+
 	if (options.keepAnswers) {
-		for (const record of records) ended.delete(String(record.conversationId));
+		for (const record of records) read.delete(String(record.conversationId));
 	}
 
-	await markAllRead(host.harness, ended);
+	await markAllRead(host.harness, read);
+
+	for (const id of ended) await host.agentEnded(id);
 }
 
 export async function childOf(handler: Pick<TargetHost, "place" | "owner">, record: ChildRecord): Promise<Child> {

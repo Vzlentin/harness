@@ -50,15 +50,17 @@ type Shared = {
 	};
 	/** The reports that the `reported` handler of the entry got, in order. */
 	readonly reports: unknown[];
+	/** The conversations that the `agentEnded` handler of the entry got, in order. */
+	readonly ended: string[];
 };
 
-const shared: Shared = { reports: [] };
+const shared: Shared = { reports: [], ended: [] };
 
 Object.assign(globalThis, { harnessLabels: shared });
 
 /**
  * The entry of the tests: it checks the label kind `fix`, and refuses `fix:no`. It keeps each report, and throws for a
- * report with the reference `throw:me`.
+ * report with the reference `throw:me`, and each ended child.
  */
 const LABELS_ENTRY = `export default function labelsEntry(handles) {
 	globalThis.harnessLabels.handles = handles;
@@ -75,6 +77,9 @@ const LABELS_ENTRY = `export default function labelsEntry(handles) {
 		reported: async (event) => {
 			globalThis.harnessLabels.reports.push(event);
 			if (event.refs.includes("throw:me")) throw new Error("The fixture refuses throw:me");
+		},
+		agentEnded: async (event) => {
+			globalThis.harnessLabels.ended.push(event.conversation);
 		},
 		close: async () => {},
 	};
@@ -181,6 +186,35 @@ async function commitsDuring(run: () => Promise<void>): Promise<number> {
 	return commits;
 }
 
+/** Holds a call of `agent`: a change of a rule by an agent is held with no question to the classifier. */
+async function holdCall(agent: string, requestId: string): Promise<number> {
+	const gated = {
+		type: "gate",
+		requestId,
+		caller: agent,
+		tool: "bash",
+		arguments: { command: "harness rule decide 1" },
+		messages: [],
+	} as const;
+
+	const reply = Value.Parse(GateReply, await send(gated));
+
+	if (reply.runs) throw new Error("the gate let the call run");
+
+	return reply.held.id;
+}
+
+/** The held action `id`, as a watch of the project gives it. */
+async function heldAction(id: number) {
+	const watch = await watchProject(MAIN_PROJECT);
+
+	try {
+		return watch.state.held.find((held) => held.id === id);
+	} finally {
+		watch.socket.destroy();
+	}
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -198,6 +232,50 @@ describe("a child ends only with its spawner", { timeout: 30_000 }, () => {
 		await untilState(child, "ended");
 		await sleep(300);
 		expect(await stateOf(other.handle)).toBe("idle");
+	});
+});
+
+describe("the end of a child", { timeout: 30_000 }, () => {
+	it("goes to the entries for each child that a stop request or a stop of a worker ends, with its children", async () => {
+		const agent = await spawnWithId("ended-session");
+		const child = await spawnWithId(agent.id);
+		await send({ type: "stop", caller: "ended-session", handle: agent.handle });
+		expect(shared.ended).toEqual(expect.arrayContaining([agent.id, child.id]));
+
+		const spawned = await spawnAs("ended-worker-session", "Task:\nEnded worker", {
+			notify: false,
+			labels: ["fix:end"],
+		});
+
+		await untilState(spawned.handle, "idle");
+		const [worker] = await handles().workers("fix:end");
+
+		if (worker?.kind !== "agent") throw new Error("no agent");
+		await handles().stop(worker);
+		expect(shared.ended).toContain(worker.conversation);
+	});
+
+	it("drops the held actions of a child that a stop request ends, and keeps those of a live child", async () => {
+		const stopped = await spawnWithId("held-stop-session");
+		const kept = await spawnWithId("held-kept-session");
+		const dropped = await holdCall(stopped.id, "held-stop-call");
+		const held = await holdCall(kept.id, "held-kept-call");
+
+		await send({ type: "stop", caller: "held-stop-session", handle: stopped.handle });
+		expect(await heldAction(dropped)).toMatchObject({ state: "dropped", by: stopped.id });
+		expect(await heldAction(held)).toMatchObject({ state: "held" });
+	});
+
+	it("drops at the next start the held actions of a child that ended with no end event after its hold", async () => {
+		const agent = await spawnWithId("held-start-session");
+		await send({ type: "stop", caller: "held-start-session", handle: agent.handle });
+		// The gate holds a call of an agent that ended: no end comes after it, as for an end while the host was down.
+		const held = await holdCall(agent.id, "held-start-call");
+		expect(await heldAction(held)).toMatchObject({ state: "held" });
+
+		await host?.close();
+		host = await startHost();
+		expect(await heldAction(held)).toMatchObject({ state: "dropped", by: agent.id });
 	});
 });
 
@@ -397,32 +475,11 @@ describe("the end of the work stops its workers", { timeout: 30_000 }, () => {
 	it("drops the held actions of a worker that the end of its item stops, by that worker", async () => {
 		const item = await addItem("Held item");
 		const agent = await spawnWithId("held-item-session", { serves: { item } });
+		const held = await holdCall(agent.id, "held-item-call");
 
-		// A change of a rule by an agent is held with no question to the classifier.
-		const gated = {
-			type: "gate",
-			requestId: "held-item-call",
-			caller: agent.id,
-			tool: "bash",
-			arguments: { command: "harness rule decide 1" },
-			messages: [],
-		} as const;
-
-		const reply = Value.Parse(GateReply, await send(gated));
-
-		if (reply.runs) throw new Error("the gate let the call run");
 		await setItem(item, "done");
 		expect(await stateOf(agent.handle)).toBe("ended");
-		const watch = await watchProject(MAIN_PROJECT);
-
-		try {
-			expect(watch.state.held.find((held) => held.id === reply.held.id)).toMatchObject({
-				state: "dropped",
-				by: agent.id,
-			});
-		} finally {
-			watch.socket.destroy();
-		}
+		expect(await heldAction(held)).toMatchObject({ state: "dropped", by: agent.id });
 	});
 
 	it("keeps the agent of an open parley at its contract, and stops it when the contract ends", async () => {

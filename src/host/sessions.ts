@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { boundedReplay } from "./checkpoint.ts";
 import { ChildRecords } from "./records.ts";
-import { endChildren, type TargetHost } from "./targets.ts";
+import { type EndHost, endChildren } from "./targets.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -29,7 +29,7 @@ export async function knownSession(tx: Tx, caller: string): Promise<boolean> {
 	return (await tx.doc(SessionsDoc)).callers.includes(caller);
 }
 
-type SessionsHost = Pick<TargetHost, "harness" | "place" | "owner"> & {
+type SessionsHost = EndHost & {
 	readonly warn: (cause: unknown) => void;
 };
 

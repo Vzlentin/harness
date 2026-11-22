@@ -1,14 +1,14 @@
 /**
  * The workers of the labels: the children of the host and the started tasks that have a label, the started tasks of
- * each label in any state, the changes of a commit that can change a worker, and the stop of a worker, at once or after
- * its turn.
+ * each label in any state, the changes of a commit that can change a worker, the stop of a worker, at once or after
+ * its turn, and whether a conversation is a child that ended.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type CommitChange, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { CHILD_DOC_KIND } from "../children/library.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
 import { ChildRecords, recordOf, recordsByAge } from "./records.ts";
-import { childEnded, childOf, endChildren, heldState, type TargetHost, turnEnded, turnRunning } from "./targets.ts";
+import { childEnded, childOf, type EndHost, endChildren, heldState, turnEnded, turnRunning } from "./targets.ts";
 import { liveTaskId, StartedTasks, TaskLabels, type TaskReader, taskWorker } from "./tasks.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -26,7 +26,7 @@ const WORKER_DOCS: ReadonlySet<string> = new Set([
 ]);
 
 /** What the workers read and stop of the host. */
-export type WorkerHost = Pick<TargetHost, "harness" | "place" | "owner">;
+export type WorkerHost = EndHost;
 
 /**
  * The live workers of each label, children oldest first and then tasks: a child that did not end, `running` while it is
@@ -113,6 +113,14 @@ export async function stopWorker(host: WorkerHost, worker: Worker): Promise<void
 	const id = await liveTaskId(started, worker.key, (task) => harness.getTask(task, context));
 
 	if (id !== undefined) await harness.abortTask(id, context);
+}
+
+/** Whether the conversation `conversation` is a child of the host that ended. */
+export async function endedChild(host: WorkerHost, conversation: string): Promise<boolean> {
+	const records = await host.harness.snapshot(ChildRecords, context);
+	const record = Object.values(records?.children ?? {}).find((found) => String(found.conversationId) === conversation);
+
+	return record !== undefined && (await childEnded(host, record));
 }
 
 /**

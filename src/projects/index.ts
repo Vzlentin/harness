@@ -3,8 +3,9 @@
  * messages, rules, held actions, parleys, items, the gate, the digest, the memory of the project agent and the watch of
  * the project, the `ask` requests with their parleys, the checks of the labels `parley:<slug>` and `item:<id>`, the
  * digest before each input, the contracts of the answered read-backs, and the items that the reports of their workers
- * close. At the open of the host, it moves an old store to items and labels, opens the index of the items, writes
- * `store.json`, and stops the workers of the work that ended.
+ * close, and drops the held actions of each child that ended. At the open of the host, it moves an old store to items
+ * and labels, opens the index of the items, writes `store.json`, stops the workers of the work that ended, and drops
+ * the held actions of the children that ended while the host was down.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
@@ -17,6 +18,7 @@ import { statePaths } from "../protocol/paths.ts";
 import { memoryDir } from "../protocol/projects.ts";
 import { type ProjectRequest, ProjectRequestLine, type Replies } from "../protocol/requests.ts";
 import { digestHook } from "./digest.ts";
+import { dropHeldOfEnded, dropHeldOfEndedAgents } from "./ended-agents.ts";
 import { gateExtension } from "./gate.ts";
 import { allItems } from "./item-docs.ts";
 import { ItemIndex } from "./item-index.ts";
@@ -105,6 +107,7 @@ export default function projects(options: EntryOptions): Entry {
 		input: digestHook(host),
 		answeredAsk: (event, handlerOptions) => parleyReaction(host())(event, handlerOptions),
 		reported: (event) => itemReports(host())(event),
+		agentEnded: ({ conversation }) => dropHeldOfEnded(host(), conversation),
 		labels: workLabelChecks(() => host().harness),
 		protocol: { name: "projects", version: PROJECTS_PROTOCOL_VERSION },
 		ask: (request, { author }) => projectAsk(request, host(), author),
@@ -117,7 +120,8 @@ export default function projects(options: EntryOptions): Entry {
 		// The first start moves the todos of the project to items, and the items that the children of an old store served
 		// to their labels, before any reader of the items or the labels. The index of the ends of the items observes the
 		// commits first, so the observers and the passes after it read it current with each commit. A worker of work that
-		// ended, such as one that a message resumed, stops at each start.
+		// ended, such as one that a message resumed, stops at each start, and a child that ended while the host was down
+		// has its held actions dropped.
 		open: async ({ harness, root, storage }) => {
 			await migrateTodos(harness, options.todos, root.id);
 			await migrateLabels(harness, storage, options.labelChild);
@@ -136,6 +140,7 @@ export default function projects(options: EntryOptions): Entry {
 
 			opened = { harness, root, storage, items, storeFile };
 			await stopEndedWork(host());
+			await dropHeldOfEndedAgents(host());
 		},
 		busy: () => compressor.running > 0,
 		close: async () => {

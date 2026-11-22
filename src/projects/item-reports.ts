@@ -33,7 +33,7 @@ export function itemReports(host: ItemReportHost): ReportedHandler {
 		if (ids.length === 0) return;
 		const landed = await host.harness.commit((tx) => landCommits(tx, ids, refs, caller, host.items), context);
 		const ended = [...landed.done.map((id) => `item:${id}`), ...landed.ended.map((slug) => `parley:${slug}`)];
-		await stopWork(host, ended, { spare: worker });
+		await stopWork(host, ended, { match: worker, stop: "spare" });
 	};
 }
 

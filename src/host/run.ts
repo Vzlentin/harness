@@ -61,6 +61,7 @@ import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
 import { ENTRY_TODOS } from "./todo-lists.ts";
 import {
+	endedChild,
 	labelledTasks,
 	liveWorkers,
 	stopAfterTurn,
@@ -249,6 +250,7 @@ export async function runHost(options: {
 		labelledTasks: () => labelledTasks(openWorkerHost()),
 		workersChange,
 		labelChild: (conversation, label) => labelChild(openWorkerHost().harness, conversation, label),
+		endedChild: (conversation) => endedChild(openWorkerHost(), conversation),
 		stop: (worker) => stopWorker(openWorkerHost(), worker),
 		stopAfterTurn: (worker) => stopAfterTurn(openWorkerHost(), worker),
 	};
@@ -341,7 +343,7 @@ export async function runHost(options: {
 	rootId = root.id;
 
 	const owner = { kind: "detached", root } as const;
-	workerHost = { harness, place, owner };
+	workerHost = { harness, place, owner, agentEnded: entries.agentEnded };
 
 	const opened = harness;
 
@@ -378,7 +380,7 @@ export async function runHost(options: {
 	});
 
 	openPush = push;
-	const sessions = await Sessions.open({ harness, place, owner, warn }, sessionEndMs);
+	const sessions = await Sessions.open({ harness, place, owner, agentEnded: entries.agentEnded, warn }, sessionEndMs);
 
 	base = {
 		harness,
@@ -397,6 +399,7 @@ export async function runHost(options: {
 		inputHooks: entries.inputHooks,
 		entryVersions: entries.versions,
 		reported: entries.reported,
+		agentEnded: entries.agentEnded,
 		ask: entries.ask,
 		classifyList: entries.classifyList,
 		checkLabels: (labels) => checkLabels(entries.labelChecks, labels),

@@ -47,7 +47,7 @@ import {
 	readThread,
 	readThreads,
 } from "./project.ts";
-import { stopWork } from "./work-workers.ts";
+import { afterTurn, stopWork } from "./work-workers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -66,6 +66,7 @@ export type ProjectsHost = Pick<
 	| "workersChange"
 	| "stop"
 	| "stopAfterTurn"
+	| "endedChild"
 	| "tell"
 > &
 	EntryOpen & {
@@ -225,7 +226,7 @@ async function parley(
 				context,
 			);
 
-			await stopWork(host, [`parley:${ended.slug}`], { caller: request.caller });
+			await stopWork(host, [`parley:${ended.slug}`], afterTurn(request.caller));
 
 			return ended;
 		}
@@ -252,9 +253,8 @@ async function item(request: Extract<ProjectRequest, { type: "item" }>, host: Pr
 
 			// A closed item stops the workers of its label and of the contracts that it ended, and the caller after its turn.
 			if (set.item.state !== "open") {
-				await stopWork(host, [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)], {
-					caller: request.caller,
-				});
+				const labels = [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)];
+				await stopWork(host, labels, afterTurn(request.caller));
 			}
 
 			return stageItem(host, set.item);
