@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
 	ClassifierApi,
@@ -16,7 +16,7 @@ import type { Host } from "../src/host/run.ts";
 import type { Replies, Request } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type ListRef } from "../src/protocol/target.ts";
 import { ClassifyReply, Todo } from "../src/protocol/todo.ts";
-import { cli, models, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
+import { cli, createProject, models, PROJECTS_MODULE, root, setUp, spawnAs, startHost, tearDown } from "./helpers.ts";
 
 const NO_CLASSIFIER = "No classifier: log in to typesafe or set todoClassifier";
 
@@ -275,5 +275,47 @@ describe("classify-todos", { timeout: 30_000 }, () => {
 		expect(await classifyTodos()).toEqual({ answers: [] });
 		expect(await cli(["todo", "sort"])).toEqual({ code: 0, stdout: "No open items\n", stderr: "" });
 		expect(asked).toEqual([]);
+	});
+});
+
+describe("the list of classify-todos of an entry", { timeout: 30_000 }, () => {
+	it("asks about the open todos of the list that an entry gives, on a host without the projects entry", async () => {
+		const project = "classify-entry";
+		const module = join(root, "list-entry.mjs");
+
+		await writeFile(
+			module,
+			`export default () => ({
+	extensions: [],
+	classifyList: async () => [
+		{ id: 7, text: "Decide the color", state: "open" },
+		{ id: 8, text: "Paint the wall", state: "done" },
+		{ id: 9, text: "Paint the door", state: "open" },
+	],
+	close: async () => {},
+});
+`,
+		);
+
+		const file = join(root, "config", "harness", "entries.json");
+		await mkdir(join(root, "config", "harness"), { recursive: true });
+		await writeFile(file, JSON.stringify({ list: module }));
+		await createProject(project);
+
+		const listed = await startHost(project).finally(() =>
+			writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE })),
+		);
+
+		try {
+			const reply = await request({ type: "classify-todos" }, { start: false, project });
+			expect(reply).toEqual({
+				answers: [
+					{ id: 7, needsYou: true },
+					{ id: 9, needsYou: false },
+				],
+			});
+		} finally {
+			await listed.close();
+		}
 	});
 });

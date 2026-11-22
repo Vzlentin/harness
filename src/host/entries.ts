@@ -18,7 +18,7 @@ import {
 	type EventBus,
 	type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AnyTask, Conversation, Extension, Harness, Storage } from "@earendil-works/pi-durable";
+import type { AnyTask, CommitChange, Conversation, Extension, Harness, Storage } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -288,6 +288,19 @@ export type EntryHandles = {
 	readonly deliver: (delivery: EntryDelivery) => Promise<void>;
 	/** The live workers of `label`. It throws until the host is open. */
 	readonly workers: (label: string) => Promise<readonly Worker[]>;
+	/** The keys of the started tasks of each label, in any state of the task. It throws until the host is open. */
+	readonly labelledTasks: () => Promise<ReadonlyMap<string, readonly string[]>>;
+	/**
+	 * Whether `change`, a change of a commit of the store, can change a live worker of a label: a change of a child, of
+	 * the record of a child, of the started tasks or of the labels of the tasks, or a task that ends. It reads nothing.
+	 */
+	readonly workersChange: (change: CommitChange) => boolean;
+	/**
+	 * Adds `label` to the labels of the child whose conversation ID is `conversation`, once, with no check of the label,
+	 * and gives whether the host has such a child. It is for the move of an old store, whose children got their labels
+	 * before the spawn checked them. It throws until the host is open.
+	 */
+	readonly labelChild: (conversation: string, label: string) => Promise<boolean>;
 	/**
 	 * Stops `worker`: a child with the children that it spawned, or a task. A worker that already ended is left as it is.
 	 * It throws until the host is open.

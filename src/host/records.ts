@@ -36,6 +36,14 @@ type RecordV4 = Omit<ChildRecord, "labels">;
 
 type ChildrenV4 = { children: Record<string, RecordV4>; requests: Record<string, string> };
 
+/**
+ * A record of version 5 or 6: what the child served in place of its labels, such as its spawner, a parley or a contract
+ * by slug, an item, or a todo of the list of the project, and the end of what it served.
+ */
+type RecordV6 = RecordV4 & { serves: { kind: string; slug?: string }; servedEnd?: string };
+
+type ChildrenV6 = { children: Record<string, RecordV6>; requests: Record<string, string> };
+
 /** A request of the caller. Without `notify`, its answer is not pushed and does not hold the caller. */
 export type ChildRequest = { id: string; notify: boolean };
 
@@ -80,12 +88,11 @@ const ChildrenV3 = Type.Object({
 
 /**
  * The children by handle, and the handle of each spawn request ID. Version 7 has the labels of each child. Versions 5
- * and 6 had what each child serves instead, which the first start of a host turns into labels (`migrateLabels`), after
- * the move of the todos to items rewrites the records of version 5 that serve a todo. The children of an older version
- * have no label. Version 6 has no child that serves a todo. Version 4 has no kind of a child; version 3 marked the children of a kernel
- * with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2 kept their IDs in `sent` and those
- * without `notify` in `quiet`. Version 2 leaves each child's last request to the children library; a store with
- * version 1 has children that the library does not know.
+ * and 6 had what each child serves instead, which the migration turns into labels (`migrateV6`). The children of an
+ * older version have no label. Version 6 has no child that serves a todo. Version 4 has no kind of a child; version 3
+ * marked the children of a kernel with `kind: "rlm"`. Version 3 keeps the requests of a child in one list; version 2
+ * kept their IDs in `sent` and those without `notify` in `quiet`. Version 2 leaves each child's last request to the
+ * children library; a store with version 1 has children that the library does not know.
  */
 export const ChildRecords = defineDoc<ChildrenState>({
 	kind: "subagent.children",
@@ -97,9 +104,9 @@ export const ChildRecords = defineDoc<ChildrenState>({
 		if (fromVersion < 2) throw new OldChildRecordsError(`subagent.children has version ${fromVersion}`);
 
 		if (fromVersion === 5 || fromVersion === 6) {
-			// SAFETY: a value of version 5 or 6 has the shape of version 7, except a `serves` in place of `labels`, which the
-			// first start of the host rewrites, before it serves a request.
-			return value as ChildrenState;
+			// SAFETY: a value of version 5 or 6 has the shape of version 7, except `serves` and `servedEnd` in place of
+			// `labels`.
+			return migrateV6(value as ChildrenV6);
 		}
 
 		if (fromVersion === 2) return migrateV4(migrateV2(Value.Parse(ChildrenV2, value)));
@@ -108,6 +115,29 @@ export const ChildRecords = defineDoc<ChildrenState>({
 		return migrateV4(migrateV3(Value.Parse(ChildrenV3, value)));
 	},
 });
+
+/**
+ * Gives each child of `state` the labels of what it served: `parley:<slug>` for a parley or a contract, and no label
+ * for its spawner and for what the record does not name, a todo or an item. An entry adds the labels of what it keeps
+ * elsewhere with `labelChild`.
+ */
+function migrateV6(state: ChildrenV6): ChildrenState {
+	const children = Object.fromEntries(
+		Object.entries(state.children).map(([handle, { serves, servedEnd: _servedEnd, ...record }]) => [
+			handle,
+			{ ...record, labels: servedLabels(serves) },
+		]),
+	);
+
+	return { children, requests: state.requests };
+}
+
+/** The labels of what a record of version 5 or 6 served, `serves`: `parley:<slug>` for a parley or a contract. */
+function servedLabels(serves: RecordV6["serves"]): string[] {
+	const parley = serves.kind === "parley" || serves.kind === "contract";
+
+	return parley && serves.slug !== undefined ? [`parley:${serves.slug}`] : [];
+}
 
 /** Gives each child of `state` no label. */
 function migrateV4(state: ChildrenV4): ChildrenState {
@@ -206,6 +236,24 @@ export async function markAllRead(harness: Harness, conversationIds: ReadonlySet
 		for (const record of Object.values((await tx.doc(ChildRecords)).children)) {
 			if (conversationIds.has(String(record.conversationId))) record.read = record.requests.length;
 		}
+	}, context);
+}
+
+/**
+ * Adds `label` to the labels of the child whose conversation ID is `conversation`, once, with no check of the label, and
+ * gives whether the host has such a child.
+ */
+export async function labelChild(harness: Harness, conversation: string, label: string): Promise<boolean> {
+	return harness.commit(async (tx) => {
+		const record = Object.values((await tx.doc(ChildRecords)).children).find(
+			(found) => String(found.conversationId) === conversation,
+		);
+
+		if (record === undefined) return false;
+
+		if (!record.labels.includes(label)) record.labels.push(label);
+
+		return true;
 	}, context);
 }
 

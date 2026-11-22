@@ -136,11 +136,6 @@ export async function taskWorker(
 	return (await liveTaskId(started, key, task)) === undefined ? undefined : { kind: "task", key, state: "running" };
 }
 
-/** The keys of the started tasks that have `label` in `taskLabels`, the labels of each task by key. */
-export function labelledTasks(taskLabels: Readonly<Record<string, readonly string[]>>, label: string): string[] {
-	return Object.entries(taskLabels).flatMap(([key, labels]) => (labels.includes(label) ? [key] : []));
-}
-
 /** The info of the task that `start` created for `key`, with its result references when it has one. */
 export async function taskInfo(harness: Harness, key: string): Promise<TaskInfo> {
 	const id = await taskId(harness, key);

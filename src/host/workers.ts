@@ -1,14 +1,28 @@
 /**
- * The workers of the labels: the children of the host and the started tasks that have a label, and the stop of a
- * worker.
+ * The workers of the labels: the children of the host and the started tasks that have a label, the started tasks of
+ * each label in any state, the changes of a commit that can change a worker, and the stop of a worker.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { CommitChange } from "@earendil-works/pi-durable";
+import { CHILD_DOC_KIND } from "../children/library.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
 import { ChildRecords, recordOf, recordsByAge } from "./records.ts";
 import { childEnded, childOf, endChildren, heldState, type TargetHost } from "./targets.ts";
 import { liveTaskId, StartedTasks, TaskLabels, type TaskReader, taskWorker } from "./tasks.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+/**
+ * The kinds of the documents whose changes can change a worker of a label: the documents of the children, their
+ * records, the started tasks and the labels of the tasks. A task becomes live in the commit that writes the started
+ * tasks.
+ */
+const WORKER_DOCS: ReadonlySet<string> = new Set([
+	CHILD_DOC_KIND,
+	ChildRecords.definition.kind,
+	StartedTasks.definition.kind,
+	TaskLabels.definition.kind,
+]);
 
 /** What the workers read and stop of the host. */
 export type WorkerHost = Pick<TargetHost, "harness" | "place" | "owner">;
@@ -49,6 +63,28 @@ export async function liveWorkers(host: WorkerHost): Promise<ReadonlyMap<string,
 	}
 
 	return byLabel;
+}
+
+/** The keys of the started tasks of each label, in any state of the task. */
+export async function labelledTasks(host: WorkerHost): Promise<ReadonlyMap<string, readonly string[]>> {
+	const taskLabels = await host.harness.snapshot(TaskLabels, context);
+	const byLabel = new Map<string, string[]>();
+
+	for (const [key, labels] of Object.entries(taskLabels?.labels ?? {})) {
+		for (const label of new Set(labels)) byLabel.set(label, [...(byLabel.get(label) ?? []), key]);
+	}
+
+	return byLabel;
+}
+
+/**
+ * Whether `change`, a change of a commit, can change a live worker of a label: a change of a child, of the record of a
+ * child, of the started tasks or of the labels of the tasks, or a task that ends.
+ */
+export function workersChange(change: CommitChange): boolean {
+	if (change.type === "task") return change.value.state.status === "terminal";
+
+	return change.type === "document" && WORKER_DOCS.has(change.record.kind);
 }
 
 /** The live workers of `label`. */

@@ -114,13 +114,13 @@ export default function projects(options: EntryOptions): Entry {
 
 			return items.map(({ id, title, state }) => ({ id, text: title, state }));
 		},
-		// The first start moves the todos of the project to items, and what the children served to their labels, before
-		// any reader of the items or the records. The index of the ends of the items observes the commits first, so the
-		// observers and the passes after it read it current with each commit. A worker of work that ended, such as one
-		// that a message resumed, stops at each start.
+		// The first start moves the todos of the project to items, and the items that the children of an old store served
+		// to their labels, before any reader of the items or the labels. The index of the ends of the items observes the
+		// commits first, so the observers and the passes after it read it current with each commit. A worker of work that
+		// ended, such as one that a message resumed, stops at each start.
 		open: async ({ harness, root, storage }) => {
 			await migrateTodos(harness, root.id);
-			await migrateLabels(harness, storage);
+			await migrateLabels(harness, storage, options.labelChild);
 			const items = await ItemIndex.open(harness, storage);
 			const path = statePaths(project).store;
 			const storeFile = storeFilePasses({ harness, storage, root, path, warn });

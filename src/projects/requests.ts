@@ -5,7 +5,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Input } from "../children/library.ts";
-import { type AnswerAuthorOf, type AskRequest, readOpenAsks } from "../host/asks.ts";
+import type { AnswerAuthorOf, AskRequest } from "../host/asks.ts";
 import type { EntryHandles, EntryOpen } from "../host/entries.ts";
 import { approvedText } from "../protocol/gate.ts";
 import { errorMessage, type ProjectRequest, type Replies } from "../protocol/requests.ts";
@@ -14,7 +14,7 @@ import { gateCall } from "./gate.ts";
 import { readItemBothWays, readItems } from "./item-docs.ts";
 import type { ItemIndex } from "./item-index.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
-import { addItem, linkItem, setItem, unlinkItem } from "./items.ts";
+import { addItem, linkItem, readItemWorkers, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import {
 	dropAskRef,
@@ -49,7 +49,18 @@ const context = BACKGROUND_CONTEXT;
 /** What the requests of the project use of the host, once it is open. */
 export type ProjectsHost = Pick<
 	EntryHandles,
-	"project" | "settings" | "degraded" | "warn" | "liveWorkers" | "stop" | "tell"
+	| "project"
+	| "settings"
+	| "degraded"
+	| "warn"
+	| "classifier"
+	| "openAsks"
+	| "liveWorkers"
+	| "workers"
+	| "labelledTasks"
+	| "workersChange"
+	| "stop"
+	| "tell"
 > &
 	EntryOpen & {
 		/** The index of the ends of the items, which gives the items that a contract shapes. */
@@ -125,7 +136,7 @@ export async function projectAsk(
 		case "read":
 			return readAsk(host.harness, request, context);
 		case "list":
-			return readOpenAsks(host.harness, context);
+			return host.openAsks();
 	}
 }
 
@@ -229,7 +240,9 @@ async function item(request: Extract<ProjectRequest, { type: "item" }>, host: Pr
 		case "add":
 			return stageItem(host, await host.harness.commit((tx) => addItem(tx, request, request.caller), context));
 		case "set": {
-			const set = await host.harness.commit((tx) => setItem(tx, request, request.caller, host.items), context);
+			const workers = await readItemWorkers(host, request.id);
+
+			const set = await host.harness.commit((tx) => setItem(tx, request, request.caller, host.items, workers), context);
 
 			// A closed item stops the workers of its label and of the contracts that it ended.
 			if (set.item.state !== "open") {

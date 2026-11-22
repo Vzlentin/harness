@@ -7,13 +7,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { CHILD_DOC_KIND } from "../children/library.ts";
 import { readAsks } from "../host/asks.ts";
 import type { Degraded } from "../host/degraded.ts";
-import type { EntryWatchOptions } from "../host/entries.ts";
-import { ChildRecords } from "../host/records.ts";
+import type { EntryHandles, EntryWatchOptions } from "../host/entries.ts";
 import { type StoreView, watchStore } from "../host/store-watch.ts";
-import { StartedTasks, TaskLabels } from "../host/tasks.ts";
 import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
 import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
@@ -39,26 +36,19 @@ const context = BACKGROUND_CONTEXT;
 const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND, HELD_KIND]);
 
 /**
- * The kinds of the documents whose changes can change a worker of a label, and so the stage or `needsYou` of any item:
- * the documents of the children, their records, the started tasks and the labels of the tasks. A task becomes live in
- * the commit that writes the started tasks.
+ * What the watch uses of the host. `workersChange` tells the changes that can change a worker of a label, and so the
+ * stage or `needsYou` of any item.
  */
-const WORKER_DOCS: ReadonlySet<string> = new Set([
-	CHILD_DOC_KIND,
-	ChildRecords.definition.kind,
-	StartedTasks.definition.kind,
-	TaskLabels.definition.kind,
-]);
-
-export type ProjectHost = StageHost & {
-	readonly harness: Harness;
-	/**
-	 * The storage of `harness`, whose entry lookup gives the thread of the source of an older rule, and whose scan of
-	 * documents lists the items.
-	 */
-	readonly storage: Pick<Storage, "entry" | "scanDocuments">;
-	readonly degraded: Degraded;
-};
+export type ProjectHost = StageHost &
+	Pick<EntryHandles, "workersChange"> & {
+		readonly harness: Harness;
+		/**
+		 * The storage of `harness`, whose entry lookup gives the thread of the source of an older rule, and whose scan of
+		 * documents lists the items.
+		 */
+		readonly storage: Pick<Storage, "entry" | "scanDocuments">;
+		readonly degraded: Degraded;
+	};
 
 /**
  * Opens a watch of the store of the project with the calls of the entry watch `options`, and returns the reply, with
@@ -223,10 +213,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			return true;
 		}
 
-		if (
-			(change.type === "task" && change.value.state.status === "terminal") ||
-			(change.type === "document" && WORKER_DOCS.has(change.record.kind))
-		) {
+		if (this.#host.workersChange(change)) {
 			this.#allStages = true;
 
 			return true;

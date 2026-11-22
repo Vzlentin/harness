@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
+import { askClassifier, classifierModel as settingClassifier } from "../src/host/classify.ts";
 import { Degraded } from "../src/host/degraded.ts";
 import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
@@ -710,12 +711,17 @@ describe("gate", { timeout: 60_000 }, () => {
 				},
 			};
 
+			const degraded = new Degraded(() => undefined);
+			const settings = SettingsManager.inMemory();
+
 			const host: GateHost = {
 				harness: raced,
-				settings: SettingsManager.inMemory(),
-				models,
+				classifier: {
+					model: (key) => settingClassifier(settings, models, key, degraded),
+					ask: (model, context, signal) => askClassifier(models, model, context, signal),
+				},
 				signal: new AbortController().signal,
-				degraded: new Degraded(() => undefined),
+				degraded,
 			};
 
 			const gated = (requestId: string) =>

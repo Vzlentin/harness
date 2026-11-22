@@ -131,7 +131,7 @@ async function storeBeforeItems(
 }
 
 describe("the move of the todos of the project to items", { timeout: 60_000 }, () => {
-	it("moves the open todos once, labels the children that served a moved todo, and skips the IDs of old todos", async () => {
+	it("moves the open todos once, gives the children that served a todo no label, and skips the IDs of old todos", async () => {
 		await createProject(PROJECT);
 		let host: Host | undefined = await startHost(PROJECT);
 		let moved: string;
@@ -178,7 +178,7 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 					edges: [],
 					at: expect.any(Number),
 					by: "migration",
-					stage: "building",
+					stage: "inbox",
 					needsYou: false,
 				},
 				{
@@ -203,17 +203,13 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 				],
 			});
 
-			expect(await send({ type: "status", handle: moved }, PROJECT)).toMatchObject({
-				state: "idle",
-				labels: ["item:1"],
-			});
-
-			for (const handle of [finished, busy, asked]) {
+			// The record of a child names the todo that it served, not the item of the todo: the host cannot name it.
+			for (const handle of [moved, finished, busy, asked]) {
 				expect(await send({ type: "status", handle }, PROJECT)).not.toHaveProperty("labels");
 			}
 
 			const { nodes } = Value.Parse(TreeReply, await send({ type: "tree" }, PROJECT));
-			expect(nodes.find((node) => node.id === moved)).toMatchObject({ labels: ["item:1"] });
+			expect(nodes.find((node) => node.id === moved)).not.toHaveProperty("labels");
 			await expect(send({ type: "item", action: "read", id: 2 }, PROJECT)).rejects.toThrow("Unknown item: 2");
 			await expect(send({ type: "item", action: "set", caller: "cli", id: 3, state: "done" }, PROJECT)).rejects.toThrow(
 				"Unknown item: 3",

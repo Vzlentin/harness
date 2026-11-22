@@ -9,8 +9,7 @@
  */
 import type { Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { Asks } from "../host/asks.ts";
-import { labelledTasks, StartedTasks, TaskLabels, taskWorker } from "../host/tasks.ts";
+import type { EntryHandles } from "../host/entries.ts";
 import {
 	CommitRef,
 	type Edge,
@@ -31,6 +30,27 @@ import { endContract, knownParley, Parleys } from "./project-docs.ts";
 
 /** The `start` key `wf:<runId>#<n>` of a task of a run, as workflows writes it: `n` is an integer from 1. */
 const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;
+
+/**
+ * What a change of an item to `done` reads of the host before its commit: the keys of the started tasks with the label
+ * of the item, in any state, the live workers of that label, and the open asks.
+ */
+export type ItemWorkers = {
+	readonly tasks: readonly string[];
+	readonly workers: readonly Worker[];
+	readonly asks: readonly Ask[];
+};
+
+/** What the read of the workers of an item uses of the host. */
+export type ItemWorkersHost = Pick<EntryHandles, "labelledTasks" | "workers" | "openAsks">;
+
+/** The workers of the item `id`, as the host has them now. */
+export async function readItemWorkers(host: ItemWorkersHost, id: number): Promise<ItemWorkers> {
+	const label = `item:${id}`;
+	const [tasks, workers, { asks }] = await Promise.all([host.labelledTasks(), host.workers(label), host.openAsks()]);
+
+	return { tasks: tasks.get(label) ?? [], workers, asks };
+}
 
 /** Adds an open item with no edge for the caller `by`, with the ID after `last` of the counter, and gives it. */
 export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkItem> {
@@ -59,19 +79,20 @@ export async function loadItems(tx: Tx, items: readonly WorkItem[], last: number
 
 /**
  * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item and the slugs of
- * the contracts that the change ended. A change to `done` fails while a run or a task that serves the item is live. A
- * change to `done` or `dropped` ends each contract that shapes the item and no open item: `done` when one item that it
- * shapes is done, else `dropped`. `items` gives the items that a contract shapes.
+ * the contracts that the change ended. A change to `done` fails while a run or a task of `workers`, the workers of the
+ * item, is live. A change to `done` or `dropped` ends each contract that shapes the item and no open item: `done` when
+ * one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes.
  */
 export async function setItem(
 	tx: Tx,
 	change: ItemSet,
 	by: string,
 	items: Pick<ItemIndex, "itemsOf">,
+	workers: ItemWorkers,
 ): Promise<{ readonly item: WorkItem; readonly ended: readonly string[] }> {
 	const item = await itemDraft(tx, change.id);
 
-	if (change.state === "done") await refuseLiveRun(tx, item);
+	if (change.state === "done") refuseLiveRun(item, workers);
 
 	if (change.title !== undefined) item.title = change.title;
 
@@ -226,28 +247,15 @@ export function taskRun(key: string): string | undefined {
 }
 
 /**
- * Fails when a run or a task with the label `item:<id>` of `item` is live in `tx`, and names the first one: the runs of
- * the started tasks with the label, in any state of the task, then the live tasks with the label whose key is of another
- * form. A run (`wf:<runId>#<n>`) is live while a live task with the label is a task of the run, or while an ask of the
- * run is open.
+ * Fails when a run or a task with the label `item:<id>` of `item` is live, and names the first one: the runs of the
+ * started tasks of `workers` with the label, in any state of the task, then the live tasks with the label whose key is
+ * of another form. A run (`wf:<runId>#<n>`) is live while a live task with the label is a task of the run, or while an
+ * ask of the run is open.
  */
-async function refuseLiveRun(tx: Tx, item: WorkItem): Promise<void> {
-	const keys = labelledTasks((await tx.doc(TaskLabels)).labels, `item:${item.id}`);
-
-	if (keys.length === 0) return;
-	const started = await tx.doc(StartedTasks);
-	const workers: Worker[] = [];
-
-	for (const key of keys) {
-		const worker = await taskWorker(started, key, (id) => tx.task(id));
-
-		if (worker !== undefined) workers.push(worker);
-	}
-
-	const { asks } = await tx.doc(Asks);
+function refuseLiveRun(item: WorkItem, { tasks, workers, asks }: ItemWorkers): void {
 	const refused = (worker: string) => new Error(`Item ${item.id} cannot be done: ${worker} serves it and is live`);
 
-	for (const run of new Set(keys.flatMap((key) => taskRun(key) ?? []))) {
+	for (const run of new Set(tasks.flatMap((key) => taskRun(key) ?? []))) {
 		if (runLive(run, workers, asks)) throw refused(`run ${run}`);
 	}
 

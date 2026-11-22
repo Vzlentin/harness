@@ -1,9 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Harness } from "@earendil-works/pi-durable";
+import type { CommitChange, Harness } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import type { EntryOptions } from "../src/host/entries.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { StagedItem } from "../src/protocol/item.ts";
@@ -37,9 +38,10 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks
 
 /** What the entry of the tests shares with them, through `globalThis`, since it runs in this process. */
 type Shared = {
-	handles?: {
-		readonly workers: (label: string) => Promise<readonly Worker[]>;
-		readonly stop: (worker: Worker) => Promise<void>;
+	handles?: Pick<
+		EntryOptions,
+		"workers" | "stop" | "liveWorkers" | "labelledTasks" | "workersChange" | "labelChild" | "tell"
+	> & {
 		/** The place of the host, whose store is the harness of the host. */
 		readonly place: { readonly store: Pick<Harness, "observeCommits"> };
 	};
@@ -144,6 +146,24 @@ async function startTask(key: string, prompt: string, extra: { labels?: string[]
 	return gate;
 }
 
+/** The changes of the commits of the store while `run` runs. */
+async function changesDuring(run: () => Promise<void>): Promise<CommitChange[]> {
+	const changes: CommitChange[] = [];
+
+	const observation = handles().place.store.observeCommits({
+		advance: (publication) => changes.push(...publication.changes),
+		end: () => {},
+	});
+
+	try {
+		await run();
+	} finally {
+		observation.detach();
+	}
+
+	return changes;
+}
+
 /** The commits of the store while `run` runs. */
 async function commitsDuring(run: () => Promise<void>): Promise<number> {
 	let commits = 0;
@@ -217,6 +237,82 @@ describe("the workers of a label", { timeout: 30_000 }, () => {
 		).toBe(0);
 		expect(await stateOf(agent.handle)).toBe("idle");
 		gate.resolve();
+	});
+
+	it("gives the live workers of each label, and the started tasks of each label in any state", async () => {
+		const { liveWorkers, labelledTasks, stop } = handles();
+
+		const child = (await spawnAs("each-session", "Task:\nEach child", { notify: false, labels: ["fix:b", "fix:c"] }))
+			.handle;
+
+		await untilState(child, "idle");
+		const gate = await startTask("each-task", "Each task", { labels: ["fix:c"] });
+		const agent: Worker = { kind: "agent", handle: child, conversation: expect.any(String), state: "idle" };
+		const task: Worker = { kind: "task", key: "each-task", state: "running" };
+
+		const live = await liveWorkers();
+		expect(live.get("fix:b")).toEqual([agent]);
+		expect(live.get("fix:c")).toEqual([agent, task]);
+		expect((await labelledTasks()).get("fix:c")).toEqual(["each-task"]);
+		expect((await labelledTasks()).has("fix:b")).toBe(false);
+
+		await stop(task);
+		await stop(agent);
+		await untilState(child, "ended");
+		expect((await liveWorkers()).has("fix:c")).toBe(false);
+		expect((await labelledTasks()).get("fix:c")).toEqual(["each-task"]);
+		gate.resolve();
+	});
+
+	it("marks the changes of a commit that can change a worker, and no other change", async () => {
+		const { workersChange } = handles();
+
+		const spawned = await changesDuring(async () => {
+			const child = await spawnAs("change-session", "Task:\nChange child", { notify: false, labels: ["fix:d"] });
+			await untilState(child.handle, "idle");
+		});
+
+		expect(spawned.some(workersChange)).toBe(true);
+
+		const listed = await changesDuring(async () => {
+			await addTodo("agent", "Not a worker");
+		});
+
+		expect(listed.length).toBeGreaterThan(0);
+		expect(listed.some(workersChange)).toBe(false);
+	});
+
+	it("adds a label to a child by its conversation once, and finds no child for another conversation", async () => {
+		const { labelChild, workers } = handles();
+		const child = await spawnAs("label-session", "Task:\nLabel child", { notify: false, labels: ["fix:e"] });
+		await untilState(child.handle, "idle");
+		const [worker] = await workers("fix:e");
+
+		if (worker?.kind !== "agent") throw new Error("no agent");
+		expect(await labelChild(worker.conversation, "fix:late")).toBe(true);
+		expect(await labelChild(worker.conversation, "fix:late")).toBe(true);
+		expect(await labelChild("999999", "fix:late")).toBe(false);
+		expect(await send({ type: "status", handle: child.handle })).toMatchObject({ labels: ["fix:e", "fix:late"] });
+		expect(await workers("fix:late")).toEqual([worker]);
+	});
+
+	it("tells a hosted conversation an input, and gives another caller nothing", async () => {
+		const { tell, workers } = handles();
+		const child = await spawnAs("tell-session", "Task:\nTell child", { notify: false, labels: ["fix:f"] });
+		await untilState(child.handle, "idle");
+		const [worker] = await workers("fix:f");
+
+		if (worker?.kind !== "agent") throw new Error("no agent");
+		const conversation = worker.conversation;
+
+		await tell(conversation, { type: "input", content: "Told input", requestId: "tell:1" });
+		await until(() => called("Told input") === 1);
+		await untilState(child.handle, "idle");
+		await tell(conversation, { type: "input", content: "Told input", requestId: "tell:1" });
+		await tell("pi-nobody", { type: "input", content: "Told nobody", requestId: "tell:2" });
+		await sleep(300);
+		expect(called("Told input")).toBe(1);
+		expect(called("Told nobody")).toBe(0);
 	});
 
 	it("refuses a spawn and a start with the reason of the check of a label, and leaves no child and no task", async () => {

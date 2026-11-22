@@ -20,17 +20,37 @@
 			"types": "./dist/client/answers.d.ts",
 			"default": "./dist/client/answers.js"
 		},
+		"./asks": {
+			"types": "./dist/host/asks.d.ts",
+			"default": "./dist/host/asks.js"
+		},
 		"./bridge": {
 			"types": "./dist/bridge/index.d.ts",
 			"default": "./dist/bridge/index.js"
+		},
+		"./checkpoint": {
+			"types": "./dist/host/checkpoint.d.ts",
+			"default": "./dist/host/checkpoint.js"
 		},
 		"./children": {
 			"types": "./dist/children/library.d.ts",
 			"default": "./dist/children/library.js"
 		},
+		"./classifier-answers": {
+			"types": "./dist/host/classifier-answers.d.ts",
+			"default": "./dist/host/classifier-answers.js"
+		},
 		"./client": {
 			"types": "./dist/client/client.d.ts",
 			"default": "./dist/client/client.js"
+		},
+		"./degraded": {
+			"types": "./dist/host/degraded.d.ts",
+			"default": "./dist/host/degraded.js"
+		},
+		"./doc-family": {
+			"types": "./dist/host/doc-family.d.ts",
+			"default": "./dist/host/doc-family.js"
 		},
 		"./durable-entry": {
 			"types": "./dist/host/durable-entry.d.ts",
@@ -39,6 +59,10 @@
 		"./entries": {
 			"types": "./dist/protocol/entries.d.ts",
 			"default": "./dist/protocol/entries.js"
+		},
+		"./entry-api": {
+			"types": "./dist/host/entries.d.ts",
+			"default": "./dist/host/entries.js"
 		},
 		"./herdr": {
 			"types": "./dist/client/herdr.d.ts",
@@ -52,6 +76,14 @@
 			"types": "./dist/inspect/index.d.ts",
 			"default": "./dist/inspect/index.js"
 		},
+		"./label-checks": {
+			"types": "./dist/host/label-checks.d.ts",
+			"default": "./dist/host/label-checks.js"
+		},
+		"./lock": {
+			"types": "./dist/host/lock.d.ts",
+			"default": "./dist/host/lock.js"
+		},
 		"./memory-tool": {
 			"types": "./dist/memory-tool.d.ts",
 			"default": "./dist/memory-tool.js"
@@ -60,9 +92,21 @@
 			"types": "./dist/client/mirror.d.ts",
 			"default": "./dist/client/mirror.js"
 		},
+		"./model-choice": {
+			"types": "./dist/host/model-choice.d.ts",
+			"default": "./dist/host/model-choice.js"
+		},
 		"./overlay": {
 			"types": "./dist/children/overlay.d.ts",
 			"default": "./dist/children/overlay.js"
+		},
+		"./passes": {
+			"types": "./dist/host/passes.d.ts",
+			"default": "./dist/host/passes.js"
+		},
+		"./project-tool": {
+			"types": "./dist/project-tool.d.ts",
+			"default": "./dist/project-tool.js"
 		},
 		"./projects": {
 			"types": "./dist/protocol/projects.d.ts",
@@ -76,9 +120,9 @@
 			"types": "./dist/children/respond.d.ts",
 			"default": "./dist/children/respond.js"
 		},
-		"./project-tool": {
-			"types": "./dist/project-tool.d.ts",
-			"default": "./dist/project-tool.js"
+		"./store-watch": {
+			"types": "./dist/host/store-watch.d.ts",
+			"default": "./dist/host/store-watch.js"
 		},
 		"./tasks": {
 			"types": "./dist/host/tasks.d.ts",
@@ -88,6 +132,10 @@
 			"types": "./dist/host/todo.d.ts",
 			"default": "./dist/host/todo.js"
 		},
+		"./todo-lists": {
+			"types": "./dist/host/todo-lists.d.ts",
+			"default": "./dist/host/todo-lists.js"
+		},
 		"./tool": {
 			"types": "./dist/tool.d.ts",
 			"default": "./dist/tool.js"
@@ -95,6 +143,10 @@
 		"./trust": {
 			"types": "./dist/protocol/trust.d.ts",
 			"default": "./dist/protocol/trust.js"
+		},
+		"./user-answers": {
+			"types": "./dist/host/user-answers.d.ts",
+			"default": "./dist/host/user-answers.js"
 		},
 		"./view-state": {
 			"types": "./dist/client/view-state.d.ts",

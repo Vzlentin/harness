@@ -4,9 +4,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { DocumentReader } from "@earendil-works/pi-durable";
-import { readOpenAsks } from "../host/asks.ts";
 import type { EntryHandles } from "../host/entries.ts";
-import { labelledTasks, TaskLabels } from "../host/tasks.ts";
 import type { ItemStage, StagedItem, WorkItem } from "../protocol/item.ts";
 import type { Ask, HeldAction, Parley } from "../protocol/project.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
@@ -17,18 +15,23 @@ import { readHeld } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** What the stage reads of the host: the store, and the live workers of each label. */
-export type StageHost = Pick<EntryHandles, "liveWorkers"> & { readonly harness: Pick<DocumentReader, "snapshot"> };
+/**
+ * What the stage reads of the host: the store, the open asks, the started tasks of each label, and the live workers of
+ * each label.
+ */
+export type StageHost = Pick<EntryHandles, "openAsks" | "labelledTasks" | "liveWorkers"> & {
+	readonly harness: Pick<DocumentReader, "snapshot">;
+};
 
 /**
  * What the stage reads of the store, once for each read of items: the parleys, the open asks, the held actions, the
- * labels of the tasks, and the live workers of each label.
+ * keys of the started tasks of each label, and the live workers of each label.
  */
 type StageInputs = {
 	readonly parleys: readonly Parley[];
 	readonly asks: readonly Ask[];
 	readonly held: readonly HeldAction[];
-	readonly taskLabels: Readonly<Record<string, readonly string[]>>;
+	readonly tasks: ReadonlyMap<string, readonly string[]>;
 	readonly workers: ReadonlyMap<string, readonly Worker[]>;
 };
 
@@ -56,15 +59,15 @@ export async function stageItem(host: StageHost, item: WorkItem): Promise<Staged
 
 /** The inputs of the stage, as the store has them now. */
 async function readInputs(host: StageHost): Promise<StageInputs> {
-	const [{ parleys }, { asks }, { held }, taskLabels, workers] = await Promise.all([
+	const [{ parleys }, { asks }, { held }, tasks, workers] = await Promise.all([
 		readParleys(host.harness, context),
-		readOpenAsks(host.harness, context),
+		host.openAsks(),
 		readHeld(host.harness, context),
-		host.harness.snapshot(TaskLabels, context),
+		host.labelledTasks(),
 		host.liveWorkers(),
 	]);
 
-	return { parleys, asks, held, taskLabels: taskLabels?.labels ?? {}, workers };
+	return { parleys, asks, held, tasks, workers };
 }
 
 /**
@@ -80,7 +83,7 @@ function staged(inputs: StageInputs, item: WorkItem): StagedItem {
 	const label = `item:${item.id}`;
 	const workers = inputs.workers.get(label) ?? [];
 
-	const labelled = labelledTasks(inputs.taskLabels, label).flatMap((key) => taskRun(key) ?? []);
+	const labelled = (inputs.tasks.get(label) ?? []).flatMap((key) => taskRun(key) ?? []);
 
 	const ends: StageEnds = {
 		workers,

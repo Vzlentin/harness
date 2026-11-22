@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { defineConfig } from "vite-plus";
 import type { OxlintOverride } from "vite-plus/lint";
 
@@ -29,25 +32,22 @@ const noProjects: ImportPattern = {
 	message: "The core does not import projects/: the host loads the projects entry through loadEntries.",
 };
 
-/** The modules of host/ that projects/ imports: the parts of the core that the entry API does not give. */
-const PROJECTS_HOST_MODULES = [
-	"asks.ts",
-	"user-answers.ts",
-	"checkpoint.ts",
-	"doc-family.ts",
-	"passes.ts",
-	"store-watch.ts",
-	"classify.ts",
-	"model-choice.ts",
-	"records.ts",
-	"tasks.ts",
-	"todo.ts",
-	"todo-lists.ts",
-	"lock.ts",
-];
+/** The `exports` of `package.json`: each subpath, with its file, or with the file of its types and of its code. */
+const Manifest = Type.Object({
+	exports: Type.Record(Type.String(), Type.Union([Type.String(), Type.Object({ default: Type.String() })])),
+});
 
-/** The modules of host/ whose types projects/ imports: the entry API, the degraded states and the label checks. */
-const PROJECTS_HOST_TYPES = ["entries.ts", "degraded.ts", "label-checks.ts"];
+/**
+ * The modules of host/ that `package.json` exports as a subpath of `@vzlentin/harness`, such as `asks.ts`: the only
+ * modules of host/ that projects/ imports, as the projects package imports them from the subpaths.
+ */
+const EXPORTED_HOST_MODULES = Object.values(
+	Value.Parse(Manifest, JSON.parse(readFileSync(new URL("package.json", import.meta.url), "utf8"))).exports,
+).flatMap((target) => {
+	const file = Value.Check(Type.String(), target) ? target : target.default;
+
+	return /^\.\/dist\/host\/([^/]+)\.js$/.exec(file)?.[1] ?? [];
+});
 
 export default defineConfig({
 	fmt: {
@@ -155,26 +155,19 @@ export default defineConfig({
 				},
 			),
 			restrictImports(["src/host/**"], hostImports, noProjects),
-			restrictImports(
-				["src/projects/**"],
-				{
-					group: [
-						"../**",
-						"!../protocol/**",
-						"!../children/**",
-						"!../tool.ts",
-						"!../project-tool.ts",
-						"!../memory-tool.ts",
-						...[...PROJECTS_HOST_MODULES, ...PROJECTS_HOST_TYPES].map((module) => `!../host/${module}`),
-					],
-					message: `projects/ imports only protocol/, children/, tool.ts, project-tool.ts, memory-tool.ts and, of host/, ${PROJECTS_HOST_MODULES.join(", ")}, and the types of ${PROJECTS_HOST_TYPES.join(", ")}.`,
-				},
-				{
-					group: PROJECTS_HOST_TYPES.map((module) => `../host/${module}`),
-					allowTypeImports: true,
-					message: `projects/ imports only the types of ${PROJECTS_HOST_TYPES.join(", ")}.`,
-				},
-			),
+			restrictImports(["src/projects/**"], {
+				group: [
+					"../**",
+					"!../protocol/**",
+					"!../children/**",
+					"!../tool.ts",
+					"!../project-tool.ts",
+					"!../memory-tool.ts",
+					...EXPORTED_HOST_MODULES.map((module) => `!../host/${module}.ts`),
+				],
+				message:
+					"projects/ imports only protocol/, children/, tool.ts, project-tool.ts, memory-tool.ts and the modules of host/ that the exports of package.json give.",
+			}),
 			restrictImports(["src/host/durable-entry.ts"], hostImports, noProjects, {
 				group: ["@earendil-works/*"],
 				allowTypeImports: true,

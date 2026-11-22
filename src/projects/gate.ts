@@ -4,8 +4,6 @@
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClassifierApi, ClassifierChoiceAnswer, ClassifierModel, ClassifierQuestion } from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
-import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type Cursor,
 	defineExtension,
@@ -15,8 +13,9 @@ import {
 	hook,
 	ToolTask,
 } from "@earendil-works/pi-durable";
-import { answerOf, askClassifier, classifierFailed, classifierModel } from "../host/classify.ts";
+import { answerOf, classifierFailed } from "../host/classifier-answers.ts";
 import type { Degraded } from "../host/degraded.ts";
+import type { EntryClassifier } from "../host/entries.ts";
 import {
 	asksNoQuestion,
 	GATE_MESSAGES,
@@ -69,9 +68,8 @@ const WRITES: ClassifierQuestion = {
 /** What the gate uses of the host. */
 export type GateHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
-	/** Pi's settings, for `gateClassifier`. */
-	readonly settings: SettingsManager;
-	readonly models: Models;
+	/** The classifier models of Pi's settings, for `gateClassifier`. */
+	readonly classifier: EntryClassifier;
 	readonly signal: AbortSignal;
 	readonly degraded: Degraded;
 };
@@ -160,11 +158,11 @@ async function brokenRule(
 	messages: readonly string[],
 	rules: readonly Rule[],
 ): Promise<Hold | undefined> {
-	const { models, signal } = host;
-	const model = await classifierModel(host.settings, models, "gateClassifier", host.degraded);
+	const { classifier, signal } = host;
+	const model = await classifier.model("gateClassifier");
 
 	try {
-		const first = await askClassifier(models, model, { state: { command }, questions: { writes: WRITES } }, signal);
+		const first = await classifier.ask(model, { state: { command }, questions: { writes: WRITES } }, signal);
 		const writes = answerOf(model, first, "writes", "bool");
 
 		if (writes.probability <= WRITES_ABOVE) {
@@ -174,7 +172,7 @@ async function brokenRule(
 		}
 
 		const state = { action: command, last_user_messages: [...messages] };
-		const second = await askClassifier(models, model, { state, questions: { rule: ruleQuestion(rules) } }, signal);
+		const second = await classifier.ask(model, { state, questions: { rule: ruleQuestion(rules) } }, signal);
 		const hold = ruleOf(model, answerOf(model, second, "rule", "choice"), rules);
 		host.degraded.end("gate-classifier", GATE_CAUSE);
 

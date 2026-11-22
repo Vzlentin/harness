@@ -56,10 +56,10 @@ import { checkLabels } from "./label-checks.ts";
 import { takeLock } from "./lock.ts";
 import { HostMcp } from "./mcp.ts";
 import { type Connection, Push } from "./push.ts";
-import { ChildRecords, OldChildRecordsError } from "./records.ts";
+import { ChildRecords, labelChild, OldChildRecordsError } from "./records.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
-import { liveWorkers, stopWorker, type WorkerHost, workers } from "./workers.ts";
+import { labelledTasks, liveWorkers, stopWorker, type WorkerHost, workers, workersChange } from "./workers.ts";
 
 /** The host exits after this long with no connection, no live task, no busy entry and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -236,6 +236,9 @@ export async function runHost(options: {
 			await queueDelivery(harness, rootId, delivery, context);
 		},
 		workers: (label) => workers(openWorkerHost(), label),
+		labelledTasks: () => labelledTasks(openWorkerHost()),
+		workersChange,
+		labelChild: (conversation, label) => labelChild(openWorkerHost().harness, conversation, label),
 		stop: (worker) => stopWorker(openWorkerHost(), worker),
 	};
 
@@ -341,8 +344,8 @@ export async function runHost(options: {
 		lock.close();
 	};
 
-	// The entries open before any reader of the records and before any task resumes: the projects entry moves the old
-	// records to their labels there, and stops the workers of the work that ended.
+	// The entries open before any task resumes: the projects entry gives the children of an old store the labels of
+	// their items there, and stops the workers of the work that ended.
 	try {
 		await entries.open({ harness, root, storage });
 	} catch (error) {

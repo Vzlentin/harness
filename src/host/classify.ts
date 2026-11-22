@@ -4,7 +4,6 @@
  */
 import type {
 	ClassifierApi,
-	ClassifierAnswer,
 	ClassifierContext,
 	ClassifierModel,
 	ClassifierQuestion,
@@ -15,6 +14,7 @@ import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Todo, TodoAnswer } from "../protocol/todo.ts";
+import { answerOf, classifierFailed } from "./classifier-answers.ts";
 import type { Degraded } from "./degraded.ts";
 
 /** The classifier of each setting when Pi's settings do not have it. */
@@ -93,35 +93,6 @@ export async function askClassifier(
 	}
 
 	return result.answers;
-}
-
-/**
- * The answer of `model` in `answers` to the question `key`, of the type `type`. A missing answer, or one of another type,
- * fails with `<failed>: no answer to <key>`.
- */
-export function answerOf<T extends "bool" | "choice">(
-	model: ClassifierModel<ClassifierApi>,
-	answers: ClassifierResult["answers"],
-	key: string,
-	type: T,
-): Extract<ClassifierAnswer, { type: T }> {
-	const answer = answers[key];
-
-	if (!hasType(answer, type)) throw new Error(`${classifierFailed(model)}: no answer to ${key}`);
-
-	return answer;
-}
-
-function hasType<T extends ClassifierAnswer["type"]>(
-	answer: ClassifierAnswer | undefined,
-	type: T,
-): answer is Extract<ClassifierAnswer, { type: T }> {
-	return answer?.type === type;
-}
-
-/** The start of the error of a call of `model` that failed. */
-export function classifierFailed(model: ClassifierModel<ClassifierApi>): string {
-	return `The classifier ${model.provider}/${model.id} failed`;
 }
 
 /**

@@ -1,80 +1,46 @@
 /**
- * The move of what each child served to its labels, at the first start of a host whose records of the children still
- * have `serves`: the records of version 5 and 6, and the `agent:` serves edges of the items, in one commit.
+ * The move of the items that the children of an old store served to their labels: the `agent:<conversation> serves`
+ * edges of the items, which the records of the children of version 5 and 6 did not name.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness, Storage } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { type ChildRecord, ChildRecords } from "../host/records.ts";
+import type { EntryHandles } from "../host/entries.ts";
+import type { Edge } from "../protocol/item.ts";
 import { allItems, Items } from "./item-docs.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/**
- * What a record of version 5 or 6 served: its spawner, an open parley or a contract by slug, or the item whose
- * `agent:<conversation> serves` edge names the child.
- */
-const OldServes = Type.Union([
-	Type.Object({ kind: Type.Literal("spawner") }),
-	Type.Object({ kind: Type.Literal("parley"), slug: Type.String() }),
-	Type.Object({ kind: Type.Literal("contract"), slug: Type.String() }),
-	Type.Object({ kind: Type.Literal("item") }),
-]);
-
-/** A record of version 5 or 6, with what it served. */
-const OldRecord = Type.Object({ serves: OldServes });
-
-/** A record of version 5 that served a todo of the list of the project, before the move of the todos to items. */
-export const OldTodoRecord = Type.Object({ serves: Type.Object({ kind: Type.Literal("todo"), id: Type.Integer() }) });
+/** The prefix of the `from` end of the edge of a child that serves an item, before its conversation ID. */
+const AGENT_PREFIX = "agent:";
 
 /**
- * Turns `serves` of each record into its labels, once: a spawner gives none, a parley or a contract gives
- * `parley:<slug>`, and an item gives `item:<id>` from the `agent:<conversation> serves item:<id>` edge, which leaves
- * the item. A record with no edge gets no label. It does nothing when no record has `serves`. `storage` lists the items.
- * The lock of the host keeps other writers out between the read and the commit.
+ * Gives the child of each `agent:<conversation> serves item:<id>` edge the label `item:<id>`, with `labelChild`, and
+ * then takes the edge from the item. An edge whose conversation is no child of the host stays. It does nothing when no
+ * item has such an edge. `storage` lists the items. A start after a failure between the two writes adds the label once.
  */
-export async function migrateLabels(harness: Harness, storage: Pick<Storage, "scanDocuments">): Promise<void> {
-	const state = await harness.snapshot(ChildRecords, context);
+export async function migrateLabels(
+	harness: Harness,
+	storage: Pick<Storage, "scanDocuments">,
+	labelChild: EntryHandles["labelChild"],
+): Promise<void> {
+	for (const item of await allItems(harness, storage, context)) {
+		const labelled: Edge[] = [];
 
-	if (!Object.values(state?.children ?? {}).some((record) => Value.Check(OldRecord, record))) return;
-	const items = await allItems(harness, storage, context);
-
-	await harness.commit(async (tx) => {
-		for (const record of Object.values((await tx.doc(ChildRecords)).children)) {
-			if (!Value.Check(OldRecord, record)) continue;
-			const { serves } = record;
-			let labels: string[] = [];
-
-			if (serves.kind === "parley" || serves.kind === "contract") labels = [`parley:${serves.slug}`];
-
-			if (serves.kind === "item") {
-				const agent = `agent:${record.conversationId}`;
-				const served = items.find((item) => item.edges.some((edge) => isAgentEdge(edge, agent)));
-
-				if (served !== undefined) {
-					const item = await tx.doc(Items, String(served.id), Value.Clone(served));
-					item.edges = item.edges.filter((edge) => !isAgentEdge(edge, agent));
-					labels = [`item:${served.id}`];
-				}
-			}
-
-			relabel(record, labels);
+		for (const edge of item.edges.filter(isAgentEdge)) {
+			if (await labelChild(edge.from.slice(AGENT_PREFIX.length), `item:${item.id}`)) labelled.push(edge);
 		}
-	}, context);
+
+		if (labelled.length === 0) continue;
+
+		await harness.commit(async (tx) => {
+			const draft = await tx.doc(Items, String(item.id), Value.Clone(item));
+			draft.edges = draft.edges.filter((edge) => !labelled.some((done) => Value.Equal(done, edge)));
+		}, context);
+	}
 }
 
-/**
- * Gives `record` the labels `labels` in place of what it served before, and drops the end of what it served, which
- * the records of version 5 and 6 kept.
- */
-export function relabel(record: ChildRecord, labels: string[]): void {
-	Reflect.deleteProperty(record, "serves");
-	Reflect.deleteProperty(record, "servedEnd");
-	record.labels = labels;
-}
-
-/** Whether `edge` is the `serves` edge from `agent`. */
-function isAgentEdge(edge: { readonly from: string; readonly kind: string }, agent: string): boolean {
-	return edge.from === agent && edge.kind === "serves";
+/** Whether `edge` is the `serves` edge of a child. */
+function isAgentEdge(edge: Edge): boolean {
+	return edge.from.startsWith(AGENT_PREFIX) && edge.kind === "serves";
 }

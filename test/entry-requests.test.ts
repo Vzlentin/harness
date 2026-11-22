@@ -2,14 +2,32 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import * as durable from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { addAsks } from "../src/host/asks.ts";
+import { ChildRecords } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
+import { AskList } from "../src/protocol/project.ts";
 import { PROTOCOL_VERSION } from "../src/protocol/requests.ts";
-import { createProject, models, PROJECTS_MODULE, root, setUp, startHost, tearDown, until } from "./helpers.ts";
+import {
+	createProject,
+	models,
+	openDurableHost,
+	PROJECTS_MODULE,
+	root,
+	send,
+	setUp,
+	spawnAs,
+	startHost,
+	tearDown,
+	until,
+} from "./helpers.ts";
 
 const PROJECT = "entries";
 const TYPEBOX = import.meta.resolve("typebox");
@@ -74,6 +92,33 @@ export default function fixtureEntry(handles) {
 }
 `;
 
+/** What the entry of the open and busy calls shares with the tests, through `globalThis`: it runs in this process. */
+type Seams = {
+	/** What each open call got: the root conversation, whether its harness is the host's store, and the live workers. */
+	opened: { root: string; store: boolean; workers: number }[];
+	/** What the busy call gives. */
+	busy: boolean;
+};
+
+const seams: Seams = { opened: [], busy: false };
+
+Object.assign(globalThis, { harnessSeams: seams });
+
+/** The entry of the open and busy calls, which records each open and is busy while `seams.busy` is true. */
+const SEAMS_ENTRY = `export default function seamsEntry(handles) {
+	const seams = globalThis.harnessSeams;
+	return {
+		extensions: [],
+		open: async ({ harness, root }) => {
+			const workers = await handles.liveWorkers();
+			seams.opened.push({ root: String(root.id), store: harness === handles.place.store, workers: workers.size });
+		},
+		busy: () => seams.busy,
+		close: async () => {},
+	};
+}
+`;
+
 /** Each line that the socket of `project` sends for `lines`, until it ends, or until `count` lines came. */
 function exchange(project: string, lines: readonly unknown[], count?: number): Promise<unknown[]> {
 	const socket = createConnection(statePaths(project).socket);
@@ -127,15 +172,33 @@ export default () => ({
 	return module;
 }
 
+/** The `subagent.children` document of version 6, whose records serve a spawner, a parley, a contract or an item. */
+const ChildrenV6 = durable.defineDoc<durable.JsonObject>({
+	kind: "subagent.children",
+	version: 6,
+	scope: "session",
+	checkpointWhen: () => false,
+	initial: () => ({ children: {}, requests: {} }),
+});
+
 /**
  * Starts a host of a new project with only the entries `entries`, by name, and gives it. `entries.json` then has only
  * the projects entry again.
  */
 async function startWith(project: string, entries: Record<string, string>): Promise<Host> {
+	await createProject(project);
+
+	return restartWith(project, entries);
+}
+
+/**
+ * Starts a host of the project `project` with only the entries `entries`, by name, and gives it. `entries.json` then
+ * has only the projects entry again.
+ */
+async function restartWith(project: string, entries: Record<string, string>): Promise<Host> {
 	const file = join(root, "config", "harness", "entries.json");
 	await mkdir(join(root, "config", "harness"), { recursive: true });
 	await writeFile(file, JSON.stringify(entries));
-	await createProject(project);
 
 	try {
 		return await startHost(project);
@@ -328,6 +391,50 @@ describe("entry load errors", () => {
 	});
 });
 
+describe("the open and busy calls of an entry", () => {
+	it("opens the entry once with the root conversation and the store of the host", async () => {
+		const project = "seams-open";
+		const opened = await startWith(project, { seams: await entryModule("seams-entry", SEAMS_ENTRY) });
+
+		try {
+			expect(seams.opened).toEqual([{ root: expect.any(String), store: true, workers: 0 }]);
+			const caller = seams.opened[0]?.root ?? "";
+			expect(await send({ type: "whoami", caller }, project)).toEqual({ handle: "agent" });
+		} finally {
+			await opened.close();
+			seams.opened.length = 0;
+		}
+	});
+
+	it("keeps the host from its idle exit while the entry is busy", async () => {
+		const project = "seams-busy";
+		const dir = await createProject(project);
+		const file = join(root, "config", "harness", "entries.json");
+		await writeFile(file, JSON.stringify({ seams: await entryModule("seams-entry", SEAMS_ENTRY) }));
+		seams.busy = true;
+
+		// The host exits once it had no connection and no activity for 300 ms, and the entry is not busy.
+		const idle = await runHost({ project, cwd: dir, models, idleExitMs: 300 }).finally(() =>
+			writeFile(file, JSON.stringify({ projects: PROJECTS_MODULE })),
+		);
+
+		if (idle === undefined) throw new Error("no host");
+		let closed = false;
+		void idle.closed.then(() => (closed = true));
+
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			expect(closed).toBe(false);
+			seams.busy = false;
+			await until(() => closed);
+		} finally {
+			seams.busy = false;
+			seams.opened.length = 0;
+			await idle.close();
+		}
+	});
+});
+
 describe("a host without the projects entry", () => {
 	let bare: Host | undefined;
 	const project = "no-projects";
@@ -359,4 +466,102 @@ describe("a host without the projects entry", () => {
 		expect(listed).toEqual({ ok: true, value: { asks: [ask] } });
 		expect(refused).toEqual({ ok: false, error: "no loaded entry serves parley asks" });
 	});
+
+	it("answers and drops an ask that serves a parley as a plain ask, and keeps its parley as data", async () => {
+		await offline(async (store) => {
+			await store.commit(async (tx) => {
+				const parley = { id: 1, n: 1 };
+
+				const asks = [
+					{ input: { title: "Kept?" }, parley },
+					{ input: { title: "Dropped?" }, parley },
+				];
+
+				await addAsks(tx, asks, "cli", 1);
+			}, BACKGROUND_CONTEXT);
+		});
+
+		const { asks } = Value.Parse(AskList, await send({ type: "ask", action: "list" }, project));
+		const [kept, dropped] = asks.filter((ask) => ask.parley !== undefined).map((ask) => ask.id);
+
+		const answer = {
+			type: "ask",
+			action: "answer",
+			caller: "cli",
+			answers: [{ id: kept, answer: "own", label: "Yes", words: ["yes"] }],
+		};
+
+		const drop = { type: "ask", action: "drop", caller: "cli", id: dropped };
+		const [answered, gone] = await exchange(project, [answer, drop], 2);
+
+		expect(answered).toMatchObject({
+			ok: true,
+			value: { asks: [{ id: kept, state: "answered", parley: { id: 1, n: 1 } }] },
+		});
+		expect(gone).toMatchObject({
+			ok: true,
+			value: { asks: [{ id: dropped, state: "dropped", parley: { id: 1, n: 1 } }] },
+		});
+	});
+
+	it("reads the children of a store of version 6 with the labels that the host names from their records", async () => {
+		const handles: string[] = [];
+
+		for (const prompt of ["parley", "contract", "item", "spawner"]) {
+			handles.push((await spawnAs("bare-session", `Task:\nServe ${prompt}`, { notify: false, project })).handle);
+		}
+
+		const [byParley = "", byContract = "", byItem = "", bySpawner = ""] = handles;
+
+		const served = {
+			[byParley]: { serves: { kind: "parley", slug: "old-open" } },
+			[byContract]: { serves: { kind: "contract", slug: "old-contract" } },
+			[byItem]: { serves: { kind: "item" } },
+			[bySpawner]: { serves: { kind: "spawner" }, servedEnd: "due" },
+		} satisfies Record<string, durable.JsonObject>;
+
+		await offline(async (store) => {
+			const state = await store.snapshot(ChildRecords, BACKGROUND_CONTEXT);
+
+			if (state === undefined) throw new Error("no records");
+
+			const children = Object.fromEntries(
+				Object.entries(Value.Clone(state).children).map(([handle, { labels: _labels, ...record }]) => [
+					handle,
+					{ ...record, ...served[handle] },
+				]),
+			);
+
+			await store.commit((tx) => tx.retireDoc(ChildRecords), BACKGROUND_CONTEXT);
+
+			await store.commit(async (tx) => {
+				Object.assign(await tx.doc(ChildrenV6), { children, requests: state.requests });
+			}, BACKGROUND_CONTEXT);
+		});
+
+		const status = (handle: string) => send({ type: "status", handle }, project);
+		expect(await status(byParley)).toMatchObject({ handle: byParley, labels: ["parley:old-open"] });
+		expect(await status(byContract)).toMatchObject({ handle: byContract, labels: ["parley:old-contract"] });
+
+		for (const handle of [byItem, bySpawner]) {
+			const child = await status(handle);
+			expect(child).toMatchObject({ handle });
+			expect(child).not.toHaveProperty("labels");
+		}
+	});
+
+	/** Runs `write` on the store of the host without the projects entry while it is closed, and starts it again. */
+	async function offline(write: (store: durable.Harness) => Promise<void>): Promise<void> {
+		await bare?.close();
+		bare = undefined;
+		const store = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
+
+		try {
+			await write(store);
+		} finally {
+			await store.close(BACKGROUND_CONTEXT);
+		}
+
+		bare = await restartWith(project, {});
+	}
 });
