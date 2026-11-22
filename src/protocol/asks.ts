@@ -248,7 +248,7 @@ export const ParleyFields = {
 };
 
 /**
- * A group of asks with a frame: its slug, unique in the project, its title, its goal, its evidence and its design
+ * A group of asks with a frame: its slug, unique in the host, its title, its goal, its evidence and its design
  * sense, which a parley needs from its contract on. It names no asker and no asks: each ask names its parley. `at` is the
  * time of its last change, and `by` the caller of that change.
  */

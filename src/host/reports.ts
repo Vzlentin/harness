@@ -45,7 +45,7 @@ export async function report(
 
 /**
  * The worker of `request` and its labels: the child `handle`, the started task `key`, or the child whose conversation
- * is the caller. The project agent and a caller that is no child refuse a report with no worker.
+ * is the caller. The host agent and a caller that is no child refuse a report with no worker.
  */
 async function reportedWorker(
 	request: Extract<Request, { type: "report" }>,

@@ -46,7 +46,7 @@ afterAll(async () => {
 	await tearDown();
 });
 
-/** The list of the child or the project agent `handle`. */
+/** The list of the child or the host agent `handle`. */
 async function listOf(handle: string): Promise<Replies["todo"]> {
 	const reply = await request({ type: "todo", caller: "cli", action: "list", handle }, { start: false });
 
@@ -112,7 +112,7 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("has no list parameter, and a todo call of the project agent changes its own list", async () => {
+	it("has no list parameter, and a todo call of the host agent changes its own list", async () => {
 		const before = await listOf(AGENT_HANDLE);
 
 		if (!("todos" in before)) throw new Error("no list");
@@ -144,7 +144,7 @@ describe("the todo tool", { timeout: 30_000 }, () => {
 		expect(cellResults.get(prompt)).toEqual(["○ 1 From the host\n○ 2 Mine\n", "◉ 1 From the host\n○ 2 Mine\n"]);
 	});
 
-	it("gives the project agent the tool", async () => {
+	it("gives the host agent the tool", async () => {
 		await agentTurn("Agent todo tools");
 
 		expect(requests.get("Agent todo tools")?.tools).toContain("todo");

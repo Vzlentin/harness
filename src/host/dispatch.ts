@@ -256,7 +256,7 @@ function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
 }
 
 async function start(request: Extract<Request, { type: "start" }>, handler: Handler): Promise<Replies["start"]> {
-	// A child that a task opens without a model takes the project agent's, so the agent is set up first. Without a model
+	// A child that a task opens without a model takes the host agent's, so the agent is set up first. Without a model
 	// for the agent, the task still starts: its children may name their own.
 	await handler.agent().catch(() => undefined);
 
@@ -278,9 +278,9 @@ async function todo(request: Extract<Request, { type: "todo" }>, handler: Handle
 }
 
 /**
- * The owner of the list that `request` targets: the task of a `start` key, a library conversation, the project agent,
+ * The owner of the list that `request` targets: the task of a `start` key, a library conversation, the host agent,
  * a child by handle, or the caller. A caller that is a conversation of the host has the list of its conversation. The
- * project agent needs no set-up, and a child by handle needs no check of its caller.
+ * host agent needs no set-up, and a child by handle needs no check of its caller.
  */
 async function todoOwner(request: Extract<Request, { type: "todo" }>, handler: Handler): Promise<TodoOwner> {
 	if (request.key !== undefined || request.handle !== undefined || request.conversation !== undefined) {
@@ -360,7 +360,7 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 }
 
 /**
- * The handle of `caller`: `agent` for the project agent, or the handle of the child whose conversation it is. Another
+ * The handle of `caller`: `agent` for the host agent, or the handle of the child whose conversation it is. Another
  * caller, such as a Pi session, gets no handle.
  */
 async function whoami(caller: string, handler: Handler): Promise<Replies["whoami"]> {
@@ -378,7 +378,7 @@ async function rename(request: Extract<Request, { type: "rename" }>, handler: Ha
 }
 
 /**
- * Stops the child of `request` with the children it spawned. For `cli`, a target with no record, the project agent or a
+ * Stops the child of `request` with the children it spawned. For `cli`, a target with no record, the host agent or a
  * conversation such as a session of a task, has its turn aborted and stays.
  */
 async function stop(request: Extract<Request, { type: "stop" }>, handler: Handler): Promise<Replies["stop"]> {
@@ -398,7 +398,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	let handle = await spawnedHandle(harness, request.requestId);
 
 	if (handle === undefined) {
-		// A caller that is a child of this host or the project agent is the parent; any other caller is a root.
+		// A caller that is a child of this host or the host agent is the parent; any other caller is a root.
 		const parent = (await callerConversation(handler, request.caller)) === undefined ? undefined : request.caller;
 
 		const settings = await spawnSettings(handler.settings);
@@ -581,13 +581,13 @@ async function abortChild(ref: Target, handler: Handler): Promise<ChildInfo> {
 }
 
 /**
- * Aborts the turn of `ref`, and gives its target and its handle: `agent` for the project agent, else the ID of its
+ * Aborts the turn of `ref`, and gives its target and its handle: `agent` for the host agent, else the ID of its
  * conversation. The handle does not come from the info, which fails for a conversation without a model or a working
  * directory.
  */
 async function abortTarget(ref: Target, handler: Handler): Promise<{ readonly found: Found; readonly handle: string }> {
 	const found = await target(handler, ref);
-	// Without `background`, an abort of the project agent does not reach the anchors of the children, which keep running.
+	// Without `background`, an abort of the host agent does not reach the anchors of the children, which keep running.
 	await found.conversation.abort(context);
 
 	return { found, handle: ref.kind === "agent" ? AGENT_HANDLE : String(found.conversation.id) };

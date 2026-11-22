@@ -107,7 +107,7 @@ export async function readPage(pathname: string): Promise<PageFile | undefined> 
  * calls of the page, for the target `fields` and the parley `parley`, the slug of the page:
  *
  * - `window.sendPrompt(text)` posts `{ ...fields, message: text }` to `/api/inspect/input`.
- * - `window.sendAnswers(answers)` posts `{ project, parley, answers }` to `/api/inspect/answers`, where each answer is
+ * - `window.sendAnswers(answers)` posts `{ host, parley, answers }` to `/api/inspect/answers`, where each answer is
  *   `{ n, answer, label?, words? }`, and resolves to the write of the host, or to undefined when it is not sent.
  * - `window.readAsks()` gets `/api/inspect/asks` and resolves to `{ parley, asks }`, or rejects with the error.
  *
@@ -182,11 +182,11 @@ function sendScript(fields: Readonly<Record<string, string>>, parley: string): s
 		await send(\`prompt \${text}\`, "/api/inspect/input", { ...fields, message: text });
 	};
 	window.sendAnswers = (answers) => {
-		const body = { project: fields.project, parley, answers };
+		const body = { host: fields.host, parley, answers };
 		return send(\`answers \${JSON.stringify(answers)}\`, "/api/inspect/answers", body);
 	};
 	window.readAsks = async () => {
-		const query = \`project=\${encodeURIComponent(fields.project)}&parley=\${encodeURIComponent(parley)}\`;
+		const query = \`host=\${encodeURIComponent(fields.host)}&parley=\${encodeURIComponent(parley)}\`;
 		const result = await call(\`/api/inspect/asks?\${query}\`);
 		if ("reason" in result) throw new Error(String(result.reason));
 		return result.body;

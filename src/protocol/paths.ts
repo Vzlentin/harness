@@ -20,8 +20,8 @@ function stateRoot(): string {
 
 export type StatePaths = { dir: string; socket: string; log: string; store: string };
 
-export function statePaths(project: string): StatePaths {
-	const dir = join(stateRoot(), project);
+export function statePaths(host: string): StatePaths {
+	const dir = join(stateRoot(), host);
 
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log"), store: join(dir, "store.json") };
 }

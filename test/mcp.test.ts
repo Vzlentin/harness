@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { type Host, runHost } from "../src/host/run.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import { cellResults, cli, handleOf, models, requests, root, scripts, setUp, tearDown, until } from "./helpers.ts";
 
 /** A JSON-RPC message that the fixture reads. */
@@ -128,7 +128,7 @@ beforeAll(async () => {
 		return write(chunk, ...(rest as []));
 	});
 
-	host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models });
+	host = await runHost({ host: MAIN_HOST, cwd: hostDir(MAIN_HOST), models });
 	await until(() => open.listed > 0 && warnings.some((line) => line.includes('"secure" requires sign-in')));
 });
 

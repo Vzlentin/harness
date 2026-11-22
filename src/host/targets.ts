@@ -1,5 +1,5 @@
 /**
- * The targets of the host's requests: the children by handle, the project agent, and the conversations of the children
+ * The targets of the host's requests: the children by handle, the host agent, and the conversations of the children
  * library by ID, with their info, and the passive user entries that the host writes to them.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -48,8 +48,8 @@ export type TargetHost = {
 	/** The host's store, models and tools, for the children library. */
 	readonly place: Place;
 	readonly owner: Owner;
-	readonly project: string;
-	/** The project agent: the root conversation, with a model and the project directory from its first use. */
+	readonly host: string;
+	/** The host agent: the root conversation, with a model and the host directory from its first use. */
 	readonly agent: () => Promise<Conversation>;
 };
 
@@ -61,7 +61,7 @@ export type EndHost = Pick<TargetHost, "harness" | "place" | "owner"> & {
 	readonly agentEnded: (conversation: string) => Promise<void>;
 };
 
-/** The request ID of the project agent's newest input, which its `error` state comes from. */
+/** The request ID of the host agent's newest input, which its `error` state comes from. */
 export const AgentState = defineDoc<{ lastRequest: string | null }>({
 	kind: "harness.agent",
 	version: 1,
@@ -76,7 +76,7 @@ export const AgentState = defineDoc<{ lastRequest: string | null }>({
 export const library = createChildren(durable);
 
 /**
- * The conversation of `ref`: a child by handle, the project agent, or a conversation of the children library by ID,
+ * The conversation of `ref`: a child by handle, the host agent, or a conversation of the children library by ID,
  * with its info, its input, and the record of a child.
  */
 export async function target(handler: TargetHost, ref: Target) {
@@ -90,7 +90,7 @@ export async function target(handler: TargetHost, ref: Target) {
 	}
 }
 
-/** The conversation ID of `ref`, with no set-up of the project agent and no check of the caller of a child. */
+/** The conversation ID of `ref`, with no set-up of the host agent and no check of the caller of a child. */
 export async function targetConversation(
 	host: Pick<TargetHost, "harness" | "place"> & { readonly root: Conversation },
 	ref: Target,
@@ -105,10 +105,10 @@ export async function targetConversation(
 	}
 }
 
-/** The target of the project agent. It has no record. */
+/** The target of the host agent. It has no record. */
 async function agentTarget(handler: TargetHost) {
 	const root = await handler.agent();
-	const { place, project } = handler;
+	const { place, host } = handler;
 	const turn = agentTurn(place, root);
 
 	return {
@@ -116,7 +116,7 @@ async function agentTarget(handler: TargetHost) {
 		info: async (): Promise<ChildInfo> => ({
 			...(await agentFields(root)),
 			handle: AGENT_HANDLE,
-			name: `${project} agent`,
+			name: `${host} agent`,
 			state: await turn.state(context),
 		}),
 		send: (input: Input) => turn.send(input, context),
@@ -127,7 +127,7 @@ async function agentTarget(handler: TargetHost) {
 	};
 }
 
-/** The input and the state of the project agent, the root conversation `root`. The state needs no model. */
+/** The input and the state of the host agent, the root conversation `root`. The state needs no model. */
 export function agentTurn(place: Place, root: Conversation): Turn {
 	return library.turn(place, root.id, root, {
 		read: async (tx) => (await tx.doc(AgentState, root.id)).lastRequest,
@@ -197,7 +197,7 @@ async function libraryConversation(place: Place, id: string) {
 }
 
 /**
- * The handle and the record of the child of `target`, when `caller`, which is not `cli`, spawned it. The project agent,
+ * The handle and the record of the child of `target`, when `caller`, which is not `cli`, spawned it. The host agent,
  * and a conversation with no record, such as a session of a task, are not children of this host.
  */
 export async function callerEntry(
@@ -222,7 +222,7 @@ export async function callerEntry(
 
 /**
  * The handle and the record of the child of `target` that `caller` stops. `cli`, a terminal that is not an agent, stops
- * any child, and gets nothing when the target has no record: the project agent, or a conversation such as a session of
+ * any child, and gets nothing when the target has no record: the host agent, or a conversation such as a session of
  * a task. Another caller gets what `callerEntry` gives.
  */
 export async function stoppedEntry(
@@ -254,7 +254,7 @@ async function recordOfConversation(
 }
 
 /**
- * The conversation of `caller` when it is the project agent or a conversation that the children library opened, such
+ * The conversation of `caller` when it is the host agent or a conversation that the children library opened, such
  * as a child of this host; nothing for another caller, such as a Pi session or `cli`.
  */
 export async function callerConversation(

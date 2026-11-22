@@ -1,5 +1,5 @@
 /**
- * The project agent, which is the root conversation: its set-up at its first use, and its catch-up, before a user
+ * The host agent, which is the root conversation: its set-up at its first use, and its catch-up, before a user
  * input, one entry with the facts of the entries' catch-up hooks and the commits on the default branch since the agent
  * last saw them.
  */
@@ -77,7 +77,7 @@ const SeenV1 = Type.Object({
 });
 
 /**
- * What the project agent has seen. Undefined until its first input. The migration from version 1 drops its workflows
+ * What the host agent has seen. Undefined until its first input. The migration from version 1 drops its workflows
  * facts, `lastTaskId` and `pending`, and starts each catch-up hook with nothing seen.
  */
 const Seen = defineDoc<SeenState>({
@@ -103,15 +103,15 @@ type Commit = { sha: string; subject: string };
  */
 type HeadCommits = { head: string; branch: string; commits: Commit[]; reset?: Reset };
 
-/** Writes an entry into the project agent's conversation. */
+/** Writes an entry into the host agent's conversation. */
 type WriteEntry = Found["write"];
 
 /** What `catchUp` uses of the host. */
 export type CatchUpHost = {
 	readonly harness: Harness;
-	/** The root conversation, which owns the host's children and is the project agent. */
+	/** The root conversation, which owns the host's children and is the host agent. */
 	readonly root: Conversation;
-	/** The project directory, for Git. */
+	/** The host directory, for Git. */
 	readonly cwd: string;
 	/** The catch-up hooks of the entries, in load order. */
 	readonly catchUps: readonly CatchUpHook[];
@@ -119,7 +119,7 @@ export type CatchUpHost = {
 };
 
 /**
- * The root conversation as the agent of `project`. The first time, it gets Pi's default model when it has a login, else
+ * The root conversation as the agent of `host`. The first time, it gets Pi's default model when it has a login, else
  * the first model with a login, Pi's default thinking level, and the directory `cwd`. Without a model with a login, it
  * throws.
  */
@@ -127,7 +127,7 @@ export async function setUpAgent(
 	root: Conversation,
 	models: Models,
 	settings: SettingsManager,
-	project: string,
+	host: string,
 	cwd: string,
 ): Promise<Conversation> {
 	if ((await root.agent(context)).model !== undefined) return root;
@@ -140,7 +140,7 @@ export async function setUpAgent(
 
 	if (model === undefined) {
 		throw new Error(
-			`No model for the ${project} agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`,
+			`No model for the ${host} agent: log in to a provider and set a default model in Pi (defaultProvider and defaultModel)`,
 		);
 	}
 
@@ -159,7 +159,7 @@ export async function setUpAgent(
 const lastCatchUps = new WeakMap<Conversation, Promise<void>>();
 
 /**
- * Writes the catch-up entry of the project agent with `write`, before the input `requestId`, when a catch-up hook gave
+ * Writes the catch-up entry of the host agent with `write`, before the input `requestId`, when a catch-up hook gave
  * lines or the default branch moved since the last one. The catch-ups of one agent run one at a time. It never throws: a
  * failure is a warning and starts the degraded state `catch-up-failed` of the cause `catch-up`, which the next catch-up
  * that ends ends, and the input goes through.

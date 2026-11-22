@@ -1,5 +1,5 @@
 /**
- * The host process of a project: its lock, its store, its socket and its idle exit.
+ * The process of a host: its lock, its store, its socket and its idle exit.
  */
 import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -141,12 +141,12 @@ export type Host = {
 };
 
 /**
- * Runs the host of `project` in this process: the store and the socket in the project's state directory
- * (`statePaths`), the children's models from `models`, and the project agent in `cwd`. It is undefined when another
+ * Runs the host `host` in this process: the store and the socket in the host's state directory
+ * (`statePaths`), the children's models from `models`, and the host agent in `cwd`. It is undefined when another
  * host holds the lock.
  */
 export async function runHost(options: {
-	readonly project: string;
+	readonly host: string;
 	readonly cwd: string;
 	readonly models: Models;
 	/** For tests: the idle time before the host exits. Default 5 minutes. */
@@ -159,8 +159,8 @@ export async function runHost(options: {
 	readonly sessionEndMs?: number;
 }): Promise<Host | undefined> {
 	const {
-		project,
-		cwd: projectCwd,
+		host,
+		cwd: hostCwd,
 		models,
 		idleExitMs = IDLE_EXIT_MS,
 		bashTimeoutSeconds = BASH_TIMEOUT_SECONDS,
@@ -168,7 +168,7 @@ export async function runHost(options: {
 		sessionEndMs = SESSION_END_MS,
 	} = options;
 
-	const { dir: stateDir, socket: socketPath } = statePaths(project);
+	const { dir: stateDir, socket: socketPath } = statePaths(host);
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = takeLock(stateDir);
 
@@ -178,9 +178,9 @@ export async function runHost(options: {
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
 
-	// The settings and the packages of the project directory, as a Pi session there with the saved trust has them.
-	const projectTrusted = savedTrust(projectCwd, PI_TRUST);
-	const settings = SettingsManager.create(projectCwd, agentDir, { projectTrusted });
+	// The settings and the packages of the host directory, as a Pi session there with the saved trust has them.
+	const projectTrusted = savedTrust(hostCwd, PI_TRUST);
+	const settings = SettingsManager.create(hostCwd, agentDir, { projectTrusted });
 
 	const warn = (cause: unknown) => process.stderr.write(`warning: ${errorMessage(cause)}\n`);
 	// The degraded states of the host, which the entries get as a handle; each source also writes its warning to `host.log`.
@@ -240,8 +240,8 @@ export async function runHost(options: {
 
 	const handles: EntryHandles = {
 		stateDir,
-		project,
-		cwd: projectCwd,
+		host,
+		cwd: hostCwd,
 		settings,
 		scope,
 		tell: async (caller, input) => {
@@ -271,7 +271,7 @@ export async function runHost(options: {
 		stopAfterTurn: (worker) => stopAfterTurn(openWorkerHost(), worker),
 	};
 
-	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(
+	const entries = await loadEntries(hostCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(
 		(cause: unknown) => {
 			lock.close();
 			throw cause;
@@ -280,15 +280,15 @@ export async function runHost(options: {
 
 	uninherited = entries.uninherited;
 
-	const envs = new ConversationEnvs(project, projectCwd);
+	const envs = new ConversationEnvs(host, hostCwd);
 	// The extension of the tasks of the entries, which is the list of the kinds that `start` can create. The registry
 	// refuses a task name that two entries give.
 	const startable = durable.defineExtension({ name: "harness-entry-tasks", tasks: entries.tasks });
-	// The project agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
+	// The host agent is the root conversation, set up at its first use. A failed set-up runs again at the next use.
 	let agentSetUp: Promise<Conversation> | undefined;
 
 	const agent = () =>
-		(agentSetUp ??= setUpAgent(base.root, models, settings, project, projectCwd).catch((cause: unknown) => {
+		(agentSetUp ??= setUpAgent(base.root, models, settings, host, hostCwd).catch((cause: unknown) => {
 			agentSetUp = undefined;
 			throw cause;
 		}));
@@ -304,7 +304,7 @@ export async function runHost(options: {
 	};
 
 	// The MCP servers of the host, which connect once the harness is open.
-	const mcp = new HostMcp({ registry, sandbox, agentDir, cwd: projectCwd, trusted: projectTrusted, models, warn });
+	const mcp = new HostMcp({ registry, sandbox, agentDir, cwd: hostCwd, trusted: projectTrusted, models, warn });
 
 	const selected = [
 		childContext(resources),
@@ -356,7 +356,7 @@ export async function runHost(options: {
 	mcp.start();
 
 	// The host's children outlive every request: each has an anchor task in the root conversation. The anchors are
-	// background tasks, so an abort of the root's turn, which is the project agent's, does not reach them.
+	// background tasks, so an abort of the root's turn, which is the host agent's, does not reach them.
 	const root = await harness.root(context);
 	rootId = root.id;
 
@@ -389,7 +389,7 @@ export async function runHost(options: {
 		place,
 		owner,
 		root,
-		project,
+		host,
 		agent,
 		warn,
 		degraded,
@@ -405,14 +405,14 @@ export async function runHost(options: {
 		place,
 		owner,
 		root,
-		project,
+		host,
 		agent,
 		startable,
 		settings,
 		push,
 		sessions,
 		storage,
-		cwd: projectCwd,
+		cwd: hostCwd,
 		catchUps: entries.catchUps,
 		inputHooks: entries.inputHooks,
 		entryVersions: entries.versions,
@@ -562,7 +562,7 @@ export async function runHost(options: {
 	const timer = setInterval(
 		() => {
 			// A connection with an open `answers` request alone does not keep the host running; a busy entry, such as one
-			// that compresses the memory of the project agent, does.
+			// that compresses the memory of the host agent, does.
 			const busy = () => [...connections].some((socket) => !push.listens(socket)) || entries.busy();
 
 			if (busy() || Date.now() - lastActivity < idleExitMs) return;

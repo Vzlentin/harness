@@ -73,7 +73,7 @@ describe("read marks", () => {
 
 describe("info", () => {
 	it("refuses a conversation without a working directory or without a model", async () => {
-		const host = { harness, place, owner, project: "main", agent: async () => owner.root };
+		const host = { harness, place, owner, host: "main", agent: async () => owner.root };
 		const child = await library.open(place, owner, "t:no-cwd", { root: "test", ...faux }, context);
 		const found = await target(host, { kind: "conversation", id: String(child.id) });
 		await expect(found.info()).rejects.toThrow(`The conversation ${child.id} has no working directory`);
@@ -102,7 +102,7 @@ describe("push", () => {
 			place,
 			owner,
 			root: owner.root,
-			project: "main",
+			host: "main",
 			agent: async () => owner.root,
 			warn: () => {},
 			degraded: new Degraded(() => undefined),

@@ -24,7 +24,7 @@ import { Label, SpawnServes } from "./worker-labels.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 43;
+export const PROTOCOL_VERSION = 44;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -197,7 +197,7 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
 	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
-	/** The handle of `caller` when it is a child of this host by handle, or `agent` when it is the project agent. */
+	/** The handle of `caller` when it is a child of this host by handle, or `agent` when it is the host agent. */
 	Type.Object({ type: Type.Literal("whoami"), caller: Type.String() }),
 	/**
 	 * Waits until the host has answers of the children of `caller`, or answers of the user to its asks, to push, and
@@ -208,7 +208,7 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	/**
 	 * Ends the child of the target and the children it spawned. The records stay, so a `send` resumes a child. The caller
-	 * `cli` can stop any child; another caller only its own children. For `cli`, a stop of the project agent or of a
+	 * `cli` can stop any child; another caller only its own children. For `cli`, a stop of the host agent or of a
 	 * conversation with no record aborts its turn, and the conversation stays.
 	 */
 	...withTarget({ type: Type.Literal("stop"), caller: Type.String() }),
@@ -344,7 +344,7 @@ export const RequestLine = Type.Union([
 	/** Replies with the open asks, in ID order. */
 	Type.Object({ type: Type.Literal("ask"), action: Type.Literal("list") }),
 	/**
-	 * Replies with the nodes of the project: the project agent, the children by handle, and the started tasks with their
+	 * Replies with the nodes of the host: the host agent, the children by handle, and the started tasks with their
 	 * child tasks and the conversations of the children library that the tasks own.
 	 */
 	Type.Object({ type: Type.Literal("tree") }),

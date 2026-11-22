@@ -21,7 +21,7 @@ export const DEFAULT_PORT = 7501;
 /** How long `listens` waits for a connection. */
 const PROBE_TIMEOUT_MS = 1000;
 
-/** The page of `/`: the picker of the projects and their targets, or the target of its query. */
+/** The page of `/`: the picker of the hosts and their targets, or the target of its query. */
 const PAGE = `<!doctype html>
 <html lang="en">
 <head>
@@ -48,7 +48,7 @@ export type InspectServerOptions = {
 	readonly hosts?: readonly string[] | undefined;
 	/** The port of every address. 0 takes a free port, the same one on every address. Default 7501. */
 	readonly port?: number | undefined;
-	/** Whether a stream, an input and an abort start the host of the project when none runs. Default true. */
+	/** Whether a stream, an input and an abort start the host when none runs. Default true. */
 	readonly start?: boolean | undefined;
 };
 
@@ -196,9 +196,9 @@ function closeAll(servers: readonly Server[]): Promise<void> {
 	).then(() => undefined);
 }
 
-/** The query of the page that opens `target`: the project alone for its agent, else with the target's reference. */
-export function pageQuery({ project, target }: MirrorTarget): string {
-	const fields = target.kind === "agent" ? { project } : { project, ...targetRef(target) };
+/** The query of the page that opens `target`: the host alone for its agent, else with the target's reference. */
+export function pageQuery({ host, target }: MirrorTarget): string {
+	const fields = target.kind === "agent" ? { host } : { host, ...targetRef(target) };
 
 	return `?${new URLSearchParams(fields).toString()}`;
 }

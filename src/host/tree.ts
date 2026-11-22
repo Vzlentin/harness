@@ -1,5 +1,5 @@
 /**
- * The tree of a project: the project agent, the children by handle, and the started tasks, each with its state and its
+ * The tree of a host: the host agent, the children by handle, and the started tasks, each with its state and its
  * list of todos, and a child or a started task with its result references. A started task that did not end has its child tasks and the conversations of the children library that
  * these tasks own under it; a started task that ended has only its own node.
  */
@@ -42,7 +42,7 @@ const PAGE_SIZE = 100;
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
 /** What the tree reads of the host. */
-export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "project"> &
+export type TreeHost = Pick<TargetHost, "harness" | "place" | "owner" | "host"> &
 	Pick<TaskHost, "root" | "startable"> & {
 		/** The reads of the tasks and the conversations of the tree, without a write transaction. */
 		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations">;
@@ -58,7 +58,7 @@ type Runs = {
 };
 
 /**
- * The nodes of the project, each parent before its children, and the siblings in ID order. pi-durable takes the IDs of
+ * The nodes of the host, each parent before its children, and the siblings in ID order. pi-durable takes the IDs of
  * the tasks and the conversations from one counter, so ID order is creation order.
  */
 export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
@@ -82,7 +82,7 @@ export async function treeNodes(host: TreeHost): Promise<TreeNode[]> {
 		node: {
 			id: AGENT_HANDLE,
 			kind: "agent",
-			name: `${host.project} agent`,
+			name: `${host.host} agent`,
 			state: await agentTurn(place, root).state(context),
 			todos: await todosOf(host, { kind: "conversation", id: root.id }),
 		},
@@ -274,7 +274,7 @@ async function scanWhile<T>(
 }
 
 /**
- * The node of `caller`, the caller of a child: the project agent, a child, or a conversation of the children library;
+ * The node of `caller`, the caller of a child: the host agent, a child, or a conversation of the children library;
  * none for a caller that is not a conversation of the host, such as a Pi session or `cli`. A conversation of the library
  * that is not in the tree leaves its children out of it too.
  */

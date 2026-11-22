@@ -18,7 +18,7 @@ import { statePaths } from "../src/protocol/paths.ts";
 import { PROTOCOL_VERSION } from "../src/protocol/requests.ts";
 import {
 	answerOf,
-	createProject,
+	createHost,
 	models,
 	openDurableHost,
 	requests,
@@ -32,7 +32,7 @@ import {
 	until,
 } from "./helpers.ts";
 
-const PROJECT = "entries";
+const HOST_NAME = "entries";
 const TYPEBOX = import.meta.resolve("typebox");
 
 /** The module of the entry that relays a request through the `send` of the scope. */
@@ -138,9 +138,9 @@ const SEAMS_ENTRY = `export default function seamsEntry(handles) {
 }
 `;
 
-/** Each line that the socket of `project` sends for `lines`, until it ends, or until `count` lines came. */
-function exchange(project: string, lines: readonly unknown[], count?: number): Promise<unknown[]> {
-	const socket = createConnection(statePaths(project).socket);
+/** Each line that the socket of `host` sends for `lines`, until it ends, or until `count` lines came. */
+function exchange(host: string, lines: readonly unknown[], count?: number): Promise<unknown[]> {
+	const socket = createConnection(statePaths(host).socket);
 	const received: unknown[] = [];
 
 	return new Promise((resolve, reject) => {
@@ -201,47 +201,47 @@ const ChildrenV6 = durable.defineDoc<durable.JsonObject>({
 });
 
 /**
- * Starts a host of a new project with only the entries `entries`, by name, and gives it. `entries.json` then has its
+ * Starts a new host with only the entries `entries`, by name, and gives it. `entries.json` then has its
  * entries from before again.
  */
-async function startWith(project: string, entries: Record<string, string>): Promise<Host> {
-	await createProject(project);
+async function startWith(host: string, entries: Record<string, string>): Promise<Host> {
+	await createHost(host);
 
-	return restartWith(project, entries);
+	return restartWith(host, entries);
 }
 
 /**
- * Starts a host of the project `project` with only the entries `entries`, by name, and gives it. `entries.json` then
+ * Starts the host `host` with only the entries `entries`, by name, and gives it. `entries.json` then
  * has its entries from before again.
  */
-async function restartWith(project: string, entries: Record<string, string>): Promise<Host> {
+async function restartWith(host: string, entries: Record<string, string>): Promise<Host> {
 	const before = readEntries();
 	await writeFile(entriesPath(), JSON.stringify(entries));
 
 	try {
-		return await startHost(project);
+		return await startHost(host);
 	} finally {
 		await writeFile(entriesPath(), JSON.stringify(before));
 	}
 }
 
-/** Starts a host of a new project with only the entries `entries`, by name, and gives the error of its start. */
-async function startError(project: string, entries: Record<string, string>): Promise<string> {
+/** Starts a new host with only the entries `entries`, by name, and gives the error of its start. */
+async function startError(host: string, entries: Record<string, string>): Promise<string> {
 	try {
-		const started = await startWith(project, entries);
+		const started = await startWith(host, entries);
 		await started.close();
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	}
 
-	throw new Error(`The host of ${project} started`);
+	throw new Error(`The host of ${host} started`);
 }
 
 beforeAll(async () => {
 	await setUp();
 	setEntry("fixture", await entryModule("fixture-entry", FIXTURE_ENTRY));
-	await createProject(PROJECT);
-	host = await startHost(PROJECT);
+	await createHost(HOST_NAME);
+	host = await startHost(HOST_NAME);
 });
 
 afterAll(async () => {
@@ -251,14 +251,14 @@ afterAll(async () => {
 
 describe("entry requests", () => {
 	it("gives the protocol versions of the entries in the hello reply", async () => {
-		expect(await exchange(PROJECT, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
+		expect(await exchange(HOST_NAME, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
 			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: { fixture: 3 } } },
 		]);
 	});
 
 	it("routes a line of an entry type to its handler, and checks it against the schema of the entry", async () => {
 		const replies = await exchange(
-			PROJECT,
+			HOST_NAME,
 			[
 				{ type: "fixture.echo", text: "hi" },
 				{ type: "fixture.echo" },
@@ -279,11 +279,11 @@ describe("entry requests", () => {
 	});
 
 	it("gives the entries the state directory and the classifier", async () => {
-		expect(await exchange(PROJECT, [{ type: "fixture.handles" }], 1)).toEqual([
+		expect(await exchange(HOST_NAME, [{ type: "fixture.handles" }], 1)).toEqual([
 			{
 				ok: true,
 				value: {
-					stateDir: statePaths(PROJECT).dir,
+					stateDir: statePaths(HOST_NAME).dir,
 					classifier: "No classifier: log in to typesafe or set todoClassifier",
 					degraded: ["no-classifier"],
 				},
@@ -292,7 +292,7 @@ describe("entry requests", () => {
 	});
 
 	it("sends the events of an entry watch after its reply, in order, and ends the connection at its end", async () => {
-		expect(await exchange(PROJECT, [{ type: "fixture.watch", count: 2 }])).toEqual([
+		expect(await exchange(HOST_NAME, [{ type: "fixture.watch", count: 2 }])).toEqual([
 			{ ok: true, value: { count: 2 } },
 			{ event: { n: 0 } },
 			{ event: { n: 1 } },
@@ -301,10 +301,10 @@ describe("entry requests", () => {
 	});
 
 	it("counts an entry line as activity for the idle exit only when its passive rule says so", async () => {
-		const project = "entries-idle";
-		const dir = await createProject(project);
+		const host = "entries-idle";
+		const dir = await createHost(host);
 		// The host exits once it had no connection and no activity for 300 ms.
-		const idle = await runHost({ project, cwd: dir, models, idleExitMs: 300 });
+		const idle = await runHost({ host, cwd: dir, models, idleExitMs: 300 });
 
 		if (idle === undefined) throw new Error("no host");
 		let closed = false;
@@ -312,7 +312,7 @@ describe("entry requests", () => {
 
 		try {
 			for (const end = Date.now() + 1000; Date.now() < end;) {
-				await exchange(project, [{ type: "fixture.echo", text: "work" }], 1);
+				await exchange(host, [{ type: "fixture.echo", text: "work" }], 1);
 				await new Promise((resolve) => setTimeout(resolve, 50));
 			}
 
@@ -320,7 +320,7 @@ describe("entry requests", () => {
 
 			const polling = (async () => {
 				while (!closed) {
-					await exchange(project, [{ type: "fixture.echo", text: "poll" }], 1).catch(() => undefined);
+					await exchange(host, [{ type: "fixture.echo", text: "poll" }], 1).catch(() => undefined);
 					await new Promise((resolve) => setTimeout(resolve, 50));
 				}
 			})();
@@ -403,9 +403,9 @@ describe("entry load errors", () => {
 
 describe("the harness host process", { timeout: 30_000 }, () => {
 	it("writes no projects entry in entries.json", async () => {
-		const project = "host-process";
-		await createProject(project);
-		const client = await startHostProcess(project);
+		const host = "host-process";
+		await createHost(host);
+		const client = await startHostProcess(host);
 		client.close();
 
 		try {
@@ -413,15 +413,15 @@ describe("the harness host process", { timeout: 30_000 }, () => {
 			expect(readEntries()).not.toHaveProperty("projects");
 		} finally {
 			process.kill(client.pid, "SIGTERM");
-			await until(() => !existsSync(statePaths(project).socket));
+			await until(() => !existsSync(statePaths(host).socket));
 		}
 	});
 });
 
 describe("the scope of the entries", () => {
 	it("serves a request of an entry type in the process with send, checks it against the schema of the entry, and refuses a type that no entry serves", async () => {
-		const project = "scope-relay";
-		const relaying = await startWith(project, { relay: SCOPE_RELAY_MODULE });
+		const host = "scope-relay";
+		const relaying = await startWith(host, { relay: SCOPE_RELAY_MODULE });
 
 		try {
 			const relays = [
@@ -430,7 +430,7 @@ describe("the scope of the entries", () => {
 				{ type: "fixture.relay", to: "item", text: "hi" },
 			];
 
-			expect(await exchange(project, relays, 3)).toEqual([
+			expect(await exchange(host, relays, 3)).toEqual([
 				{ ok: true, value: { shout: "HI" } },
 				{
 					ok: true,
@@ -446,12 +446,12 @@ describe("the scope of the entries", () => {
 
 describe("the uninherited extensions of an entry", () => {
 	it("gives a child the other extensions of the entry, and not the uninherited ones", async () => {
-		const project = "uninherited";
-		const opened = await startWith(project, { own: await entryModule("uninherited-entry", UNINHERITED_ENTRY) });
+		const host = "uninherited";
+		const opened = await startWith(host, { own: await entryModule("uninherited-entry", UNINHERITED_ENTRY) });
 
 		try {
-			const child = await spawnAs("uninherited", "Uninherited child", { notify: false, project });
-			await answerOf(child.handle, project);
+			const child = await spawnAs("uninherited", "Uninherited child", { notify: false, host });
+			await answerOf(child.handle, host);
 			const tools = requests.get("Uninherited child")?.tools.filter((name) => name.startsWith("fixture_"));
 			expect(tools).toEqual(["fixture_kept"]);
 		} finally {
@@ -462,13 +462,13 @@ describe("the uninherited extensions of an entry", () => {
 
 describe("the open and busy calls of an entry", () => {
 	it("opens the entry once with the root conversation and the store of the host", async () => {
-		const project = "seams-open";
-		const opened = await startWith(project, { seams: await entryModule("seams-entry", SEAMS_ENTRY) });
+		const host = "seams-open";
+		const opened = await startWith(host, { seams: await entryModule("seams-entry", SEAMS_ENTRY) });
 
 		try {
 			expect(seams.opened).toEqual([{ root: expect.any(String), store: true, workers: 0 }]);
 			const caller = seams.opened[0]?.root ?? "";
-			expect(await send({ type: "whoami", caller }, project)).toEqual({ handle: "agent" });
+			expect(await send({ type: "whoami", caller }, host)).toEqual({ handle: "agent" });
 		} finally {
 			await opened.close();
 			seams.opened.length = 0;
@@ -476,14 +476,14 @@ describe("the open and busy calls of an entry", () => {
 	});
 
 	it("keeps the host from its idle exit while the entry is busy", async () => {
-		const project = "seams-busy";
-		const dir = await createProject(project);
+		const host = "seams-busy";
+		const dir = await createHost(host);
 		const before = readEntries();
 		await writeFile(entriesPath(), JSON.stringify({ seams: await entryModule("seams-entry", SEAMS_ENTRY) }));
 		seams.busy = true;
 
 		// The host exits once it had no connection and no activity for 300 ms, and the entry is not busy.
-		const idle = await runHost({ project, cwd: dir, models, idleExitMs: 300 }).finally(() =>
+		const idle = await runHost({ host, cwd: dir, models, idleExitMs: 300 }).finally(() =>
 			writeFile(entriesPath(), JSON.stringify(before)),
 		);
 
@@ -506,23 +506,23 @@ describe("the open and busy calls of an entry", () => {
 
 describe("a host without the projects entry", () => {
 	let bare: Host | undefined;
-	const project = "no-projects";
+	const host = "no-projects";
 
 	beforeAll(async () => {
-		bare = await startWith(project, {});
+		bare = await startWith(host, {});
 	});
 
 	afterAll(async () => {
 		await bare?.close();
 	});
 
-	it("serves a spawn and its wait, and refuses a request of the projects with the error that names its type", async () => {
-		expect(await exchange(project, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
+	it("serves a spawn and its wait, and refuses a request of the projects entry with the error that names its type", async () => {
+		expect(await exchange(host, [{ type: "hello", version: PROTOCOL_VERSION }], 1)).toEqual([
 			{ ok: true, value: { version: PROTOCOL_VERSION, pid: process.pid, entries: {} } },
 		]);
-		const child = await spawnAs("bare-spawn", "Bare child", { notify: false, project });
-		expect(await answerOf(child.handle, project)).toBe("Answer to Bare child");
-		expect(await exchange(project, [{ type: "item", action: "list" }], 1)).toEqual([
+		const child = await spawnAs("bare-spawn", "Bare child", { notify: false, host });
+		expect(await answerOf(child.handle, host)).toBe("Answer to Bare child");
+		expect(await exchange(host, [{ type: "item", action: "list" }], 1)).toEqual([
 			{ ok: false, error: 'no loaded entry serves request type "item"' },
 		]);
 	});
@@ -530,7 +530,7 @@ describe("a host without the projects entry", () => {
 	it("serves a plain round of asks and their list, and refuses a round of a parley", async () => {
 		const round = { type: "ask", action: "round", caller: "cli", asks: [{ title: "Ship it?" }] };
 		const parley = { ...round, parley: { slug: "ship", title: "Ship", goal: "Ship the change." } };
-		const [written, listed, refused] = await exchange(project, [round, { type: "ask", action: "list" }, parley], 3);
+		const [written, listed, refused] = await exchange(host, [round, { type: "ask", action: "list" }, parley], 3);
 
 		const ask = { id: 1, title: "Ship it?", state: "open", asker: "cli", at: expect.any(Number), by: "cli" };
 		expect(written).toEqual({ ok: true, value: { parleys: [], asks: [ask] } });
@@ -552,7 +552,7 @@ describe("a host without the projects entry", () => {
 			}, BACKGROUND_CONTEXT);
 		});
 
-		const { asks } = Value.Parse(AskList, await send({ type: "ask", action: "list" }, project));
+		const { asks } = Value.Parse(AskList, await send({ type: "ask", action: "list" }, host));
 		const [kept, dropped] = asks.filter((ask) => ask.parley !== undefined).map((ask) => ask.id);
 
 		const answer = {
@@ -563,7 +563,7 @@ describe("a host without the projects entry", () => {
 		};
 
 		const drop = { type: "ask", action: "drop", caller: "cli", id: dropped };
-		const [answered, gone] = await exchange(project, [answer, drop], 2);
+		const [answered, gone] = await exchange(host, [answer, drop], 2);
 
 		expect(answered).toMatchObject({
 			ok: true,
@@ -579,7 +579,7 @@ describe("a host without the projects entry", () => {
 		const handles: string[] = [];
 
 		for (const prompt of ["parley", "contract", "item", "spawner"]) {
-			handles.push((await spawnAs("bare-session", `Task:\nServe ${prompt}`, { notify: false, project })).handle);
+			handles.push((await spawnAs("bare-session", `Task:\nServe ${prompt}`, { notify: false, host })).handle);
 		}
 
 		const [byParley = "", byContract = "", byItem = "", bySpawner = ""] = handles;
@@ -611,7 +611,7 @@ describe("a host without the projects entry", () => {
 			}, BACKGROUND_CONTEXT);
 		});
 
-		const status = (handle: string) => send({ type: "status", handle }, project);
+		const status = (handle: string) => send({ type: "status", handle }, host);
 		expect(await status(byParley)).toMatchObject({ handle: byParley, labels: ["parley:old-open"] });
 		expect(await status(byContract)).toMatchObject({ handle: byContract, labels: ["parley:old-contract"] });
 
@@ -644,7 +644,7 @@ describe("a host without the projects entry", () => {
 	async function offline(write: (store: durable.Harness) => Promise<void>): Promise<void> {
 		await bare?.close();
 		bare = undefined;
-		const store = await openDurableHost(join(statePaths(project).dir, "durable.sqlite"), []);
+		const store = await openDurableHost(join(statePaths(host).dir, "durable.sqlite"), []);
 
 		try {
 			await write(store);
@@ -652,6 +652,6 @@ describe("a host without the projects entry", () => {
 			await store.close(BACKGROUND_CONTEXT);
 		}
 
-		bare = await restartWith(project, {});
+		bare = await restartWith(host, {});
 	}
 });

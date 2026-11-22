@@ -24,8 +24,8 @@ import type * as client from "../dist/client/client.js";
 import type * as herdr from "../dist/client/herdr.js";
 import type * as mirror from "../dist/client/mirror.js";
 import type * as viewState from "../dist/client/view-state.js";
+import type * as hosts from "../dist/protocol/hosts.js";
 import type * as protocol from "../dist/protocol/index.js";
-import type * as projects from "../dist/protocol/projects.js";
 import type * as trust from "../dist/protocol/trust.js";
 import type * as tool from "../dist/tool.js";
 import { registerBridge } from "./bridge.ts";
@@ -49,7 +49,7 @@ export type Harness = {
 	readonly client: typeof client;
 	readonly herdr: typeof herdr;
 	readonly mirror: typeof mirror;
-	readonly projects: typeof projects;
+	readonly hosts: typeof hosts;
 	readonly protocol: typeof protocol;
 	readonly tool: typeof tool;
 	readonly trust: typeof trust;
@@ -271,22 +271,11 @@ function hasSpawned(ctx: ExtensionContext): boolean {
 
 /** Loads the modules of the harness package that this extension resolves. A module that does not load makes the extension fail. */
 async function loadHarness(require: NodeJS.Require): Promise<Harness> {
-	const names = [
-		"answers",
-		"bridge",
-		"client",
-		"herdr",
-		"mirror",
-		"projects",
-		"protocol",
-		"tool",
-		"trust",
-		"view-state",
-	];
+	const names = ["answers", "bridge", "client", "herdr", "mirror", "hosts", "protocol", "tool", "trust", "view-state"];
 
 	const urls = names.map((name) => pathToFileURL(require.resolve(`${HARNESS_PACKAGE}/${name}`)).href);
 
-	const [answers, bridge, client, herdr, mirror, projects, protocol, tool, trust, viewState] = await Promise.all(
+	const [answers, bridge, client, herdr, mirror, hosts, protocol, tool, trust, viewState] = await Promise.all(
 		urls.map((url) => import(url)),
 	);
 
@@ -297,7 +286,7 @@ async function loadHarness(require: NodeJS.Require): Promise<Harness> {
 		client,
 		herdr,
 		mirror,
-		projects,
+		hosts,
 		protocol,
 		tool,
 		trust,

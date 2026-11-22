@@ -1,5 +1,5 @@
 /**
- * The labels of the work of a project: the text that ties an agent or a task to the work that it does, such as
+ * The labels of the work of a host: the text that ties an agent or a task to the work that it does, such as
  * `parley:<slug>` or `item:<id>`, the workers that a label gives, and the identity of a worker.
  */
 import { type Static, Type } from "typebox";

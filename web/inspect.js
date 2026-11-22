@@ -1,7 +1,7 @@
 /**
  * The browser side of harness inspect, with no dependencies. `mountInspect` draws one conversation of a harness host,
  * live, with a form that sends to it. `mountPage` is the page of `harness inspect`: the target of its query, or the
- * picker of the projects and their targets. Both need the routes of `createInspectHandler` on the same origin.
+ * picker of the hosts and their targets. Both need the routes of `createInspectHandler` on the same origin.
  *
  * Every text goes into the page with `textContent`: the transcript is the output of agents, so it is never HTML.
  */
@@ -9,7 +9,7 @@
 const API = "/api/inspect";
 
 /** The keys that name a target, in the query of the page and in the routes. */
-const TARGET_KEYS = ["project", "handle", "conversation"];
+const TARGET_KEYS = ["host", "handle", "conversation"];
 
 /** The block of diagnostics that pi-durable adds to a tool result for the model, such as `[error] Command exited`. */
 const DIAGNOSTICS = /^<harness>\n([\s\S]*)\n<\/harness>$/;
@@ -35,7 +35,7 @@ function el(tag, className, text) {
 	return node;
 }
 
-/** The target in `values`: its project, and the handle or the conversation, without the keys that are empty. */
+/** The target in `values`: its host, and the handle or the conversation, without the keys that are empty. */
 function targetOf(values) {
 	const target = {};
 
@@ -199,8 +199,8 @@ function pairCalls(entries, streaming, tools) {
 }
 
 /**
- * Draws the conversation of `target`, `{ project, handle?, conversation? }`, in `container`, and follows it until
- * `close()`. Without `handle` and `conversation`, the target is the project agent. `onTitle` gets the title of the
+ * Draws the conversation of `target`, `{ host, handle?, conversation? }`, in `container`, and follows it until
+ * `close()`. Without `handle` and `conversation`, the target is the host agent. `onTitle` gets the title of the
  * agent each time that it changes. Esc in the view calls `interrupt()`, which stops the turn while the agent works.
  */
 export function mountInspect(container, target, { onTitle } = {}) {
@@ -518,7 +518,7 @@ export function mountInspect(container, target, { onTitle } = {}) {
 			return;
 		}
 
-		// EventSource gives up after a reply that is not a stream, such as the 400 of an unknown project: show its error.
+		// EventSource gives up after a reply that is not a stream, such as the 400 of an unknown host: show its error.
 		connection.className = "inspect-connection failed";
 		void call(streamPath).then((reply) => {
 			connection.textContent = `failed: ${reply.ok ? "the stream ended" : reply.error}`;
@@ -534,9 +534,9 @@ export function mountInspect(container, target, { onTitle } = {}) {
 	};
 }
 
-/** The list of the targets of `project` in `list`: the project agent and the children, when the host runs. */
-async function listTargets(project, list) {
-	const reply = await call(`targets?${targetQuery({ project })}`);
+/** The list of the targets of `host` in `list`: the host agent and the children, when the host runs. */
+async function listTargets(host, list) {
+	const reply = await call(`targets?${targetQuery({ host })}`);
 
 	if (!reply.ok) {
 		list.append(el("li", "error-line", reply.error));
@@ -549,7 +549,7 @@ async function listTargets(project, list) {
 	if (!running) {
 		const item = el("li");
 		const link = el("a", "", "agent");
-		link.href = `?${targetQuery({ project })}`;
+		link.href = `?${targetQuery({ host })}`;
 		item.append(link, el("span", "muted-line", " the host is not running: opening it starts the host"));
 		list.append(item);
 
@@ -561,16 +561,16 @@ async function listTargets(project, list) {
 	for (const child of targets) {
 		const item = el("li");
 		const link = el("a", "", child.title);
-		link.href = `?${targetQuery({ project, handle: child.handle })}`;
+		link.href = `?${targetQuery({ host, handle: child.handle })}`;
 		item.append(link, el("span", `badge ${child.state}`, ` ${child.state}`));
 		item.append(el("span", "inspect-model", ` ${modelText(child)}`));
 		list.append(item);
 	}
 }
 
-/** The picker: each project, with its directory, and the list of its targets. */
-async function listProjects(root) {
-	const reply = await call("projects");
+/** The picker: each host, with its directory, and the list of its targets. */
+async function listHosts(root) {
+	const reply = await call("hosts");
 
 	if (!reply.ok) {
 		root.append(el("p", "error-line", reply.error));
@@ -578,27 +578,27 @@ async function listProjects(root) {
 		return;
 	}
 
-	for (const project of reply.value.projects) {
-		const section = el("section", "inspect-project");
-		const head = el("h2", "", project.name);
+	for (const host of reply.value.hosts) {
+		const section = el("section", "inspect-host");
+		const head = el("h2", "", host.name);
 
-		if (project.dir) head.append(el("span", "muted-line", ` ${project.dir}`));
+		if (host.dir) head.append(el("span", "muted-line", ` ${host.dir}`));
 		const list = el("ul");
 		section.append(head, list);
 		root.append(section);
-		void listTargets(project.name, list);
+		void listTargets(host.name, list);
 	}
 }
 
 /**
- * The page of `harness inspect` in `container`: the target of the query of the page, `project` with `handle` or
- * `conversation`, or the picker of the projects and their targets without `project`.
+ * The page of `harness inspect` in `container`: the target of the query of the page, `host` with `handle` or
+ * `conversation`, or the picker of the hosts and their targets without `host`.
  */
 export function mountPage(container) {
 	const target = targetOf(new URLSearchParams(location.search));
 
-	if (target.project) {
-		const back = el("a", "inspect-back", "← projects");
+	if (target.host) {
+		const back = el("a", "inspect-back", "← hosts");
 		back.href = location.pathname;
 		const body = el("div", "inspect-body");
 		container.replaceChildren(back, body);
@@ -627,7 +627,7 @@ export function mountPage(container) {
 	const root = el("div", "inspect-picker");
 	root.append(el("h1", "", "harness inspect"));
 	container.replaceChildren(root);
-	void listProjects(root);
+	void listHosts(root);
 
 	return {
 		close() {

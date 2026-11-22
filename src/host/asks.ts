@@ -1,5 +1,5 @@
 /**
- * The asks of the store of the project, by ID: the questions that someone puts to the user, their answers, drops,
+ * The asks of the store of the host, by ID: the questions that someone puts to the user, their answers, drops,
  * notes and takes, and their reads, and the handle of the entries to them. An ask keeps the parley that it serves as data
  * from its caller, which this module does not read. The commit of an answer also adds the todos `Save to the vault`,
  * queues the deliveries of the answers for their askers, and queues one event for each answered ask. The plain asks
@@ -113,7 +113,7 @@ export async function addAsks(tx: Tx, asks: readonly NewAsk[], by: string, at: n
  * `answers`. Two answers of one ask fail. Each answer replaces the answer of its ask, with its label and its words, as
  * one unit. An ask takes `own`, and the key of one of its options. The asks of `confirms` take `own` and `ok`, and get
  * no todo `Save to the vault`. When the host has a vault, the same commit adds the todo `Save to the vault` of each
- * other answered ask to the list of its asker, where `root` is the project agent. It queues the deliveries that `group` makes of the answered asks
+ * other answered ask to the list of its asker, where `root` is the host agent. It queues the deliveries that `group` makes of the answered asks
  * whose asker is not `by`, and each delivery ends with the line of each added todo of its asks. It also queues one event
  * for each answered ask.
  */
@@ -222,7 +222,7 @@ export async function readOpenAsks(reader: Pick<DocumentReader, "snapshot">, con
 /**
  * Serves `request` with the plain asks, on the store of `harness`, which name each ask by its ID. A round that frames a
  * parley, and an ask by its number in a parley, fail: the plain asks make no parley. An ask that serves a parley is an
- * ask like any other: its `parley` is data. `root` is the project agent, and `authorOf` gives the author of the answers
+ * ask like any other: its `parley` is data. `root` is the host agent, and `authorOf` gives the author of the answers
  * of an `answer`.
  */
 export async function plainAsk(

@@ -117,13 +117,13 @@ function post(route: string, body: string, type = "application/json"): Promise<R
 	return fetch(`${base}api/inspect/${route}`, { method: "POST", headers: { "content-type": type }, body });
 }
 
-/** The status of `GET /api/inspect/projects` with the `Host` header `hostHeader`, which `fetch` does not send. */
+/** The status of `GET /api/inspect/hosts` with the `Host` header `hostHeader`, which `fetch` does not send. */
 function statusWithHost(hostHeader: string): Promise<number | undefined> {
 	const url = new URL(base);
 
 	return new Promise((resolve, reject) => {
 		const req = httpRequest(
-			{ hostname: url.hostname, port: url.port, path: "/api/inspect/projects", headers: { host: hostHeader } },
+			{ hostname: url.hostname, port: url.port, path: "/api/inspect/hosts", headers: { host: hostHeader } },
 			(res) => {
 				res.resume();
 				resolve(res.statusCode);
@@ -208,17 +208,17 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 		expect((await fetch(`${base}nothing`)).status).toBe(404);
 	});
 
-	it("lists the projects, and the agent and the children of the caller in a running host only", async () => {
+	it("lists the hosts, and the agent and the children of the caller in a running host only", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "web-")));
 		expect((await cli(["create", "web", "--cwd", dir])).code).toBe(0);
 		const own = await spawnAs("cli", "Inspect listed", { notify: false });
 		const other = await spawnAs("other-session", "Inspect other", { notify: false });
 		await answerOf(own.handle);
 
-		expect(await (await getJson("projects")).json()).toEqual({ projects: [{ name: "web", dir }, { name: "main" }] });
+		expect(await (await getJson("hosts")).json()).toEqual({ hosts: [{ name: "web", dir }, { name: "main" }] });
 
-		const reply = await (await getJson("targets?project=main")).json();
-		expect(reply).toMatchObject({ project: "main" });
+		const reply = await (await getJson("targets?host=main")).json();
+		expect(reply).toMatchObject({ host: "main" });
 		const { running, targets } = Value.Parse(Targets, reply);
 		expect(running).toBe(true);
 		// The child of another caller is not listed.
@@ -227,19 +227,19 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 		expect(other.handle).not.toBe(own.handle);
 
 		// The host of web does not run, and the list does not start it.
-		expect(await (await getJson("targets?project=web")).json()).toEqual({
-			project: "web",
+		expect(await (await getJson("targets?host=web")).json()).toEqual({
+			host: "web",
 			running: false,
 			targets: [],
 		});
 		expect(existsSync(statePaths("web").socket)).toBe(false);
 
-		const unknown = await getJson("targets?project=nosuch");
+		const unknown = await getJson("targets?host=nosuch");
 		expect(unknown.status).toBe(400);
-		expect(await unknown.json()).toEqual({ error: "Unknown harness project: nosuch" });
-		const noProject = await getJson("targets");
-		expect(noProject.status).toBe(400);
-		expect(await noProject.json()).toEqual({ error: "Invalid query: must have required properties project" });
+		expect(await unknown.json()).toEqual({ error: "Unknown harness host: nosuch" });
+		const noHost = await getJson("targets");
+		expect(noHost.status).toBe(400);
+		expect(await noHost.json()).toEqual({ error: "Invalid query: must have required properties host" });
 	});
 
 	it("refuses a Host header that is not an address, a body that is not valid JSON, and unknown routes", async () => {
@@ -249,14 +249,14 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 		const refusals: [Response, string][] = [
 			[await post("input", "{}", "text/plain"), "The body must be application/json"],
 			[await post("input", "{"), "The body is not JSON"],
-			[await post("input", JSON.stringify({ project: "main", message: " " })), "The message is empty"],
+			[await post("input", JSON.stringify({ host: "main", message: " " })), "The message is empty"],
 			[
-				await post("input", JSON.stringify({ project: "main", handle: "a", conversation: "1", message: "Hi" })),
+				await post("input", JSON.stringify({ host: "main", handle: "a", conversation: "1", message: "Hi" })),
 				"Give handle or conversation, not both",
 			],
 			[await post("input", "x".repeat(1024 * 1024 + 1)), "The body is longer than 1 MiB"],
-			[await post("abort", JSON.stringify({ project: "nosuch" })), "Unknown harness project: nosuch"],
-			[await getJson("stream?project=main&handle=a&conversation=1"), "Give handle or conversation, not both"],
+			[await post("abort", JSON.stringify({ host: "nosuch" })), "Unknown harness host: nosuch"],
+			[await getJson("stream?host=main&handle=a&conversation=1"), "Give handle or conversation, not both"],
 		];
 
 		for (const [response, error] of refusals) {
@@ -277,7 +277,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 
 		try {
 			expect(local.urls).toEqual([expect.stringMatching(/^http:\/\/localhost:\d+\/$/)]);
-			expect((await fetch(`${local.urls[0]}api/inspect/projects`)).status).toBe(200);
+			expect((await fetch(`${local.urls[0]}api/inspect/hosts`)).status).toBe(200);
 		} finally {
 			await local.close();
 		}
@@ -286,7 +286,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 	it("streams the conversation of a child, and starts a new turn of the idle child with input", async () => {
 		const child = await spawnAs("cli", "Inspect streamed", { notify: false });
 		await answerOf(child.handle);
-		const stream = await openStream(`project=main&handle=${child.handle}`);
+		const stream = await openStream(`host=main&handle=${child.handle}`);
 
 		try {
 			expect(stream.response.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
@@ -298,7 +298,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 			expect(open?.summary).toMatchObject({ statusText: "", queued: [] });
 			expect(answersOf(open)).toEqual(["Answer to Inspect streamed"]);
 
-			const again = JSON.stringify({ project: "main", handle: child.handle, message: "Inspect again" });
+			const again = JSON.stringify({ host: "main", handle: child.handle, message: "Inspect again" });
 			expect(await (await post("input", again)).json()).toEqual({ ok: true });
 			await until(() => answersOf(stream.frames.at(-1)).includes("Answer to Inspect again"));
 			expect(stream.frames.some((frame) => frame.child?.state === "busy")).toBe(true);
@@ -312,7 +312,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 	it("shows a busy turn, and aborts it", async () => {
 		gates.set("Inspect gated", Promise.withResolvers());
 		const child = await spawnAs("cli", "Inspect gated", { notify: false });
-		const stream = await openStream(`project=main&handle=${child.handle}`);
+		const stream = await openStream(`host=main&handle=${child.handle}`);
 
 		try {
 			await until(() => called("Inspect gated") === 1);
@@ -320,7 +320,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 			const busy = stream.frames.find((frame) => frame.child?.state === "busy");
 			expect(busy?.summary?.statusText).toBe("Working... (esc to interrupt)");
 
-			const stopped = await post("abort", JSON.stringify({ project: "main", handle: child.handle }));
+			const stopped = await post("abort", JSON.stringify({ host: "main", handle: child.handle }));
 			expect(await stopped.json()).toEqual({ ok: true });
 			expect(aborted.has("Inspect gated")).toBe(true);
 			await until(() => stream.frames.at(-1)?.child?.state === "idle");
@@ -333,7 +333,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 	it("steers a busy conversation, and gives the refusal of the host for an idle one", async () => {
 		gates.set("Inspect conversation", Promise.withResolvers());
 		const id = await startConversation("inspected", "Inspect conversation");
-		const stream = await openStream(`project=main&conversation=${id}`);
+		const stream = await openStream(`host=main&conversation=${id}`);
 
 		try {
 			await until(() => stream.frames.some((frame) => frame.status.kind === "open"));
@@ -341,7 +341,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 			expect(stream.frames[0]?.title).toBe(id);
 			expect(stream.frames.at(-1)?.title).toBe(key);
 
-			const steer = JSON.stringify({ project: "main", conversation: id, message: "Inspect steer" });
+			const steer = JSON.stringify({ host: "main", conversation: id, message: "Inspect steer" });
 			expect(await (await post("input", steer)).json()).toEqual({ ok: true });
 			gates.get("Inspect conversation")?.resolve();
 			await until(() => called("Inspect steer") === 1);
@@ -357,7 +357,7 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 	});
 
 	it("ends the stream of an unknown child after one failed frame", async () => {
-		const stream = await openStream("project=main&handle=nosuch");
+		const stream = await openStream("host=main&handle=nosuch");
 		await stream.ended;
 
 		expect(stream.frames.at(-1)).toEqual({
@@ -370,12 +370,12 @@ describe("the inspect server", { timeout: 30_000 }, () => {
 		const dir = realpathSync(await mkdtemp(join(root, "idle-")));
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
 		// The host exits once it has no connection for 300 ms: the open mirror is one.
-		const idle = await runHost({ project: "idle", cwd: dir, models, idleExitMs: 300 });
+		const idle = await runHost({ host: "idle", cwd: dir, models, idleExitMs: 300 });
 
 		if (idle === undefined) throw new Error("no host");
 		let closed = false;
 		void idle.closed.then(() => (closed = true));
-		const stream = await openStream("project=idle");
+		const stream = await openStream("host=idle");
 
 		try {
 			await until(() => stream.frames.some((frame) => frame.status.kind === "open"));
@@ -393,15 +393,15 @@ describe("harness inspect", { timeout: 30_000 }, () => {
 	it("prints the URL of the page with the target of its arguments, and stops on SIGTERM", async () => {
 		expect(await cli(["inspect", "a1b2c3", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
 			code: 0,
-			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&handle=a1b2c3\n$/),
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?host=main&handle=a1b2c3\n$/),
 		});
-		expect(await cli(["--project", "main", "inspect", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
+		expect(await cli(["--host", "main", "inspect", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
 			code: 0,
-			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main\n$/),
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?host=main\n$/),
 		});
 		expect(await cli(["inspect", "--conversation", "42", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
 			code: 0,
-			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?project=main&conversation=42\n$/),
+			stdout: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/\?host=main&conversation=42\n$/),
 		});
 		expect(await cli(["inspect", "--port", "0"], STOP_AFTER_FIRST_WRITE)).toMatchObject({
 			code: 0,

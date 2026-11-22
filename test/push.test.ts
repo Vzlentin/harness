@@ -249,7 +249,7 @@ describe("push", { timeout: 30_000 }, () => {
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
 
 		const idle = await runHost({
-			project: "idle",
+			host: "idle",
 			cwd: dir,
 			models,
 			idleExitMs: 100,
@@ -257,7 +257,7 @@ describe("push", { timeout: 30_000 }, () => {
 
 		if (idle === undefined) throw new Error("no host");
 
-		const client = await connect({ start: false, project: "idle" });
+		const client = await connect({ start: false, host: "idle" });
 
 		try {
 			if (client === undefined) throw new Error("no host");

@@ -8,8 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { type CallerTodoList, readCallerTodos, readTodos } from "../src/host/todo.ts";
 import { Ask } from "../src/protocol/asks.ts";
+import { MAIN_HOST } from "../src/protocol/hosts.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import type { Todo } from "../src/protocol/todo.ts";
 import {
 	answer,
@@ -26,7 +26,7 @@ import {
 	until,
 } from "./helpers.ts";
 
-/** The conversation ID of the project agent of a new store. */
+/** The conversation ID of the host agent of a new store. */
 const AGENT = "1";
 
 let host: Host | undefined;
@@ -68,15 +68,15 @@ async function knownSession(caller: string): Promise<() => void> {
 	return () => answers.listener.close();
 }
 
-/** The lists of the store of the main project: the list of the project agent, and the list of each caller. */
+/** The lists of the store of the main host: the list of the host agent, and the list of each caller. */
 type StoreLists = { readonly todos: readonly Todo[]; readonly callerTodos: readonly CallerTodoList[] };
 
-/** The lists of the store of the main project, which a program reads while its host is down. The host starts again. */
+/** The lists of the store of the main host, which a program reads while its host is down. The host starts again. */
 async function downLists(): Promise<StoreLists> {
 	await host?.close();
 
 	try {
-		const storage = await openNodeSqliteStorage(join(statePaths(MAIN_PROJECT).dir, "durable.sqlite"));
+		const storage = await openNodeSqliteStorage(join(statePaths(MAIN_HOST).dir, "durable.sqlite"));
 
 		const harness = await Harness.open(
 			storage,
@@ -167,7 +167,7 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("goes to the list of the project agent, and a dropped todo stays dropped at the note", async () => {
+	it("goes to the list of the host agent, and a dropped todo stays dropped at the note", async () => {
 		const asked = await ask(AGENT, "Which store");
 		await answer([{ id: asked, answer: "a" }]);
 		const todo = (await todosOf(AGENT)).find((found) => found.ask === asked);
@@ -221,7 +221,7 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 
 	it("is set to done at the note after the host no longer knows the Pi session of the asker", async () => {
 		await host?.close();
-		host = await startHost(MAIN_PROJECT, { sessionEndMs: 200 });
+		host = await startHost(MAIN_HOST, { sessionEndMs: 200 });
 
 		try {
 			const close = await knownSession("pi-gone");

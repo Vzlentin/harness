@@ -17,14 +17,14 @@ import { inboxOf, withdrawnTexts } from "./view-state.ts";
 /** The `customType` of the session entry that holds the target of a mirror session. */
 export const MIRROR_ENTRY = "harness-mirror";
 
-/** The conversation that a mirror session shows, in the host of `project`. */
-export type MirrorTarget = { readonly project: string; readonly target: Target };
+/** The conversation that a mirror session shows, in the host `host`. */
+export type MirrorTarget = { readonly host: string; readonly target: Target };
 
 /**
- * The data of the session entry of a mirror session: the project, and the handle of a child or the project agent, or
+ * The data of the session entry of a mirror session: the host, and the handle of a child or the host agent, or
  * the ID of a conversation that the children library opened. Each refuses the other key.
  */
-const MirrorEntryData = Type.Union(withTarget({ project: Type.String() }));
+const MirrorEntryData = Type.Union(withTarget({ host: Type.String() }));
 
 export type MirrorEntryData = Static<typeof MirrorEntryData>;
 
@@ -35,23 +35,23 @@ export function isMirrorEntry(data: unknown): data is MirrorEntryData {
 
 /** The target in the data of a mirror entry. */
 export function fromMirrorEntry(data: MirrorEntryData): MirrorTarget {
-	return { project: data.project, target: parseTarget(data) };
+	return { host: data.host, target: parseTarget(data) };
 }
 
 /** The data of the session entry of `target`. */
 export function toMirrorEntry(target: MirrorTarget): MirrorEntryData {
-	return { project: target.project, ...targetRef(target.target) };
+	return { host: target.host, ...targetRef(target.target) };
 }
 
 /**
- * The Pi flags that open a mirror session of a target: the project, and the child or the conversation in place of the
- * project agent.
+ * The Pi flags that open a mirror session of a target: the host, and the child or the conversation in place of the
+ * host agent.
  */
-export const PI_FLAGS = { project: "harness", child: "harness-child", conversation: "harness-conversation" } as const;
+export const PI_FLAGS = { host: "harness", child: "harness-child", conversation: "harness-conversation" } as const;
 
 /** The arguments of `pi` that open a mirror session of `target`. */
 export function piArgs(target: MirrorTarget): string[] {
-	return [`--${PI_FLAGS.project}`, target.project, ...piTargetArgs(target.target)];
+	return [`--${PI_FLAGS.host}`, target.host, ...piTargetArgs(target.target)];
 }
 
 function piTargetArgs(target: Target): string[] {
@@ -66,25 +66,25 @@ function piTargetArgs(target: Target): string[] {
 }
 
 /**
- * The arguments of the `harness` CLI that open `target` in Pi: `<project>` for the project agent, `--project <project>
- * attach <handle>` for a child, and `--project <project> attach --conversation <id>` for a conversation.
+ * The arguments of the `harness` CLI that open `target` in Pi: `<host>` for the host agent, `--host <host>
+ * attach <handle>` for a child, and `--host <host> attach --conversation <id>` for a conversation.
  */
-export function harnessArgs({ project, target }: MirrorTarget): string[] {
+export function harnessArgs({ host, target }: MirrorTarget): string[] {
 	switch (target.kind) {
 		case "agent":
-			return [project];
+			return [host];
 		case "child":
-			return ["--project", project, "attach", target.handle];
+			return ["--host", host, "attach", target.handle];
 		case "conversation":
-			return ["--project", project, "attach", "--conversation", target.id];
+			return ["--host", host, "attach", "--conversation", target.id];
 	}
 }
 
 /** The title of the agent of `target` before the host gives its name: the handle or the conversation ID of a child. */
-export function targetTitle({ project, target }: MirrorTarget): string {
+export function targetTitle({ host, target }: MirrorTarget): string {
 	switch (target.kind) {
 		case "agent":
-			return `${project} agent`;
+			return `${host} agent`;
 		case "child":
 			return target.handle;
 		case "conversation":
@@ -170,7 +170,7 @@ export class Mirror {
 		return this.#view;
 	}
 
-	/** The child or the project agent, as the last connection gave it. It is undefined before the first connection. */
+	/** The child or the host agent, as the last connection gave it. It is undefined before the first connection. */
 	get child(): ChildInfo | undefined {
 		return this.#child;
 	}
@@ -289,7 +289,7 @@ export class Mirror {
 		const { signal } = this.#closing;
 
 		const attempt = await tryEach(delays, signal, async (): Promise<Watched> => {
-			const client = await connect({ start: this.#start, project: this.target.project, signal });
+			const client = await connect({ start: this.#start, host: this.target.host, signal });
 
 			if (client === undefined) throw new Error("Could not connect to the harness host");
 

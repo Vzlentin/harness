@@ -60,7 +60,7 @@ export async function serveWatch(
 	try {
 		found = await target(handler, ref);
 
-		// The project agent and a conversation target have no record and no `ChildRecords` watch: they are never renamed.
+		// The host agent and a conversation target have no record and no `ChildRecords` watch: they are never renamed.
 		if (ref.kind === "child") {
 			const { handle } = ref;
 			// The `ChildRecords` watch opens before the info, so it gets each later rename of the child.

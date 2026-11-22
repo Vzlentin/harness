@@ -138,7 +138,7 @@ beforeAll(async () => {
 		{ id: 3, text: "Archive librlm", state: "done" },
 		{ id: 4, text: "Write the spec", state: "open" },
 	);
-	// The private list of the project agent is not asked about without a list.
+	// The private list of the host agent is not asked about without a list.
 	await add({ handle: AGENT_HANDLE }, "Decide the agent todo");
 });
 

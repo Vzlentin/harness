@@ -32,7 +32,7 @@ import {
 /** The entry with the `ipython` tool that follows the contract of pi-ipython. */
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ipython", "index.ts");
 
-/** The caller of the project agent and of its kernel. */
+/** The caller of the host agent and of its kernel. */
 const AGENT_CALLER = String(ROOT_CONVERSATION_ID);
 
 /** The error of a call while no cell of its kernel runs. */

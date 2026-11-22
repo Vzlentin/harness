@@ -224,7 +224,7 @@ function fakePage(): FakePage {
 		},
 	};
 
-	const page = runPage(addedScript(addSend(INDEX, { project: "main", handle: "a1b2c3" }, "fake"), INDEX), globals);
+	const page = runPage(addedScript(addSend(INDEX, { host: "main", handle: "a1b2c3" }, "fake"), INDEX), globals);
 
 	return { page, posts, timers };
 }
@@ -259,7 +259,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", folder, "--slug", "demo", "--port", port], session)).toEqual({
 			code: 0,
-			stdout: `${base}pages/demo/?project=main&handle=${child.handle}\n`,
+			stdout: `${base}pages/demo/?host=main&handle=${child.handle}\n`,
 			stderr: "",
 		});
 		expect(readdirSync(pageDir("demo")).sort()).toEqual(["fig.svg", "index.html"]);
@@ -277,7 +277,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", pageDir("self"), "--slug", "self", "a1b2c3", "--port", port])).toEqual({
 			code: 0,
-			stdout: `${base}pages/self/?project=main&handle=a1b2c3\n`,
+			stdout: `${base}pages/self/?host=main&handle=a1b2c3\n`,
 			stderr: "",
 		});
 		expect(readdirSync(pageDir("self")).sort()).toEqual(["fig.svg", "index.html"]);
@@ -303,18 +303,18 @@ describe("harness page", { timeout: 30_000 }, () => {
 		expect(readdirSync(dirname(pageDir("unread"))).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 	});
 
-	it("gives the project agent for its conversation ID, and the target of its arguments", async () => {
+	it("gives the host agent for its conversation ID, and the target of its arguments", async () => {
 		const folder = await pageFolder({ "index.html": INDEX });
 		const agent = { PI_SESSION_ID: String(ROOT_CONVERSATION_ID) };
 
 		expect(await cli(["page", folder, "--slug", "agent-page", "--port", port], agent)).toMatchObject({
 			code: 0,
-			stdout: `${base}pages/agent-page/?project=main\n`,
+			stdout: `${base}pages/agent-page/?host=main\n`,
 		});
 		// An explicit target needs no PI_SESSION_ID.
 		expect(await cli(["page", folder, "--slug", "conv", "--conversation", "42", "--port", port])).toMatchObject({
 			code: 0,
-			stdout: `${base}pages/conv/?project=main&conversation=42\n`,
+			stdout: `${base}pages/conv/?host=main&conversation=42\n`,
 		});
 	});
 
@@ -327,7 +327,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 		const pid = Number(/pid (\d+)/.exec(result.stderr)?.[1]);
 
 		try {
-			const link = `http://127.0.0.1:${closed}/pages/closed/?project=main&handle=a1b2c3`;
+			const link = `http://127.0.0.1:${closed}/pages/closed/?host=main&handle=a1b2c3`;
 			expect(result).toEqual({
 				code: 0,
 				stdout: `${link}\n`,
@@ -339,14 +339,14 @@ describe("harness page", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("posts for a caller that the host does not run to the project agent, and needs PI_SESSION_ID and the host", async () => {
+	it("posts for a caller that the host does not run to the host agent, and needs PI_SESSION_ID and the host", async () => {
 		const first = await pageFolder({ "index.html": INDEX });
 		expect((await cli(["page", first, "--slug", "kept", "a1b2c3", "--port", port])).code).toBe(0);
 		const other = await pageFolder({ "index.html": "<p>other</p>\n" });
 
 		expect(await cli(["page", other, "--slug", "kept", "--port", port], { PI_SESSION_ID: "other" })).toEqual({
 			code: 0,
-			stdout: `${base}pages/kept/?project=main\n`,
+			stdout: `${base}pages/kept/?host=main\n`,
 			stderr: "",
 		});
 		expect(await readFile(join(pageDir("kept"), "index.html"), "utf8")).toBe("<p>other</p>\n");
@@ -360,15 +360,15 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		const dir = realpathSync(await mkdtemp(join(root, "web-")));
 		expect((await cli(["create", "web", "--cwd", dir])).code).toBe(0);
-		expect(await cli(["--project", "web", "page", other, "--slug", "down"], { PI_SESSION_ID: "other" })).toEqual({
+		expect(await cli(["--host", "web", "page", other, "--slug", "down"], { PI_SESSION_ID: "other" })).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "The harness host of web is not running\n",
+			stderr: "The harness host web is not running\n",
 		});
 		expect(existsSync(pageDir("down"))).toBe(false);
 	});
 
-	it("posts for a caller that the host does not run to the project agent of the working directory", async () => {
+	it("posts for a caller that the host does not run to the host agent of the working directory", async () => {
 		const folder = await pageFolder({ "index.html": INDEX });
 		const dir = realpathSync(await mkdtemp(join(root, "site-")));
 		expect((await cli(["create", "site", "--cwd", dir])).code).toBe(0);
@@ -377,7 +377,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 		try {
 			expect(await cli(["page", folder, "--slug", "site", "--port", port], { PI_SESSION_ID: "other" }, dir)).toEqual({
 				code: 0,
-				stdout: `${base}pages/site/?project=site\n`,
+				stdout: `${base}pages/site/?host=site\n`,
 				stderr: "",
 			});
 		} finally {
@@ -441,7 +441,7 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 		const folder = await pageFolder({ "index.html": INDEX });
 		expect((await cli(["page", folder, "--slug", "refused", "a1b2c3", "--port", port])).code).toBe(0);
 		const handle = "</script><b>";
-		const link = `${base}pages/refused/?project=main&handle=${encodeURIComponent(handle)}`;
+		const link = `${base}pages/refused/?host=main&handle=${encodeURIComponent(handle)}`;
 		const served = await (await fetch(link)).text();
 		expect(served).not.toContain(handle);
 		const page = runPage(addedScript(served, INDEX));
@@ -460,7 +460,7 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 		expect(lines(page)).toEqual(["sending\u2026"]);
 		expect(layers(page)).toBe(1);
 		expect(await Promise.all(posts.map(async (post) => post.body))).toEqual([
-			JSON.stringify({ project: "main", handle: "a1b2c3", message: "one" }),
+			JSON.stringify({ host: "main", handle: "a1b2c3", message: "one" }),
 		]);
 		expect(timers.map((timer) => timer.ms)).toEqual([400]);
 
@@ -542,11 +542,11 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 	});
 
 	it("serves the script as ASCII", () => {
-		expect(addSend(INDEX, { project: "main" }, "ascii")).not.toMatch(/[^\t\n -~]/);
+		expect(addSend(INDEX, { host: "main" }, "ascii")).not.toMatch(/[^\t\n -~]/);
 	});
 });
 
-/** The page of the slug `slug`, served with the script of the Send for the project `main`. */
+/** The page of the slug `slug`, served with the script of the Send for the host `main`. */
 async function askPage(slug: string): Promise<Page> {
 	const folder = await pageFolder({ "index.html": INDEX });
 	const printed = await cli(["page", folder, "--slug", slug, "a1b2c3", "--port", port]);
@@ -586,12 +586,12 @@ async function pageRound(slug: string): Promise<{ call: number; plain: number }>
 
 describe("the asks of a page", { timeout: 30_000 }, () => {
 	it("refuses the asks and the answers with 400 on a host with no entry that serves parleys", async () => {
-		const read = await rawRequest("/api/inspect/asks?project=main&parley=page-none");
+		const read = await rawRequest("/api/inspect/asks?host=main&parley=page-none");
 		expect(read.status).toBe(400);
 		expect(JSON.parse(read.body.toString("utf8"))).toEqual({ error: 'no loaded entry serves request type "parley"' });
 
 		const write = await postAnswers(
-			JSON.stringify({ project: "main", parley: "page-none", answers: [{ n: 1, answer: "a" }] }),
+			JSON.stringify({ host: "main", parley: "page-none", answers: [{ n: 1, answer: "a" }] }),
 		);
 
 		expect(write.status).toBe(400);
@@ -599,7 +599,7 @@ describe("the asks of a page", { timeout: 30_000 }, () => {
 	});
 
 	it("refuses a Host header that is not an address with 403 on both routes", async () => {
-		const read = await rawRequest("/api/inspect/asks?project=main&parley=page-read", { host: "evil.example" });
+		const read = await rawRequest("/api/inspect/asks?host=main&parley=page-read", { host: "evil.example" });
 		expect(read.status).toBe(403);
 		const write = await rawRequest("/api/inspect/answers", { host: "evil.example", method: "POST" });
 		expect(write.status).toBe(403);
@@ -666,7 +666,7 @@ describe("the asks of a page", { timeout: 30_000 }, () => {
 				{ parley: "page-bad", answers: [{ n: 1, answer: "z" }] },
 				{ parley: "page-bad", answers: [{ n: 1, answer: "a", id: call }] },
 				{ parley: "page-bad", answers: [{ n: 1, answer: "a", slug: "page-read" }] },
-			].map((body) => JSON.stringify({ project: "main", ...body }));
+			].map((body) => JSON.stringify({ host: "main", ...body }));
 
 			for (const body of [...bodies, "{"]) {
 				const reply = await postAnswers(body);
@@ -696,7 +696,7 @@ describe("the page route", { timeout: 30_000 }, () => {
 		expect((await rawRequest("/pages/files/index.html")).body.equals(Buffer.from(INDEX))).toBe(true);
 
 		// A target in the query adds the script only to an HTML file.
-		const svg = await rawRequest("/pages/files/fig.svg?project=main");
+		const svg = await rawRequest("/pages/files/fig.svg?host=main");
 		expect(svg).toMatchObject({ status: 200, type: "image/svg+xml" });
 		expect(svg.body.equals(Buffer.from(SVG))).toBe(true);
 
@@ -730,11 +730,11 @@ describe("the page route", { timeout: 30_000 }, () => {
 	it("refuses a Host header that is not an address with 403, and a query that is not valid with 400", async () => {
 		expect((await rawRequest("/pages/files/", { host: "evil.example" })).status).toBe(403);
 
-		const unknown = await rawRequest("/pages/files/?project=nosuch");
+		const unknown = await rawRequest("/pages/files/?host=nosuch");
 		expect(unknown.status).toBe(400);
-		expect(JSON.parse(unknown.body.toString("utf8"))).toEqual({ error: "Unknown harness project: nosuch" });
+		expect(JSON.parse(unknown.body.toString("utf8"))).toEqual({ error: "Unknown harness host: nosuch" });
 
-		const both = await rawRequest("/pages/files/?project=main&handle=a&conversation=1");
+		const both = await rawRequest("/pages/files/?host=main&handle=a&conversation=1");
 		expect(both.status).toBe(400);
 		expect(JSON.parse(both.body.toString("utf8"))).toEqual({ error: "Give handle or conversation, not both" });
 	});

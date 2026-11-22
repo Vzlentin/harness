@@ -14,13 +14,13 @@ import { type CatchUpHost, catchUp } from "../src/host/agent.ts";
 import { Degraded } from "../src/host/degraded.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
+import { hostDir } from "../src/protocol/hosts.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { projectDir } from "../src/protocol/projects.ts";
 import { errorMessage, type WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { cli, contexts, models, root, setUp, tearDown, until } from "./helpers.ts";
 
-const PROJECT = "repo";
+const HOST_NAME = "repo";
 const execGit = promisify(execFile);
 
 const HOOK_KIND = "fixture.catchup";
@@ -52,7 +52,7 @@ async function git(...args: string[]): Promise<string> {
 }
 
 function openHost(): Promise<Host | undefined> {
-	return runHost({ project: PROJECT, cwd: projectDir(PROJECT), models });
+	return runHost({ host: HOST_NAME, cwd: hostDir(HOST_NAME), models });
 }
 
 async function client(): Promise<Client> {
@@ -63,7 +63,7 @@ async function client(): Promise<Client> {
 	return connected;
 }
 
-/** Sends `message` to the project agent and waits until its turn has ended. */
+/** Sends `message` to the host agent and waits until its turn has ended. */
 async function input(message: string): Promise<void> {
 	const watching = await client();
 	const connected = await client();
@@ -93,13 +93,13 @@ async function input(message: string): Promise<void> {
 
 async function openStore(): Promise<Harness> {
 	return Harness.open(
-		await openNodeSqliteStorage(join(statePaths(PROJECT).dir, "durable.sqlite")),
+		await openNodeSqliteStorage(join(statePaths(HOST_NAME).dir, "durable.sqlite")),
 		{ models, registry: durable.createRegistry() },
 		BACKGROUND_CONTEXT,
 	);
 }
 
-/** The data of each catch-up entry of the project agent in `store`. */
+/** The data of each catch-up entry of the host agent in `store`. */
 async function catchUpData(store: Harness): Promise<unknown[]> {
 	const page = await store.commit(
 		(tx) => tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 1000),
@@ -110,7 +110,7 @@ async function catchUpData(store: Harness): Promise<unknown[]> {
 }
 
 /**
- * Runs `use` with the store of the project, with the host closed, and a catch-up host on it whose warnings go to
+ * Runs `use` with the store of the host, with the host closed, and a catch-up host on it whose warnings go to
  * `warnings`.
  */
 async function withStore(
@@ -130,7 +130,7 @@ async function withStore(
 	}
 }
 
-/** Writes an entry into the project agent's conversation, as the host does. */
+/** Writes an entry into the host agent's conversation, as the host does. */
 function writer(agent: CatchUpHost): (write: Write) => Promise<void> {
 	return async (write) => {
 		await agent.root.submit(write, BACKGROUND_CONTEXT);
@@ -139,7 +139,7 @@ function writer(agent: CatchUpHost): (write: Write) => Promise<void> {
 
 beforeAll(async () => {
 	await setUp();
-	repo = join(root, PROJECT);
+	repo = join(root, HOST_NAME);
 	await mkdir(repo);
 	await git("init", "--quiet", "--initial-branch", "trunk");
 	await git("commit", "--quiet", "--allow-empty", "-m", "Start");
@@ -166,8 +166,8 @@ export default function catchUpEntry() {
 `,
 	);
 	setEntry("catchup", module);
-	expect((await cli(["create", PROJECT, "--cwd", repo])).code).toBe(0);
-	process.env.HARNESS_PROJECT = PROJECT;
+	expect((await cli(["create", HOST_NAME, "--cwd", repo])).code).toBe(0);
+	process.env.HARNESS_HOST = HOST_NAME;
 	host = await openHost();
 });
 
@@ -176,7 +176,7 @@ afterAll(async () => {
 	await tearDown();
 });
 
-describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
+describe("the catch-up of the host agent", { timeout: 60_000 }, () => {
 	it("tells the agent once about new commits", async () => {
 		await input("First");
 		expect(contexts.get("First")).toEqual(["First"]);
@@ -222,7 +222,7 @@ describe("the catch-up of the project agent", { timeout: 60_000 }, () => {
 		host = undefined;
 
 		const store = await Harness.open(
-			await openNodeSqliteStorage(join(statePaths(PROJECT).dir, "durable.sqlite")),
+			await openNodeSqliteStorage(join(statePaths(HOST_NAME).dir, "durable.sqlite")),
 			{ models, registry: durable.createRegistry() },
 			BACKGROUND_CONTEXT,
 		);

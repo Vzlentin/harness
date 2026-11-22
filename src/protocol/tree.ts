@@ -20,7 +20,7 @@ const NODE_FIELDS = {
 };
 
 /**
- * One node of the tree of a project: an agent (the project agent, a child, or a conversation of the children library)
+ * One node of the tree of a host: an agent (the host agent, a child, or a conversation of the children library)
  * with the state of a child, its labels and its result references, or a run (a started task, or a child task under
  * it) with the state of its task and the result references of a started task.
  */
@@ -29,7 +29,7 @@ export const TreeNode = Type.Union([
 		...NODE_FIELDS,
 		kind: Type.Literal("agent"),
 		state: Type.Enum(CHILD_STATES),
-		/** The labels of a child of the host, when it has one. The project agent and a conversation of a task have none. */
+		/** The labels of a child of the host, when it has one. The host agent and a conversation of a task have none. */
 		labels: Type.Optional(Type.Array(Label)),
 		/** The result references that `report` stored for a child of the host, when it has one. */
 		refs: Type.Optional(Type.Array(Type.String())),

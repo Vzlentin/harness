@@ -20,7 +20,7 @@ import { answerOf, called, cli, gates, models, root, setUp, spawnAs, tearDown, u
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
 
-/** The conversation of the project agent: the root conversation, the first one of a new store. */
+/** The conversation of the host agent: the root conversation, the first one of a new store. */
 const AGENT_CALLER = "1";
 
 /** One line of a tree watch: the reply, or an event. */
@@ -29,63 +29,60 @@ const WatchLine = Type.Union([
 	Type.Object({ event: TreeEvent }),
 ]);
 
-/** Runs the host of the new project `name` in this process. */
-async function projectHost(name: string): Promise<Host> {
+/** Runs the new host `name` in this process. */
+async function newHost(name: string): Promise<Host> {
 	const dir = await mkdtemp(join(root, `${name}-`));
 	expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
-	const host = await runHost({ project: name, cwd: dir, models });
+	const host = await runHost({ host: name, cwd: dir, models });
 
 	if (host === undefined) throw new Error("no host");
 
 	return host;
 }
 
-/** Runs the host of the new project `name` with the entry `module` too, which the hosts started later do not load. */
-async function projectHostWith(name: string, module: string): Promise<Host> {
+/** Runs the new host `name` with the entry `module` too, which the hosts started later do not load. */
+async function newHostWith(name: string, module: string): Promise<Host> {
 	const entries = readEntries();
 	setEntry(name, module);
 
 	try {
-		return await projectHost(name);
+		return await newHost(name);
 	} finally {
 		await writeFile(entriesPath(), JSON.stringify(entries));
 	}
 }
 
-/** Sends `line` to the host of `project` through the socket. */
-async function send<T extends Request["type"]>(
-	line: Extract<Request, { type: T }>,
-	project: string,
-): Promise<Replies[T]> {
-	const reply = await request(line, { start: false, project });
+/** Sends `line` to the host `host` through the socket. */
+async function send<T extends Request["type"]>(line: Extract<Request, { type: T }>, host: string): Promise<Replies[T]> {
+	const reply = await request(line, { start: false, host });
 
 	if (reply === undefined) throw new Error("no host");
 
 	return reply;
 }
 
-/** Adds the todo `text` to the list `list` of the host of `project`. */
-async function add(list: ListRef, text: string, project: string): Promise<void> {
-	await send({ type: "todo", caller: "cli", action: "add", ...list, text }, project);
+/** Adds the todo `text` to the list `list` of the host `host`. */
+async function add(list: ListRef, text: string, host: string): Promise<void> {
+	await send({ type: "todo", caller: "cli", action: "add", ...list, text }, host);
 }
 
-/** The nodes of the tree of `project`, checked against the reply schema. */
-async function tree(project: string): Promise<TreeNode[]> {
-	const reply = await send({ type: "tree" }, project);
+/** The nodes of the tree of `host`, checked against the reply schema. */
+async function tree(host: string): Promise<TreeNode[]> {
+	const reply = await send({ type: "tree" }, host);
 	expect(Value.Check(TreeReply, reply)).toBe(true);
 
 	return reply.nodes;
 }
 
-/** Starts the task `key` of `kind` with `input` in the host of `project`, and waits until it ends. */
+/** Starts the task `key` of `kind` with `input` in the host `host`, and waits until it ends. */
 async function runTask(
-	project: string,
+	host: string,
 	kind: string,
 	key: string,
 	input: Extract<Request, { type: "start" }>["input"],
 ): Promise<Replies["start"]> {
-	const started = await send({ type: "start", kind, key, input }, project);
-	await send({ type: "wait-task", key }, project);
+	const started = await send({ type: "start", kind, key, input }, host);
+	await send({ type: "wait-task", key }, host);
 
 	return started;
 }
@@ -95,11 +92,11 @@ function open(id: number, text: string): Todo {
 }
 
 /**
- * A `watch-tree` request of `project` on a socket of its own: its socket, the nodes of the reply, and the events that
+ * A `watch-tree` request of `host` on a socket of its own: its socket, the nodes of the reply, and the events that
  * came so far.
  */
-async function openTreeWatch(project: string): Promise<{ socket: Socket; nodes: TreeNode[]; events: TreeEvent[] }> {
-	const socket = createConnection(statePaths(project).socket);
+async function openTreeWatch(host: string): Promise<{ socket: Socket; nodes: TreeNode[]; events: TreeEvent[] }> {
+	const socket = createConnection(statePaths(host).socket);
 	await once(socket, "connect");
 	const replies: TreeReply[] = [];
 	const events: TreeEvent[] = [];
@@ -127,18 +124,18 @@ function statesOf(events: readonly TreeEvent[], id: string): string[] {
 }
 
 /**
- * Starts the `fixture.ask` task `top` in `project`: it asks `above`, then starts a child task that asks `below`. Waits
+ * Starts the `fixture.ask` task `top` in `host`: it asks `above`, then starts a child task that asks `below`. Waits
  * until both asks are called, and gives the started task and the child conversations of the two asks.
  */
 async function startHeldBelow(
-	project: string,
+	host: string,
 	above: string,
 	below: string,
 ): Promise<{ top: Replies["start"]; aboveChild: string; belowChild: string }> {
-	const idFile = join(root, `${project}.ids.json`);
-	const belowFile = join(root, `${project}.below.json`);
+	const idFile = join(root, `${host}.ids.json`);
+	const belowFile = join(root, `${host}.below.json`);
 	const input = { cwd: root, prompt: above, idFile, below: { prompt: below, idFile: belowFile } };
-	const top = await send({ type: "start", kind: "fixture.ask", key: "top", input }, project);
+	const top = await send({ type: "start", kind: "fixture.ask", key: "top", input }, host);
 	await until(() => called(below) === 1 && called(above) === 1);
 	const aboveIds: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
 	const belowIds: { child: string } = JSON.parse(await readFile(belowFile, "utf8"));
@@ -167,33 +164,33 @@ afterAll(async () => {
 });
 
 describe("tree", { timeout: 60_000 }, () => {
-	it("gives the project agent, a child, a live started task and the conversation that it owns, with their todos", async () => {
-		const project = "four";
-		const host = await projectHost(project);
+	it("gives the host agent, a child, a live started task and the conversation that it owns, with their todos", async () => {
+		const name = "four";
+		const host = await newHost(name);
 		const prompt = "Tree task";
 		const gate = Promise.withResolvers<void>();
 		gates.set(prompt, gate);
 
 		try {
-			const child = await spawnAs(AGENT_CALLER, "Tree child", { notify: false, project });
-			expect(await answerOf(child.handle, project)).toBe("Answer to Tree child");
+			const child = await spawnAs(AGENT_CALLER, "Tree child", { notify: false, host: name });
+			expect(await answerOf(child.handle, name)).toBe("Answer to Tree child");
 			const idFile = join(root, "four.ids.json");
 
 			const run = await send(
 				{ type: "start", kind: "fixture.ask", key: "run", input: { cwd: root, prompt, idFile } },
-				project,
+				name,
 			);
 
 			await until(() => called(prompt) === 1);
 			const ids: { child: string; root: string } = JSON.parse(await readFile(idFile, "utf8"));
 			expect(ids.root).toBe(AGENT_CALLER);
 
-			await add({ handle: AGENT_HANDLE }, "Agent todo", project);
-			await add({ handle: AGENT_HANDLE }, "Agent todo done", project);
-			await send({ type: "todo", caller: "cli", action: "set", handle: AGENT_HANDLE, id: 2, state: "done" }, project);
-			await add({ handle: child.handle }, "Child todo", project);
-			await add({ key: "run" }, "Run todo", project);
-			await add({ conversation: ids.child }, "Conversation todo", project);
+			await add({ handle: AGENT_HANDLE }, "Agent todo", name);
+			await add({ handle: AGENT_HANDLE }, "Agent todo done", name);
+			await send({ type: "todo", caller: "cli", action: "set", handle: AGENT_HANDLE, id: 2, state: "done" }, name);
+			await add({ handle: child.handle }, "Child todo", name);
+			await add({ key: "run" }, "Run todo", name);
+			await add({ conversation: ids.child }, "Conversation todo", name);
 
 			const agent: TreeNode = {
 				id: AGENT_HANDLE,
@@ -212,7 +209,7 @@ describe("tree", { timeout: 60_000 }, () => {
 				todos: [open(1, "Child todo")],
 			};
 
-			const nodes = await tree(project);
+			const nodes = await tree(name);
 
 			expect(nodes).toEqual([
 				agent,
@@ -228,7 +225,7 @@ describe("tree", { timeout: 60_000 }, () => {
 				},
 			]);
 
-			expect(await cli(["--project", project, "tree"])).toEqual({
+			expect(await cli(["--host", name, "tree"])).toEqual({
 				code: 0,
 				stdout: [
 					"○ four agent  idle  1 open",
@@ -239,19 +236,19 @@ describe("tree", { timeout: 60_000 }, () => {
 				].join("\n"),
 				stderr: "",
 			});
-			expect(await cli(["--project", project, "tree", "--json"])).toEqual({
+			expect(await cli(["--host", name, "tree", "--json"])).toEqual({
 				code: 0,
 				stdout: `${JSON.stringify({ nodes })}\n`,
 				stderr: "",
 			});
-			expect(await cli(["--project", project, "tree", "--all"])).toMatchObject({
+			expect(await cli(["--host", name, "tree", "--all"])).toMatchObject({
 				code: 1,
 				stderr: expect.stringContaining("  harness tree [--json]\n"),
 			});
 
 			gate.resolve();
-			await send({ type: "wait-task", key: "run" }, project);
-			expect(await tree(project)).toEqual([
+			await send({ type: "wait-task", key: "run" }, name);
+			expect(await tree(name)).toEqual([
 				agent,
 				spawned,
 				{ id: "task:run", kind: "run", name: "fixture.ask run", state: "completed", todos: [open(1, "Run todo")] },
@@ -264,24 +261,24 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("puts the child tasks of a live started task under it, with the conversations that they own", async () => {
-		const project = "nested";
-		const host = await projectHost(project);
+		const name = "nested";
+		const host = await newHost(name);
 		const prompt = "Below gate";
 		const gate = Promise.withResolvers<void>();
 		gates.set(prompt, gate);
 
 		try {
-			const { top, aboveChild, belowChild } = await startHeldBelow(project, "Above", prompt);
+			const { top, aboveChild, belowChild } = await startHeldBelow(name, "Above", prompt);
 
 			await vi.waitFor(
 				async () => {
-					const nodes = await tree(project);
+					const nodes = await tree(name);
 					expect(nodes.find((node) => node.id === `conversation:${aboveChild}`)).toMatchObject({ state: "idle" });
 				},
 				{ timeout: 10_000 },
 			);
 
-			const [agent, run, task, belowConversation, aboveConversation, ...rest] = await tree(project);
+			const [agent, run, task, belowConversation, aboveConversation, ...rest] = await tree(name);
 			expect(agent?.id).toBe(AGENT_HANDLE);
 			expect(rest).toEqual([]);
 			expect(run).toEqual({ id: "task:top", kind: "run", name: "fixture.ask top", state: "running", todos: [] });
@@ -319,19 +316,19 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("gives only the run node of a started task that ended, in the tree and in a watch", async () => {
-		const project = "ended";
-		const host = await projectHost(project);
+		const name = "ended";
+		const host = await newHost(name);
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			await runTask(project, "fixture.nest", "deep", { depth: 2, todo: "Nest" });
-			const [agent, ...rest] = await tree(project);
+			await runTask(name, "fixture.nest", "deep", { depth: 2, todo: "Nest" });
+			const [agent, ...rest] = await tree(name);
 			expect(agent?.id).toBe(AGENT_HANDLE);
 			expect(rest).toEqual([
 				{ id: "task:deep", kind: "run", name: "fixture.nest deep", state: "completed", todos: [open(1, "Nest")] },
 			]);
 
-			watch = await openTreeWatch(project);
+			watch = await openTreeWatch(name);
 			expect(watch.nodes).toEqual([agent, ...rest]);
 		} finally {
 			watch?.socket.destroy();
@@ -340,30 +337,30 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("leaves out the nodes that ended before the 50 newest started tasks, with the nodes under them", async () => {
-		const project = "window";
-		const host = await projectHost(project);
+		const name = "window";
+		const host = await newHost(name);
 		const prompt = "Window gate";
 		const gate = Promise.withResolvers<void>();
 		gates.set(prompt, gate);
 
 		try {
 			const idFile = join(root, "window.ids.json");
-			await send({ type: "start", kind: "fixture.ask", key: "live", input: { cwd: root, prompt, idFile } }, project);
+			await send({ type: "start", kind: "fixture.ask", key: "live", input: { cwd: root, prompt, idFile } }, name);
 			await until(() => called(prompt) === 1);
 			const ids: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
-			await runTask(project, "fixture.nest", "old", { depth: 0 });
+			await runTask(name, "fixture.nest", "old", { depth: 0 });
 			const recent = Array.from({ length: 50 }, (_, index) => `task:new-${index}`);
 
-			for (const id of recent) await runTask(project, "fixture.nest", id.replace(/^task:/, ""), { depth: 0 });
+			for (const id of recent) await runTask(name, "fixture.nest", id.replace(/^task:/, ""), { depth: 0 });
 
-			const live = await tree(project);
+			const live = await tree(name);
 			expect(live.map((node) => node.id)).toEqual([AGENT_HANDLE, "task:live", `conversation:${ids.child}`, ...recent]);
 			expect(live[1]).toMatchObject({ state: "running" });
 			expect(live[2]).toMatchObject({ state: "busy" });
 
 			gate.resolve();
-			await send({ type: "wait-task", key: "live" }, project);
-			expect((await tree(project)).map((node) => node.id)).toEqual([AGENT_HANDLE, ...recent]);
+			await send({ type: "wait-task", key: "live" }, name);
+			expect((await tree(name)).map((node) => node.id)).toEqual([AGENT_HANDLE, ...recent]);
 		} finally {
 			gate.resolve();
 			gates.delete(prompt);
@@ -372,24 +369,24 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("sends the nodes that a commit changed to a watch, and keeps a stopped child as ended", async () => {
-		const project = "watched";
-		const host = await projectHost(project);
+		const name = "watched";
+		const host = await newHost(name);
 		const prompt = "Tree turn";
 		const gate = Promise.withResolvers<void>();
 		gates.set(prompt, gate);
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const a = await spawnAs(AGENT_CALLER, "Watched A", { notify: false, project });
-			const b = await spawnAs(AGENT_CALLER, "Watched B", { notify: false, project });
-			await answerOf(a.handle, project);
-			await answerOf(b.handle, project);
-			watch = await openTreeWatch(project);
+			const a = await spawnAs(AGENT_CALLER, "Watched A", { notify: false, host: name });
+			const b = await spawnAs(AGENT_CALLER, "Watched B", { notify: false, host: name });
+			await answerOf(a.handle, name);
+			await answerOf(b.handle, name);
+			watch = await openTreeWatch(name);
 			const { events } = watch;
-			expect(watch.nodes).toEqual(await tree(project));
+			expect(watch.nodes).toEqual(await tree(name));
 			expect(watch.nodes.map((node) => node.id)).toEqual([AGENT_HANDLE, a.handle, b.handle]);
 
-			await add({ handle: a.handle }, "Todo of A", project);
+			await add({ handle: a.handle }, "Todo of A", name);
 			await until(() => events.length > 0);
 			expect(events).toEqual([
 				{
@@ -408,7 +405,7 @@ describe("tree", { timeout: 60_000 }, () => {
 
 			await send(
 				{ type: "input", requestId: "tree-turn", handle: AGENT_HANDLE, message: prompt, followUp: false },
-				project,
+				name,
 			);
 			await until(() => statesOf(events, AGENT_HANDLE).includes("busy"));
 			gate.resolve();
@@ -417,10 +414,10 @@ describe("tree", { timeout: 60_000 }, () => {
 			expect(idsOf(events.slice(1)).every((id) => id === AGENT_HANDLE)).toBe(true);
 			expect(events.some((event) => "removed" in event)).toBe(false);
 
-			const c = await spawnAs(AGENT_CALLER, "Watched C", { notify: false, project });
-			await answerOf(c.handle, project);
+			const c = await spawnAs(AGENT_CALLER, "Watched C", { notify: false, host: name });
+			await answerOf(c.handle, name);
 			await until(() => statesOf(events, c.handle).at(-1) === "idle");
-			await send({ type: "stop", caller: AGENT_CALLER, handle: c.handle }, project);
+			await send({ type: "stop", caller: AGENT_CALLER, handle: c.handle }, name);
 			await until(() => statesOf(events, c.handle).at(-1) === "ended");
 			expect(events.some((event) => "removed" in event)).toBe(false);
 			expect(idsOf(events).filter((id) => id !== AGENT_HANDLE && id !== c.handle)).toEqual([a.handle]);
@@ -433,14 +430,14 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("gives the labels of a child in its node, and sends the node to a watch when a stop ends it", async () => {
-		const project = "labels-node";
-		const host = await projectHostWith(project, join(dirname(FIXTURE), "fix-labels.ts"));
+		const name = "labels-node";
+		const host = await newHostWith(name, join(dirname(FIXTURE), "fix-labels.ts"));
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const child = await spawnAs(AGENT_CALLER, "Labeled child", { notify: false, project, labels: ["fix:7"] });
-			await answerOf(child.handle, project);
-			watch = await openTreeWatch(project);
+			const child = await spawnAs(AGENT_CALLER, "Labeled child", { notify: false, host: name, labels: ["fix:7"] });
+			await answerOf(child.handle, name);
+			watch = await openTreeWatch(name);
 			const { events } = watch;
 
 			const node = {
@@ -454,7 +451,7 @@ describe("tree", { timeout: 60_000 }, () => {
 			};
 
 			expect(watch.nodes.find((found) => found.id === child.handle)).toEqual(node);
-			await send({ type: "stop", caller: AGENT_CALLER, handle: child.handle }, project);
+			await send({ type: "stop", caller: AGENT_CALLER, handle: child.handle }, name);
 			await until(() => events.length > 0);
 			expect(events).toEqual([{ nodes: [{ ...node, state: "ended" }] }]);
 		} finally {
@@ -465,19 +462,19 @@ describe("tree", { timeout: 60_000 }, () => {
 
 	it("sends the end of a run to a watch that opened while the tasks after the run ran", async () => {
 		// pi-durable deletes the run after its after-run tasks in a commit that changes only the live document.
-		const project = "after";
-		const host = await projectHostWith(project, join(FIXTURE, "after-run.ts"));
+		const name = "after";
+		const host = await newHostWith(name, join(FIXTURE, "after-run.ts"));
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const child = await spawnAs(AGENT_CALLER, "After-run child", { notify: false, project });
+			const child = await spawnAs(AGENT_CALLER, "After-run child", { notify: false, host: name });
 			await until(() => afterRun.waiting);
-			watch = await openTreeWatch(project);
+			watch = await openTreeWatch(name);
 			const { events } = watch;
 			expect(watch.nodes.find((node) => node.id === child.handle)).toMatchObject({ state: "busy" });
 
 			// The event of this todo comes from a pass that ran before the gate opened, so a later pass sends the end.
-			await add({ handle: AGENT_HANDLE }, "Agent todo", project);
+			await add({ handle: AGENT_HANDLE }, "Agent todo", name);
 			await until(() => idsOf(events).includes(AGENT_HANDLE));
 			afterRun.gate.resolve();
 			await until(() => statesOf(events, child.handle).length > 0);
@@ -490,16 +487,16 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("sends the nodes under a run as removed to a watch when the run ends", async () => {
-		const project = "removed";
-		const host = await projectHost(project);
+		const name = "removed";
+		const host = await newHost(name);
 		const prompt = "Removed gate";
 		const gate = Promise.withResolvers<void>();
 		gates.set(prompt, gate);
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const { aboveChild, belowChild } = await startHeldBelow(project, "Removed above", prompt);
-			watch = await openTreeWatch(project);
+			const { aboveChild, belowChild } = await startHeldBelow(name, "Removed above", prompt);
+			watch = await openTreeWatch(name);
 			const { events } = watch;
 			const task = watch.nodes.find((node) => node.parent === "task:top" && node.kind === "run");
 			expect(task).toBeDefined();
@@ -509,7 +506,7 @@ describe("tree", { timeout: 60_000 }, () => {
 			gate.resolve();
 			await until(() => under.every((id) => id !== undefined && removedOf(events).includes(id)));
 			expect(statesOf(events, "task:top").at(-1)).toBe("completed");
-			expect((await tree(project)).map((node) => node.id)).toEqual([AGENT_HANDLE, "task:top"]);
+			expect((await tree(name)).map((node) => node.id)).toEqual([AGENT_HANDLE, "task:top"]);
 		} finally {
 			gate.resolve();
 			gates.delete(prompt);
@@ -519,31 +516,31 @@ describe("tree", { timeout: 60_000 }, () => {
 	});
 
 	it("sends every node once to a watch that fell behind, and answers the other requests meanwhile", async () => {
-		const project = "slow";
-		const host = await projectHost(project);
+		const name = "slow";
+		const host = await newHost(name);
 		let watch: Awaited<ReturnType<typeof openTreeWatch>> | undefined;
 
 		try {
-			const a = await spawnAs(AGENT_CALLER, "Slow A", { notify: false, project });
-			const b = await spawnAs(AGENT_CALLER, "Slow B", { notify: false, project });
-			await answerOf(a.handle, project);
-			await answerOf(b.handle, project);
-			watch = await openTreeWatch(project);
+			const a = await spawnAs(AGENT_CALLER, "Slow A", { notify: false, host: name });
+			const b = await spawnAs(AGENT_CALLER, "Slow B", { notify: false, host: name });
+			await answerOf(a.handle, name);
+			await answerOf(b.handle, name);
+			watch = await openTreeWatch(name);
 			const { events, socket } = watch;
 			const large = "x".repeat(1_000_000);
 
 			// The client reads nothing, so the host waits for the socket to drain after the event of the large todo.
 			socket.pause();
-			await add({ handle: a.handle }, large, project);
+			await add({ handle: a.handle }, large, name);
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			await add({ handle: b.handle }, "After the large todo", project);
-			await add({ handle: AGENT_HANDLE }, "Also after it", project);
+			await add({ handle: b.handle }, "After the large todo", name);
+			await add({ handle: AGENT_HANDLE }, "Also after it", name);
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			socket.resume();
 
 			const index = () => events.findIndex((event) => "nodes" in event && JSON.stringify(event).includes(large));
 			await until(() => index() !== -1 && events.length > index() + 1);
-			const all = await tree(project);
+			const all = await tree(name);
 			expect(events.slice(index() + 1)).toEqual([{ nodes: all }]);
 		} finally {
 			watch?.socket.destroy();

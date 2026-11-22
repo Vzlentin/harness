@@ -82,7 +82,7 @@ const ChildrenV3 = Type.Object({
 
 /**
  * A record of version 5 or 6: what the child served in place of its labels, such as its spawner, a parley or a contract
- * by slug, an item, or a todo of the list of the project, and the end of what it served.
+ * by slug, an item, or a todo of the list of the host, and the end of what it served.
  */
 const RecordV6 = Type.Object({
 	...RecordV4Fields,
@@ -292,7 +292,7 @@ export function conversationEntry<E extends readonly [string, ChildRecord]>(
 }
 
 /**
- * The handle of `caller`, a conversation ID: `agent` for `rootId`, the conversation of the project agent, or the handle
+ * The handle of `caller`, a conversation ID: `agent` for `rootId`, the conversation of the host agent, or the handle
  * of the child of `entries` whose conversation it is. Nothing for another caller.
  */
 export function callerHandle(

@@ -10,9 +10,9 @@ import { connect, request } from "../src/client/client.ts";
 import { addAsks, answerAsks } from "../src/host/asks.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
+import { MAIN_HOST } from "../src/protocol/hosts.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { askGroup, type Delivery } from "../src/protocol/requests.ts";
 import {
 	answer,
@@ -105,7 +105,7 @@ async function restart(): Promise<void> {
 
 /** Asks the entry to deliver `text` to `to` once for `key`. It throws the error of the reply. */
 async function deliver(key: string, to: string, text: string): Promise<void> {
-	const socket = createConnection(statePaths(MAIN_PROJECT).socket);
+	const socket = createConnection(statePaths(MAIN_HOST).socket);
 
 	const reply = await new Promise<string>((resolve, reject) => {
 		socket.once("error", reject);
@@ -151,7 +151,7 @@ async function newestHead(conversation: Conversation): Promise<string | undefine
 	return marker === undefined ? undefined : String(marker.id);
 }
 
-/** Sends `message` to the project agent, and gives its conversation ID, which the input hook saw. */
+/** Sends `message` to the host agent, and gives its conversation ID, which the input hook saw. */
 async function agentConversation(message: string): Promise<string> {
 	const client = await connect({ start: false });
 
@@ -181,7 +181,7 @@ async function answeredAsk(title: string): Promise<number> {
 async function offline(write: (harness: Awaited<ReturnType<typeof openDurableHost>>) => Promise<void>): Promise<void> {
 	await host?.close();
 	host = undefined;
-	const harness = await openDurableHost(join(statePaths(MAIN_PROJECT).dir, "durable.sqlite"), []);
+	const harness = await openDurableHost(join(statePaths(MAIN_HOST).dir, "durable.sqlite"), []);
 
 	try {
 		await write(harness);
@@ -192,7 +192,7 @@ async function offline(write: (harness: Awaited<ReturnType<typeof openDurableHos
 	host = await startHost();
 }
 
-// SAFETY: with no vault, the answers add no todo, so they never read the conversation of the project agent.
+// SAFETY: with no vault, the answers add no todo, so they never read the conversation of the host agent.
 const NO_ROOT = 1 as ConversationId;
 
 /** The keys of the events that the handler got for the ask `id`. */

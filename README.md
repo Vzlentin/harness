@@ -59,26 +59,27 @@ harness inspect <handle>    # open it in a browser, at the URL that it prints
 harness page <folder> --slug <slug>  # serve a page with harness inspect, which it starts when none runs; its Send posts to you
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
-harness tree                # print the agents and the runs of the project, with their todos
-harness main                # open the agent of the main project in Pi
+harness tree                # print the agents and the runs of the host, with their todos
+harness main                # open the agent of the main host in Pi
 ```
 
-In Pi, `/harness <project>` opens a session that shows the agent of the project in Pi's own chat, and sends what you
-type to it. Without a project, it asks for one. `pi --harness <project>` starts Pi in such a session.
+In Pi, `/harness <host>` opens a session that shows the agent of the host in Pi's own chat, and sends what you type
+to it. Without a host, it asks for one. `pi --harness <host>` starts Pi in such a session.
 
 In Pi, `/todo <text>` adds a todo to the session's list. `/todo` alone asks for the text.
 
 In Pi, `/vc` (or `ctrl+shift+y`) selects a block of the agent messages, such as a code block, and copies it.
 
-When the directory of a project has a `.optmem` folder, the agents of the project get it as their memory (`MEMORY_DIR`).
+When the directory of a host has a `.optmem` folder, the agents of the host get it as their memory (`MEMORY_DIR`).
 
-The rules, the gate, the parleys, the work items, the digest and the memory of the project agent come from the
-projects entry, a separate package. A host without it runs the agents with none of them.
+The rules, the gate, the parleys, the work items, the digest and the memory of the host agent come from the projects
+entry, a separate package. A host without it runs the agents with none of them.
 
-Before your input, the agent of a project gets a short catch-up: the workflows runs that ended and the new commits on
+Before your input, the agent of a host gets a short catch-up: the workflows runs that ended and the new commits on
 the default branch since its last input.
 
-[docs/spec.md](docs/spec.md) describes all the commands, the tool, the Pi extension, projects, the host and its state.
+[docs/spec.md](docs/spec.md) describes all the commands, the tool, the Pi extension, the hosts, the host process and
+its state.
 
 ## Development
 

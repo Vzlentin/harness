@@ -22,14 +22,14 @@ import {
 	toMirrorEntry,
 } from "../src/client/mirror.ts";
 import * as viewState from "../src/client/view-state.ts";
+import * as hosts from "../src/protocol/hosts.ts";
 import * as protocol from "../src/protocol/index.ts";
-import * as projects from "../src/protocol/projects.ts";
 import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type Todo } from "../src/protocol/todo.ts";
 import { drawWidget, FakeTerminal, until } from "./helpers.ts";
 
-const AGENT: MirrorTarget = { project: "main", target: { kind: "agent" } };
+const AGENT: MirrorTarget = { host: "main", target: { kind: "agent" } };
 
 const CHILD: ChildInfo = {
 	handle: AGENT_HANDLE,
@@ -292,7 +292,7 @@ class Session {
 
 		const harness = {
 			mirror: { ...mirror, Mirror: FakeMirror },
-			projects,
+			hosts,
 			protocol,
 			viewState,
 		};

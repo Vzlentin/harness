@@ -30,8 +30,8 @@ import type extension from "../pi/index.ts";
 import { request } from "../src/client/client.ts";
 import { MIRROR_ENTRY, toMirrorEntry } from "../src/client/mirror.ts";
 import type { Host } from "../src/host/run.ts";
+import { MAIN_HOST } from "../src/protocol/hosts.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { TODO_TOOL_DESCRIPTION, TOOL_DESCRIPTION, todoToolSchemas } from "../src/tool.ts";
 import { drawWidget, gates, rawReply, root, setUp, spawnAs, startHost, tearDown, untilState } from "./helpers.ts";
 
@@ -337,11 +337,11 @@ function noWidgets(): Widgets {
 	};
 }
 
-/** The mirror entry of a mirror session of the project agent of `main`. */
+/** The mirror entry of a mirror session of the host agent of `main`. */
 const MIRROR = {
 	type: "custom",
 	customType: MIRROR_ENTRY,
-	data: toMirrorEntry({ project: MAIN_PROJECT, target: { kind: "agent" } }),
+	data: toMirrorEntry({ host: MAIN_HOST, target: { kind: "agent" } }),
 	id: "mirror-1",
 	parentId: null,
 	timestamp: "",
@@ -352,7 +352,7 @@ const MIRROR = {
  * model. Without `widgets`, the session has no UI. With it, the session has a UI whose theme writes `<colour>text`, and
  * `widgets` logs the sets and the removals of the subagents widget and of the todo widget, and each render of their components, at 80
  * columns, when they are set and when they ask for one. With `mirror`, the session is a mirror
- * session of the project agent in Pi's interactive mode, whose components are never drawn. The notifications go to
+ * session of the host agent in Pi's interactive mode, whose components are never drawn. The notifications go to
  * `registered`.
  */
 async function sessionEvent(registered: Registered, event: PiEvent, widgets?: Widgets, mirror = false): Promise<void> {
@@ -472,7 +472,7 @@ describe("the Pi extension", () => {
 		expect(await callTool(registered, { action: "list" })).toBe("No subagents\n");
 	});
 
-	it("gives the session no tool, command, section or gate of the store of the project or of the memory", async () => {
+	it("gives the session no tool, command, section or gate of the store of the host or of the memory", async () => {
 		const registered = await load();
 
 		expect(registered.handlers.get("before_agent_start")).toBeUndefined();
@@ -765,8 +765,8 @@ describe("the Pi extension", () => {
 				{ id: 2, text: "Write the plan", state: "doing" },
 			],
 		});
-		const project = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
-		expect(project).toEqual({ todos: [] });
+		const agentList = await request({ type: "todo", caller: "cli", action: "list", handle: "agent" }, { start: false });
+		expect(agentList).toEqual({ todos: [] });
 	});
 
 	it("adds a session todo with /todo, from its arguments or an input, refreshes the widget, and refuses in a mirror session", async () => {
@@ -828,7 +828,7 @@ describe("the Pi extension", () => {
 		const quiet = noWidgets();
 		await sessionEvent(registered, { type: "session_start", reason: "startup" }, quiet);
 		await vi.waitFor(() => expect(quiet.todos.renders).toEqual([[], []]), { timeout: 10_000 });
-		expect(existsSync(statePaths(MAIN_PROJECT).socket)).toBe(false);
+		expect(existsSync(statePaths(MAIN_HOST).socket)).toBe(false);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" }, quiet);
 
 		host = await startHost();

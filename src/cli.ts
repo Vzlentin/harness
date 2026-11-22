@@ -17,22 +17,14 @@ import { LocalId } from "./protocol/asks.ts";
 import {
 	cliCaller,
 	HARNESS_INSPECT_PORT,
-	HARNESS_PROJECT,
+	HARNESS_HOST,
 	PI_MODEL,
 	PI_PROVIDER,
 	PI_REASONING_LEVEL,
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
+import { addHost, type CommandName, checkHost, MAIN_HOST, hostDir, hostOf, readHosts } from "./protocol/hosts.ts";
 import { inspectPaths, pageDir } from "./protocol/paths.ts";
-import {
-	addProject,
-	type CommandName,
-	checkProject,
-	MAIN_PROJECT,
-	projectDir,
-	projectOf,
-	readProjects,
-} from "./protocol/projects.ts";
 import { type ChildInfo, errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
@@ -46,19 +38,19 @@ function fail(message: string): never {
 	throw new Error(message);
 }
 
-/** A command of the CLI: its lines in the usage, and what it runs. `project` is the `--project` value. */
+/** A command of the CLI: its lines in the usage, and what it runs. `host` is the `--host` value. */
 type Command = {
 	readonly usage: readonly string[];
-	run(args: string[], project: string | undefined): Promise<void> | void;
+	run(args: string[], host: string | undefined): Promise<void> | void;
 };
 
 function usage(): never {
 	const lines = [...COMMANDS.values()].flatMap((command) => command.usage);
 
 	fail(`Usage:
-  harness <project>
+  harness <host>
 ${lines.join("\n")}
-Any command but harness <project> takes --project <name> before it; without it, the project is ${HARNESS_PROJECT}, then the cwd.`);
+Any command but harness <host> takes --host <name> before it; without it, the host is ${HARNESS_HOST}, then the cwd.`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -283,11 +275,11 @@ function todoState(value: string): TodoState {
 }
 
 /** Runs `todo` as a call of the todo tool, or `todo sort` as a `classify-todos` request, and prints its output. */
-async function todoCommand(args: string[], project: string | undefined): Promise<void> {
+async function todoCommand(args: string[], host: string | undefined): Promise<void> {
 	const call = todoArgs(args);
 
-	if (call.args.action === "sort") return sortCommand(call.target, project);
-	const { text } = await runTodoTool(call.args, cliScope(project), call.target);
+	if (call.args.action === "sort") return sortCommand(call.target, host);
+	const { text } = await runTodoTool(call.args, cliScope(host), call.target);
 
 	process.stdout.write(text);
 }
@@ -296,13 +288,13 @@ async function todoCommand(args: string[], project: string | undefined): Promise
  * Prints the answers of the classifier about the open todos of the list `target`, or without a target about the open
  * work items: one line for each, or `No open todos` or `No open items`.
  */
-async function sortCommand(target: ListTarget, project: string | undefined): Promise<void> {
+async function sortCommand(target: ListTarget, host: string | undefined): Promise<void> {
 	const list = listRef(target);
 
 	const classify =
 		list === undefined ? ({ type: "classify-todos" } as const) : ({ type: "classify-todos", list } as const);
 
-	const { answers } = await request(classify, { start: true, project });
+	const { answers } = await request(classify, { start: true, host });
 	const none = list === undefined ? "No open items\n" : "No open todos\n";
 
 	process.stdout.write(answers.length === 0 ? none : answers.map((answer) => `${answerLine(answer)}\n`).join(""));
@@ -317,12 +309,12 @@ function listRef(target: ListTarget): ListRef | undefined {
 	return target.key === undefined ? undefined : { key: target.key };
 }
 
-/** Prints the line of each node of the tree of the project, or with `--json` the reply as one JSON line. */
-async function treeCommand(args: string[], project: string | undefined): Promise<void> {
+/** Prints the line of each node of the tree of the host, or with `--json` the reply as one JSON line. */
+async function treeCommand(args: string[], host: string | undefined): Promise<void> {
 	const json = args.length === 1 && args[0] === "--json";
 
 	if (args.length !== 0 && !json) usage();
-	const reply = await request({ type: "tree" }, { start: true, project });
+	const reply = await request({ type: "tree" }, { start: true, host });
 
 	process.stdout.write(
 		json
@@ -333,34 +325,34 @@ async function treeCommand(args: string[], project: string | undefined): Promise
 	);
 }
 
-/** Adds the project `name` with the real path of `dir` to `projects.json`. */
+/** Adds the host `name` with the real path of `dir` to `hosts.json`. */
 function createCommand(args: string[]): void {
 	const [name, option, dir] = args;
 
 	if (args.length !== 3 || name === undefined || option !== "--cwd" || dir === undefined) usage();
 
-	process.stdout.write(`Created ${name} (${addProject(name, dir)})\n`);
+	process.stdout.write(`Created ${name} (${addHost(name, dir)})\n`);
 }
 
-function projectsCommand(args: string[]): void {
+function hostsCommand(args: string[]): void {
 	if (args.length !== 0) usage();
 
-	for (const [name, dir] of Object.entries(readProjects())) process.stdout.write(`${name}  ${dir}\n`);
-	process.stdout.write(`${MAIN_PROJECT}\n`);
+	for (const [name, dir] of Object.entries(readHosts())) process.stdout.write(`${name}  ${dir}\n`);
+	process.stdout.write(`${MAIN_HOST}\n`);
 }
 
 /**
- * Runs the host of `project` in this process with Pi's models. It exits at once when another host runs. The project
- * comes only from `--project`, not from the env: a host can start from a child's shell of another project.
+ * Runs the host `name` in this process with Pi's models. It exits at once when another host runs. The name comes only
+ * from `--host`, not from the env: a host can start from the shell of a child of another host.
  */
-async function hostCommand(args: string[], project: string): Promise<void> {
+async function hostCommand(args: string[], name: string): Promise<void> {
 	if (args.length !== 0) usage();
 
 	const { createAgentSessionServices, ExtensionRunner, ModelRegistry, SessionManager } =
 		await import("@earendil-works/pi-coding-agent");
 
 	const { runHost } = await import("./host/run.ts");
-	const cwd = projectDir(project);
+	const cwd = hostDir(name);
 	const { modelRuntime, resourceLoader } = await createAgentSessionServices({ cwd });
 	const { extensions, runtime } = resourceLoader.getExtensions();
 
@@ -375,7 +367,7 @@ async function hostCommand(args: string[], project: string): Promise<void> {
 	runtime.createContext = () => runner.createContext();
 
 	const host = await runHost({
-		project,
+		host: name,
 		cwd,
 		models: modelRuntime,
 	});
@@ -408,46 +400,46 @@ function commandTarget(args: string[]) {
  * Opens a child, or a conversation of the children library with `--conversation <id>`, in Pi in this terminal. With
  * `--side` in an hc terminal, it opens it in a new herdr-app pane to the right in the tab of that terminal, and exits.
  */
-async function attachCommand(args: string[], project: string | undefined): Promise<void> {
+async function attachCommand(args: string[], host: string | undefined): Promise<void> {
 	const { target, rest } = commandTarget(args);
 	const side = rest.length === 1 && rest[0] === "--side";
 
 	if (rest.length > 0 && !side) usage();
-	const name = projectOf(project, process.env, process.cwd());
-	const child = await checkTarget({ project: name, target });
+	const name = hostOf(host, process.env, process.cwd());
+	const child = await checkTarget({ host: name, target });
 
 	if (side && inHerdr(process.env)) {
-		await openInHerdr(child, target, { side: true }, { ...process.env, [HARNESS_PROJECT]: name });
+		await openInHerdr(child, target, { side: true }, { ...process.env, [HARNESS_HOST]: name });
 	} else {
-		runPi({ project: name, target });
+		runPi({ host: name, target });
 	}
 }
 
 /** Prints the answer of the query model to a question about a child, or a conversation with `--conversation <id>`. */
-async function queryCommand(args: string[], project: string | undefined): Promise<void> {
+async function queryCommand(args: string[], host: string | undefined): Promise<void> {
 	const { target, rest } = commandTarget(args);
 	const question = rest.join(" ").trim();
 
 	if (question === "") usage();
-	const { text } = await runQuery(targetRef(target), question, cliScope(project));
+	const { text } = await runQuery(targetRef(target), question, cliScope(host));
 
 	process.stdout.write(text);
 }
 
 /** Stops a child, or the child of the conversation `<id>` with `--conversation <id>`, and the children it spawned. */
-async function stopCommand(args: string[], project: string | undefined): Promise<void> {
+async function stopCommand(args: string[], host: string | undefined): Promise<void> {
 	const { target, rest } = commandTarget(args);
 
 	if (rest.length > 0) usage();
-	const { text } = await runStop(targetRef(target), cliScope(project));
+	const { text } = await runStop(targetRef(target), cliScope(host));
 
 	process.stdout.write(text);
 }
 
-/** Opens the agent of the project `name`, which is `main` or a project, in Pi in this terminal. */
-async function agentCommand(name: string, project: string | undefined): Promise<void> {
-	if (project !== undefined) fail(`harness ${name} takes no --project`);
-	const target: MirrorTarget = { project: name, target: { kind: "agent" } };
+/** Opens the agent of the host `name`, which is `main` or a host, in Pi in this terminal. */
+async function agentCommand(name: string, host: string | undefined): Promise<void> {
+	if (host !== undefined) fail(`harness ${name} takes no --host`);
+	const target: MirrorTarget = { host: name, target: { kind: "agent" } };
 
 	await checkTarget(target);
 	runPi(target);
@@ -463,11 +455,11 @@ function userPath(): string {
 
 /**
  * Sends a first watch of `target` and gives its child. It starts the host when none runs, and fails for an unknown
- * child, an unknown conversation and a project agent without a model, before anything opens.
+ * child, an unknown conversation and a host agent without a model, before anything opens.
  */
 async function checkTarget(target: MirrorTarget): Promise<ChildInfo> {
-	const { project } = target;
-	const { child } = await request({ type: "watch", ...targetRef(target.target) }, { start: true, project });
+	const { host } = target;
+	const { child } = await request({ type: "watch", ...targetRef(target.target) }, { start: true, host });
 
 	return child;
 }
@@ -549,15 +541,15 @@ function defaultPort(env: NodeJS.ProcessEnv): number {
 
 /**
  * Serves the inspect UI until SIGINT or SIGTERM, and prints its URL on each bound address: with the target of the
- * arguments in the query, the project agent with `--project` alone, or the picker of the projects without either.
+ * arguments in the query, the host agent with `--host <name>` alone, or the picker of the hosts without either.
  */
-async function inspectCommand(args: string[], project: string | undefined): Promise<void> {
+async function inspectCommand(args: string[], name: string | undefined): Promise<void> {
 	const { ref, port, host, tailscale } = serverArgs("inspect", args);
 
 	const target: MirrorTarget | undefined =
-		ref === undefined && project === undefined
+		ref === undefined && name === undefined
 			? undefined
-			: { project: projectOf(project, process.env, process.cwd()), target: ref ?? { kind: "agent" } };
+			: { host: hostOf(name, process.env, process.cwd()), target: ref ?? { kind: "agent" } };
 
 	const hosts = await resolveBindHosts({ host, tailscale });
 	const server = await startInspectServer({ hosts, port: port ?? defaultPort(process.env) });
@@ -588,16 +580,16 @@ function pageArgs(args: string[]): PageArgs {
 
 /**
  * Copies the page in `<folder>` to the pages of the inspect routes, and prints its link on each address, with the target
- * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the project agent. When
+ * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the host agent. When
  * no address listens, it starts `harness inspect` in the background on the same addresses, and prints its PID and its
  * log on stderr. When only some addresses listen, it starts nothing, and a line notes each address where none listens.
  */
-async function pageCommand(args: string[], project: string | undefined): Promise<void> {
+async function pageCommand(args: string[], hostName: string | undefined): Promise<void> {
 	const { folder, slug, ref, port = defaultPort(process.env), host, tailscale } = pageArgs(args);
 	const dest = pageDir(slug);
 	const files = pageFiles(folder);
-	const name = projectOf(project, process.env, process.cwd());
-	const target: MirrorTarget = { project: name, target: ref ?? (await callerTarget(name)) };
+	const name = hostOf(hostName, process.env, process.cwd());
+	const target: MirrorTarget = { host: name, target: ref ?? (await callerTarget(name)) };
 	const hosts = await resolveBindHosts({ host, tailscale });
 	writePage(dest, folder, files);
 	const seen = await listening(hosts, port);
@@ -646,33 +638,33 @@ async function startInspect(args: readonly string[], hosts: readonly string[], p
 }
 
 /**
- * The target of the caller of this process in the host of `project`: its child by handle, else the project agent, also
+ * The target of the caller of this process in the host `host`: its child by handle, else the host agent, also
  * for a caller that the host does not run, such as a Pi session.
  */
-async function callerTarget(project: string): Promise<Target> {
+async function callerTarget(host: string): Promise<Target> {
 	const caller = process.env[PI_SESSION_ID];
 
 	if (!caller) fail("Give <handle> or --conversation <id>: PI_SESSION_ID is not set");
-	const reply = await request({ type: "whoami", caller }, { start: false, project });
+	const reply = await request({ type: "whoami", caller }, { start: false, host });
 
-	if (reply === undefined) fail(`The harness host of ${project} is not running`);
+	if (reply === undefined) fail(`The harness host ${host} is not running`);
 
 	return reply.handle === undefined ? { kind: "agent" } : parseTarget({ handle: reply.handle });
 }
 
-function versionCommand(args: string[], project: string | undefined): void {
-	if (project !== undefined || args.length !== 0) usage();
+function versionCommand(args: string[], host: string | undefined): void {
+	if (host !== undefined || args.length !== 0) usage();
 
 	const json: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	process.stdout.write(`${Value.Parse(Type.Object({ version: Type.String() }), json).version}\n`);
 }
 
 /**
- * The scope of a tool call of the CLI, to the host of `project`. The caller is `PI_SESSION_ID`, or `cli` outside Pi. The
+ * The scope of a tool call of the CLI, to the host `host`. The caller is `PI_SESSION_ID`, or `cli` outside Pi. The
  * host gives a spawn the `subagentModel` and `subagentThinkingLevel` of Pi's global settings, else `PI_PROVIDER`,
  * `PI_MODEL` and `PI_REASONING_LEVEL`.
  */
-function cliScope(project: string | undefined): ToolScope {
+function cliScope(host: string | undefined): ToolScope {
 	return {
 		caller: cliCaller(process.env),
 		callKey: randomUUID(),
@@ -680,7 +672,7 @@ function cliScope(project: string | undefined): ToolScope {
 		model: process.env[PI_MODEL],
 		thinking: process.env[PI_REASONING_LEVEL] || "medium",
 		cwd: process.cwd(),
-		send: (message, signal) => request(message, { start: true, signal, project }),
+		send: (message, signal) => request(message, { start: true, signal, host }),
 		signal: undefined,
 	};
 }
@@ -689,8 +681,8 @@ function cliScope(project: string | undefined): ToolScope {
 function toolCommand(lines: readonly string[], parse: (args: string[]) => ToolArgs): Command {
 	return {
 		usage: lines,
-		async run(args, project) {
-			const { text } = await runTool(parse(args), cliScope(project));
+		async run(args, host) {
+			const { text } = await runTool(parse(args), cliScope(host));
 
 			process.stdout.write(text);
 		},
@@ -741,37 +733,35 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			],
 			run: pageCommand,
 		},
-		host: { usage: [], run: (args, project) => hostCommand(args, checkProject(project ?? MAIN_PROJECT)) },
+		host: { usage: [], run: (args, host) => hostCommand(args, checkHost(host ?? MAIN_HOST)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },
-		projects: { usage: ["  harness projects"], run: projectsCommand },
+		hosts: { usage: ["  harness hosts"], run: hostsCommand },
 		"--version": { usage: ["  harness --version"], run: versionCommand },
 	} satisfies Record<CommandName | "--version", Command>),
 );
 
 /**
- * Runs a command of the table, or opens the agent of a project named alone. Any other word gives the usage.
+ * Runs a command of the table, or opens the agent of a host named alone. Any other word gives the usage.
  */
 async function main(): Promise<void> {
 	const all = process.argv.slice(2);
 	// Only before the command, so a message or a prompt can contain the word.
-	let project: string | undefined;
+	let host: string | undefined;
 
-	if (all[0] === "--project") {
-		project = valueAfter(all, 0, "--project");
+	if (all[0] === "--project") fail("harness takes --host <name>, not --project");
+
+	if (all[0] === "--host") {
+		host = valueAfter(all, 0, "--host");
 		all.splice(0, 2);
 	}
 
 	const [command, ...args] = all;
 	const known = command === undefined ? undefined : COMMANDS.get(command);
 
-	if (known !== undefined) return known.run(args, project);
+	if (known !== undefined) return known.run(args, host);
 
-	if (
-		command !== undefined &&
-		args.length === 0 &&
-		(command === MAIN_PROJECT || Object.hasOwn(readProjects(), command))
-	) {
-		return agentCommand(command, project);
+	if (command !== undefined && args.length === 0 && (command === MAIN_HOST || Object.hasOwn(readHosts(), command))) {
+		return agentCommand(command, host);
 	}
 
 	usage();

@@ -249,15 +249,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("opens a child and the project agent in Pi, and refuses an unknown child before Pi starts", async () => {
+	it("opens a child and the host agent in Pi, and refuses an unknown child before Pi starts", async () => {
 		const pi = await fakePi();
 		const handle = handleOf(await cli(["spawn", "--name", "piped", "--prompt", "Pipe me"]));
 
 		expect(await cli(["attach", handle], pi.env)).toMatchObject({ code: 3, stderr: "" });
-		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_PROJECT=`]);
+		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_HOST=`]);
 
 		expect((await cli(["main"], pi.env)).code).toBe(3);
-		expect(logLines(pi.log)[1]).toBe("--harness main HARNESS_PROJECT=");
+		expect(logLines(pi.log)[1]).toBe("--harness main HARNESS_HOST=");
 
 		expect(await cli(["attach", "abcdef"], pi.env)).toMatchObject({ code: 1, stderr: "Unknown subagent: abcdef\n" });
 		expect(logLines(pi.log)).toHaveLength(2);
@@ -282,13 +282,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(await cli(["attach", handle, "--side"], env)).toMatchObject({ code: 0, stderr: "" });
 		expect(logLines(hc.log)).toEqual([
 			"get --json t3",
-			`run --bg --keep --no-parent --cwd ${child.cwd} --name sided --label herdr.space=s1 --label herdr.tab=b2 -- ${xdg} ${process.execPath} ${CLI} --project main attach ${handle}`,
+			`run --bg --keep --no-parent --cwd ${child.cwd} --name sided --label herdr.space=s1 --label herdr.tab=b2 -- ${xdg} ${process.execPath} ${CLI} --host main attach ${handle}`,
 		]);
 		expect(logLines(pi.log)).toEqual([]);
 
 		// Outside an hc terminal, --side opens Pi in this terminal.
 		expect(await cli(["attach", handle, "--side"], { ...env, HC_TERMINAL_ID: "" })).toMatchObject({ code: 3 });
-		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_PROJECT=`]);
+		expect(logLines(pi.log)).toEqual([`--harness main --harness-child ${handle} HARNESS_HOST=`]);
 		expect(logLines(hc.log)).toHaveLength(2);
 
 		// --side comes after the target, and no other word does.
@@ -335,7 +335,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(state).toBeTruthy();
 		expect(config).toBeTruthy();
 		const run = `run --bg --keep --no-parent --cwd ${child.cwd} --name tabbed --label herdr.space=s1 --`;
-		const command = `${process.execPath} ${CLI} --project main attach ${handle}`;
+		const command = `${process.execPath} ${CLI} --host main attach ${handle}`;
 		await openChildTab(child, hc.env);
 		expect(logLines(hc.log)).toEqual([
 			"get --json t3",
@@ -372,14 +372,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 		delete env.HC_TERMINAL_ID;
 		await openConversationPane(conversationInfo(), { space: "s9" }, env);
 		expect(logLines(hc.log)).toEqual([
-			`run --bg --keep --no-parent --cwd ${root} --name key --label herdr.space=s9 -- ${process.execPath} ${CLI} --project main attach --conversation c1`,
+			`run --bg --keep --no-parent --cwd ${root} --name key --label herdr.space=s9 -- ${process.execPath} ${CLI} --host main attach --conversation c1`,
 		]);
 	});
 
 	it("opens a conversation in Pi in a new tab of the space of the caller, or to the right in its tab", async () => {
 		const hc = await fakeHc();
 		const env = withoutXdg(hc.env);
-		const command = `${process.execPath} ${CLI} --project main attach --conversation c1`;
+		const command = `${process.execPath} ${CLI} --host main attach --conversation c1`;
 		const run = `run --bg --keep --no-parent --cwd ${root} --name key --label herdr.space=s1`;
 		await openConversationPane(conversationInfo(), {}, env);
 		await openConversationPane(conversationInfo(), { side: true }, env);

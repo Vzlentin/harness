@@ -62,7 +62,7 @@ export const CatchUpPart = Type.Object({
 export type CatchUpPart = Static<typeof CatchUpPart>;
 
 /**
- * The catch-up hook of an entry. Before each input of the project agent, the host calls `run` with what the hook said
+ * The catch-up hook of an entry. Before each input of the host agent, the host calls `run` with what the hook said
  * the agent saw at the last catch-up, or nothing the first time. `kind` names the hook's state and data. The hooks of
  * `loadEntries` check the part of `run`: an invalid part throws.
  */
@@ -300,7 +300,7 @@ export type EntryAsks = {
 	/**
 	 * Writes the answers `answers` of `author` for the caller `by`, and gives the answered asks, in the order of
 	 * `answers`. The asks of `confirms` take `own` and `ok`, and get no todo `Save to the vault`; the other answered
-	 * asks get one in the list of their asker, where `root` is the project agent. The same commit queues the deliveries
+	 * asks get one in the list of their asker, where `root` is the host agent. The same commit queues the deliveries
 	 * that `group` makes of the answered asks whose asker is not `by`, and one event for each answered ask.
 	 */
 	readonly answer: (
@@ -360,13 +360,13 @@ export type EntryTodos = {
 
 /** The handles of the host that each entry gets, the same object for each. */
 export type EntryHandles = {
-	/** The state directory of the project. */
+	/** The state directory of the host. */
 	readonly stateDir: string;
-	/** The name of the project. */
-	readonly project: string;
-	/** The working directory of the project. */
+	/** The name of the host. */
+	readonly host: string;
+	/** The working directory of the host. */
 	readonly cwd: string;
-	/** Pi's settings for the project directory, as the host reads them. */
+	/** Pi's settings for the host directory, as the host reads them. */
 	readonly settings: SettingsManager;
 	/**
 	 * The scope of the tools of the hosted conversations: its `send` serves a request in this process. The host serves a
@@ -376,7 +376,7 @@ export type EntryHandles = {
 	 */
 	readonly scope: DurableScope;
 	/**
-	 * Sends `input` to `caller` when it is a conversation of the host (the project agent, a child or a library
+	 * Sends `input` to `caller` when it is a conversation of the host (the host agent, a child or a library
 	 * conversation), after the input hooks. It resumes an ended conversation. Another caller, such as a Pi session, gets
 	 * nothing. It throws until the host is open.
 	 */
@@ -391,7 +391,7 @@ export type EntryHandles = {
 	readonly warn: (cause: unknown) => void;
 	readonly classifier: EntryClassifier;
 	/**
-	 * Sends `text` once for each `key` to `to`: as input to a hosted conversation (the project agent, a child or a library
+	 * Sends `text` once for each `key` to `to`: as input to a hosted conversation (the host agent, a child or a library
 	 * conversation), or in the reply to the `answers` request of a Pi session. It throws until the host is open, and
 	 * `UnknownDeliveryTarget` for another `to`.
 	 */

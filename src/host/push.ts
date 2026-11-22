@@ -34,7 +34,7 @@ const context = BACKGROUND_CONTEXT;
 /** What the push uses of the host. */
 export type PushHost = TargetHost &
 	InputHooksHost & {
-		/** The root conversation, which is the project agent. */
+		/** The root conversation, which is the host agent. */
 		readonly root: Conversation;
 		readonly warn: (cause: unknown) => void;
 		readonly degraded: Degraded;
@@ -453,7 +453,7 @@ export class Push {
 
 	/**
 	 * Where the answers for `caller` go: its open `answers` request, else the input of a conversation of the host (a
-	 * child, the project agent, or another conversation of the children library, such as a child of a task), which resumes
+	 * child, the host agent, or another conversation of the children library, such as a child of a task), which resumes
 	 * an ended one. Nothing for another caller, such as a Pi session without an open request: its deliveries wait.
 	 */
 	async #destination(caller: string, entries: readonly Entry[]): Promise<Destination | undefined> {
@@ -523,7 +523,7 @@ export class Push {
 	}
 
 	/**
-	 * The input of `caller` when it is a conversation of the host: a child, the project agent, or another conversation of
+	 * The input of `caller` when it is a conversation of the host: a child, the host agent, or another conversation of
 	 * the children library. An input resumes an ended conversation. Nothing for another caller, such as a Pi session.
 	 */
 	async inputOf(caller: string): Promise<((input: Input) => Promise<void>) | undefined> {

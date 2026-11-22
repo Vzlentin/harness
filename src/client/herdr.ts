@@ -5,9 +5,9 @@
 import { execFile } from "node:child_process";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { resolveHost } from "../protocol/hosts.ts";
 import { childLabel } from "../protocol/labels.ts";
 import { cliPath } from "../protocol/paths.ts";
-import { resolveProject } from "../protocol/projects.ts";
 import type { ChildInfo } from "../protocol/requests.ts";
 import { parseTarget } from "../protocol/target.ts";
 import { harnessArgs, type MirrorTarget } from "./mirror.ts";
@@ -100,8 +100,7 @@ function terminalName(child: ChildInfo): string | undefined {
  * `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of `env`, when they are set.
  */
 function openCommand(target: MirrorTarget, env: NodeJS.ProcessEnv): string[] {
-	// The program must find the same host and projects as `statePaths()` in paths.ts and `projectsPath()` in
-	// projects.ts.
+	// The program must find the same state and hosts as `statePaths()` in paths.ts and `hostsPath()` in hosts.ts.
 	const assignments = ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].flatMap((name) => {
 		const value = env[name];
 
@@ -114,7 +113,7 @@ function openCommand(target: MirrorTarget, env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * Opens `target` in Pi at `place` in herdr-app, on the project of `env` and this process's cwd, in a new background hc
+ * Opens `target` in Pi at `place` in herdr-app, on the host of `env` and this process's cwd, in a new background hc
  * terminal in the cwd of `child`, named after it. With `place.space`, the terminal gets that `herdr.space` label;
  * without it, the terminal gets the labels of the hc terminal of this process that `place` needs. It rejects before it
  * starts a terminal when it cannot read these labels, and it rejects when an `hc` call fails.
@@ -125,7 +124,7 @@ export async function openInHerdr(
 	place: ConversationPlace,
 	env: NodeJS.ProcessEnv,
 ): Promise<void> {
-	const project = resolveProject(env, process.cwd());
+	const host = resolveHost(env, process.cwd());
 
 	const labels =
 		place.space !== undefined
@@ -135,13 +134,13 @@ export async function openInHerdr(
 	const flags = Object.entries(labels).flatMap(([label, value]) => ["--label", `${label}=${value}`]);
 	const name = terminalName(child);
 	const named = name === undefined ? [] : ["--name", name];
-	const command = openCommand({ project, target }, env);
+	const command = openCommand({ host, target }, env);
 
 	await hc(["run", "--bg", "--keep", "--no-parent", "--cwd", child.cwd, ...named, ...flags, "--", ...command], env);
 }
 
 /**
- * Opens `child` in Pi in a new herdr-app tab, in the space of the hc terminal of this process, on the project of `env`
+ * Opens `child` in Pi in a new herdr-app tab, in the space of the hc terminal of this process, on the host of `env`
  * and this process's cwd. It rejects before it starts a terminal when this process is not in an hc terminal or its
  * terminal has no `herdr.space` label, and it rejects when an `hc` call fails.
  */
@@ -150,7 +149,7 @@ export function openChildTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<
 }
 
 /**
- * Opens the children library conversation `conversation` in Pi at `place` in herdr-app, on the project of `env` and
+ * Opens the children library conversation `conversation` in Pi at `place` in herdr-app, on the host of `env` and
  * this process's cwd. For a conversation, `ChildInfo` gives the same ID in `handle` and in `conversation`. Without
  * `place.space`, it rejects before it starts a terminal when this process is not in an hc terminal, or when its
  * terminal does not have the labels that `place` needs. It rejects when an `hc` call fails.

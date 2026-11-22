@@ -65,7 +65,7 @@ export async function queryConversation(
 async function queriedConversation(host: QueryHost, ref: Target, caller: string): Promise<ConversationId> {
 	if (caller === CLI_CALLER) return targetConversation(host, ref);
 
-	if (ref.kind === "agent") throw new Error("Only a terminal that is not an agent can query the project agent");
+	if (ref.kind === "agent") throw new Error("Only a terminal that is not an agent can query the host agent");
 
 	return (await callerEntry(host, ref, caller))[1].conversationId;
 }

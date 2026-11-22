@@ -6,9 +6,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { MAIN_HOST, hostOf } from "../protocol/hosts.ts";
 import { onLines } from "../protocol/lines.ts";
 import { cliPath, statePaths } from "../protocol/paths.ts";
-import { MAIN_PROJECT, projectOf } from "../protocol/projects.ts";
 import {
 	type EntryRequestLine,
 	errorMessage,
@@ -107,8 +107,8 @@ export class Client {
 	#lines: Readable | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
-	/** The project of the host. `connect` sets it. */
-	project = MAIN_PROJECT;
+	/** The name of the host. `connect` sets it. */
+	host = MAIN_HOST;
 
 	constructor(socket: Socket) {
 		this.#socket = socket;
@@ -203,29 +203,29 @@ export class Client {
 }
 
 /**
- * A connection to the host of `project`, or of the project of `HARNESS_PROJECT` or the cwd (see `projectOf`),
- * after its `hello`. When no host listens and `start` is true, it starts one (see `startAndConnect`). When no host
- * listens and `start` is false, it is undefined. It fails with `HostUnreachableError` when no host answers its `hello`, or
- * when the host has another protocol version, unless `signal` aborted.
+ * A connection to the host `host`, else to the host of `HARNESS_HOST` or the cwd (see `hostOf`), after its `hello`.
+ * When no host listens and `start` is true, it starts one (see `startAndConnect`). When no host listens and `start` is
+ * false, it is undefined. It fails with `HostUnreachableError` when no host answers its `hello`, or when the host has
+ * another protocol version, unless `signal` aborted.
  */
 export async function connect(options: ConnectOptions): Promise<Client | undefined> {
-	const project = projectOf(options.project, process.env, process.cwd());
+	const host = hostOf(options.host, process.env, process.cwd());
 
 	try {
-		return await connectTo(project, options);
+		return await connectTo(host, options);
 	} catch (error) {
 		throw options.signal?.aborted ? error : new HostUnreachableError(errorMessage(error), { cause: error });
 	}
 }
 
-/** `connect` to the host of `project`, with the errors of each step. */
-async function connectTo(project: string, options: ConnectOptions): Promise<Client | undefined> {
-	const paths = statePaths(project);
+/** `connect` to the host `host`, with the errors of each step. */
+async function connectTo(host: string, options: ConnectOptions): Promise<Client | undefined> {
+	const paths = statePaths(host);
 	let socket = await tryConnect(paths.socket);
 
 	if (socket === undefined) {
 		if (!options.start) return undefined;
-		socket = await startAndConnect(project, paths, options.signal);
+		socket = await startAndConnect(host, paths, options.signal);
 	}
 
 	const client = new Client(socket);
@@ -238,7 +238,7 @@ async function connectTo(project: string, options: ConnectOptions): Promise<Clie
 		}
 
 		client.pid = hello.pid;
-		client.project = project;
+		client.host = host;
 
 		return client;
 	} catch (error) {
@@ -250,8 +250,8 @@ async function connectTo(project: string, options: ConnectOptions): Promise<Clie
 type ConnectOptions = {
 	readonly start: boolean;
 	readonly signal?: AbortSignal | undefined;
-	/** `main` or a project name. Without it, the project comes from `HARNESS_PROJECT` and the cwd. */
-	readonly project?: string | undefined;
+	/** `main` or a host name. Without it, the host comes from `HARNESS_HOST` and the cwd. */
+	readonly host?: string | undefined;
 };
 
 type OneShot<T extends Request["type"]> = Extract<Request, { type: T }>;
@@ -326,17 +326,17 @@ function tryConnect(path: string): Promise<Socket | undefined> {
 }
 
 /**
- * Starts a host of `project`, detached, with its output in `host.log`, and connects to it, for 10 s, or until `signal`
+ * Starts the host `name`, detached, with its output in `host.log`, and connects to it, for 10 s, or until `signal`
  * aborts. A started host that exits with code 0 found the lock held, such as by a host that closes on idle and has not
  * released its lock yet, so it starts a host again, at most once per second. Another exit fails at once.
  */
 async function startAndConnect(
-	project: string,
+	name: string,
 	paths: ReturnType<typeof statePaths>,
 	signal: AbortSignal | undefined,
 ): Promise<Socket> {
 	const deadline = Date.now() + START_TIMEOUT_MS;
-	const hostArgs = ["--project", project, "host"];
+	const hostArgs = ["--host", name, "host"];
 	let host = startDetached(hostArgs, paths.dir, paths.log);
 
 	for (;;) {

@@ -101,7 +101,7 @@ describe("watch", { timeout: 30_000 }, () => {
 		await expectListEvents({ kind: "child", handle }, { kind: "child", handle: other });
 	});
 
-	it("gives the list of todos of the project agent, and an event for each change of it", async () => {
+	it("gives the list of todos of the host agent, and an event for each change of it", async () => {
 		const other = handleOf(await cli(["spawn", "--name", "apart", "--prompt", "Keep a list apart"]));
 
 		await expectListEvents({ kind: "agent" }, { kind: "child", handle: other });

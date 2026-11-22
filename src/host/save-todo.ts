@@ -14,7 +14,7 @@ import { isFinished } from "./todo.ts";
 
 /**
  * Adds the todo `Save to the vault: <first line of the title>` for each answered ask of `asks` to the list of its asker
- * in `tx`, where `root` is the project agent. It reads the vault once for all of `asks`, and adds nothing when the host
+ * in `tx`, where `root` is the host agent. It reads the vault once for all of `asks`, and adds nothing when the host
  * has no vault. With a vault, it adds nothing for an ask that has a note, an asker with no list, or an ask that already
  * has its todo, in any state. It gives the todos that it added.
  */
@@ -66,7 +66,7 @@ function hasVault(): boolean {
 }
 
 /**
- * The list of `asker` in `tx`: the list of the project agent `root` or of a conversation that the children library
+ * The list of `asker` in `tx`: the list of the host agent `root` or of a conversation that the children library
  * opened, or the list of a Pi session of the host. Nothing for another asker, such as a session of a workflows run.
  */
 async function askerList(tx: Tx, root: ConversationId, asker: string): Promise<TodoOwner | undefined> {

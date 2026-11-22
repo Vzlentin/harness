@@ -1,5 +1,5 @@
 /**
- * The lock of the host of a project, which a program that writes the store with no host takes too, so that it never
+ * The lock of a host, which a program that writes the store with no host takes too, so that it never
  * writes while a host runs.
  */
 import { join } from "node:path";

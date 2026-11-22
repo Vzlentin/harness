@@ -43,7 +43,7 @@ import { type Host, runHost } from "../src/host/run.ts";
 import { AskWrite } from "../src/protocol/asks.ts";
 import { DegradedState } from "../src/protocol/degraded.ts";
 import { setEntry } from "../src/protocol/entries.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import type { ChildInfo, Delivery, Replies, Request, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
@@ -198,7 +198,7 @@ async function respond(
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const prompt = lastUser === undefined ? "" : textOf(lastUser);
 	const child = toolSpawns.get(prompt);
-	// Only the tool results of this turn count: the project agent keeps the turns before.
+	// Only the tool results of this turn count: the host agent keeps the turns before.
 	const turn = lastUser === undefined ? messages : messages.slice(messages.indexOf(lastUser) + 1);
 
 	if (child !== undefined && last?.role === "toolResult" && turn.filter((m) => m.role === "toolResult").length === 1) {
@@ -339,7 +339,7 @@ async function respond(
 	}
 
 	if (prompt === "Task:\nEnvironment") {
-		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL $HARNESS_PROJECT"';
+		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL $HARNESS_HOST"';
 
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
 	}
@@ -417,44 +417,41 @@ export function handleOf(result: Result): string {
 }
 
 /**
- * Runs the host of `project` in this process. It throws when another host has the lock, such as one that a CLI started
+ * Runs the host `name` in this process. It throws when another host has the lock, such as one that a CLI started
  * while the test host was down, because the tests would then run against a host without the faux provider.
  */
-export async function startHost(
-	project = MAIN_PROJECT,
-	options: { readonly sessionEndMs?: number } = {},
-): Promise<Host> {
-	const host = await runHost({ project, cwd: projectDir(project), models, ...options });
+export async function startHost(name = MAIN_HOST, options: { readonly sessionEndMs?: number } = {}): Promise<Host> {
+	const host = await runHost({ host: name, cwd: hostDir(name), models, ...options });
 
-	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+	if (host === undefined) throw new Error(`another host has the lock of ${name}`);
 
 	return host;
 }
 
-/** Adds the project `name` with a new directory, and gives the directory. */
-export async function createProject(name: string): Promise<string> {
+/** Adds the host `name` with a new directory, and gives the directory. */
+export async function createHost(name: string): Promise<string> {
 	const dir = await mkdtemp(join(root, `${name}-`));
 	expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
 
 	return dir;
 }
 
-/** Adds the project `name` with a new directory, and runs its host in this process. */
-export async function projectHost(name: string): Promise<Host> {
-	await createProject(name);
+/** Adds the host `name` with a new directory, and runs its host in this process. */
+export async function newHost(name: string): Promise<Host> {
+	await createHost(name);
 
 	return startHost(name);
 }
 
 /**
- * Connects to the host process of `project` and starts it when no host listens, as a command does. When the started host
+ * Connects to the host process of `host` and starts it when no host listens, as a command does. When the started host
  * is still starting after the 10 s of `connect`, as on a loaded machine, it waits up to 10 s more until the host listens.
  */
-export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> {
+export async function startHostProcess(host = MAIN_HOST): Promise<Client> {
 	let client: Client | undefined;
 
 	try {
-		client = await connect({ start: true, project });
+		client = await connect({ start: true, host });
 	} catch (error) {
 		if (!(error instanceof Error && error.message.includes(" is still starting: "))) throw error;
 	}
@@ -463,9 +460,9 @@ export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> 
 		client ??
 		vi.waitFor(
 			async () => {
-				const started = await connect({ start: false, project });
+				const started = await connect({ start: false, host });
 
-				if (started === undefined) throw new Error(`The host of ${project} does not listen yet`);
+				if (started === undefined) throw new Error(`The host of ${host} does not listen yet`);
 
 				return started;
 			},
@@ -477,9 +474,9 @@ export async function startHostProcess(project = MAIN_PROJECT): Promise<Client> 
 /** The reply of `fixture.degraded`, the request of the `degraded` entry that `setUp` sets. */
 const DegradedReply = Type.Object({ degraded: Type.Array(DegradedState) });
 
-/** The degraded states of the host of `project`, which must run, as the `degraded` entry of `setUp` gives them. */
-export async function degradedStates(project = MAIN_PROJECT): Promise<DegradedState[]> {
-	const reply = await requestEntry({ type: "fixture.degraded" }, { start: false, project });
+/** The degraded states of the host `host`, which must run, as the `degraded` entry of `setUp` gives them. */
+export async function degradedStates(host = MAIN_HOST): Promise<DegradedState[]> {
+	const reply = await requestEntry({ type: "fixture.degraded" }, { start: false, host });
 
 	if (reply === undefined) throw new Error("no host");
 
@@ -549,7 +546,7 @@ export function listsOf(lines: readonly WatchLine[]): unknown[] {
 	});
 }
 
-/** Sends `message` to the project agent and gives the verb. */
+/** Sends `message` to the host agent and gives the verb. */
 export async function inputAgent(client: Client, message: string): Promise<string> {
 	const reply = await client.request({
 		type: "input",
@@ -568,7 +565,7 @@ export async function untilIdleAfterBusy(events: readonly WatchLine[]): Promise<
 	await until(() => busy() !== -1 && events.slice(busy() + 1).some((line) => line.child.state === "idle"));
 }
 
-/** Sends `message` to the project agent, and waits until its turn ends. */
+/** Sends `message` to the host agent, and waits until its turn ends. */
 export async function agentTurn(message: string): Promise<void> {
 	const { client, lines } = await openWatch({ kind: "agent" });
 
@@ -582,12 +579,12 @@ export async function agentTurn(message: string): Promise<void> {
 
 /**
  * The options of a spawn through the socket: whether its answers are pushed, its request ID
- * (`<caller>:<prompt>` by default), the project of its host, what the child serves, and its labels.
+ * (`<caller>:<prompt>` by default), its host, what the child serves, and its labels.
  */
 type SpawnOptions = {
 	readonly notify: boolean;
 	readonly requestId?: string;
-	readonly project?: string;
+	readonly host?: string;
 	readonly serves?: SpawnServes;
 	readonly labels?: readonly string[];
 };
@@ -612,7 +609,7 @@ export async function spawnAs(caller: string, prompt: string, options: SpawnOpti
 
 	const spawned = await request(spawn, {
 		start: false,
-		project: options.project,
+		host: options.host,
 	});
 
 	if (spawned === undefined) throw new Error("no host");
@@ -620,9 +617,9 @@ export async function spawnAs(caller: string, prompt: string, options: SpawnOpti
 	return spawned;
 }
 
-/** The answer that a `wait` for `handle` gives, in the host of `project`. */
-export async function answerOf(handle: string, project?: string): Promise<string> {
-	const reply = await request({ type: "wait", handle, timeout: 10 }, { start: false, project });
+/** The answer that a `wait` for `handle` gives, in the host `host`. */
+export async function answerOf(handle: string, host?: string): Promise<string> {
+	const reply = await request({ type: "wait", handle, timeout: 10 }, { start: false, host });
 
 	if (reply === undefined) throw new Error("no host");
 
@@ -645,12 +642,12 @@ export async function spawnWithId(
 	return { handle: child.handle, id };
 }
 
-/** Sends `line` to the host of `project`, the main project by default, through the socket. */
+/** Sends `line` to the host `host`, the main host by default, through the socket. */
 export async function send<T extends Request["type"]>(
 	line: Extract<Request, { type: T }>,
-	project?: string,
+	host?: string,
 ): Promise<Replies[T]> {
-	const reply = await request(line, { start: false, project });
+	const reply = await request(line, { start: false, host });
 
 	if (reply === undefined) throw new Error("no host");
 
@@ -775,7 +772,7 @@ export async function setUp(): Promise<void> {
 		"PI_REASONING_LEVEL",
 		"PI_SESSION_FILE",
 		"HC_TERMINAL_ID",
-		"HARNESS_PROJECT",
+		"HARNESS_HOST",
 		"MEMORY_DIR",
 		"VAULT",
 		// Node warns on stderr when both are set, and the tests compare stderr.
@@ -820,13 +817,13 @@ export async function tearDown(): Promise<void> {
 	await rm(root, { recursive: true, force: true });
 }
 
-/** A `pi` on `PATH` that logs its arguments and `HARNESS_PROJECT` to `log`, one line for each call, and exits with 3. */
+/** A `pi` on `PATH` that logs its arguments and `HARNESS_HOST` to `log`, one line for each call, and exits with 3. */
 export async function fakePi(): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
 	const bin = await mkdtemp(join(root, "bin-"));
 	const log = join(bin, "pi.log");
 
 	const script = `#!/bin/sh
-echo "$* HARNESS_PROJECT=$HARNESS_PROJECT" >> "${log}"
+echo "$* HARNESS_HOST=$HARNESS_HOST" >> "${log}"
 exit 3
 `;
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
-import { MAIN_PROJECT } from "../src/protocol/projects.ts";
+import { MAIN_HOST } from "../src/protocol/hosts.ts";
 import {
 	aborted,
 	called,
@@ -27,7 +27,7 @@ let host: Host | undefined;
 
 beforeAll(async () => {
 	await setUp();
-	host = await startHost(MAIN_PROJECT, { sessionEndMs: END_MS });
+	host = await startHost(MAIN_HOST, { sessionEndMs: END_MS });
 });
 
 afterAll(async () => {
@@ -130,7 +130,7 @@ describe("session end", { timeout: 30_000 }, () => {
 		await until(() => called("Task:\nRestart end") === 1);
 		await host?.close();
 		answers.listener.close();
-		host = await startHost(MAIN_PROJECT, { sessionEndMs: END_MS });
+		host = await startHost(MAIN_HOST, { sessionEndMs: END_MS });
 		await untilState(handle, "ended");
 	});
 
@@ -143,7 +143,7 @@ describe("session end", { timeout: 30_000 }, () => {
 			const { handle } = await spawnAs(caller, "Task:\nRestart keep", { notify: true });
 			await until(() => called("Task:\nRestart keep") === 1);
 			await host?.close();
-			host = await startHost(MAIN_PROJECT, { sessionEndMs: END_MS });
+			host = await startHost(MAIN_HOST, { sessionEndMs: END_MS });
 			await sleep(END_MS * 2);
 			expect(await stateOf(handle)).toBe("busy");
 			gates.get("Task:\nRestart keep")?.resolve();

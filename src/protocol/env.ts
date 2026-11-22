@@ -23,10 +23,10 @@ export const PI_MODEL = "PI_MODEL";
 /** The thinking level of the conversation: the default thinking level of a spawn. */
 export const PI_REASONING_LEVEL = "PI_REASONING_LEVEL";
 
-/** The project of a command, before the project of the current directory. */
-export const HARNESS_PROJECT = "HARNESS_PROJECT";
+/** The host of a command, before the host of the current directory. */
+export const HARNESS_HOST = "HARNESS_HOST";
 
-/** The memory folder of the project, for the `memo` tool. */
+/** The memory folder of the host, for the `memo` tool. */
 export const MEMORY_DIR = "MEMORY_DIR";
 
 /** The port of `harness inspect` and `harness page` without `--port`, before 7501. */

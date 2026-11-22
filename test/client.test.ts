@@ -83,7 +83,7 @@ describe("client", () => {
 			});
 			await new Promise<void>((resolve) => server?.listen(socket, resolve));
 
-			const connecting = connect({ start: false, project: "main" });
+			const connecting = connect({ start: false, host: "main" });
 			await expect(connecting).rejects.toThrow(versionMismatch(PROTOCOL_VERSION, PROTOCOL_VERSION + 1, 7));
 			await expect(connecting).rejects.toBeInstanceOf(HostUnreachableError);
 			expect(hellos).toEqual([{ type: "hello", version: PROTOCOL_VERSION }]);

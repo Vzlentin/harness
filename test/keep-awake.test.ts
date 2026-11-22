@@ -8,7 +8,7 @@ import {
 	RELEASE_DELAY_MS,
 } from "../src/host/keep-awake.ts";
 import { runHost } from "../src/host/run.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import { called, cli, degradedStates, gates, models, setUp, tearDown, until } from "./helpers.ts";
 
 /** A child that the fake system started: its arguments, its kills, and the listeners that a test can call. */
@@ -192,7 +192,7 @@ describe("the hold of a host", { timeout: 30_000 }, () => {
 
 	it("holds the Mac awake while a child's model request runs, and releases the hold when the host closes", async () => {
 		const { fake, system, tickAt } = fakeSystem();
-		const host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models, keepAwake: system });
+		const host = await runHost({ host: MAIN_HOST, cwd: hostDir(MAIN_HOST), models, keepAwake: system });
 		const gate = Promise.withResolvers<void>();
 		gates.set("Task:\nKeep awake", gate);
 
@@ -217,7 +217,7 @@ describe("the hold of a host", { timeout: 30_000 }, () => {
 	it("gives the failed hold in the degraded states of the host, where it stays, with its warning", async () => {
 		const { fake, system, tickAt } = fakeSystem();
 		const stderr = vi.spyOn(process.stderr, "write");
-		const host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models, keepAwake: system });
+		const host = await runHost({ host: MAIN_HOST, cwd: hostDir(MAIN_HOST), models, keepAwake: system });
 		const gate = Promise.withResolvers<void>();
 		gates.set("Task:\nAwake fails", gate);
 		const line = "caffeinate cannot start: spawn caffeinate ENOENT";

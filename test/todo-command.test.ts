@@ -29,32 +29,32 @@ afterAll(async () => {
 });
 
 describe("harness todo", { timeout: 30_000 }, () => {
-	it("adds, sets and lists the todos of the project agent", async () => {
-		const project = ["--handle", "agent"];
-		expect(await todo(["add", "Move", "the", "config", ...project])).toBe("○ 1 Move the config\n");
-		expect(await todo(["add", "Archive librlm", ...project])).toBe("○ 2 Archive librlm\n");
-		expect(await todo([...project, "add", "Drop the old flag"])).toBe("○ 3 Drop the old flag\n");
-		expect(await todo(["add", "Write the spec", ...project])).toBe("○ 4 Write the spec\n");
-		expect(await todo(["set", "1", "doing", ...project])).toBe("◉ 1 Move the config\n");
-		expect(await todo(["set", "2", "done", "--text", "Archive librlm and pi-rlm", ...project])).toBe(
+	it("adds, sets and lists the todos of the host agent", async () => {
+		const host = ["--handle", "agent"];
+		expect(await todo(["add", "Move", "the", "config", ...host])).toBe("○ 1 Move the config\n");
+		expect(await todo(["add", "Archive librlm", ...host])).toBe("○ 2 Archive librlm\n");
+		expect(await todo([...host, "add", "Drop the old flag"])).toBe("○ 3 Drop the old flag\n");
+		expect(await todo(["add", "Write the spec", ...host])).toBe("○ 4 Write the spec\n");
+		expect(await todo(["set", "1", "doing", ...host])).toBe("◉ 1 Move the config\n");
+		expect(await todo(["set", "2", "done", "--text", "Archive librlm and pi-rlm", ...host])).toBe(
 			"✓ 2 Archive librlm and pi-rlm\n",
 		);
-		expect(await todo(["set", "3", "dropped", ...project])).toBe("✗ 3 Drop the old flag\n");
+		expect(await todo(["set", "3", "dropped", ...host])).toBe("✗ 3 Drop the old flag\n");
 
 		const lines = "◉ 1 Move the config\n✓ 2 Archive librlm and pi-rlm\n✗ 3 Drop the old flag\n○ 4 Write the spec\n";
-		expect(await todo(["list", ...project])).toBe(lines);
-		expect(await todo(project)).toBe(lines);
+		expect(await todo(["list", ...host])).toBe(lines);
+		expect(await todo(host)).toBe(lines);
 	});
 
-	it("keeps the list of each caller apart from the list of the project agent", async () => {
+	it("keeps the list of each caller apart from the list of the host agent", async () => {
 		const session = { PI_SESSION_ID: "session-1" };
-		const projectList = await todo(["list", "--handle", "agent"]);
+		const hostList = await todo(["list", "--handle", "agent"]);
 		expect(await todo(["list"])).toBe("No todos\n");
 		expect(await todo(["add", "Mine"])).toBe("○ 1 Mine\n");
 		expect(await todo(["add", "Theirs"], session)).toBe("○ 1 Theirs\n");
 		expect(await todo(["list"])).toBe("○ 1 Mine\n");
 		expect(await todo([], session)).toBe("○ 1 Theirs\n");
-		expect(await todo(["list", "--handle", "agent"], session)).toBe(projectList);
+		expect(await todo(["list", "--handle", "agent"], session)).toBe(hostList);
 	});
 
 	it("reaches the list of a child with --handle", async () => {
@@ -82,7 +82,7 @@ describe("harness todo", { timeout: 30_000 }, () => {
 			[["add", " "], "The text of a todo is empty\n"],
 			[["set", "1", "done", "--text", " "], "The text of a todo is empty\n"],
 			[["list", "--verbose"], "Unknown todo argument: --verbose\n"],
-			[["add", "x", "--project-list"], "Unknown todo argument: --project-list\n"],
+			[["add", "x", "--hosts-list"], "Unknown todo argument: --hosts-list\n"],
 			[["list", "--handle"], "--handle requires a value\n"],
 			[["add", "x", "--handle", "abcdef"], "Unknown subagent: abcdef\n"],
 			[["add", "x", "--conversation", "999999"], "Unknown conversation: 999999\n"],

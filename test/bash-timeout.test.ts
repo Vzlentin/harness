@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { type Host, runHost } from "../src/host/run.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
+import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import { cellResults, cli, handleOf, models, requests, scripts, setUp, tearDown } from "./helpers.ts";
 
 const DEFAULT_LINE = "Command stopped after 1 seconds: it set no timeout. Set a timeout to run longer.";
@@ -9,7 +9,7 @@ let host: Host | undefined;
 
 beforeAll(async () => {
 	await setUp();
-	host = await runHost({ project: MAIN_PROJECT, cwd: projectDir(MAIN_PROJECT), models, bashTimeoutSeconds: 1 });
+	host = await runHost({ host: MAIN_HOST, cwd: hostDir(MAIN_HOST), models, bashTimeoutSeconds: 1 });
 });
 
 afterAll(async () => {

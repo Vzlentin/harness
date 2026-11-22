@@ -18,20 +18,20 @@ type ListRef = { readonly caller: string } & ListTarget;
 
 let host: Host | undefined;
 
-/** Sends `line` to the host of `project` through the socket. */
+/** Sends `line` to the host `host` through the socket. */
 async function send<T extends Request["type"]>(
 	line: Extract<Request, { type: T }>,
-	project?: string,
+	host?: string,
 ): Promise<Replies[T]> {
-	const reply = await request(line, { start: false, project });
+	const reply = await request(line, { start: false, host });
 
 	if (reply === undefined) throw new Error("no host");
 
 	return reply;
 }
 
-function add(ref: ListRef, text: string, project?: string): Promise<Replies["todo"]> {
-	return send({ type: "todo", action: "add", ...ref, text }, project);
+function add(ref: ListRef, text: string, host?: string): Promise<Replies["todo"]> {
+	return send({ type: "todo", action: "add", ...ref, text }, host);
 }
 
 function set(
@@ -41,8 +41,8 @@ function set(
 	return send({ type: "todo", action: "set", ...ref, ...change });
 }
 
-function list(ref: ListRef, project?: string): Promise<Replies["todo"]> {
-	return send({ type: "todo", action: "list", ...ref }, project);
+function list(ref: ListRef, host?: string): Promise<Replies["todo"]> {
+	return send({ type: "todo", action: "list", ...ref }, host);
 }
 
 /** Starts a `fixture.ask` task, waits for its outcome, and gives the conversation IDs of its child and its root. */
@@ -67,7 +67,7 @@ afterAll(async () => {
 });
 
 describe("todo lists", { timeout: 30_000 }, () => {
-	it("keeps one list for the project agent, a child, a library conversation and a caller", async () => {
+	it("keeps one list for the host agent, a child, a library conversation and a caller", async () => {
 		const child = await spawnAs("session-1", "Todo child", { notify: false });
 		const ids = await askTask("lists");
 
@@ -114,7 +114,7 @@ describe("todo lists", { timeout: 30_000 }, () => {
 		expect(await list({ caller: ids.child })).toEqual(await list(byConversation));
 
 		const agent = { caller: "session-1", handle: AGENT_HANDLE };
-		const added = await add({ caller: "1" }, "Added by the project agent");
+		const added = await add({ caller: "1" }, "Added by the host agent");
 		expect(await list(agent)).toMatchObject({ todos: expect.arrayContaining([added]) });
 		expect(await list({ caller: "1" })).toEqual(await list(agent));
 	});
@@ -183,9 +183,9 @@ describe("todo lists", { timeout: 30_000 }, () => {
 		expect(await list({ caller: "session-5" })).toEqual({ todos: [] });
 	});
 
-	it("keeps the list of the project agent when the agent gets no model", async () => {
+	it("keeps the list of the host agent when the agent gets no model", async () => {
 		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
-		const bare = await runHost({ project: "bare", cwd: root, models: createModels() });
+		const bare = await runHost({ host: "bare", cwd: root, models: createModels() });
 
 		if (bare === undefined) throw new Error("no host");
 
@@ -202,7 +202,7 @@ describe("todo lists", { timeout: 30_000 }, () => {
 		const dir = await mkdtemp(join(root, "idle-"));
 		expect((await cli(["create", "idle", "--cwd", dir])).code).toBe(0);
 		// The host exits once it had no connection and no activity for 300 ms.
-		const idle = await runHost({ project: "idle", cwd: dir, models, idleExitMs: 300 });
+		const idle = await runHost({ host: "idle", cwd: dir, models, idleExitMs: 300 });
 
 		if (idle === undefined) throw new Error("no host");
 		let closed = false;

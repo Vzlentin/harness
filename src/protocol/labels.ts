@@ -44,7 +44,7 @@ export function runDisplayName(metadata: { readonly handle: string; readonly nam
 }
 
 /**
- * The title of a child in a client: `<name> (<handle>)`, or only the name for the project agent, which says what it is,
+ * The title of a child in a client: `<name> (<handle>)`, or only the name for the host agent, which says what it is,
  * and for a conversation, whose name is its key.
  */
 export function childTitle(child: Labeled): string {

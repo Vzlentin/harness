@@ -1,6 +1,6 @@
 /**
- * The routes of the conversation inspect UI: the JSON and Server-Sent Events routes under `/api/inspect/`, on the hosts
- * of the projects, with those that read the asks of a parley and write the answers of the user, the browser files under
+ * The routes of the conversation inspect UI: the JSON and Server-Sent Events routes under `/api/inspect/`, on the harness
+ * hosts, with those that read the asks of a parley and write the answers of the user, the browser files under
  * `/assets/`, and the pages of `harness page` under `/pages/`. `harness inspect` serves them alone, and another server,
  * such as `workflows web`, can mount them on its own port.
  */
@@ -26,8 +26,8 @@ import {
 } from "../client/view-state.ts";
 import { PageAnswer, Slug } from "../protocol/asks.ts";
 import { cliCaller } from "../protocol/env.ts";
+import { checkHost, MAIN_HOST, readHosts } from "../protocol/hosts.ts";
 import { childTitle } from "../protocol/labels.ts";
-import { checkProject, MAIN_PROJECT, readProjects } from "../protocol/projects.ts";
 import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
 import { AGENT_HANDLE, parseTarget, targetRef } from "../protocol/target.ts";
 import { addSend, PAGES, readPage } from "./pages.ts";
@@ -48,7 +48,7 @@ const ASSETS: ReadonlyMap<string, { readonly file: string; readonly type: string
 const MAX_BODY_BYTES = 1024 * 1024;
 
 export type InspectOptions = {
-	/** Whether a stream, an input and an abort start the host of the project when none runs. Default true. */
+	/** Whether a stream, an input and an abort start the host when none runs. Default true. */
 	readonly start?: boolean | undefined;
 };
 
@@ -79,18 +79,18 @@ export type InspectFrame = {
 export type InspectTarget = ChildInfo & { readonly title: string };
 
 /**
- * The reply of `/api/inspect/targets`: whether the host of the project runs, and the project agent and the children of
+ * The reply of `/api/inspect/targets`: whether the host runs, and the host agent and the children of
  * the caller of this process in it.
  */
 export type InspectTargets = {
-	readonly project: string;
+	readonly host: string;
 	readonly running: boolean;
 	readonly targets: readonly InspectTarget[];
 };
 
-/** The project and the target of a stream, an input and an abort. Without `handle` and `conversation`, the project agent. */
+/** The host and the target of a stream, an input and an abort. Without `handle` and `conversation`, the host agent. */
 const TargetFields = {
-	project: Type.String({ minLength: 1 }),
+	host: Type.String({ minLength: 1 }),
 	handle: Type.Optional(Type.String({ minLength: 1 })),
 	conversation: Type.Optional(Type.String({ minLength: 1 })),
 };
@@ -99,15 +99,15 @@ const TargetQuery = Type.Object(TargetFields);
 
 const InputBody = Type.Object({ ...TargetFields, message: Type.String(), followUp: Type.Optional(Type.Boolean()) });
 
-/** The project and the parley of `/api/inspect/asks`. */
-const AsksQuery = Type.Object({ project: TargetFields.project, parley: Slug });
+/** The host and the parley of `/api/inspect/asks`. */
+const AsksQuery = Type.Object({ host: TargetFields.host, parley: Slug });
 
 /**
  * The body of `/api/inspect/answers`: the answers of the user to asks of the parley `parley`. Each answer names its ask
  * by `n`, its number in the parley, and has the other fields of an answer.
  */
 const AnswersBody = Type.Object({
-	project: TargetFields.project,
+	host: TargetFields.host,
 	parley: Slug,
 	answers: Type.Array(PageAnswer, { minItems: 1 }),
 });
@@ -118,7 +118,7 @@ const PAGE_CALLER = "page";
 /** An error that the request causes, such as a refusal of the host. Its reply is 400. */
 class BadRequest extends Error {}
 
-/** The error when no host of the project runs and the request does not start one. */
+/** The error when the host does not run and the request does not start one. */
 class HostNotRunning extends Error {}
 
 /**
@@ -176,10 +176,10 @@ async function sendAsset(res: ServerResponse, file: string, type: string): Promi
 
 async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, start: boolean): Promise<void> {
 	switch (`${req.method} ${url.pathname}`) {
-		case "GET /api/inspect/projects":
-			return answer(res, () => undefined, projectList);
+		case "GET /api/inspect/hosts":
+			return answer(res, () => undefined, hostList);
 		case "GET /api/inspect/targets":
-			return answer(res, () => checkProject(queryOf(url).project), targetsOf);
+			return answer(res, () => checkHost(queryOf(url).host), targetsOf);
 		case "GET /api/inspect/stream":
 			return stream(res, url, start);
 		case "POST /api/inspect/input":
@@ -198,20 +198,20 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 			return answer(
 				res,
 				() => asksOf(url),
-				({ project, parley }) =>
+				({ host, parley }) =>
 					refusedAsBad(
-						hostReply(requestEntry({ type: "parley", action: "read", slug: parley }, { start, project }), project),
+						hostReply(requestEntry({ type: "parley", action: "read", slug: parley }, { start, host }), host),
 					),
 			);
 		case "POST /api/inspect/answers":
 			return answer(
 				res,
 				() => answersOf(req),
-				({ project, answers }) =>
+				({ host, answers }) =>
 					refusedAsBad(
 						hostReply(
-							request({ type: "ask", action: "answer", caller: PAGE_CALLER, answers, user: true }, { start, project }),
-							project,
+							request({ type: "ask", action: "answer", caller: PAGE_CALLER, answers, user: true }, { start, host }),
+							host,
 						),
 					),
 			);
@@ -246,7 +246,7 @@ async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): P
 	const target = queryTarget(res, url);
 
 	if (target === undefined) return;
-	const fields = { project: target.project, ...targetRef(target.target) };
+	const fields = { host: target.host, ...targetRef(target.target) };
 	res.writeHead(200, headers).end(addSend(file.data.toString("utf8"), fields, file.slug));
 }
 
@@ -309,7 +309,7 @@ function invalid(what: string, [error]: readonly TLocalizedValidationError[]): E
 	return new Error(`Invalid ${what}: ${[error?.instancePath, error?.message].filter((part) => part).join(" ")}`);
 }
 
-/** The project and the target of the query of `url`. Other keys are ignored. */
+/** The host and the target of the query of `url`. Other keys are ignored. */
 function queryOf(url: URL): Static<typeof TargetQuery> {
 	const query = Object.fromEntries(url.searchParams);
 
@@ -360,35 +360,35 @@ function queryTarget(res: ServerResponse, url: URL): MirrorTarget | undefined {
 	}
 }
 
-/** The target of the fields of a query or a body. It throws for both `handle` and `conversation`, and for an unknown project. */
-function mirrorTarget({ project, handle, conversation }: Static<typeof TargetQuery>): MirrorTarget {
+/** The target of the fields of a query or a body. It throws for both `handle` and `conversation`, and for an unknown host. */
+function mirrorTarget({ host, handle, conversation }: Static<typeof TargetQuery>): MirrorTarget {
 	if (handle !== undefined && conversation !== undefined) throw new Error("Give handle or conversation, not both");
 	const ref = conversation === undefined ? { handle: handle ?? AGENT_HANDLE } : { conversation };
 
-	return { project: checkProject(project), target: parseTarget(ref) };
+	return { host: checkHost(host), target: parseTarget(ref) };
 }
 
-/** A project in the reply of `/api/inspect/projects`. `main` has no directory. */
-type InspectProject = { readonly name: string; readonly dir?: string };
+/** A host in the reply of `/api/inspect/hosts`. `main` has no directory. */
+type InspectHost = { readonly name: string; readonly dir?: string };
 
-/** The reply of `/api/inspect/projects`. */
-type ProjectList = { readonly projects: readonly InspectProject[] };
+/** The reply of `/api/inspect/hosts`. */
+type HostList = { readonly hosts: readonly InspectHost[] };
 
-/** The projects, in creation order, then `main`. */
-function projectList(): ProjectList {
-	const projects: InspectProject[] = Object.entries(readProjects()).map(([name, dir]) => ({ name, dir }));
+/** The hosts, in creation order, then `main`. */
+function hostList(): HostList {
+	const hosts: InspectHost[] = Object.entries(readHosts()).map(([name, dir]) => ({ name, dir }));
 
-	return { projects: [...projects, { name: MAIN_PROJECT }] };
+	return { hosts: [...hosts, { name: MAIN_HOST }] };
 }
 
 /**
- * The project agent and the children of the caller of this process in the host of `project`. They are none when the
+ * The host agent and the children of the caller of this process in the host `host`. They are none when the
  * host does not run: a list does not start it. The agent is left out when its watch fails, such as without a model.
  */
-async function targetsOf(project: string): Promise<InspectTargets> {
-	const client = await connect({ start: false, project });
+async function targetsOf(host: string): Promise<InspectTargets> {
+	const client = await connect({ start: false, host });
 
-	if (client === undefined) return { project, running: false, targets: [] };
+	if (client === undefined) return { host, running: false, targets: [] };
 
 	try {
 		// The reply of the watch gives the agent's info. Its events are dropped, because the client has no `watch()`.
@@ -402,62 +402,62 @@ async function targetsOf(project: string): Promise<InspectTargets> {
 
 		const found = agent === undefined ? children : [agent, ...children];
 
-		return { project, running: true, targets: found.map((child) => ({ ...child, title: childTitle(child) })) };
+		return { host, running: true, targets: found.map((child) => ({ ...child, title: childTitle(child) })) };
 	} finally {
 		client.close();
 	}
 }
 
-/** A request of a POST route, for the host of `project`. */
-type HostRequest = { readonly project: string; readonly request: Extract<Request, { type: "input" | "abort" }> };
+/** A request of a POST route, for the host `host`. */
+type HostRequest = { readonly host: string; readonly request: Extract<Request, { type: "input" | "abort" }> };
 
 async function inputOf(req: IncomingMessage): Promise<HostRequest> {
 	const { message, followUp, ...fields } = await bodyOf(req, InputBody);
 
 	if (message.trim() === "") throw new Error("The message is empty");
-	const { project, target } = mirrorTarget(fields);
+	const { host, target } = mirrorTarget(fields);
 	const input = { type: "input", requestId: randomUUID(), message, followUp: Boolean(followUp) } as const;
 
-	return { project, request: { ...input, ...targetRef(target) } };
+	return { host, request: { ...input, ...targetRef(target) } };
 }
 
 async function abortOf(req: IncomingMessage): Promise<HostRequest> {
-	const { project, target } = mirrorTarget(await bodyOf(req, TargetQuery));
+	const { host, target } = mirrorTarget(await bodyOf(req, TargetQuery));
 
-	return { project, request: { type: "abort", ...targetRef(target) } };
+	return { host, request: { type: "abort", ...targetRef(target) } };
 }
 
 /** Sends `sent` to its host. It throws as `hostReply` does. */
 async function toHost(sent: HostRequest, start: boolean): Promise<{ ok: true }> {
-	await hostReply(request(sent.request, { start, project: sent.project }), sent.project);
+	await hostReply(request(sent.request, { start, host: sent.host }), sent.host);
 
 	return { ok: true };
 }
 
-/** The project and the parley of the query of `url`. Other keys are ignored. */
+/** The host and the parley of the query of `url`. Other keys are ignored. */
 function asksOf(url: URL): Static<typeof AsksQuery> {
 	const query = Object.fromEntries(url.searchParams);
 
 	if (!Value.Check(AsksQuery, query)) throw invalid("query", Value.Errors(AsksQuery, query));
 
-	return { project: checkProject(query.project), parley: query.parley };
+	return { host: checkHost(query.host), parley: query.parley };
 }
 
-/** The project of the body of `req`, and its answers, each with the slug of the parley of the body. */
+/** The host of the body of `req`, and its answers, each with the slug of the parley of the body. */
 async function answersOf(req: IncomingMessage) {
-	const { project, parley, answers } = await bodyOf(req, AnswersBody);
+	const { host, parley, answers } = await bodyOf(req, AnswersBody);
 
-	return { project: checkProject(project), answers: answers.map((each) => ({ ...each, slug: parley })) };
+	return { host: checkHost(host), answers: answers.map((each) => ({ ...each, slug: parley })) };
 }
 
 /**
- * The reply of a host, sent to the host of `project`. It throws the refusal of the host as an `Error`, a
+ * The reply of a host, sent to the host `host`. It throws the refusal of the host as an `Error`, a
  * `HostUnreachableError` when no host answers, and a `HostNotRunning` when no host runs and `start` was false.
  */
-async function hostReply<R>(reply: Promise<R | undefined>, project: string): Promise<R> {
+async function hostReply<R>(reply: Promise<R | undefined>, host: string): Promise<R> {
 	const replied = await reply;
 
-	if (replied === undefined) throw new HostNotRunning(`The harness host of ${project} is not running`);
+	if (replied === undefined) throw new HostNotRunning(`The harness host ${host} is not running`);
 
 	return replied;
 }

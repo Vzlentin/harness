@@ -1,5 +1,5 @@
 /**
- * The watch of the tree of a project: the nodes, then an event with the nodes that changed after the commits that can
+ * The watch of the tree of a host: the nodes, then an event with the nodes that changed after the commits that can
  * change a node, and one with the nodes that went.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -24,7 +24,7 @@ import { runState, type TreeHost, treeNodes } from "./tree.ts";
 import { WorkerRefs } from "./worker-refs.ts";
 
 /**
- * The kinds of the documents whose changes can change a node: the lists of todos, the last request of the project
+ * The kinds of the documents whose changes can change a node: the lists of todos, the last request of the host
  * agent, the records of the children by handle, with their labels, the started tasks, the result references of the
  * workers, and the documents of the conversations of the children library.
  */
@@ -55,7 +55,7 @@ export async function serveTreeWatch(
 	return { nodes };
 }
 
-/** The tree of a project, and the commits that can change a node. */
+/** The tree of a host, and the commits that can change a node. */
 class TreeView implements StoreView<TreeNode[], TreeEvent> {
 	readonly #host: TreeHost;
 	/** The kinds of the tasks of the entries. */

@@ -362,7 +362,7 @@ function checkHandle(handle: string): string {
 export type DurableScope = {
 	/**
 	 * The caller of the calling conversation: it owns the children, its list of todos is the default list, and the store
-	 * of the project keeps it as the writer of each object that a call writes.
+	 * of the host keeps it as the writer of each object that a call writes.
 	 */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;
 	/** Sends a request of a core type with its typed reply, or a request of a type that an entry serves. */

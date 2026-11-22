@@ -8,8 +8,8 @@ import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
 import { inboxOf } from "../src/client/view-state.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
+import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import { childTitle } from "../src/protocol/labels.ts";
-import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import {
@@ -88,8 +88,8 @@ afterAll(async () => {
 });
 
 describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
-	// First in the file, so nothing has set up the project agent before this start.
-	it("sets up the project agent before a start, so a child without a model takes the agent's", async () => {
+	// First in the file, so nothing has set up the host agent before this start.
+	it("sets up the host agent before a start, so a child without a model takes the agent's", async () => {
 		const reply = await request(
 			{
 				type: "start",
@@ -242,7 +242,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		expect(await request(note, { start: false })).toMatchObject({ child: { conversation: ids.child, state: "ended" } });
 	});
 
-	it("aborts a busy task's child by stop, and the project agent, which both stay, and refuses other targets", async () => {
+	it("aborts a busy task's child by stop, and the host agent, which both stay, and refuses other targets", async () => {
 		gates.set("Fixture stopped", Promise.withResolvers());
 		const ids = await startWithIds("stopped", "Fixture stopped");
 		const stop = { type: "stop", caller: "cli" } as const;
@@ -309,7 +309,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		gates.set("Fixture mirrored", Promise.withResolvers());
 		const ids = await startWithIds("mirrored", "Fixture mirrored");
 		const { id } = await taskRequest("task", "mirrored");
-		const target: MirrorTarget = { project: MAIN_PROJECT, target: { kind: "conversation", id: ids.child } };
+		const target: MirrorTarget = { host: MAIN_HOST, target: { kind: "conversation", id: ids.child } };
 		const mirror = new Mirror(target, () => {}, { start: false });
 
 		try {
@@ -346,7 +346,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 
 		try {
 			expect(await cli(["attach", "--conversation", ids.child], pi.env)).toMatchObject({ code: 3, stderr: "" });
-			expect(logLines(pi.log)).toEqual([`--harness main --harness-conversation ${ids.child} HARNESS_PROJECT=`]);
+			expect(logLines(pi.log)).toEqual([`--harness main --harness-conversation ${ids.child} HARNESS_HOST=`]);
 
 			// With --side in an hc terminal, the conversation opens in a new pane to the right, and Pi does not start here.
 			const hc = await fakeHc();
@@ -356,7 +356,7 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 			expect(get).toBe("get --json t3");
 			expect(run).toMatch(new RegExp(`^run --bg --keep --no-parent --cwd ${root} --name \\S+ `));
 			expect(run).toContain(" --label herdr.space=s1 --label herdr.tab=b2 -- ");
-			expect(run).toMatch(new RegExp(` ${CLI} --project main attach --conversation ${ids.child}$`));
+			expect(run).toMatch(new RegExp(` ${CLI} --host main attach --conversation ${ids.child}$`));
 			expect(run).not.toContain("--side");
 			expect(logLines(pi.log)).toHaveLength(1);
 
@@ -376,11 +376,11 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 				expect(usage.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
 			}
 
-			// The usage comes before the project check.
-			const noProject = await cli(["attach"], { ...pi.env, HARNESS_PROJECT: "nosuch" });
-			expect(noProject.code).toBe(1);
-			expect(noProject.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
-			expect(noProject.stderr).not.toContain("Unknown harness project");
+			// The usage comes before the host check.
+			const noHost = await cli(["attach"], { ...pi.env, HARNESS_HOST: "nosuch" });
+			expect(noHost.code).toBe(1);
+			expect(noHost.stderr).toContain("harness attach (<handle> | --conversation <id>) [--side]");
+			expect(noHost.stderr).not.toContain("Unknown harness host");
 
 			expect(logLines(pi.log)).toHaveLength(1);
 		} finally {
@@ -407,8 +407,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		await host?.close();
 
 		const idle = await runHost({
-			project: MAIN_PROJECT,
-			cwd: projectDir(MAIN_PROJECT),
+			host: MAIN_HOST,
+			cwd: hostDir(MAIN_HOST),
 			models,
 			idleExitMs: 100,
 		});
@@ -442,8 +442,8 @@ describe("tasks of piDurable entries", { timeout: 30_000 }, () => {
 		await writeFile(entriesPath(), "{}");
 
 		const idle = await runHost({
-			project: MAIN_PROJECT,
-			cwd: projectDir(MAIN_PROJECT),
+			host: MAIN_HOST,
+			cwd: hostDir(MAIN_HOST),
 			models,
 			idleExitMs: 100,
 		});
@@ -508,25 +508,25 @@ export default function typedEntry({ durable }: { readonly durable: typeof Durab
 		}
 	});
 
-	it("starts a task when the project agent gets no model", async () => {
+	it("starts a task when the host agent gets no model", async () => {
 		expect((await cli(["create", "bare", "--cwd", root])).code).toBe(0);
 
 		const bare = await runHost({
-			project: "bare",
+			host: "bare",
 			cwd: root,
 			models: createModels(),
 		});
 
 		if (bare === undefined) throw new Error("no host");
-		const saved = process.env.HARNESS_PROJECT;
-		process.env.HARNESS_PROJECT = "bare";
+		const saved = process.env.HARNESS_HOST;
+		process.env.HARNESS_HOST = "bare";
 
 		try {
 			expect(await start("bare", "Fixture bare")).toMatchObject({ key: "bare", kind: KIND });
 			expect(await taskRequest("wait-task", "bare")).toMatchObject({ status: "terminal" });
 		} finally {
-			if (saved === undefined) delete process.env.HARNESS_PROJECT;
-			else process.env.HARNESS_PROJECT = saved;
+			if (saved === undefined) delete process.env.HARNESS_HOST;
+			else process.env.HARNESS_HOST = saved;
 			await bare.close();
 		}
 	});

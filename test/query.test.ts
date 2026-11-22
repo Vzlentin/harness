@@ -68,7 +68,7 @@ describe("query", { timeout: 30_000 }, () => {
 			"User: Mine\n\nAssistant: Answer to Mine",
 		);
 		expect((await cli(["query", "agent", "Why?"], { PI_SESSION_ID: "a" })).stderr).toBe(
-			"Only a terminal that is not an agent can query the project agent\n",
+			"Only a terminal that is not an agent can query the host agent\n",
 		);
 	});
 

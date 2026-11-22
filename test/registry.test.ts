@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { entriesPath, readEntries } from "../src/protocol/entries.ts";
-import { readProjects } from "../src/protocol/projects.ts";
+import { readHosts } from "../src/protocol/hosts.ts";
 import { root, setUp, tearDown } from "./helpers.ts";
 
 const WORKERS = 4;
@@ -59,7 +59,7 @@ describe("registry files", { timeout: 30_000 }, () => {
 		expect(Object.keys(readEntries()).filter((name) => name.startsWith("w"))).toHaveLength(WORKERS * WRITES);
 	});
 
-	it("keeps every project that processes add at the same time", async () => {
+	it("keeps every host that processes add at the same time", async () => {
 		const dirs = join(root, "dirs");
 
 		for (let worker = 0; worker < WORKERS; worker++) {
@@ -67,10 +67,10 @@ describe("registry files", { timeout: 30_000 }, () => {
 		}
 
 		await inWorkers(
-			`import { addProject } from ${source("projects")};
-			for (let i = 0; i < ${WRITES}; i++) addProject(\`w\${process.env.WORKER}-\${i}\`, ${JSON.stringify(dirs)} + \`/\${process.env.WORKER}-\${i}\`);`,
+			`import { addHost } from ${source("hosts")};
+			for (let i = 0; i < ${WRITES}; i++) addHost(\`w\${process.env.WORKER}-\${i}\`, ${JSON.stringify(dirs)} + \`/\${process.env.WORKER}-\${i}\`);`,
 		);
-		expect(Object.keys(readProjects())).toHaveLength(WORKERS * WRITES);
+		expect(Object.keys(readHosts())).toHaveLength(WORKERS * WRITES);
 	});
 	it("removes a lock with no process ID or of a process that does not run, while processes set entries", async () => {
 		for (const [round, holder] of ["", "999999999"].entries()) {

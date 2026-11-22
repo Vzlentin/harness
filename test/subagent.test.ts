@@ -26,9 +26,9 @@ import { Push } from "../src/host/push.ts";
 import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { library } from "../src/host/targets.ts";
+import { hostDir } from "../src/protocol/hosts.ts";
 import { onLines } from "../src/protocol/lines.ts";
 import { statePaths } from "../src/protocol/paths.ts";
-import { projectDir } from "../src/protocol/projects.ts";
 import {
 	type ChildInfo,
 	type EntryRequestLine,
@@ -397,13 +397,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["wait", handle])).stdout).toContain(" faux faux-2 high main\n");
 	});
 
-	it("keeps a configure of the project agent that comes during its first set-up", async () => {
+	it("keeps a configure of the host agent that comes during its first set-up", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "setup-")));
 		expect((await cli(["create", "setup", "--cwd", dir])).code).toBe(0);
 		const host = await startHost("setup");
 
 		try {
-			const options = { project: "setup", start: false } as const;
+			const options = { host: "setup", start: false } as const;
 			// The first configure sets up the agent with faux-1 and then gives it faux-2.
 			expect(
 				await request({ type: "configure", handle: AGENT_HANDLE, provider: "faux", model: "faux-2" }, options),
@@ -417,15 +417,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("gives the children of a project its .optmem folder as MEMORY_DIR", async () => {
+	it("gives the children of a host its .optmem folder as MEMORY_DIR", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "memory-")));
 		await mkdir(join(dir, ".optmem"));
 		expect((await cli(["create", "memory", "--cwd", dir])).code).toBe(0);
-		// The spawn runs in root, outside the project directory.
+		// The spawn runs in root, outside the host directory.
 		expect(await memoryOfChild("memory")).toBe(join(dir, ".optmem"));
 	});
 
-	it("gives no MEMORY_DIR to the children of a project without a .optmem folder", async () => {
+	it("gives no MEMORY_DIR to the children of a host without a .optmem folder", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "nomemory-")));
 		expect((await cli(["create", "nomemory", "--cwd", dir])).code).toBe(0);
 		expect(await memoryOfChild("nomemory")).toBe("unset");
@@ -1678,7 +1678,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("refuses a store from before the children library", async () => {
 		const stateDir = await childrenStore("old-state", 1);
-		await expect(runHost({ project: "old-state", cwd: stateDir, models })).rejects.toThrow(
+		await expect(runHost({ host: "old-state", cwd: stateDir, models })).rejects.toThrow(
 			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
 		);
 	});
@@ -1703,7 +1703,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				requests: { x: "v2kid" },
 			}));
 
-			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
+			const migrated = await runHost({ host: "main", cwd: hostDir("main"), models });
 
 			try {
 				const children = await request({ type: "list", caller }, { start: false });
@@ -1751,7 +1751,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				requests: {},
 			}));
 
-			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
+			const migrated = await runHost({ host: "main", cwd: hostDir("main"), models });
 
 			try {
 				const children = await request({ type: "list", caller }, { start: false });
@@ -1795,7 +1795,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				requests: {},
 			}));
 
-			const migrated = await runHost({ project: "main", cwd: projectDir("main"), models });
+			const migrated = await runHost({ host: "main", cwd: hostDir("main"), models });
 
 			try {
 				const children = await request({ type: "list", caller }, { start: false });
@@ -1816,12 +1816,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 
 	it("does not take a store from a newer pi-subagent for an old one", async () => {
 		const stateDir = await childrenStore("new-state", 8);
-		const refusal = runHost({ project: "new-state", cwd: stateDir, models });
+		const refusal = runHost({ host: "new-state", cwd: stateDir, models });
 		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 8 than 7");
 		await expect(refusal).rejects.not.toThrow("older pi-subagent");
 	});
 
-	it("runs the project agent, which keeps its history after a restart", async () => {
+	it("runs the host agent, which keeps its history after a restart", async () => {
 		const { client, child, lines } = await openWatch({ kind: "agent" });
 
 		try {
@@ -1847,12 +1847,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(textsOf(watched?.view)).toEqual(["Agent hello", "Answer to Agent hello"]);
 	});
 
-	it("gives the agent of a project its directory, instructions and tools", async () => {
+	it("gives the agent of a host its directory, instructions and tools", async () => {
 		const dir = realpathSync(await mkdtemp(join(root, "web-")));
 		await writeFile(join(dir, "AGENTS.md"), "Web rules.");
 		expect((await cli(["create", "web", "--cwd", dir])).code).toBe(0);
 		const web = await startHost("web");
-		process.env.HARNESS_PROJECT = "web";
+		process.env.HARNESS_HOST = "web";
 
 		try {
 			const client = await connect({ start: false });
@@ -1866,7 +1866,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 				client.close();
 			}
 		} finally {
-			delete process.env.HARNESS_PROJECT;
+			delete process.env.HARNESS_HOST;
 			await web?.close();
 		}
 
@@ -1902,8 +1902,8 @@ describe("subagent", { timeout: 30_000 }, () => {
 			process.env.XDG_STATE_HOME = join(root, "state-empty");
 
 			const empty = await runHost({
-				project: "main",
-				cwd: projectDir("main"),
+				host: "main",
+				cwd: hostDir("main"),
 				models: createModels(),
 			});
 
@@ -2009,12 +2009,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect((await cli(["create", name, "--cwd", dir])).code).toBe(0);
 
 			if (name === "trusted") new ProjectTrustStore(join(root, "agent")).set(dir, true);
-			const projectHost = await startHost(name);
+			const newHost = await startHost(name);
 
 			try {
-				agents[name] = (await request({ type: "watch", handle: AGENT_HANDLE }, { start: false, project: name }))?.child;
+				agents[name] = (await request({ type: "watch", handle: AGENT_HANDLE }, { start: false, host: name }))?.child;
 			} finally {
-				await projectHost?.close();
+				await newHost?.close();
 			}
 		}
 
@@ -2150,7 +2150,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("gives a note to the project agent", async () => {
+	it("gives a note to the host agent", async () => {
 		const { client, lines } = await openWatch({ kind: "agent" });
 
 		try {
@@ -2185,15 +2185,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
-	it("prints the usage for a word that is not a project, and refuses --project with a project", async () => {
+	it("prints the usage for a word that is not a host, and refuses --host with a host", async () => {
 		const unknown = await cli(["lsit"]);
 		expect(unknown.code).toBe(1);
 		expect(unknown.stdout).toBe("");
 		expect(unknown.stderr).toMatch(/^Usage:/);
-		expect(await cli(["--project", "main", "main"])).toEqual({
+		expect(await cli(["--host", "main", "main"])).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "harness main takes no --project\n",
+			stderr: "harness main takes no --host\n",
 		});
 	});
 
@@ -2366,7 +2366,7 @@ function textsOf(view: Awaited<ReturnType<Client["watch"]>>["view"] | undefined)
 }
 
 /**
- * The state directory of the project `name`, whose store has a `subagent.children` document at `version`, as another
+ * The state directory of the host `name`, whose store has a `subagent.children` document at `version`, as another
  * pi-subagent writes it.
  */
 async function childrenStore(name: string, version: number): Promise<string> {
@@ -2398,7 +2398,7 @@ async function childrenStore(name: string, version: number): Promise<string> {
 type OlderChildren = { children: Record<string, durable.JsonObject>; requests: Record<string, string> };
 
 /**
- * Writes the `subagent.children` document at `version` into the store of the project "main", as an older pi-subagent
+ * Writes the `subagent.children` document at `version` into the store of the host "main", as an older pi-subagent
  * writes it. The document is what `state` gives for the conversation of one library child of `caller`, whose id it
  * returns.
  */
@@ -2441,7 +2441,7 @@ async function olderChildrenStore(
 	return child.id;
 }
 
-/** The `ChildRecords` document in the store of the project "main", read with no extension installed. */
+/** The `ChildRecords` document in the store of the host "main", read with no extension installed. */
 async function storedChildren(): Promise<Readonly<ChildrenState> | null | undefined> {
 	const store = await Harness.open(
 		await openNodeSqliteStorage(join(statePaths("main").dir, "durable.sqlite")),
@@ -2456,10 +2456,10 @@ async function storedChildren(): Promise<Readonly<ChildrenState> | null | undefi
 	}
 }
 
-/** Spawns a child of `project` (the suite host when undefined) that prints its MEMORY_DIR, while the host has its own. */
-async function memoryOfChild(project?: string): Promise<string> {
-	const projectHost = project === undefined ? undefined : await startHost(project);
-	const env = project === undefined ? {} : { HARNESS_PROJECT: project };
+/** Spawns a child of `host` (the suite host when undefined) that prints its MEMORY_DIR, while the host has its own. */
+async function memoryOfChild(host?: string): Promise<string> {
+	const newHost = host === undefined ? undefined : await startHost(host);
+	const env = host === undefined ? {} : { HARNESS_HOST: host };
 	process.env.MEMORY_DIR = "/leaked";
 
 	try {
@@ -2468,6 +2468,6 @@ async function memoryOfChild(project?: string): Promise<string> {
 		return stdout.match(/Tool said: (.*)\n/)?.[1] ?? stdout;
 	} finally {
 		delete process.env.MEMORY_DIR;
-		await projectHost?.close();
+		await newHost?.close();
 	}
 }

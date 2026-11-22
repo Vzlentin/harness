@@ -1,13 +1,13 @@
 import { type Static, type TProperties, Type } from "typebox";
 
 /**
- * The handle of the project agent, the host's root conversation, in `watch`, `input`, `note`, `abort`, `configure` and
+ * The handle of the host agent, the host's root conversation, in `watch`, `input`, `note`, `abort`, `configure` and
  * `todo`. It is not hex, so no child has it.
  */
 export const AGENT_HANDLE = "agent";
 
 /**
- * The target of `watch`, `input`, `note`, `abort`, `configure` and `todo`: a child by handle, the project agent, or a
+ * The target of `watch`, `input`, `note`, `abort`, `configure` and `todo`: a child by handle, the host agent, or a
  * conversation that the children library opened, such as a child of a task.
  */
 export type Target =
@@ -75,7 +75,7 @@ export function parseTarget(ref: TargetRef): Target {
 	return ref.handle === AGENT_HANDLE ? { kind: "agent" } : { kind: "child", handle: ref.handle };
 }
 
-/** The wire reference of `target`. A child and the project agent have a handle. */
+/** The wire reference of `target`. A child and the host agent have a handle. */
 export function targetRef(target: Exclude<Target, { kind: "conversation" }>): { handle: string };
 export function targetRef(target: Target): TargetRef;
 export function targetRef(target: Target): TargetRef {

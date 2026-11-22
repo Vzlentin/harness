@@ -53,7 +53,7 @@ export type TaskHost = {
 };
 
 /**
- * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the project
+ * Starts the task of `request.key` once. It is a background task of the root conversation, so an abort of the host
  * agent's turn does not reach it. The key is written in the commit that creates the task, so a start after a crash
  * finds it. A repeat for a known key refuses another kind than the task's, and a version that the loaded definition
  * does not have, as a first start does. A first start checks the labels of the task (`taskLabels`) before its commit,
