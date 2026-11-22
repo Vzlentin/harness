@@ -8,7 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { DocumentReader, Harness, Storage } from "@earendil-works/pi-durable";
+import type { DocumentReader, Harness } from "@earendil-works/pi-durable";
 import type { Degraded } from "../host/degraded.ts";
 import type { InputHook, InputHookCall } from "../host/entries.ts";
 import { ITEM_MARKS, type WorkItem } from "../protocol/item.ts";
@@ -20,7 +20,6 @@ import {
 	personNames,
 	type Thread,
 } from "../protocol/project.ts";
-import { readItems } from "./item-docs.ts";
 import { sessionDoc } from "./project-docs.ts";
 import type { OutMessage, StoreReader } from "./project-store.ts";
 
@@ -54,8 +53,7 @@ export type Digest = {
 /** What the digest uses of the host. */
 export type DigestHost = {
 	readonly harness: Pick<Harness, "snapshot" | "commit">;
-	readonly storage: Pick<Storage, "scanDocuments">;
-	/** The project store, with the persons, the threads and the messages out. */
+	/** The project store, with the persons, the threads, the messages out, the held actions and the items. */
 	readonly store: StoreReader;
 	readonly project: string;
 	readonly degraded: Degraded;
@@ -69,7 +67,6 @@ export type DigestHost = {
 export async function nextDigest(
 	host: {
 		readonly harness: Pick<DocumentReader, "snapshot">;
-		readonly storage: Pick<Storage, "scanDocuments">;
 		readonly store: StoreReader;
 		readonly project: string;
 	},
@@ -82,11 +79,8 @@ export async function nextDigest(
 	const outbox = store.outMessages();
 
 	const held = store.held();
-
-	const [open, digests] = await Promise.all([
-		readItems(harness, host.storage, "open", context),
-		harness.snapshot(Digests, context),
-	]);
+	const open = store.items("open");
+	const digests = await harness.snapshot(Digests, context);
 
 	const waiting = outbox.filter((out) => isWaiting(out.state));
 	const own = held.filter((action) => action.state === "held" && action.agent === caller);

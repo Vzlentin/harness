@@ -110,4 +110,81 @@ describe("project store", () => {
 		expect(store.findHeld(other.id)).toEqual(ran);
 		expect(store.deliveries()).toEqual([]);
 	});
+
+	it("tells the parleys and the items with their own edges that a write changes", () => {
+		const parley = store.write((tx) =>
+			tx.addParley({ slug: "place", title: "T", goal: "G", evidence: ["e"], status: "open", at: 1, by: "a" }),
+		);
+
+		const item = store.write((tx) => tx.addItem({ title: "Work", state: "open", at: 1, by: "a" }));
+		const edge = { from: "parley:place", kind: "shapes", to: `item:${item.id}`, at: 2, by: "a" } as const;
+
+		store.write((tx) => {
+			tx.addEdge(edge);
+			tx.putParley({ ...parley, status: "contract", design_sense: "D", at: 3 });
+		});
+
+		expect(writes).toEqual([
+			[{ kind: "parley", value: parley }],
+			[{ kind: "item", value: { ...item, edges: [] } }],
+			[
+				{ kind: "item", value: { ...item, edges: [edge] } },
+				{ kind: "parley", value: { ...parley, status: "contract", design_sense: "D", at: 3 } },
+			],
+		]);
+		expect(store.parleyBySlug("place")).toMatchObject({ id: parley.id, status: "contract" });
+		expect(() => store.parley(9)).toThrow("Unknown parley: 9");
+		expect(() => store.parleyBySlug("none")).toThrow("Unknown parley: none");
+		expect(() => store.item(9)).toThrow("Unknown item: 9");
+	});
+
+	it("gives the items of an end and the needs edges that go to an item in the ID order of the items", () => {
+		const run = "run:20260101T000000-abcdef01";
+
+		store.write((tx) => {
+			for (const title of ["a", "b", "c"]) tx.addItem({ title, state: "open", at: 1, by: "a" });
+			tx.addEdge({ from: "item:3", kind: "needs", to: "item:1", at: 1, by: "a" });
+			tx.addEdge({ from: "item:2", kind: "needs", to: "item:1", at: 2, by: "a" });
+			tx.addEdge({ from: run, kind: "serves", to: "item:3", at: 3, by: "a" });
+			tx.addEdge({ from: run, kind: "serves", to: "item:2", at: 4, by: "a" });
+		});
+
+		expect(store.itemsFrom(run)).toEqual([2, 3]);
+		expect(store.incomingNeeds(1).map((edge) => edge.from)).toEqual(["item:2", "item:3"]);
+		expect(store.item(1).edges).toEqual([]);
+		expect(store.item(3).edges.map((edge) => edge.kind)).toEqual(["needs", "serves"]);
+	});
+
+	it("has no counter of the IDs of items until a load of items writes it, also at 0", () => {
+		expect(store.lastItem()).toBeUndefined();
+
+		store.write((tx) => tx.loadItems([], 0));
+		expect(store.lastItem()).toBe(0);
+
+		store.write((tx) => tx.loadItems([], 5));
+		expect(store.write((tx) => tx.addItem({ title: "Next", state: "open", at: 1, by: "a" })).id).toBe(6);
+	});
+
+	it("tells the writes of a writeAcross only once it settles, also when it fails", async () => {
+		const outer = Promise.withResolvers<void>();
+
+		const across = store.writeAcross(async () => {
+			store.write((tx) => tx.addPerson({ name: "Ann" }));
+			await outer.promise;
+		});
+
+		expect(store.persons()).toHaveLength(1);
+		expect(writes).toEqual([]);
+		outer.resolve();
+		await across;
+		expect(writes).toEqual([[{ kind: "person", value: { id: 1, name: "Ann" } }]]);
+
+		await expect(
+			store.writeAcross(async () => {
+				store.write((tx) => tx.addPerson({ name: "Bob" }));
+				throw new Error("stop");
+			}),
+		).rejects.toThrow("stop");
+		expect(writes.at(-1)).toEqual([{ kind: "person", value: { id: 2, name: "Bob" } }]);
+	});
 });

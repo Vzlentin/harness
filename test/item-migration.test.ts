@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as durable from "@earendil-works/pi-durable";
@@ -6,8 +7,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { ChildRecords, type ChildrenState } from "../src/host/records.ts";
 import type { Host } from "../src/host/run.ts";
 import { ConversationTodos } from "../src/host/todo-lists.ts";
-import { ItemCounterDoc, Items } from "../src/projects/item-docs.ts";
 import { LabelMove } from "../src/projects/label-migration.ts";
+import { PROJECT_STORE_FILE, ProjectStore } from "../src/projects/project-store.ts";
+import type { Edge } from "../src/protocol/item.ts";
 import { ItemList, StagedItem } from "../src/protocol/item.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { AskWrite } from "../src/protocol/project.ts";
@@ -86,8 +88,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Makes the store of the project a store of the host before the work items: it retires the counter of the IDs of items,
- * and writes the records of the children at version 5, where the child of each handle of `todos` serves that todo. Each
+ * Adds `edge` to the project store of `project`, while no host runs.
+ */
+function addEdge(project: string, edge: Edge): void {
+	const store = ProjectStore.open(statePaths(project).dir, 0);
+
+	try {
+		store.write((tx) => tx.addEdge(edge));
+	} finally {
+		store.close();
+	}
+}
+
+/**
+ * Makes the store of the project a store of the host before the work items: it deletes the project store, with the
+ * counter of the IDs of items, and writes the records of the children at version 5, where the child of each handle of `todos` serves that todo. Each
  * todo of the root list whose ID is a key of `asks` gets that ask, as an ask with a todo had one before the items.
  */
 async function storeBeforeItems(
@@ -120,7 +135,6 @@ async function storeBeforeItems(
 			}
 
 			await tx.retireDoc(ChildRecords);
-			await tx.retireDoc(ItemCounterDoc);
 		}, BACKGROUND_CONTEXT);
 
 		await store.commit(async (tx) => {
@@ -129,6 +143,10 @@ async function storeBeforeItems(
 	} finally {
 		await store.close(BACKGROUND_CONTEXT);
 	}
+
+	const file = join(statePaths(PROJECT).dir, PROJECT_STORE_FILE);
+
+	for (const path of [file, `${file}-wal`, `${file}-shm`]) rmSync(path, { force: true });
 }
 
 describe("the move of the todos of the project to items", { timeout: 60_000 }, () => {
@@ -342,18 +360,9 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 				await tx.retireDoc(ChildRecords);
 				// A store of version 6 had no host that moved its edges.
 				await tx.retireDoc(LabelMove);
-
-				const stored = await tx.doc(Items, String(item), {
-					id: item,
-					title: "-",
-					state: "open",
-					edges: [],
-					at: 0,
-					by: "",
-				});
-
-				stored.edges.push({ from: agent, kind: "serves", to: `item:${item}`, at: 1, by: "old" });
 			}, BACKGROUND_CONTEXT);
+
+			addEdge(LABELS_PROJECT, { from: agent, kind: "serves", to: `item:${item}`, at: 1, by: "old" });
 
 			await store.commit(async (tx) => {
 				Object.assign(await tx.doc(ChildrenV6), { children, requests: state.requests });
@@ -392,18 +401,7 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			// After the move, a start reads no edge: an edge of a child that comes later stays, with no label.
 			const agent = `agent:${(await after.snapshot(ChildRecords, BACKGROUND_CONTEXT))?.children[byParley]?.conversationId}`;
 
-			await after.commit(async (tx) => {
-				const stored = await tx.doc(Items, String(item), {
-					id: item,
-					title: "-",
-					state: "open",
-					edges: [],
-					at: 0,
-					by: "",
-				});
-
-				stored.edges.push({ from: agent, kind: "serves", to: `item:${item}`, at: 2, by: "late" });
-			}, BACKGROUND_CONTEXT);
+			addEdge(LABELS_PROJECT, { from: agent, kind: "serves", to: `item:${item}`, at: 2, by: "late" });
 		} finally {
 			await after.close(BACKGROUND_CONTEXT);
 		}

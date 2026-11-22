@@ -1,14 +1,15 @@
 /**
- * The changes of the work items of the store of the project, each in the commit that a caller gives: the `item`
- * request changes them with these functions, each change in its own commit. A round of asks writes the `shapes` edge of its parley, and the commit
- * that makes a parley a contract gives it an item when it shapes none. A load of a store file writes its items, with their
- * edges and the counter. It also gives whether a run is live: the stage of an item reads it,
- * and a live run, or a live task with the label of the item, refuses a change of the item to `done`. A change of an item to `done` or `dropped` ends each contract
- * that shapes it and no open item, and the end of a contract reads the open items that it shapes. A report of a commit
- * by a worker of an item writes its `landed` edge and sets the item `done`, with no refusal for a live run.
+ * The changes of the work items of the project store, each in the write that a caller gives: the `item` request changes
+ * them with these functions, each change in its own write. A round of asks writes the `shapes` edge of its parley, and
+ * the write that makes a parley a contract gives it an item when it shapes none. It also gives the other ends of the
+ * edges of an item, the item with the `needs` edges that go to it, and whether a run is live: the stage of an item reads
+ * it, and a live run, or a live task with the label of the item, refuses a change of the item to `done`. A change of an
+ * item to `done` or `dropped` ends each contract that shapes it and no open item, and the end of a contract reads the
+ * open items that it shapes. A report of a commit by a worker of an item writes its `landed` edge and sets the item
+ * `done`, with no refusal for a live run.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { DocumentReader, Tx } from "@earendil-works/pi-durable";
+import type { DocumentReader } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { EntryHandles } from "../host/entries.ts";
 import {
@@ -16,18 +17,15 @@ import {
 	type Edge,
 	type EdgeInput,
 	type EdgeItem,
-	edgeItem,
 	type ItemAdd,
 	type ItemSet,
 	type ItemState,
 	refParts,
 	type WorkItem,
 } from "../protocol/item.ts";
-import type { Ask, Parley } from "../protocol/project.ts";
+import type { Ask, Parley, ParleyEnd } from "../protocol/project.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
-import { ItemCounterDoc, itemEnds, Items } from "./item-docs.ts";
-import type { ItemIndex } from "./item-index.ts";
-import { endContract, knownParley, Parleys } from "./project-docs.ts";
+import { edgeEnds, type StoreReader, type StoreTx } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -35,7 +33,7 @@ const context = BACKGROUND_CONTEXT;
 const RUN_TASK_KEY = /^wf:(.+)#[1-9]\d*$/;
 
 /**
- * What a change of an item to `done` reads of the host before its commit: the keys of the started tasks with the label
+ * What a change of an item to `done` reads of the host before its write: the keys of the started tasks with the label
  * of the item, in any state, the live workers of that label, and the open asks.
  */
 export type ItemWorkers = {
@@ -62,70 +60,79 @@ export async function readItemWorkers(host: ItemWorkersHost, id: number): Promis
 	return { tasks: tasks.get(label) ?? [], workers, asks };
 }
 
-/** Adds an open item with no edge for the caller `by`, with the ID after `last` of the counter, and gives it. */
-export async function addItem(tx: Tx, input: ItemAdd, by: string): Promise<WorkItem> {
-	const counter = await tx.doc(ItemCounterDoc);
-	counter.last += 1;
-	const item: WorkItem = { id: counter.last, title: input.title, state: "open", edges: [], at: Date.now(), by };
-
-	if (input.text !== undefined) item.text = input.text;
-	// The new document starts as a copy of the seed.
-	await tx.doc(Items, String(item.id), item);
-
-	return item;
-}
-
 /**
- * Writes `items`, each with its edges, into a store that has no item, in `tx`. `last` of the counter becomes the highest
- * of `last`, the `last` of the store, and the highest ID of `items`, so a new item never takes the ID of a stored one.
+ * The item `id`, in any state, with its edges and then the `needs` edges that go to it from other items, in the ID order
+ * of those items. Only the item that needs another stores the edge.
  */
-export async function loadItems(tx: Tx, items: readonly WorkItem[], last: number): Promise<void> {
-	const counter = await tx.doc(ItemCounterDoc);
-	counter.last = Math.max(counter.last, last, ...items.map((item) => item.id));
+export function readItemBothWays(store: Pick<StoreReader, "item" | "incomingNeeds">, id: number): WorkItem {
+	const item = store.item(id);
 
-	// Each new document starts as a copy of its seed.
-	for (const item of items) await tx.doc(Items, String(item.id), item);
+	return { ...item, edges: [...item.edges, ...store.incomingNeeds(id)] };
 }
+
+/** The other ends of the `serves` and `shapes` edges of an item, without their kinds, in the order of the edges. */
+export type ItemEnds = {
+	/** The IDs of the runs that serve the item. */
+	readonly runs: readonly string[];
+	/** The slugs of the parleys that shape the item. */
+	readonly parleys: readonly string[];
+};
+
+/** The other ends of the `serves` and `shapes` edges of `item`. */
+export function itemEnds(item: Readonly<WorkItem>): ItemEnds {
+	const runs: string[] = [];
+	const parleys: string[] = [];
+
+	for (const edge of item.edges) {
+		const { kind, value } = refParts(edge.from);
+
+		if (kind === "run") runs.push(value);
+		else if (kind === "parley") parleys.push(value);
+	}
+
+	return { runs, parleys };
+}
+
+/** Adds an open item with no edge for the caller `by`, with the next ID, and gives it. */
+export function addItem(tx: StoreTx, input: ItemAdd, by: string): WorkItem {
+	const item = { title: input.title, state: "open", at: Date.now(), by } as const;
+
+	return tx.addItem(input.text === undefined ? item : { ...item, text: input.text });
+}
+
+/** The item that a change wrote, and the slugs of the contracts that the change ended. */
+export type ItemChange = { readonly item: WorkItem; readonly ended: readonly string[] };
+
+/** The IDs of the items that a report set `done`, and the slugs of the contracts that it ended. */
+export type LandedCommits = { readonly done: readonly number[]; readonly ended: readonly string[] };
 
 /**
  * Changes the fields that `change` gives of the item `change.id` for the caller `by`, and gives the item and the slugs of
  * the contracts that the change ended. A change to `done` fails while a run or a task of `workers`, the workers of the
  * item, is live. A change to `done` or `dropped` ends each contract that shapes the item and no open item: `done` when
- * one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes.
+ * one item that it shapes is done, else `dropped`.
  */
-export async function setItem(
-	tx: Tx,
-	change: ItemSet,
-	by: string,
-	items: Pick<ItemIndex, "itemsOf">,
-	workers: ItemWorkers,
-): Promise<{ readonly item: WorkItem; readonly ended: readonly string[] }> {
-	const item = await itemDraft(tx, change.id);
+export function setItem(tx: StoreTx, change: ItemSet, by: string, workers: ItemWorkers): ItemChange {
+	const item = tx.item(change.id);
 
 	if (change.state === "done") refuseLiveRun(item, workers);
 
 	if (change.title !== undefined) item.title = change.title;
 
 	if (change.text !== undefined) item.text = change.text;
-	const ended = await changeItem(tx, item, change.state, by, items);
+	const ended = changeItem(tx, item, change.state, by);
 
-	return { item: Value.Clone(item), ended };
+	return { item: tx.item(item.id), ended };
 }
 
 /**
  * Writes the edge `item:<id> landed <commit>` for the caller `by`, for each item of `ids`, which the store has, and each
  * commit reference of `refs`, as a report of a worker of the item gives them, and sets each open item of them `done`.
  * A closed item keeps its state. Unlike `setItem`, a live run or task of the item does not refuse the change: the
- * reporter is such a task. `items` gives the items that a contract shapes. It gives the IDs of the items that it set
- * `done`, and the slugs of the contracts that it ended. With no commit reference, it changes nothing.
+ * reporter is such a task. It gives the IDs of the items that it set `done`, and the slugs of the contracts that it
+ * ended. With no commit reference, it changes nothing.
  */
-export async function landCommits(
-	tx: Tx,
-	ids: readonly number[],
-	refs: readonly string[],
-	by: string,
-	items: Pick<ItemIndex, "itemsOf">,
-): Promise<{ readonly done: readonly number[]; readonly ended: readonly string[] }> {
+export function landCommits(tx: StoreTx, ids: readonly number[], refs: readonly string[], by: string): LandedCommits {
 	const commits = refs.filter((ref) => Value.Check(CommitRef, ref));
 	const done: number[] = [];
 	const ended: string[] = [];
@@ -133,105 +140,103 @@ export async function landCommits(
 	if (commits.length === 0) return { done, ended };
 
 	for (const id of ids) {
-		for (const commit of commits) await writeEdge(tx, { from: `item:${id}`, kind: "landed", to: commit }, by);
-		const item = await itemDraft(tx, id);
+		for (const commit of commits) writeEdge(tx, { from: `item:${id}`, kind: "landed", to: commit }, by);
+		const item = tx.item(id);
 
 		if (item.state !== "open") continue;
-		ended.push(...(await changeItem(tx, item, "done", by, items)));
+		ended.push(...changeItem(tx, item, "done", by));
 		done.push(id);
 	}
 
 	return { done, ended };
 }
 
-/**
- * The drafts of the items that the contract `slug` shapes in `tx`, in the order of `items`. `items` gives the items with
- * an edge from the parley, and an item counts only while its document still has the edge `shapes`.
- */
-export async function contractItems(tx: Tx, slug: string, items: Pick<ItemIndex, "itemsOf">): Promise<WorkItem[]> {
-	const end = `parley:${slug}`;
-	const work: WorkItem[] = [];
-
-	for (const id of items.itemsOf(end)) {
-		const item = await itemDraft(tx, id);
-
-		if (item.edges.some((edge) => edge.from === end && edge.kind === "shapes")) work.push(item);
-	}
-
-	return work;
+/** The items that the contract `slug` shapes in `tx`, in ID order: the items of the edges from the parley. */
+export function contractItems(tx: StoreReader, slug: string): WorkItem[] {
+	return tx.itemsFrom(`parley:${slug}`).map((id) => tx.item(id));
 }
 
 /**
- * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it, as the request
- * `item link` does. On top of the checks of `writeEdge`, an agent has no `serves` edge, and a run serves one item at
- * most: `items` gives the items of the run.
+ * Checks the edge `input` and writes it for the caller `by`, and gives it, as the request `item link` does. On top of
+ * the checks of `writeEdge`, an agent has no `serves` edge, and a run serves one item at most.
  */
-export async function linkItem(tx: Tx, input: EdgeInput, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<Edge> {
+export function linkItem(tx: StoreTx, input: EdgeInput, by: string): Edge {
 	if (input.kind === "serves") {
 		const { id, other } = endsOf(input);
-		const item = await itemDraft(tx, id);
+		const item = tx.item(id);
 		const fresh = !item.edges.some((edge) => sameEdge(edge, input));
 
 		// A stored edge is the reply, and a closed item fails in `writeEdge` with its state: both come before the refusal.
-		if (fresh && item.state === "open") refuseServe(other, items);
+		if (fresh && item.state === "open") refuseServe(tx, other);
 	}
 
 	return writeEdge(tx, input, by);
 }
 
 /**
- * Checks the edge `input` and writes it into the document of its item for the caller `by`, and gives it. The kind fixes
+ * Checks the edge `input` and writes it as the last edge of its item for the caller `by`, and gives it. The kind fixes
  * the ends, a `needs` edge does not go from an item to itself, the item must exist, and an edge with the same ends and
  * kind is not written again: its stored edge is the reply. A `serves`, `shapes` or `needs` edge needs an open item, a
  * parley at the other end of a `shapes` edge, and an item at the other end of a `needs` edge, which must not make a
  * cycle of `needs` edges: `knownEnd` checks the other end. A run or a commit end is checked for its form only.
  */
-export async function writeEdge(tx: Tx, input: EdgeInput, by: string): Promise<Edge> {
+export function writeEdge(tx: StoreTx, input: EdgeInput, by: string): Edge {
 	const { id, other } = endsOf(input);
-	const item = await itemDraft(tx, id);
+	const item = tx.item(id);
 	const stored = item.edges.find((edge) => sameEdge(edge, input));
 
-	if (stored !== undefined) return Value.Clone(stored);
+	if (stored !== undefined) return stored;
 
 	if (input.kind !== "landed" && item.state !== "open") {
 		const way = input.from === `item:${id}` ? "go from" : "go to";
 		throw new Error(`Item ${id} is ${item.state}: an edge ${input.kind} cannot ${way} it`);
 	}
 
-	await knownEnd(tx, id, other);
+	knownEnd(tx, id, other);
 	const edge: Edge = { from: input.from, kind: input.kind, to: input.to, at: Date.now(), by };
-	item.edges.push({ ...edge });
+	tx.addEdge(edge);
 
 	return edge;
 }
 
 /**
- * Gives the contract `parley` an item in `tx` for the caller `by`: when `items` gives no item with the edge
- * `parley:<slug> shapes`, it adds an item with the title of the parley and writes that edge.
+ * Gives the contract `parley` an item in `tx` for the caller `by`: when no item has the edge `parley:<slug> shapes`, it
+ * adds an item with the title of the parley and writes that edge.
  */
-export async function itemForContract(
-	tx: Tx,
-	parley: Readonly<Parley>,
-	by: string,
-	items: Pick<ItemIndex, "itemsOf">,
-): Promise<void> {
+export function itemForContract(tx: StoreTx, parley: Readonly<Parley>, by: string): void {
 	const end = `parley:${parley.slug}`;
 
-	if (items.itemsOf(end).length > 0) return;
-	const item = await addItem(tx, { title: parley.title }, by);
-	await writeEdge(tx, { from: end, kind: "shapes", to: `item:${item.id}` }, by);
+	if (tx.itemsFrom(end).length > 0) return;
+	const item = addItem(tx, { title: parley.title }, by);
+	writeEdge(tx, { from: end, kind: "shapes", to: `item:${item.id}` }, by);
 }
 
-/** Removes the edge `input` from the document of its item, and gives the item. The item keeps its `at` and `by`. */
-export async function unlinkItem(tx: Tx, input: EdgeInput): Promise<WorkItem> {
+/** Removes the edge `input` of its item, and gives the item. The item keeps its `at` and `by`. */
+export function unlinkItem(tx: StoreTx, input: EdgeInput): WorkItem {
 	const { id } = endsOf(input);
-	const item = await itemDraft(tx, id);
-	const index = item.edges.findIndex((edge) => sameEdge(edge, input));
 
-	if (index === -1) throw new Error(`Item ${id} has no edge ${input.from} ${input.kind} ${input.to}`);
-	item.edges.splice(index, 1);
+	if (!tx.item(id).edges.some((edge) => sameEdge(edge, input))) {
+		throw new Error(`Item ${id} has no edge ${input.from} ${input.kind} ${input.to}`);
+	}
 
-	return Value.Clone(item);
+	tx.removeEdge(input);
+
+	return tx.item(id);
+}
+
+/**
+ * Ends the contract `parley` with the status `status` for the caller `by` in `tx`, and gives the ended parley.
+ */
+export function endContract(
+	tx: StoreTx,
+	parley: Readonly<Extract<Parley, { design_sense: string }>>,
+	status: ParleyEnd,
+	by: string,
+): Parley {
+	const ended: Parley = { ...parley, status, at: Date.now(), by };
+	tx.putParley(ended);
+
+	return ended;
 }
 
 /** The asker of the asks of the run `runId`, as workflows writes them. */
@@ -275,64 +280,38 @@ function refuseLiveRun(item: WorkItem, { tasks, workers, asks }: ItemWorkers): v
 }
 
 /**
- * Sets the state of `item` to `state`, when it gives one, and its `at` and `by` for the caller `by`. A change to `done`
- * or `dropped` ends each contract that shapes the item and no open item (`endContracts`), and it gives their slugs.
+ * Sets the state of `item` to `state`, when it gives one, and its `at` and `by` for the caller `by`, and writes its
+ * fields. A change to `done` or `dropped` ends each contract that shapes the item and no open item (`endContracts`),
+ * and it gives their slugs.
  */
-async function changeItem(
-	tx: Tx,
-	item: WorkItem,
-	state: ItemState | undefined,
-	by: string,
-	items: Pick<ItemIndex, "itemsOf">,
-): Promise<string[]> {
+function changeItem(tx: StoreTx, item: WorkItem, state: ItemState | undefined, by: string): string[] {
 	if (state !== undefined) item.state = state;
 	item.at = Date.now();
 	item.by = by;
+	tx.putItem(item);
 
-	return state === "done" || state === "dropped" ? endContracts(tx, item, by, items) : [];
+	return state === "done" || state === "dropped" ? endContracts(tx, item, by) : [];
 }
 
 /**
  * Ends each contract with an edge to `item`, a closed item, for the caller `by` when the contract shapes no open item:
- * `done` when one item that it shapes is done, else `dropped`. `items` gives the items that a contract shapes. It gives
- * the slugs of the contracts that it ended.
+ * `done` when one item that it shapes is done, else `dropped`. It gives the slugs of the contracts that it ended.
  */
-async function endContracts(tx: Tx, item: WorkItem, by: string, items: Pick<ItemIndex, "itemsOf">): Promise<string[]> {
-	const { parleys: slugs } = itemEnds(item);
-
-	if (slugs.length === 0) return [];
-	const parleys = (await tx.doc(Parleys)).parleys;
+function endContracts(tx: StoreTx, item: WorkItem, by: string): string[] {
 	const ended: string[] = [];
 
-	for (const slug of new Set(slugs)) {
-		const parley = parleys.find((found) => found.slug === slug);
+	for (const slug of new Set(itemEnds(item).parleys)) {
+		const parley = tx.findParleyBySlug(slug);
 
 		if (parley?.status !== "contract") continue;
-		const work = await contractItems(tx, slug, items);
+		const work = contractItems(tx, slug);
 
 		if (work.some((found) => found.state === "open")) continue;
-		endContract(parleys, parley, work.some((found) => found.state === "done") ? "done" : "dropped", by);
+		endContract(tx, parley, work.some((found) => found.state === "done") ? "done" : "dropped", by);
 		ended.push(slug);
 	}
 
 	return ended;
-}
-
-/** The `at` of the seed of a missing item, which no stored item has. */
-const MISSING_AT = -1;
-
-/**
- * The draft of the item `id` in `tx`. An ID with no item, such as an ID that no `item add` gave or the ID of a todo
- * that the move to items did not move, fails with `Unknown item: <id>`.
- */
-async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
-	// `tx.doc` creates a missing item from this seed, and the throw fails the commit, so the seed is never stored.
-	const seed: WorkItem = { id, title: "-", state: "open", edges: [], at: MISSING_AT, by: "" };
-	const item = await tx.doc(Items, String(id), seed);
-
-	if (item.at === MISSING_AT) throw new Error(`Unknown item: ${id}`);
-
-	return item;
 }
 
 /**
@@ -340,9 +319,7 @@ async function itemDraft(tx: Tx, id: number): Promise<WorkItem> {
  * so does an edge from an item to itself.
  */
 function endsOf(edge: EdgeInput): EdgeItem {
-	const ends = edgeItem(edge);
-
-	if (ends === undefined) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to ${edge.to}`);
+	const ends = edgeEnds(edge);
 
 	if (edge.from === edge.to) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to itself`);
 
@@ -354,23 +331,23 @@ function endsOf(edge: EdgeInput): EdgeItem {
  * does not have, or an item that the store does not have or that needs the item `id`, so that the edge would make a
  * cycle of `needs` edges. A run or a commit is not checked.
  */
-async function knownEnd(tx: Tx, id: number, ref: string): Promise<void> {
+function knownEnd(tx: StoreReader, id: number, ref: string): void {
 	const { kind, value } = refParts(ref);
 
-	if (kind === "parley") knownParley((await tx.doc(Parleys)).parleys, value);
-	else if (kind === "item") await refuseCycle(tx, id, Number(value));
+	if (kind === "parley") tx.parleyBySlug(value);
+	else if (kind === "item") refuseCycle(tx, id, Number(value));
 }
 
 /**
  * Fails when the item `to` needs the item `from`, through its `needs` edges and those of the items it needs, so that the
- * edge `item:<from> needs item:<to>` would make a cycle. The walk only reads the items, so the commit writes none of them.
+ * edge `item:<from> needs item:<to>` would make a cycle.
  */
-async function refuseCycle(tx: Tx, from: number, to: number): Promise<void> {
+function refuseCycle(tx: StoreReader, from: number, to: number): void {
 	const seen = new Set([to]);
 	const next = [to];
 
 	for (let id = next.pop(); id !== undefined; id = next.pop()) {
-		for (const edge of (await itemDraft(tx, id)).edges) {
+		for (const edge of tx.item(id).edges) {
 			if (edge.kind !== "needs") continue;
 			const needed = Number(refParts(edge.to).value);
 
@@ -386,13 +363,13 @@ async function refuseCycle(tx: Tx, from: number, to: number): Promise<void> {
 
 /**
  * Fails when `from`, the end of a new `serves` edge of `item link`, cannot write it: an agent, which serves an item
- * through its label, or a run that `items` gives an item for.
+ * through its label, or a run that already serves an item.
  */
-function refuseServe(from: string, items: Pick<ItemIndex, "itemsOf">): void {
+function refuseServe(tx: StoreReader, from: string): void {
 	const { kind, value } = refParts(from);
 
 	if (kind === "agent") throw new Error("An agent serves an item through its label: spawn it with serves");
-	const served = items.itemsOf(from)[0];
+	const served = tx.itemsFrom(from)[0];
 
 	if (served !== undefined) throw new Error(`Run ${value} already serves item ${served}`);
 }

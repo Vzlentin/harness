@@ -13,9 +13,7 @@ import { takeLock } from "../host/lock.ts";
 import { statePaths } from "../protocol/paths.ts";
 import { STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from "../protocol/store-file.ts";
-import { loadItems } from "./items.ts";
 import { ProjectStore } from "./project-store.ts";
-import { loadLists } from "./project.ts";
 import { readStoreFile } from "./store-file.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -25,8 +23,8 @@ export type StoreLoadHandles = Pick<EntryHandles, "asks" | "todos">;
 
 /**
  * Writes the lists of the store file at `path` into the stores of `project`, under the lock of the host, with the asks
- * and the lists of todos of `handles`, and gives the count of each list. The persons, the threads, the messages and the
- * rules keep the IDs of the file. The two stores are written as one: the transaction of the project store stays open
+ * and the lists of todos of `handles`, and gives the count of each list. The persons, the threads, the messages, the
+ * rules, the parleys and the items keep the IDs of the file. The two stores are written as one: the transaction of the project store stays open
  * across the commit of `durable.sqlite`, and a commit that fails rolls it back. It fails before it writes when the file
  * is not a store file, when a host runs for `project`, or when a list of the stores is not empty.
  */
@@ -66,15 +64,13 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 }
 
 /**
- * Writes the lists of `file` that `durable.sqlite` keeps in one commit, with the asks and the lists of todos of
- * `handles`: the commit that creates the root conversation when the store has none. The commit always writes the
- * counter of the IDs of items, so the next start of a host does not move the loaded todos to items.
+ * Writes the lists of `file` that `durable.sqlite` keeps, the asks and the lists of todos, in one commit with the
+ * handles `handles`: the commit that creates the root conversation when the store has none.
  */
 async function writeFile(harness: Harness, handles: StoreLoadHandles, file: StoreFile): Promise<void> {
 	const write = async (tx: Tx) => {
-		await loadLists(tx, handles.asks, file);
+		await handles.asks.load(tx, file.asks);
 		await handles.todos.load(tx, ROOT_CONVERSATION_ID, file.todos, file.callerTodos);
-		await loadItems(tx, file.items, file.lastItem);
 	};
 
 	if ((await harness.conversation(ROOT_CONVERSATION_ID, context)) === undefined) {

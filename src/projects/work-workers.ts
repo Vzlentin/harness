@@ -2,14 +2,14 @@
  * The stops of the workers of the work of the project: the workers of a parley or an item that ended, but the worker
  * whose report ended it. The agent that ended the work stops after its turn.
  */
-import type { Harness } from "@earendil-works/pi-durable";
 import type { EntryHandles } from "../host/entries.ts";
 import type { WorkerId, Worker } from "../protocol/worker-labels.ts";
-import { workState } from "./work-state.ts";
+import { type WorkReader, workState } from "./work-state.ts";
 
 /** What the stops of the workers use of the host. */
 export type WorkStopHost = Pick<EntryHandles, "liveWorkers" | "stop" | "stopAfterTurn" | "warn"> & {
-	readonly harness: Pick<Harness, "snapshot">;
+	/** The project store, with the parleys and the items. */
+	readonly store: WorkReader;
 };
 
 /**
@@ -60,7 +60,7 @@ export async function stopEndedWork(host: WorkStopHost): Promise<void> {
 		const ended: string[] = [];
 
 		for (const label of (await host.liveWorkers()).keys()) {
-			if ((await workState(host.harness, label))?.state === "ended") ended.push(label);
+			if (workState(host.store, label)?.state === "ended") ended.push(label);
 		}
 
 		await stopWork(host, ended);

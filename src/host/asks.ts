@@ -6,7 +6,14 @@
  * serve the `ask` requests of a host whose entries serve no parley asks.
  */
 import type { Context } from "@earendil-works/chord/context";
-import { type ConversationId, defineDoc, type DocumentReader, type Harness, type Tx } from "@earendil-works/pi-durable";
+import {
+	type CommitChange,
+	type ConversationId,
+	defineDoc,
+	type DocumentReader,
+	type Harness,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import {
 	type AnswerAuthor,
@@ -66,7 +73,13 @@ export const ENTRY_ASKS: EntryAsks = {
 	load: async (tx, asks) => {
 		(await tx.doc(Asks)).asks.push(...asks);
 	},
+	changed: asksChange,
 };
+
+/** Whether `change` changes or retires the document of the asks. */
+function asksChange(change: CommitChange): boolean {
+	return change.type === "document" && change.record.kind === ASKS_KIND;
+}
 
 /** Adds an open ask for each of `asks`, asked at `at` by the caller `by`, each with the next ID, and gives them. */
 export async function addAsks(tx: Tx, asks: readonly NewAsk[], by: string, at: number): Promise<Ask[]> {

@@ -4,16 +4,12 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
 import type { EntryAsks, EntryTodos } from "../host/entries.ts";
 import { CommitPasses } from "../host/passes.ts";
 import { writeJsonFile } from "../protocol/json-file.ts";
 import { errorMessage } from "../protocol/requests.ts";
 import { STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
-import { allItems, ItemCounterDoc, itemChange } from "./item-docs.ts";
-import { readParleys } from "./parleys.ts";
 import type { ProjectStore, StoreReader } from "./project-store.ts";
-import { projectChange } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -23,13 +19,16 @@ type StoreFileTodos = Pick<EntryTodos, "read" | "callers" | "changed">;
 /** What the file uses of the host. */
 export type StoreFileHost = {
 	readonly harness: Harness;
-	/** The storage of `harness`, whose scan lists the items and the callers that have a list of todos. */
+	/** The storage of `harness`, whose scan lists the callers that have a list of todos. */
 	readonly storage: Pick<Storage, "scanDocuments">;
-	/** The project store, with the persons, the threads, the messages, the rules and the held actions. */
+	/**
+	 * The project store, with the persons, the threads, the messages, the rules, the held actions, the parleys and the
+	 * items.
+	 */
 	readonly store: Pick<ProjectStore, keyof StoreReader | "subscribe">;
 	/** The root conversation, whose list is the list of the project. */
 	readonly root: Conversation;
-	readonly asks: Pick<EntryAsks, "read">;
+	readonly asks: Pick<EntryAsks, "read" | "changed">;
 	readonly todos: StoreFileTodos;
 	/** The file, `store.json` in the state folder of the project. */
 	readonly path: string;
@@ -50,7 +49,7 @@ export type StoreFilePasses = {
 export function storeFilePasses(host: StoreFileHost): StoreFilePasses {
 	const passes = new CommitPasses(
 		host.harness,
-		(change) => projectChange(change) || host.todos.changed(change, host.root.id) || itemChange(change),
+		(change) => host.asks.changed(change) || host.todos.changed(change, host.root.id),
 		() =>
 			readStoreFile(host.harness, host.storage, host.root.id, host)
 				.then((file) => writeJsonFile(host.path, file))
@@ -71,8 +70,8 @@ export function storeFilePasses(host: StoreFileHost): StoreFilePasses {
 /**
  * Every list of the file, as the store of `harness` and the project store `store` have them now, with the list of
  * the project from the root conversation `root`, the asks from `asks` and the lists of todos from `todos`. `storage`,
- * the storage of `harness`, lists the items and the callers that have a list of todos. A store with no counter of the
- * IDs of items has `lastItem` 0.
+ * the storage of `harness`, lists the callers that have a list of todos. A store with no counter of the IDs of items
+ * has `lastItem` 0.
  */
 export async function readStoreFile(
 	harness: Harness,
@@ -88,12 +87,9 @@ export async function readStoreFile(
 		readonly todos: Pick<StoreFileTodos, "read" | "callers">;
 	},
 ): Promise<StoreFile> {
-	const [parleys, asked] = await Promise.all([readParleys(harness, context), asks.read(harness, context)]);
-
+	const asked = await asks.read(harness, context);
 	const todos = await lists.read(harness, root, context);
 	const callerTodos = await lists.callers(harness, storage, context);
-	const items = await allItems(harness, storage, context);
-	const counter = await harness.snapshot(ItemCounterDoc, context);
 
 	return {
 		version: STORE_FILE_VERSION,
@@ -102,11 +98,11 @@ export async function readStoreFile(
 		rules: store.rules({}),
 		lastRule: store.lastRule(),
 		held: store.held(),
-		parleys: parleys.parleys,
+		parleys: store.parleys(),
 		asks: asked.asks,
 		todos: todos.todos,
 		callerTodos,
-		items: items.map((item) => Value.Clone(item)),
-		lastItem: counter?.last ?? 0,
+		items: store.items(),
+		lastItem: store.lastItem() ?? 0,
 	};
 }

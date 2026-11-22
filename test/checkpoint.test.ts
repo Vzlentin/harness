@@ -11,12 +11,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { addAsks, ENTRY_ASKS } from "../src/host/asks.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import { AgentState } from "../src/host/targets.ts";
 import { addListTodo, CallerTodos, ConversationTodos, linkOwner, TaskTodos } from "../src/host/todo-lists.ts";
 import { queueAnswers, readUserAnswers, USER_ANSWERS_KIND } from "../src/host/user-answers.ts";
-import { Parleys } from "../src/projects/project-docs.ts";
-import { PARLEYS_KIND } from "../src/protocol/project.ts";
+import { ASKS_KIND } from "../src/protocol/project.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND } from "../src/protocol/todo.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";
 
@@ -34,7 +34,7 @@ function addresses(conversationId: ConversationId) {
 	const session = { kind: "session" } as const;
 
 	return {
-		parleys: { kind: PARLEYS_KIND, scope: session },
+		asks: { kind: ASKS_KIND, scope: session },
 		conversationTodos: { kind: TODO_LIST_KIND, scope: { kind: "conversation", conversationId } },
 		links: { kind: "harness.save-todos", scope: session },
 		callerTodos: { kind: CallerTodos.definition.kind, scope: session, key: "cli" },
@@ -48,17 +48,7 @@ function addresses(conversationId: ConversationId) {
 /** Writes each document of `addresses` once, in one commit. */
 async function writeRound(harness: Harness, conversationId: ConversationId, round: number): Promise<void> {
 	await harness.commit(async (tx) => {
-		const parley = {
-			id: round,
-			slug: `p-${round}`,
-			title: "T",
-			goal: "G",
-			status: "open",
-			at: round,
-			by: "cli",
-		} as const;
-
-		(await tx.doc(Parleys)).parleys.push(parley);
+		await addAsks(tx, [{ input: { title: `ask ${round}` } }], "cli", round);
 		await addListTodo(tx, { kind: "conversation", id: conversationId }, `todo ${round}`, round);
 		await addListTodo(tx, { kind: "caller", caller: "cli" }, `todo ${round}`);
 		(await tx.doc(TaskTodos, "1", null)).todos.push({ id: round, text: `todo ${round}`, state: "open" });
@@ -94,7 +84,7 @@ async function lengths(tx: Tx, conversationId: ConversationId): Promise<Record<s
 	for (let ask = 1; ask <= ROUNDS; ask++) if ((await linkOwner(tx, ask)) !== undefined) links += 1;
 
 	return {
-		parleys: (await tx.doc(Parleys)).parleys.length,
+		asks: (await ENTRY_ASKS.inCommit(tx)).length,
 		conversationTodos: (await tx.doc(ConversationTodos, conversationId)).todos.length,
 		links,
 		callerTodos: (await tx.doc(CallerTodos, "cli", null)).todos.length,
@@ -130,7 +120,7 @@ describe("the checkpoint rule of the host's documents", () => {
 
 		try {
 			expect(await reopened.commit((tx) => lengths(tx, conversationId), context)).toEqual({
-				parleys: ROUNDS,
+				asks: ROUNDS,
 				conversationTodos: ROUNDS,
 				links: ROUNDS,
 				callerTodos: ROUNDS,

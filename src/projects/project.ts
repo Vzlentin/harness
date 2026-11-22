@@ -1,13 +1,9 @@
 /**
  * The objects of the project that its requests change: the persons, the threads, the messages and the held actions.
  * They are in the project store (`project-store.ts`), and each function writes them in the transaction of a write. The
- * rules are in `project-rules.ts`, the asks in `asks.ts` and the parleys in `parleys.ts`. A load of a store file writes
- * the parleys and the asks into `durable.sqlite`.
+ * rules are in `project-rules.ts`, the parleys in `parleys.ts` and the items in `items.ts`.
  */
-import type { CommitChange, Tx } from "@earendil-works/pi-durable";
-import type { EntryAsks } from "../host/entries.ts";
 import {
-	ASKS_KIND,
 	type HeldAction,
 	type HeldInput,
 	type Message,
@@ -23,19 +19,10 @@ import {
 	type ThreadJoin,
 	type ThreadMessages,
 } from "../protocol/project.ts";
-import type { FileMessage, StoreFile } from "../protocol/store-file.ts";
+import type { FileMessage } from "../protocol/store-file.ts";
 import { approveDelivery, approveKey } from "./project-deliveries.ts";
-import { Parleys } from "./project-docs.ts";
 import { releaseSource } from "./project-rules.ts";
 import { knownAuthor, replyMessage, type StoreReader, type StoreTx } from "./project-store.ts";
-
-/** The kinds of the documents of the project in `durable.sqlite`. */
-const PROJECT_DOCS: ReadonlySet<string> = new Set([ASKS_KIND, Parleys.definition.kind]);
-
-/** Whether `change` can change an object of the project in `durable.sqlite`: a document of the project. */
-export function projectChange(change: CommitChange): boolean {
-	return change.type === "document" && PROJECT_DOCS.has(change.record.kind);
-}
 
 /** Adds a person with the next ID, and gives it. */
 export function addPerson(tx: StoreTx, input: PersonAdd): Person {
@@ -263,15 +250,6 @@ export function heldFor(held: readonly HeldAction[], agent: string, requestId: s
 /** The thread `id` and its messages, oldest first. */
 export function readThread(store: StoreReader, id: number): ThreadMessages {
 	return { thread: store.thread(id), messages: store.messages(id).map(replyMessage) };
-}
-
-/**
- * Writes the parleys and the asks (in `asks`) of `file` in `tx`, into a store whose lists are empty. The persons, the
- * threads, the messages, the rules and the held actions go to the project store.
- */
-export async function loadLists(tx: Tx, asks: Pick<EntryAsks, "load">, file: StoreFile): Promise<void> {
-	(await tx.doc(Parleys)).parleys.push(...file.parleys);
-	await asks.load(tx, file.asks);
 }
 
 /** Sets the held action `id` to the decision `decision`, and gives it. An action that is not held fails. */

@@ -1,15 +1,26 @@
 /**
- * `project.sqlite`: the persons, the threads with their persons, the messages, the rules and the held actions of the
- * project, and the pending deliveries, as plain tables beside `durable.sqlite`. The host is the only writer: a write is
- * one synchronous transaction, and the store tells its listeners what changed after the commit. Each table gives the
- * next ID of its list and never gives an ID again. `store load` writes a store file into the empty tables with the IDs
- * of the file. The schema also has the tables of the parleys and the items with their edges.
+ * `project.sqlite`: the persons, the threads with their persons, the messages, the rules, the held actions, the
+ * parleys, and the work items with their edges of the project, and the pending deliveries, as plain tables beside
+ * `durable.sqlite`. The host is the only writer: a write is one synchronous transaction, and the store tells its
+ * listeners what changed after the commit, or after the commit of `durable.sqlite` that the write is part of. Each
+ * table gives the next ID of its list and never gives an ID again. The edges give the items of each end, and the
+ * `needs` edges that go to an item. `store load` writes a store file into the empty tables with the IDs of the file.
  */
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Author, HeldAction, Message, Person, Rule, type RuleFilter, Thread } from "../protocol/project.ts";
+import { Edge, type EdgeInput, type EdgeItem, edgeItem, type ItemState, WorkItem } from "../protocol/item.ts";
+import {
+	type Author,
+	HeldAction,
+	Message,
+	Parley,
+	Person,
+	Rule,
+	type RuleFilter,
+	Thread,
+} from "../protocol/project.ts";
 import { FileMessage, type StoreFile } from "../protocol/store-file.ts";
 
 /** The file of the store, in the state directory of the project. */
@@ -110,6 +121,28 @@ const RULE_COLUMNS = `id, name, kind, value, status, COALESCE(said_by, 'user') A
 
 const HELD_COLUMNS = `id, request_id AS requestId, agent, tool, command, rule, reason, state, ran_request_id AS ranRequestId, ran_at AS ranAt, at, "by"`;
 
+const PARLEY_COLUMNS = `id, slug, title, goal, evidence, design_sense, status, at, "by"`;
+
+const ITEM_COLUMNS = `id, title, text, state, at, "by"`;
+
+const EDGE_COLUMNS = `"from", kind, "to", at, "by"`;
+
+/** A parley row, with its evidence as JSON text. */
+const ParleyRow = Type.Object({
+	...Parley.anyOf[0].properties,
+	evidence: Type.Optional(Type.String()),
+	status: Type.String(),
+});
+
+/** An item row, without its edges. */
+const ItemRow = Type.Omit(WorkItem, ["edges"]);
+
+/** A parley as a write gives it, with the next ID when it has none. */
+type NewParley = DistributiveOmit<Parley, "id"> & { id?: number };
+
+/** The fields of an item as a write gives them, with the next ID when it has none. */
+type NewItem = Omit<WorkItem, "id" | "edges"> & { id?: number };
+
 /** A held action row, with the call that an approved action ran for in two columns. */
 const HeldRow = Type.Object({
 	...HeldAction.anyOf[0].properties,
@@ -151,6 +184,9 @@ export type StoreChange =
 	| { readonly kind: "message"; readonly value: FileMessage }
 	| { readonly kind: "rule"; readonly value: Rule }
 	| { readonly kind: "held"; readonly value: HeldAction }
+	| { readonly kind: "parley"; readonly value: Parley }
+	/** An item with its own edges. */
+	| { readonly kind: "item"; readonly value: WorkItem }
 	| { readonly kind: "removed"; readonly table: "message" | "rule"; readonly id: number };
 
 /**
@@ -258,12 +294,106 @@ export class StoreReader {
 
 	/** The highest ID that a rule had, also a rule that is gone, or 0 when no rule was set. */
 	lastRule(): number {
+		return this.#sequence("rule") ?? 0;
+	}
+
+	/** The parleys, in ID order. */
+	parleys(): Parley[] {
+		return this.#parleys(`SELECT ${PARLEY_COLUMNS} FROM parley ORDER BY id`);
+	}
+
+	/** The parley `id`. An ID of no parley fails with `Unknown parley: <id>`. */
+	parley(id: number): Parley {
+		return this.findParley(id) ?? unknown("parley", id);
+	}
+
+	/** The parley `id`, or `undefined` when there is no such parley. */
+	findParley(id: number): Parley | undefined {
+		return this.#parleys(`SELECT ${PARLEY_COLUMNS} FROM parley WHERE id = ?`, id)[0];
+	}
+
+	/** The parley `slug`. A slug of no parley fails with `Unknown parley: <slug>`. */
+	parleyBySlug(slug: string): Parley {
+		return this.findParleyBySlug(slug) ?? unknown("parley", slug);
+	}
+
+	/** The parley `slug`, or `undefined` when there is no such parley. */
+	findParleyBySlug(slug: string): Parley | undefined {
+		return this.#parleys(`SELECT ${PARLEY_COLUMNS} FROM parley WHERE slug = ?`, slug)[0];
+	}
+
+	/** The items, in ID order, each with its own edges: with `state`, only those in that state. */
+	items(state?: ItemState): WorkItem[] {
+		return this.#items(`SELECT ${ITEM_COLUMNS} FROM item WHERE (?1 IS NULL OR state = ?1) ORDER BY id`, state ?? null);
+	}
+
+	/**
+	 * The item `id`, in any state, with its own edges in the order of their writes: the edges from the item, and the
+	 * edges to it that are not `needs`. An ID of no item fails with `Unknown item: <id>`.
+	 */
+	item(id: number): WorkItem {
+		return this.findItem(id) ?? unknown("item", id);
+	}
+
+	/** The item `id` with its own edges, or `undefined` when there is no such item. */
+	findItem(id: number): WorkItem | undefined {
+		return this.#items(`SELECT ${ITEM_COLUMNS} FROM item WHERE id = ?`, id)[0];
+	}
+
+	/** The `needs` edges that go to the item `id` from other items, in the ID order of those items. */
+	incomingNeeds(id: number): Edge[] {
+		return this.#rows(
+			Edge,
+			`SELECT ${EDGE_COLUMNS} FROM edge WHERE kind = 'needs' AND "to" = ? ORDER BY CAST(substr("from", 6) AS INTEGER), id`,
+			`item:${id}`,
+		);
+	}
+
+	/** The IDs of the items whose edges come from `end`, a `run:`, a `parley:` or an `agent:` reference, in ID order. */
+	itemsFrom(end: string): number[] {
+		return this.#rows(
+			Type.Object({ id: Type.Integer() }),
+			`SELECT DISTINCT CAST(substr("to", 6) AS INTEGER) AS id FROM edge WHERE "from" = ? AND "to" LIKE 'item:%' ORDER BY id`,
+			end,
+		).map((row) => row.id);
+	}
+
+	/** The highest ID that an item had, or `undefined` when the store has no counter of the IDs of items. */
+	lastItem(): number | undefined {
+		return this.#sequence("item");
+	}
+
+	/** The last ID that the table `table` gave, or `undefined` when it has none. */
+	#sequence(table: string): number | undefined {
 		const [row] = this.#rows(
 			Type.Object({ seq: Type.Integer() }),
-			"SELECT seq FROM sqlite_sequence WHERE name = 'rule'",
+			"SELECT seq FROM sqlite_sequence WHERE name = ?",
+			table,
 		);
 
-		return row?.seq ?? 0;
+		return row?.seq;
+	}
+
+	/** The parleys of `sql` with `params`. */
+	#parleys(sql: string, ...params: SQLInputValue[]): Parley[] {
+		return this.#rows(ParleyRow, sql, ...params).map(({ evidence, ...parley }) =>
+			Value.Parse(Parley, evidence === undefined ? parley : { ...parley, evidence: JSON.parse(evidence) }),
+		);
+	}
+
+	/** The items of `sql` with `params`, each with its own edges. */
+	#items(sql: string, ...params: SQLInputValue[]): WorkItem[] {
+		return this.#rows(ItemRow, sql, ...params).map((item) => {
+			const ref = `item:${item.id}`;
+
+			const edges = this.#rows(
+				Edge,
+				`SELECT ${EDGE_COLUMNS} FROM edge WHERE "from" = ?1 OR ("to" = ?1 AND kind <> 'needs') ORDER BY id`,
+				ref,
+			);
+
+			return { ...item, edges };
+		});
 	}
 
 	#threads(sql: string, ...params: SQLInputValue[]): Thread[] {
@@ -443,9 +573,87 @@ export class StoreTx extends StoreReader {
 
 	/** Makes `last` the highest ID that a rule had, when it is higher. */
 	raiseLastRule(last: number): void {
-		if (last <= this.lastRule()) return;
-		this.db.prepare("DELETE FROM sqlite_sequence WHERE name = 'rule'").run();
-		this.db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('rule', ?)").run(last);
+		if (last > this.lastRule()) this.#setSequence("rule", last);
+	}
+
+	/** Adds the parley `parley`, with the next ID when it has none, and gives it. */
+	addParley(parley: NewParley): Parley {
+		const id = this.#insert(
+			`INSERT INTO parley (id, slug, title, goal, evidence, design_sense, status, at, "by") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			parley.id ?? null,
+			...parleyValues(parley),
+		);
+
+		this.#record("parley", id);
+
+		return this.parley(id);
+	}
+
+	/** Writes `parley` over the parley of its ID. */
+	putParley(parley: Parley): void {
+		this.db
+			.prepare(
+				`UPDATE parley SET slug = ?, title = ?, goal = ?, evidence = ?, design_sense = ?, status = ?, at = ?, "by" = ? WHERE id = ?`,
+			)
+			.run(...parleyValues(parley), parley.id);
+		this.#record("parley", parley.id);
+	}
+
+	/** Adds the item `item` with no edge, with the next ID when it has none, and gives it. */
+	addItem(item: NewItem): WorkItem {
+		const id = this.#insert(
+			`INSERT INTO item (id, title, text, state, at, "by") VALUES (?, ?, ?, ?, ?, ?)`,
+			item.id ?? null,
+			...itemValues(item),
+		);
+
+		this.#record("item", id);
+
+		return this.item(id);
+	}
+
+	/** Writes the fields of `item` over the item of its ID. Its edges do not change. */
+	putItem(item: Omit<WorkItem, "edges">): void {
+		this.db
+			.prepare(`UPDATE item SET title = ?, text = ?, state = ?, at = ?, "by" = ? WHERE id = ?`)
+			.run(...itemValues(item), item.id);
+		this.#record("item", item.id);
+	}
+
+	/** Adds the edge `edge` as the last edge of its item. */
+	addEdge(edge: Edge): void {
+		const { from, kind, to, at, by } = edge;
+		this.db
+			.prepare(`INSERT INTO edge ("from", kind, "to", at, "by") VALUES (?, ?, ?, ?, ?)`)
+			.run(from, kind, to, at, by);
+		this.#record("item", edgeEnds(edge).id);
+	}
+
+	/** Removes the edges with the ends and the kind of `edge`. */
+	removeEdge(edge: EdgeInput): void {
+		this.db.prepare(`DELETE FROM edge WHERE "from" = ? AND kind = ? AND "to" = ?`).run(edge.from, edge.kind, edge.to);
+		this.#record("item", edgeEnds(edge).id);
+	}
+
+	/**
+	 * Writes `items`, each with its edges, with their IDs, and makes `last` the highest ID that an item had, when it is
+	 * higher. The counter of the IDs of items exists after it, also with no item.
+	 */
+	loadItems(items: readonly WorkItem[], last: number): void {
+		for (const { edges, ...item } of items) {
+			this.addItem(item);
+
+			for (const edge of edges) this.addEdge(edge);
+		}
+
+		const stored = this.lastItem();
+
+		if (stored === undefined || last > stored) this.#setSequence("item", last);
+	}
+
+	#setSequence(table: string, last: number): void {
+		this.db.prepare("DELETE FROM sqlite_sequence WHERE name = ?").run(table);
+		this.db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(table, last);
 	}
 
 	#insert(sql: string, ...params: SQLInputValue[]): number {
@@ -483,15 +691,23 @@ export class StoreTx extends StoreReader {
 
 			case "held":
 				return { kind: table, value: this.heldAction(id) };
+			case "parley":
+				return { kind: table, value: this.parley(id) };
+			case "item":
+				return { kind: table, value: this.item(id) };
 		}
 	}
 }
 
-type ChangedTable = "person" | "thread" | "message" | "rule" | "held";
+type ChangedTable = "person" | "thread" | "message" | "rule" | "held" | "parley" | "item";
 
 /** The store of a project, open on its file. */
 export class ProjectStore extends StoreReader {
 	readonly #listeners = new Set<StoreListener>();
+	/** How many `writeAcross` calls run now. */
+	#across = 0;
+	/** The changes of the writes that commit while a `writeAcross` runs, which its listeners get after it. */
+	#deferred: StoreChange[] = [];
 
 	/**
 	 * Opens `project.sqlite` in the directory `dir`, and creates its tables when they are not there. A lock that another
@@ -523,9 +739,31 @@ export class ProjectStore extends StoreReader {
 		this.#begin();
 		const [result, changes] = this.#end(() => [fn(tx), tx.changes()] as const);
 
-		if (changes.length > 0) for (const listener of this.#listeners) listener(changes);
+		if (this.#across > 0) this.#deferred.push(...changes);
+		else this.#tell(changes);
 
 		return result;
+	}
+
+	/**
+	 * Runs `outer`, such as a commit of `durable.sqlite` whose callback writes the store, and gives its result. Each
+	 * write commits at once, but the listeners get the changes of the writes only once `outer` settles, and no
+	 * `writeAcross` runs: a listener then reads the two stores with all of their writes.
+	 */
+	async writeAcross<T>(outer: () => Promise<T>): Promise<T> {
+		this.#across += 1;
+
+		try {
+			return await outer();
+		} finally {
+			this.#across -= 1;
+
+			if (this.#across === 0) {
+				const changes = this.#deferred;
+				this.#deferred = [];
+				this.#tell(changes);
+			}
+		}
 	}
 
 	/** Calls `listener` after each write that changes something, and gives the function that stops it. */
@@ -536,10 +774,11 @@ export class ProjectStore extends StoreReader {
 	}
 
 	/**
-	 * Writes the persons, the threads with their messages, the rules and the held actions of `file` into the store with
-	 * the IDs of the file, then awaits `rest`, the write of the other lists, and commits only when it succeeds. A rule with a source
-	 * gets the thread of its source message. The highest ID that a rule had becomes `lastRule` when it is higher. The
-	 * load tells no listener.
+	 * Writes the persons, the threads with their messages, the rules, the held actions, the parleys and the items with
+	 * their edges of `file` into the store with the IDs of the file, then awaits `rest`, the write of the other lists, and
+	 * commits only when it succeeds. A rule with a source gets the thread of its source message. The highest ID that a
+	 * rule had becomes `lastRule`, and the highest ID that an item had `lastItem`, when it is higher. The load always
+	 * writes the counter of the IDs of items, and tells no listener.
 	 */
 	async load(file: StoreFile, rest: () => Promise<void>): Promise<void> {
 		this.#begin();
@@ -556,6 +795,11 @@ export class ProjectStore extends StoreReader {
 		this.#listeners.clear();
 
 		if (this.db.isOpen) this.db.close();
+	}
+
+	/** Gives `changes` to each listener, when there are any. */
+	#tell(changes: readonly StoreChange[]): void {
+		if (changes.length > 0) for (const listener of this.#listeners) listener(changes);
 	}
 
 	async #load(file: StoreFile, rest: () => Promise<void>): Promise<void> {
@@ -580,6 +824,9 @@ export class ProjectStore extends StoreReader {
 
 		for (const held of file.held) tx.addHeld(held);
 		tx.raiseLastRule(file.lastRule);
+
+		for (const parley of file.parleys) tx.addParley(parley);
+		tx.loadItems(file.items, file.lastItem);
 		await rest();
 	}
 
@@ -647,11 +894,39 @@ function heldValues(held: DistributiveOmit<HeldAction, "id">): SQLInputValue[] {
 	];
 }
 
+function parleyValues(parley: NewParley): SQLInputValue[] {
+	const { slug, title, goal, evidence, design_sense, status, at, by } = parley;
+
+	return [
+		slug,
+		title,
+		goal,
+		evidence === undefined ? null : JSON.stringify(evidence),
+		design_sense ?? null,
+		status,
+		at,
+		by,
+	];
+}
+
+function itemValues(item: NewItem): SQLInputValue[] {
+	return [item.title, item.text ?? null, item.state, item.at, item.by];
+}
+
+/** The ID of the item that stores `edge`, and the reference at its other end. Ends that its kind does not take fail. */
+export function edgeEnds(edge: EdgeInput): EdgeItem {
+	const ends = edgeItem(edge);
+
+	if (ends === undefined) throw new Error(`An edge ${edge.kind} cannot go from ${edge.from} to ${edge.to}`);
+
+	return ends;
+}
+
 function personOf(author: Author): number | null {
 	return author === "user" ? null : author;
 }
 
-function unknown(name: string, id: number): never {
+function unknown(name: string, id: number | string): never {
 	throw new Error(`Unknown ${name}: ${id}`);
 }
 

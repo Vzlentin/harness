@@ -5,44 +5,43 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
-import type { CommitChange, Harness, Storage } from "@earendil-works/pi-durable";
+import type { CommitChange, Harness } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import type { Degraded } from "../host/degraded.ts";
 import type { EntryHandles, EntryWatchOptions } from "../host/entries.ts";
 import { type StoreView, watchStore } from "../host/store-watch.ts";
 import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
-import { ASKS_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
-import { changedItemId, readItem, readItems } from "./item-docs.ts";
+import { isWaiting, type ProjectThread } from "../protocol/project.ts";
 import { type StageHost, stageItems } from "./item-stage.ts";
-import { readParleys } from "./parleys.ts";
 import { type ProjectStore, replyMessage } from "./project-store.ts";
-import { projectChange } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** The kinds of the documents whose changes can change the stage or `needsYou` of any item. */
-const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND]);
-
 /**
- * What the watch uses of the host. `workersChange` tells the changes that can change a worker of a label, and so the
- * stage or `needsYou` of any item.
+ * What the watch uses of the host. `asks.changed` and `workersChange` tell the changes of the commits that can change an
+ * ask or a worker of a label, and so the stage or `needsYou` of any item.
  */
 export type ProjectHost = StageHost &
 	Pick<EntryHandles, "workersChange" | "asks"> & {
 		readonly harness: Harness;
-		/** The storage of `harness`, whose scan of documents lists the items. */
-		readonly storage: Pick<Storage, "scanDocuments">;
-		/** The project store, with the persons, the rules, the threads, the messages and the held actions. */
-		readonly store: Pick<ProjectStore, "persons" | "rules" | "threads" | "outMessages" | "held" | "subscribe">;
+		/**
+		 * The project store, with the persons, the rules, the threads, the messages, the held actions, the parleys and the
+		 * items.
+		 */
+		readonly store: Pick<
+			ProjectStore,
+			"persons" | "rules" | "threads" | "outMessages" | "held" | "parleys" | "items" | "item" | "subscribe"
+		>;
 		readonly degraded: Degraded;
 	};
 
 /**
  * Opens a watch of the store of the project with the calls of the entry watch `options`, and returns the reply, with
  * every object. A pass runs at once, and its events wait for the reply. After it, each write of the project store that
- * changes a person, a rule, a thread, a message or a held action, each commit that changes a parley, an ask, an item, a
- * child, a started task or a task that ends, and each change of the degraded states of the host start a pass: the host reads the objects again and
+ * changes a person, a rule, a thread, a message, a held action, a parley or an item, each commit that changes an ask, a
+ * child, a started task or a task that ends, and each change of the degraded states of the host start a pass: the host
+ * reads the objects again and
  * sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that went and every
  * degraded state, only when one of its lists is not empty or the degraded states changed. The passes run one at a
  * time, and the commits during a pass give one more pass. When a write waits for a slow socket to drain, the next event
@@ -128,11 +127,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	async read(): Promise<ProjectState> {
 		const { store } = this.#host;
 		const items = this.#readItems();
-
-		const [parleys, asks] = await Promise.all([
-			readParleys(this.#host.harness, context),
-			this.#host.asks.read(this.#host.harness, context),
-		]);
+		const asks = await this.#host.asks.read(this.#host.harness, context);
 
 		const waiting = store.outMessages().filter((message) => isWaiting(message.state));
 
@@ -146,7 +141,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			rules: store.rules({}),
 			threads,
 			held: store.held(),
-			...parleys,
+			parleys: store.parleys(),
 			...asks,
 			items: await items,
 			degraded: this.#host.degraded.list(),
@@ -160,34 +155,19 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	}
 
 	/**
-	 * Whether `change` can change an object of the project in `durable.sqlite`. It records the items that change, and
-	 * whether every stage can change.
+	 * Whether `change` can change an ask or a worker of a label, which can change every stage. It records that every stage
+	 * can change.
 	 */
 	changes(change: CommitChange): boolean {
-		const item = changedItemId(change);
-
-		if (item !== undefined) {
-			this.#freshItems.add(item);
-
-			return true;
-		}
-
-		if (this.#host.workersChange(change)) {
-			this.#allStages = true;
-
-			return true;
-		}
-
-		if (!projectChange(change)) return false;
-
-		if (change.type === "document" && STAGE_DOCS.has(change.record.kind)) this.#allStages = true;
+		if (!this.#host.asks.changed(change) && !this.#host.workersChange(change)) return false;
+		this.#allStages = true;
 
 		return true;
 	}
 
 	/**
 	 * The open items with their stages, in ID order, and the items that left `open` since the last read, once. The first
-	 * read lists the open items. A later read reads again the items that a commit changed, and works out the stages of
+	 * read lists the open items. A later read reads again the items that a write changed, and works out the stages of
 	 * those items, or of every open item after a change of a parley, an ask, a held action, a child, a started task or a task that ends.
 	 */
 	async #readItems(): Promise<StagedItem[]> {
@@ -197,10 +177,8 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		this.#allStages = false;
 		const map = this.#staged ?? new Map<number, StagedItem>();
 
-		const read =
-			this.#staged === undefined
-				? await readItems(this.#host.harness, this.#host.storage, "open", context)
-				: await Promise.all([...fresh].map((id) => readItem(this.#host.harness, id, context)));
+		const { store } = this.#host;
+		const read = this.#staged === undefined ? store.items("open") : [...fresh].map((id) => store.item(id));
 
 		this.#staged = map;
 		const open: WorkItem[] = [];
@@ -226,14 +204,18 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 	}
 
 	/**
-	 * Requests a pass at each change of the degraded states, and at each write of the project store that changes it. A
-	 * change of a held action can change every stage.
+	 * Requests a pass at each change of the degraded states, and at each write of the project store that changes it. It
+	 * records the items that a write changes, and a change of a parley or a held action can change every stage.
 	 */
 	triggers(request: () => void): () => void {
 		const degraded = this.#host.degraded.subscribe(request);
 
 		const store = this.#host.store.subscribe((changes) => {
-			if (changes.some((change) => change.kind === "held")) this.#allStages = true;
+			for (const change of changes) {
+				if (change.kind === "item") this.#freshItems.add(change.value.id);
+				else if (change.kind === "parley" || change.kind === "held") this.#allStages = true;
+			}
+
 			request();
 		});
 

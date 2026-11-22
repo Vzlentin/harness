@@ -8,9 +8,7 @@ import type { EntryHandles } from "../host/entries.ts";
 import type { ItemStage, StagedItem, WorkItem } from "../protocol/item.ts";
 import type { Ask, HeldAction, Parley } from "../protocol/project.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
-import { itemEnds } from "./item-docs.ts";
-import { runAsker, runLive, taskRun } from "./items.ts";
-import { readParleys } from "./parleys.ts";
+import { itemEnds, runAsker, runLive, taskRun } from "./items.ts";
 import type { StoreReader } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -21,8 +19,8 @@ const context = BACKGROUND_CONTEXT;
  */
 export type StageHost = Pick<EntryHandles, "asks" | "labelledTasks" | "liveWorkers"> & {
 	readonly harness: Pick<DocumentReader, "snapshot">;
-	/** The project store, with the held actions. */
-	readonly store: Pick<StoreReader, "held">;
+	/** The project store, with the held actions and the parleys. */
+	readonly store: Pick<StoreReader, "held" | "parleys">;
 };
 
 /**
@@ -61,14 +59,13 @@ export async function stageItem(host: StageHost, item: WorkItem): Promise<Staged
 
 /** The inputs of the stage, as the store has them now. */
 async function readInputs(host: StageHost): Promise<StageInputs> {
-	const [{ parleys }, { asks }, tasks, workers] = await Promise.all([
-		readParleys(host.harness, context),
+	const [{ asks }, tasks, workers] = await Promise.all([
 		host.asks.open(host.harness, context),
 		host.labelledTasks(),
 		host.liveWorkers(),
 	]);
 
-	return { parleys, asks, held: host.store.held(), tasks, workers };
+	return { parleys: host.store.parleys(), asks, held: host.store.held(), tasks, workers };
 }
 
 /**

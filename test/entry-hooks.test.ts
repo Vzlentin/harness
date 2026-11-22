@@ -10,6 +10,7 @@ import { connect, request } from "../src/client/client.ts";
 import { addAsks, answerAsks, ENTRY_ASKS } from "../src/host/asks.ts";
 import type { Host } from "../src/host/run.ts";
 import { readParley, writeAnswers } from "../src/projects/parleys.ts";
+import { ProjectStore } from "../src/projects/project-store.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -341,11 +342,17 @@ describe("the contract of a read-back", { timeout: 30_000 }, () => {
 				{ id: readBack, answer: "ok" },
 			];
 
-			await harness.commit(
-				(tx) => writeAnswers(tx, ENTRY_ASKS, answers, "user", { kind: "user" }, NO_ROOT),
-				BACKGROUND_CONTEXT,
-			);
-			open = (await readParley(harness, ENTRY_ASKS, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
+			const store = ProjectStore.open(statePaths(MAIN_PROJECT).dir, 0);
+
+			try {
+				await harness.commit(
+					(tx) => writeAnswers(tx, store, ENTRY_ASKS, answers, "user", { kind: "user" }, NO_ROOT),
+					BACKGROUND_CONTEXT,
+				);
+				open = (await readParley(harness, store, ENTRY_ASKS, "offline-sign", BACKGROUND_CONTEXT)).parley.status;
+			} finally {
+				store.close();
+			}
 		});
 
 		expect(open).toBe("open");

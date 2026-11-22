@@ -8,10 +8,8 @@ import type { EntryHandles, EntryOpen } from "../host/entries.ts";
 import { type AnswerAuthorOf, type AskRequest, type ProjectRequest, type Replies } from "../protocol/requests.ts";
 import { nextDigest, recordDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
-import { readItemBothWays, readItems } from "./item-docs.ts";
-import type { ItemIndex } from "./item-index.ts";
 import { stageItem, stageItems } from "./item-stage.ts";
-import { addItem, linkItem, readItemWorkers, setItem, unlinkItem } from "./items.ts";
+import { addItem, linkItem, readItemBothWays, readItemWorkers, setItem, unlinkItem } from "./items.ts";
 import { answerMemory, type HostMemory } from "./memory.ts";
 import {
 	dropAskRef,
@@ -19,7 +17,6 @@ import {
 	noteAskRef,
 	readAsk,
 	readParley,
-	readParleys,
 	takeParley,
 	writeAnswers,
 	writeRound,
@@ -62,12 +59,13 @@ export type ProjectsHost = Pick<
 	| "deliver"
 > &
 	EntryOpen & {
-		/** The index of the ends of the items, which gives the items that a contract shapes. */
-		readonly items: ItemIndex;
 		readonly models: Models;
 		/** The memory of the project agent, for the `memory` requests. */
 		readonly memory: HostMemory;
-		/** The persons, the threads, the messages, the rules, the held actions and the pending deliveries. */
+		/**
+		 * The persons, the threads, the messages, the rules, the held actions, the parleys, the items with their edges and
+		 * the pending deliveries.
+		 */
 		readonly store: ProjectStore;
 	};
 
@@ -120,22 +118,25 @@ export async function projectAsk(
 ): Promise<Replies["ask"]> {
 	switch (request.action) {
 		case "round":
-			return host.harness.commit((tx) => writeRound(tx, host.asks, request, request.caller), context);
+			return writeRound(host.harness, host.store, host.asks, request, request.caller, context);
 		case "answer": {
 			const author = await authorOf(request);
 
 			return host.harness.commit(
-				(tx) => writeAnswers(tx, host.asks, request.answers, request.caller, author, host.root.id),
+				(tx) => writeAnswers(tx, host.store, host.asks, request.answers, request.caller, author, host.root.id),
 				context,
 			);
 		}
 
 		case "drop":
-			return host.harness.commit((tx) => dropAskRef(tx, host.asks, request, request.caller), context);
+			return host.harness.commit((tx) => dropAskRef(tx, host.store, host.asks, request, request.caller), context);
 		case "note":
-			return host.harness.commit((tx) => noteAskRef(tx, host.asks, request, request.note, request.caller), context);
+			return host.harness.commit(
+				(tx) => noteAskRef(tx, host.store, host.asks, request, request.note, request.caller),
+				context,
+			);
 		case "read":
-			return readAsk(host.harness, host.asks, request, context);
+			return readAsk(host.harness, host.store, host.asks, request, context);
 		case "list":
 			return host.asks.open(host.harness, context);
 	}
@@ -210,12 +211,9 @@ async function parley(
 ): Promise<Replies["parley"]> {
 	switch (request.action) {
 		case "take":
-			return host.harness.commit((tx) => takeParley(tx, host.asks, request.slug, request.caller), context);
+			return host.harness.commit((tx) => takeParley(tx, host.store, host.asks, request.slug, request.caller), context);
 		case "end": {
-			const ended = await host.harness.commit(
-				(tx) => endParley(tx, request.slug, request.status, request.caller, host.items),
-				context,
-			);
+			const ended = host.store.write((tx) => endParley(tx, request.slug, request.status, request.caller));
 
 			await stopWork(host, [`parley:${ended.slug}`], afterTurn(request.caller));
 
@@ -223,24 +221,28 @@ async function parley(
 		}
 
 		case "read":
-			return readParley(host.harness, host.asks, request.slug, context);
+			return readParley(host.harness, host.store, host.asks, request.slug, context);
 		case "list":
-			return readParleys(host.harness, context);
+			return { parleys: host.store.parleys() };
 	}
 }
 
 /**
- * Each item of a reply has its stage, which the entry works out after the commit: a commit callback cannot read the
- * states of the agents, which their own commits give.
+ * Each item of a reply has its stage, which the entry works out after the write: the states of the agents are in the
+ * commits of `durable.sqlite`.
  */
 async function item(request: Extract<ProjectRequest, { type: "item" }>, host: ProjectsHost): Promise<Replies["item"]> {
+	const { store } = host;
+
 	switch (request.action) {
 		case "add":
-			return stageItem(host, await host.harness.commit((tx) => addItem(tx, request, request.caller), context));
+			return stageItem(
+				host,
+				store.write((tx) => addItem(tx, request, request.caller)),
+			);
 		case "set": {
 			const workers = await readItemWorkers(host, request.id);
-
-			const set = await host.harness.commit((tx) => setItem(tx, request, request.caller, host.items, workers), context);
+			const set = store.write((tx) => setItem(tx, request, request.caller, workers));
 
 			// A closed item stops the workers of its label and of the contracts that it ended, and the caller after its turn.
 			if (set.item.state !== "open") {
@@ -251,18 +253,17 @@ async function item(request: Extract<ProjectRequest, { type: "item" }>, host: Pr
 			return stageItem(host, set.item);
 		}
 
-		case "list": {
-			const items = await readItems(host.harness, host.storage, request.state ?? "open", context);
-
-			return { items: await stageItems(host, items) };
-		}
-
+		case "list":
+			return { items: await stageItems(host, store.items(request.state ?? "open")) };
 		case "read":
-			return stageItem(host, await readItemBothWays(host.harness, host.storage, request.id, context));
+			return stageItem(host, readItemBothWays(store, request.id));
 		case "link":
-			return host.harness.commit((tx) => linkItem(tx, request, request.caller, host.items), context);
+			return store.write((tx) => linkItem(tx, request, request.caller));
 		case "unlink":
-			return stageItem(host, await host.harness.commit((tx) => unlinkItem(tx, request), context));
+			return stageItem(
+				host,
+				store.write((tx) => unlinkItem(tx, request)),
+			);
 	}
 }
 

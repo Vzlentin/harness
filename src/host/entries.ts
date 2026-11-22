@@ -323,6 +323,8 @@ export type EntryAsks = {
 	readonly take: (tx: Tx, ids: readonly number[], by: string) => Promise<void>;
 	/** Adds the asks of a store file, with their IDs, to the asks of `tx`. */
 	readonly load: (tx: Tx, asks: readonly Ask[]) => Promise<void>;
+	/** Whether `change`, a change of a commit, can change an ask. */
+	readonly changed: (change: CommitChange) => boolean;
 };
 
 /** The lists of todos of the store. They need no open host. */

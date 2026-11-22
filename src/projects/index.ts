@@ -3,11 +3,10 @@
  * messages, rules, held actions, parleys, items, the gate, the digest, the memory of the project agent and the watch of
  * the project, the `ask` requests with their parleys, the checks of the labels `parley:<slug>` and `item:<id>`, the
  * digest before each input, the contracts of the answered read-backs, and the items that the reports of their workers
- * close, and drops the held actions of each child that ended. At the open of the host, it moves an old store to items
- * and labels, opens the index of the items, writes `store.json`, sends the pending deliveries, stops the workers of
- * the work that ended, and drops the held actions of the children that ended while the host was down.
+ * close, and drops the held actions of each child that ended. At the open of the host, it opens the project store,
+ * moves an old store to items and labels, writes `store.json`, sends the pending deliveries, stops the workers of the
+ * work that ended, and drops the held actions of the children that ended while the host was down.
  */
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -19,8 +18,6 @@ import { type ProjectRequest, ProjectRequestLine, type Replies } from "../protoc
 import { digestHook } from "./digest.ts";
 import { dropHeldOfEnded, dropHeldOfEndedAgents } from "./ended-agents.ts";
 import { gateExtension } from "./gate.ts";
-import { allItems } from "./item-docs.ts";
-import { ItemIndex } from "./item-index.ts";
 import { migrateTodos } from "./item-migration.ts";
 import { itemReports } from "./item-reports.ts";
 import { migrateLabels } from "./label-migration.ts";
@@ -34,8 +31,6 @@ import { rulesExtension } from "./rules-section.ts";
 import { type StoreFilePasses, storeFilePasses } from "./store-file.ts";
 import { workLabelChecks } from "./work-state.ts";
 import { stopEndedWork } from "./work-workers.ts";
-
-const context = BACKGROUND_CONTEXT;
 
 /** The version of the protocol of the requests of the projects entry, which the `hello` reply gives. */
 export const PROJECTS_PROTOCOL_VERSION = 1;
@@ -62,10 +57,10 @@ const PROJECT_PASSIVE = {
 } satisfies { readonly [T in ProjectRequest["type"]]: (request: EntryLine) => boolean };
 
 /**
- * What the entry has once the host is open: the harness, the root conversation, the storage, the index of the items,
- * the project store and the passes of `store.json`.
+ * What the entry has once the host is open: the harness, the root conversation, the storage, the project store and the
+ * passes of `store.json`.
  */
-type Opened = EntryOpen & Pick<ProjectsHost, "items" | "store"> & { readonly storeFile: StoreFilePasses };
+type Opened = EntryOpen & Pick<ProjectsHost, "store"> & { readonly storeFile: StoreFilePasses };
 
 /** The projects entry, with the handles of the host in `options`. */
 export default function projects(options: EntryOptions): Entry {
@@ -109,28 +104,24 @@ export default function projects(options: EntryOptions): Entry {
 		answeredAsk: (event, handlerOptions) => parleyReaction(host())(event, handlerOptions),
 		reported: (event) => itemReports(host())(event),
 		agentEnded: ({ conversation }) => dropHeldOfEnded(host(), conversation),
-		labels: workLabelChecks(() => host().harness),
+		labels: workLabelChecks(() => host().store),
 		protocol: { name: "projects", version: PROJECTS_PROTOCOL_VERSION },
 		ask: (request, { author }) => projectAsk(request, host(), author),
-		classifyList: async () => {
-			const { harness, storage } = host();
-			const items = await allItems(harness, storage, context);
-
-			return items.map(({ id, title, state }) => ({ id, text: title, state }));
-		},
+		classifyList: async () =>
+			host()
+				.store.items()
+				.map(({ id, title, state }) => ({ id, text: title, state })),
 		// The project store opens first. The first start moves the todos of the project to items, and the items that the
-		// children of an old store served to their labels, before any reader of the items or the labels. The index of the
-		// ends of the items observes the commits first, so the observers and the passes after it read it current with each
-		// commit. A worker of work that ended, such as one that a message resumed, stops at each start, and a child that
-		// ended while the host was down has its held actions dropped.
+		// children of an old store served to their labels, before any reader of the items or the labels. A worker of work
+		// that ended, such as one that a message resumed, stops at each start, and a child that ended while the host was
+		// down has its held actions dropped.
 		open: async ({ harness, root, storage }) => {
 			// The host is the only writer, so a write never waits for a lock.
 			const store = ProjectStore.open(options.stateDir, 0);
 
 			try {
-				await migrateTodos(harness, options.todos, root.id);
-				await migrateLabels(harness, storage, options.labelChild);
-				const items = await ItemIndex.open(harness, storage);
+				await migrateTodos(harness, store, options.todos, root.id);
+				await migrateLabels(harness, store, options.labelChild);
 				const path = statePaths(project).store;
 
 				const storeFile = storeFilePasses({
@@ -144,7 +135,7 @@ export default function projects(options: EntryOptions): Entry {
 					warn,
 				});
 
-				opened = { harness, root, storage, items, store, storeFile };
+				opened = { harness, root, storage, store, storeFile };
 			} catch (error) {
 				store.close();
 				throw error;
@@ -157,7 +148,6 @@ export default function projects(options: EntryOptions): Entry {
 		},
 		busy: () => compressor.running > 0,
 		close: async () => {
-			opened?.items.close();
 			await opened?.storeFile.close();
 			await compressor.close();
 			opened?.store.close();
