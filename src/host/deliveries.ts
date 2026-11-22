@@ -6,7 +6,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { boundedReplay } from "./checkpoint.ts";
-import { EntryDelivery } from "./entries.ts";
+import { EntryDelivery, UnknownDeliveryTarget } from "./entries.ts";
 import { knownSession } from "./sessions.ts";
 import { library } from "./targets.ts";
 
@@ -50,8 +50,7 @@ export async function queueDelivery(
 	await harness.commit(async (tx) => {
 		const id = to === String(root) ? root : await library.opened(tx, to);
 
-		if (id === undefined && !(await knownSession(tx, to)))
-			throw new Error(`${to} is not a conversation or a Pi session of the host`);
+		if (id === undefined && !(await knownSession(tx, to))) throw new UnknownDeliveryTarget(to);
 		const queue = await tx.doc(Deliveries);
 		const same = (each: Sent) => each.key === key && each.to === to;
 

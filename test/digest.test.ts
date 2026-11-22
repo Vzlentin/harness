@@ -42,7 +42,7 @@ describe("the digest", () => {
 			const conversation = await harness.root(BACKGROUND_CONTEXT);
 			const agent = String(conversation.id);
 			const call = { requestId: "call-1", agent, tool: "bash", command: "git push", reason: "No go." };
-			await harness.commit((tx) => holdAction(tx, call), BACKGROUND_CONTEXT);
+			store.write((tx) => holdAction(tx, call));
 			const warnings: string[] = [];
 			const degraded = new Degraded((cause) => warnings.push(errorMessage(cause)));
 			const host = { harness, storage, store, project: "digest-failed", degraded };
@@ -82,7 +82,7 @@ describe("the digest", () => {
 			const agent = { model: { provider: "faux", modelId: "faux-1" }, compaction: { keepRecentTokens: 0 } };
 			const conversation = await harness.root(BACKGROUND_CONTEXT, { agent });
 			const call = { requestId: "call-1", agent: String(conversation.id), tool: "bash", command: "ls", reason: "No." };
-			await harness.commit((tx) => holdAction(tx, call), BACKGROUND_CONTEXT);
+			store.write((tx) => holdAction(tx, call));
 			const degraded = new Degraded(() => {});
 			const host = { harness, storage, store, project: "digest-head", degraded };
 			const hooks = { storage, inputHooks: [digestHook(() => host)], degraded };

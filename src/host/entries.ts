@@ -385,8 +385,8 @@ export type EntryHandles = {
 	readonly classifier: EntryClassifier;
 	/**
 	 * Sends `text` once for each `key` to `to`: as input to a hosted conversation (the project agent, a child or a library
-	 * conversation), or in the reply to the `answers` request of a Pi session. It throws until the host is open, and for
-	 * another `to`.
+	 * conversation), or in the reply to the `answers` request of a Pi session. It throws until the host is open, and
+	 * `UnknownDeliveryTarget` for another `to`.
 	 */
 	readonly deliver: (delivery: EntryDelivery) => Promise<void>;
 	/** The live workers of `label`. It throws until the host is open. */
@@ -426,6 +426,15 @@ export const EntryDelivery = Type.Object({
 });
 
 export type EntryDelivery = Static<typeof EntryDelivery>;
+
+/** The error of `deliver` for a `to` that is not a conversation or a Pi session of the host. */
+export class UnknownDeliveryTarget extends Error {
+	override readonly name = "UnknownDeliveryTarget";
+
+	constructor(to: string) {
+		super(`${to} is not a conversation or a Pi session of the host`);
+	}
+}
 
 /** What the host gives the default export of an entry. */
 export type EntryOptions = EntryHandles & {

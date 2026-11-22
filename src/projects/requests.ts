@@ -4,16 +4,8 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import type { Input } from "../children/library.ts";
 import type { EntryHandles, EntryOpen } from "../host/entries.ts";
-import { approvedText } from "../protocol/gate.ts";
-import {
-	type AnswerAuthorOf,
-	type AskRequest,
-	errorMessage,
-	type ProjectRequest,
-	type Replies,
-} from "../protocol/requests.ts";
+import { type AnswerAuthorOf, type AskRequest, type ProjectRequest, type Replies } from "../protocol/requests.ts";
 import { nextDigest, recordDigest } from "./digest.ts";
 import { gateCall } from "./gate.ts";
 import { readItemBothWays, readItems } from "./item-docs.ts";
@@ -32,6 +24,7 @@ import {
 	writeAnswers,
 	writeRound,
 } from "./parleys.ts";
+import { sendDeliveries } from "./project-deliveries.ts";
 import { changeRule, setRule } from "./project-rules.ts";
 import type { ProjectStore } from "./project-store.ts";
 import {
@@ -66,7 +59,7 @@ export type ProjectsHost = Pick<
 	| "stop"
 	| "stopAfterTurn"
 	| "endedChild"
-	| "tell"
+	| "deliver"
 > &
 	EntryOpen & {
 		/** The index of the ends of the items, which gives the items that a contract shapes. */
@@ -74,7 +67,7 @@ export type ProjectsHost = Pick<
 		readonly models: Models;
 		/** The memory of the project agent, for the `memory` requests. */
 		readonly memory: HostMemory;
-		/** The persons, the threads, the messages and the rules. */
+		/** The persons, the threads, the messages, the rules, the held actions and the pending deliveries. */
 		readonly store: ProjectStore;
 	};
 
@@ -274,31 +267,16 @@ async function item(request: Extract<ProjectRequest, { type: "item" }>, host: Pr
 }
 
 /**
- * Approves or drops the held action of `request`. An approve tells the agent of the action with a follow-up input, so
- * that it calls the command again. A failed delivery is a warning and the degraded state `approve-tell` of the action,
- * until the action runs.
+ * Approves or drops the held action of `request`. An approve by another caller than the agent of the action adds the
+ * delivery that tells the agent, so that it calls the command again, and the request then sends the pending
+ * deliveries (see `sendDeliveries`).
  */
 async function held(request: Extract<ProjectRequest, { type: "held" }>, host: ProjectsHost): Promise<Replies["held"]> {
 	const { id, caller } = request;
 
-	if (request.action === "drop") return host.harness.commit((tx) => dropHeld(tx, id, caller), context);
-	const approved = await host.harness.commit((tx) => approveHeld(tx, id, caller), context);
-
-	const input: Input = {
-		type: "input",
-		content: approvedText(approved),
-		whenBusy: "followUp",
-		requestId: `approve:${approved.id}`,
-	};
-
-	await host.tell(approved.agent, input).catch((cause: unknown) => {
-		host.warn(cause);
-		host.degraded.start(
-			"approve-tell",
-			String(approved.id),
-			`The tell of approved action ${approved.id} failed: ${errorMessage(cause)}`,
-		);
-	});
+	if (request.action === "drop") return host.store.write((tx) => dropHeld(tx, id, caller));
+	const approved = host.store.write((tx) => approveHeld(tx, id, caller));
+	await sendDeliveries(host);
 
 	return approved;
 }

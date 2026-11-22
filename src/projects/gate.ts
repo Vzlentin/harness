@@ -2,17 +2,9 @@
  * The gate on the tool calls of the agents: it checks a call that can write against the decided conduct rules of the
  * project, in two questions to the classifier of `gateClassifier`, and holds a call that breaks one.
  */
-import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord/context";
 import type { ClassifierApi, ClassifierChoiceAnswer, ClassifierModel, ClassifierQuestion } from "@earendil-works/pi-ai";
-import {
-	type Cursor,
-	defineExtension,
-	type Extension,
-	type Harness,
-	type HookApi,
-	hook,
-	ToolTask,
-} from "@earendil-works/pi-durable";
+import { type Cursor, defineExtension, type Extension, type HookApi, hook, ToolTask } from "@earendil-works/pi-durable";
 import { answerOf, classifierFailed } from "../host/classifier-answers.ts";
 import type { Degraded } from "../host/degraded.ts";
 import type { EntryClassifier } from "../host/entries.ts";
@@ -29,9 +21,7 @@ import type { HeldInput, Rule } from "../protocol/project.ts";
 import { errorMessage, type Request } from "../protocol/requests.ts";
 import type { Send } from "../tool.ts";
 import type { ProjectStore } from "./project-store.ts";
-import { heldFor, holdAction, markSent, readHeld, runApproved, runsFor } from "./project.ts";
-
-const context = BACKGROUND_CONTEXT;
+import { heldFor, holdAction, markSent, runApproved } from "./project.ts";
 
 /** The number of entries that one page of the read of the user messages gives. */
 const PAGE = 50;
@@ -67,8 +57,7 @@ const WRITES: ClassifierQuestion = {
 
 /** What the gate uses of the host. */
 export type GateHost = {
-	readonly harness: Pick<Harness, "snapshot" | "commit">;
-	/** The project store, with the rules and the drafts. */
+	/** The project store, with the held actions, the rules and the drafts. */
 	readonly store: Pick<ProjectStore, "rules" | "write">;
 	/** The classifier models of Pi's settings, for `gateClassifier`. */
 	readonly classifier: EntryClassifier;
@@ -110,14 +99,11 @@ async function checkCall(
 	command: string,
 	host: GateHost,
 ): Promise<GateReply> {
-	const { harness } = host;
+	const { store } = host;
 	const { requestId, caller: agent, tool } = request;
-	const { held } = await readHeld(harness, context);
 	const call = { agent, tool, command, requestId };
-
-	const candidate = held.some((found) => runsFor(found, call));
-
-	const ran = candidate ? await harness.commit((tx) => runApproved(tx, call), context) : undefined;
+	// One write reads the held actions and runs an approved one, so two calls of its command cannot both run it.
+	const { ran, held } = store.write((tx) => ({ ran: runApproved(tx, call), held: tx.held() }));
 
 	// The approved action runs, so a failed tell of its approve no longer matters.
 	if (ran !== undefined) {
@@ -133,7 +119,7 @@ async function checkCall(
 	if (tool === "bash" && RULE_CHANGE.test(command)) {
 		const input: HeldInput = { requestId, agent, tool, command, reason: RULE_CHANGE_REASON };
 
-		return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
+		return { runs: false, held: store.write((tx) => holdAction(tx, input)) };
 	}
 
 	const rules = host.store.rules({ kind: "conduct", status: "decided" });
@@ -150,7 +136,7 @@ async function checkCall(
 	if (hold === undefined) return RUNS;
 	const input: HeldInput = { requestId, agent, tool, command, ...hold };
 
-	return { runs: false, held: await harness.commit((tx) => holdAction(tx, input), context) };
+	return { runs: false, held: store.write((tx) => holdAction(tx, input)) };
 }
 
 /**

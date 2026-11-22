@@ -1,19 +1,15 @@
 /**
  * The objects of the project that its requests change: the persons, the threads, the messages and the held actions.
- * The persons, the threads and the messages are in the project store (`project-store.ts`), and each function writes
- * them in the transaction of a write. The held actions are one document of the session of `durable.sqlite`, and each
- * function writes them in its own commit. The rules are in `project-rules.ts`, the asks in `asks.ts` and the parleys
- * in `parleys.ts`. A load of a store file writes the held actions, the parleys and the asks.
+ * They are in the project store (`project-store.ts`), and each function writes them in the transaction of a write. The
+ * rules are in `project-rules.ts`, the asks in `asks.ts` and the parleys in `parleys.ts`. A load of a store file writes
+ * the parleys and the asks into `durable.sqlite`.
  */
-import type { Context } from "@earendil-works/chord/context";
-import type { CommitChange, DocumentReader, Tx } from "@earendil-works/pi-durable";
+import type { CommitChange, Tx } from "@earendil-works/pi-durable";
 import type { EntryAsks } from "../host/entries.ts";
 import {
 	ASKS_KIND,
-	HELD_KIND,
 	type HeldAction,
 	type HeldInput,
-	type HeldList,
 	type Message,
 	type MessageDelete,
 	type MessageEdit,
@@ -28,14 +24,13 @@ import {
 	type ThreadMessages,
 } from "../protocol/project.ts";
 import type { FileMessage, StoreFile } from "../protocol/store-file.ts";
-import { known, Parleys, sessionDoc } from "./project-docs.ts";
+import { approveDelivery, approveKey } from "./project-deliveries.ts";
+import { Parleys } from "./project-docs.ts";
 import { releaseSource } from "./project-rules.ts";
 import { knownAuthor, replyMessage, type StoreReader, type StoreTx } from "./project-store.ts";
 
-const Held = sessionDoc<HeldList>(HELD_KIND, () => ({ held: [] }));
-
 /** The kinds of the documents of the project in `durable.sqlite`. */
-const PROJECT_DOCS: ReadonlySet<string> = new Set([ASKS_KIND, ...[Held, Parleys].map((doc) => doc.definition.kind)]);
+const PROJECT_DOCS: ReadonlySet<string> = new Set([ASKS_KIND, Parleys.definition.kind]);
 
 /** Whether `change` can change an object of the project in `durable.sqlite`: a document of the project. */
 export function projectChange(change: CommitChange): boolean {
@@ -190,27 +185,32 @@ export function markSent(tx: StoreTx, ids: readonly number[], by: string): void 
  * Holds the call `input` of its agent with the state `held`, and gives the held action. A held or dropped action of the
  * same agent and request ID is given again, and no action is added.
  */
-export async function holdAction(tx: Tx, input: HeldInput): Promise<HeldAction> {
-	const list = await tx.doc(Held);
-	const found = heldFor(list.held, input.agent, input.requestId);
+export function holdAction(tx: StoreTx, input: HeldInput): HeldAction {
+	const found = heldFor(tx.held(), input.agent, input.requestId);
 
-	if (found !== undefined) return copyHeld(found);
-	const held: HeldAction = { id: nextId(list.held), ...input, state: "held", at: Date.now(), by: input.agent };
-	list.held.push(copyHeld(held));
+	if (found !== undefined) return found;
 
-	return held;
+	return tx.addHeld({ ...input, state: "held", at: Date.now(), by: input.agent });
 }
 
 /** The call that an approved action can run for. */
 type RunCall = Pick<HeldInput, "agent" | "tool" | "command" | "requestId">;
 
-/** Approves the held action `id` for the caller `by`, and gives it. An action that is not held fails. */
-export async function approveHeld(tx: Tx, id: number, by: string): Promise<HeldAction> {
-	return decide(tx, id, { state: "approved", by });
+/**
+ * Approves the held action `id` for the caller `by`, and gives it. An action that is not held fails. When `by` is not
+ * the agent of the action, the same write adds the delivery that tells the agent: an agent that approves its own action,
+ * such as a Pi session with a UI, calls it again by itself.
+ */
+export function approveHeld(tx: StoreTx, id: number, by: string): HeldAction {
+	const approved = decide(tx, id, { state: "approved", by });
+
+	if (by !== approved.agent) tx.addDelivery(approveDelivery(approved));
+
+	return approved;
 }
 
 /** Drops the held action `id` for the caller `by`, and gives it. An action that is not held fails. */
-export async function dropHeld(tx: Tx, id: number, by: string): Promise<HeldAction> {
+export function dropHeld(tx: StoreTx, id: number, by: string): HeldAction {
 	return decide(tx, id, { state: "dropped", by });
 }
 
@@ -218,29 +218,25 @@ export async function dropHeld(tx: Tx, id: number, by: string): Promise<HeldActi
  * Drops each action of `agent` in the state `held`, for the caller `agent`, and gives the dropped actions. A repeat
  * changes nothing.
  */
-export async function dropHeldOf(tx: Tx, agent: string): Promise<HeldAction[]> {
-	const ids = (await tx.doc(Held)).held
+export function dropHeldOf(tx: StoreTx, agent: string): HeldAction[] {
+	return tx
+		.held()
 		.filter((found) => found.state === "held" && found.agent === agent)
-		.map((found) => found.id);
-
-	const dropped: HeldAction[] = [];
-
-	for (const id of ids) dropped.push(await decide(tx, id, { state: "dropped", by: agent }));
-
-	return dropped;
+		.map((found) => decide(tx, found.id, { state: "dropped", by: agent }));
 }
 
 /**
  * Marks the approved action of the call `call` as run by it, and gives it: the action of the same agent, tool and
- * command that ran for no call, or for this call. With no such action, it gives `undefined` and changes nothing.
+ * command that ran for no call, or for this call. The first run removes the delivery of its approve. With no such
+ * action, it gives `undefined` and changes nothing.
  */
-export async function runApproved(tx: Tx, call: RunCall): Promise<HeldAction | undefined> {
-	const list = await tx.doc(Held);
-	const found = list.held.find((held) => runsFor(held, call));
+export function runApproved(tx: StoreTx, call: RunCall): HeldAction | undefined {
+	const found = tx.held().find((held) => runsFor(held, call));
 
-	if (found === undefined) return undefined;
-	const ran: HeldAction = { ...found, ran: found.ran ?? { requestId: call.requestId, at: Date.now() } };
-	list.held[list.held.indexOf(found)] = copyHeld(ran);
+	if (found === undefined || found.ran !== undefined) return found;
+	const ran: HeldAction = { ...found, ran: { requestId: call.requestId, at: Date.now() } };
+	tx.putHeld(ran);
+	tx.removeDelivery(approveKey(found.id));
 
 	return ran;
 }
@@ -249,7 +245,7 @@ export async function runApproved(tx: Tx, call: RunCall): Promise<HeldAction | u
  * Whether the held action `held` is approved for the agent, tool and command of `call`, and lets it run: it ran for no
  * call, or for this one.
  */
-export function runsFor(held: HeldAction, call: RunCall): held is Extract<HeldAction, { readonly state: "approved" }> {
+function runsFor(held: HeldAction, call: RunCall): held is Extract<HeldAction, { readonly state: "approved" }> {
 	return (
 		held.state === "approved" &&
 		held.agent === call.agent &&
@@ -264,48 +260,31 @@ export function heldFor(held: readonly HeldAction[], agent: string, requestId: s
 	return held.find((found) => found.state !== "approved" && found.agent === agent && found.requestId === requestId);
 }
 
-/** The held actions, in ID order. */
-export async function readHeld(reader: Pick<DocumentReader, "snapshot">, context: Context): Promise<HeldList> {
-	const list = await reader.snapshot(Held, context);
-
-	return { held: (list?.held ?? []).map(copyHeld) };
-}
-
 /** The thread `id` and its messages, oldest first. */
 export function readThread(store: StoreReader, id: number): ThreadMessages {
 	return { thread: store.thread(id), messages: store.messages(id).map(replyMessage) };
 }
 
 /**
- * Writes the held actions, the parleys and the asks (in `asks`) of `file` in `tx`, into a store whose lists are empty.
- * The persons, the threads, the messages and the rules go to the project store.
+ * Writes the parleys and the asks (in `asks`) of `file` in `tx`, into a store whose lists are empty. The persons, the
+ * threads, the messages, the rules and the held actions go to the project store.
  */
 export async function loadLists(tx: Tx, asks: Pick<EntryAsks, "load">, file: StoreFile): Promise<void> {
-	(await tx.doc(Held)).held.push(...file.held);
 	(await tx.doc(Parleys)).parleys.push(...file.parleys);
 	await asks.load(tx, file.asks);
 }
 
-function nextId(items: readonly { readonly id: number }[]): number {
-	return (items.at(-1)?.id ?? 0) + 1;
-}
-
 /** Sets the held action `id` to the decision `decision`, and gives it. An action that is not held fails. */
-async function decide(
-	tx: Tx,
+function decide(
+	tx: StoreTx,
 	id: number,
 	decision: Pick<Extract<HeldAction, { readonly state: "approved" | "dropped" }>, "state" | "by">,
-): Promise<HeldAction> {
-	const list = await tx.doc(Held);
-	const found = known(list.held, id, "held action");
+): HeldAction {
+	const found = tx.heldAction(id);
 
 	if (found.state !== "held") throw new Error(`Held action ${id} is ${found.state}, not held`);
 	const decided: HeldAction = { ...found, ...decision, at: Date.now() };
-	list.held[list.held.indexOf(found)] = copyHeld(decided);
+	tx.putHeld(decided);
 
 	return decided;
-}
-
-function copyHeld(held: HeldAction): HeldAction {
-	return held.state === "approved" && held.ran !== undefined ? { ...held, ran: { ...held.ran } } : { ...held };
 }

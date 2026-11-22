@@ -1,15 +1,15 @@
 /**
- * `project.sqlite`: the persons, the threads with their persons, the messages and the rules of the project, as plain
- * tables beside `durable.sqlite`. The host is the only writer: a write is one synchronous transaction, and the store
- * tells its listeners what changed after the commit. Each table gives the next ID of its list and never gives an ID
- * again. `store load` writes a store file into the empty tables with the IDs of the file. The schema also has the
- * tables of the held actions, the parleys, the items with their edges and the pending deliveries.
+ * `project.sqlite`: the persons, the threads with their persons, the messages, the rules and the held actions of the
+ * project, and the pending deliveries, as plain tables beside `durable.sqlite`. The host is the only writer: a write is
+ * one synchronous transaction, and the store tells its listeners what changed after the commit. Each table gives the
+ * next ID of its list and never gives an ID again. `store load` writes a store file into the empty tables with the IDs
+ * of the file. The schema also has the tables of the parleys and the items with their edges.
  */
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
-import { type TSchema, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Author, Message, Person, Rule, type RuleFilter, Thread } from "../protocol/project.ts";
+import { type Author, HeldAction, Message, Person, Rule, type RuleFilter, Thread } from "../protocol/project.ts";
 import { FileMessage, type StoreFile } from "../protocol/store-file.ts";
 
 /** The file of the store, in the state directory of the project. */
@@ -108,6 +108,26 @@ const MESSAGE_COLUMNS = `id, thread, COALESCE(person, 'user') AS "from", directi
 
 const RULE_COLUMNS = `id, name, kind, value, status, COALESCE(said_by, 'user') AS saidBy, source, thread, replaces, at, "by"`;
 
+const HELD_COLUMNS = `id, request_id AS requestId, agent, tool, command, rule, reason, state, ran_request_id AS ranRequestId, ran_at AS ranAt, at, "by"`;
+
+/** A held action row, with the call that an approved action ran for in two columns. */
+const HeldRow = Type.Object({
+	...HeldAction.anyOf[0].properties,
+	state: Type.String(),
+	ranRequestId: Type.Optional(Type.String()),
+	ranAt: Type.Optional(HeldAction.anyOf[0].properties.at),
+});
+
+/** A pending delivery: the text that goes once for its key to `target`, queued at `at`. */
+export const PendingDelivery = Type.Object({
+	key: Type.String(),
+	target: Type.String(),
+	text: Type.String(),
+	at: Type.Integer(),
+});
+
+export type PendingDelivery = Static<typeof PendingDelivery>;
+
 /** A message row, with the last change of the state of a message out in two columns. */
 const MessageRow = Type.Object({
 	...Message.properties,
@@ -130,6 +150,7 @@ export type StoreChange =
 	| { readonly kind: "thread"; readonly value: Thread }
 	| { readonly kind: "message"; readonly value: FileMessage }
 	| { readonly kind: "rule"; readonly value: Rule }
+	| { readonly kind: "held"; readonly value: HeldAction }
 	| { readonly kind: "removed"; readonly table: "message" | "rule"; readonly id: number };
 
 /**
@@ -215,6 +236,26 @@ export class StoreReader {
 		return this.#rows(Rule, `SELECT ${RULE_COLUMNS} FROM rule WHERE source = ? ORDER BY id`, source);
 	}
 
+	/** The held actions, in ID order. */
+	held(): HeldAction[] {
+		return this.#held(`SELECT ${HELD_COLUMNS} FROM held ORDER BY id`);
+	}
+
+	/** The held action `id`. An ID of no held action fails with `Unknown held action: <id>`. */
+	heldAction(id: number): HeldAction {
+		return this.findHeld(id) ?? unknown("held action", id);
+	}
+
+	/** The held action `id`, or `undefined` when there is no such action. */
+	findHeld(id: number): HeldAction | undefined {
+		return this.#held(`SELECT ${HELD_COLUMNS} FROM held WHERE id = ?`, id)[0];
+	}
+
+	/** The pending deliveries, oldest first. */
+	deliveries(): PendingDelivery[] {
+		return this.#rows(PendingDelivery, `SELECT "key", target, text, at FROM delivery ORDER BY at, rowid`);
+	}
+
 	/** The highest ID that a rule had, also a rule that is gone, or 0 when no rule was set. */
 	lastRule(): number {
 		const [row] = this.#rows(
@@ -230,6 +271,16 @@ export class StoreReader {
 
 		return this.#rows(Type.Omit(Thread, ["persons"]), sql, ...params).map((thread) =>
 			Value.Parse(Thread, { ...thread, persons: persons.all(thread.id).map((row) => row.person) }),
+		);
+	}
+
+	/** The held actions of `sql` with `params`. */
+	#held(sql: string, ...params: SQLInputValue[]): HeldAction[] {
+		return this.#rows(HeldRow, sql, ...params).map(({ ranRequestId, ranAt, ...held }) =>
+			Value.Parse(
+				HeldAction,
+				ranRequestId === undefined ? held : { ...held, ran: { requestId: ranRequestId, at: ranAt } },
+			),
 		);
 	}
 
@@ -355,6 +406,41 @@ export class StoreTx extends StoreReader {
 		this.#record("rule", id);
 	}
 
+	/** Adds the held action `held`, with the next ID when it has none, and gives it. */
+	addHeld(held: DistributiveOmit<HeldAction, "id"> & { id?: number }): HeldAction {
+		const id = this.#insert(
+			`INSERT INTO held (id, request_id, agent, tool, command, rule, reason, state, ran_request_id, ran_at, at, "by") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			held.id ?? null,
+			...heldValues(held),
+		);
+
+		this.#record("held", id);
+
+		return this.heldAction(id);
+	}
+
+	/** Writes `held` over the held action of its ID. */
+	putHeld(held: HeldAction): void {
+		this.db
+			.prepare(
+				`UPDATE held SET request_id = ?, agent = ?, tool = ?, command = ?, rule = ?, reason = ?, state = ?, ran_request_id = ?, ran_at = ?, at = ?, "by" = ? WHERE id = ?`,
+			)
+			.run(...heldValues(held), held.id);
+		this.#record("held", held.id);
+	}
+
+	/** Adds the pending delivery `delivery`. It is no change of the feed. */
+	addDelivery(delivery: PendingDelivery): void {
+		this.db
+			.prepare(`INSERT INTO delivery ("key", target, text, at) VALUES (?, ?, ?, ?)`)
+			.run(delivery.key, delivery.target, delivery.text, delivery.at);
+	}
+
+	/** Removes the pending delivery `key`, when there is one. It is no change of the feed. */
+	removeDelivery(key: string): void {
+		this.db.prepare(`DELETE FROM delivery WHERE "key" = ?`).run(key);
+	}
+
 	/** Makes `last` the highest ID that a rule had, when it is higher. */
 	raiseLastRule(last: number): void {
 		if (last <= this.lastRule()) return;
@@ -394,11 +480,14 @@ export class StoreTx extends StoreReader {
 
 				return value === undefined ? { kind: "removed", table, id } : { kind: table, value };
 			}
+
+			case "held":
+				return { kind: table, value: this.heldAction(id) };
 		}
 	}
 }
 
-type ChangedTable = "person" | "thread" | "message" | "rule";
+type ChangedTable = "person" | "thread" | "message" | "rule" | "held";
 
 /** The store of a project, open on its file. */
 export class ProjectStore extends StoreReader {
@@ -447,8 +536,8 @@ export class ProjectStore extends StoreReader {
 	}
 
 	/**
-	 * Writes the persons, the threads with their messages and the rules of `file` into the store with the IDs of the
-	 * file, then awaits `rest`, the write of the other lists, and commits only when it succeeds. A rule with a source
+	 * Writes the persons, the threads with their messages, the rules and the held actions of `file` into the store with
+	 * the IDs of the file, then awaits `rest`, the write of the other lists, and commits only when it succeeds. A rule with a source
 	 * gets the thread of its source message. The highest ID that a rule had becomes `lastRule` when it is higher. The
 	 * load tells no listener.
 	 */
@@ -489,6 +578,7 @@ export class ProjectStore extends StoreReader {
 			tx.addRule(thread === undefined ? rule : { ...rule, thread });
 		}
 
+		for (const held of file.held) tx.addHeld(held);
 		tx.raiseLastRule(file.lastRule);
 		await rest();
 	}
@@ -536,6 +626,25 @@ function ruleValues(rule: Omit<Rule, "id">): SQLInputValue[] {
 	const { name, kind, value, status, saidBy, source, thread, replaces, at, by } = rule;
 
 	return [name, kind, value, status, personOf(saidBy), source ?? null, thread ?? null, replaces ?? null, at, by];
+}
+
+function heldValues(held: DistributiveOmit<HeldAction, "id">): SQLInputValue[] {
+	const { requestId, agent, tool, command, rule, reason, state, at, by } = held;
+	const ran = held.state === "approved" ? held.ran : undefined;
+
+	return [
+		requestId,
+		agent,
+		tool,
+		command,
+		rule ?? null,
+		reason,
+		state,
+		ran?.requestId ?? null,
+		ran?.at ?? null,
+		at,
+		by,
+	];
 }
 
 function personOf(author: Author): number | null {

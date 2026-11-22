@@ -4,8 +4,8 @@
  * the project, the `ask` requests with their parleys, the checks of the labels `parley:<slug>` and `item:<id>`, the
  * digest before each input, the contracts of the answered read-backs, and the items that the reports of their workers
  * close, and drops the held actions of each child that ended. At the open of the host, it moves an old store to items
- * and labels, opens the index of the items, writes `store.json`, stops the workers of the work that ended, and drops
- * the held actions of the children that ended while the host was down.
+ * and labels, opens the index of the items, writes `store.json`, sends the pending deliveries, stops the workers of
+ * the work that ended, and drops the held actions of the children that ended while the host was down.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
@@ -26,6 +26,7 @@ import { itemReports } from "./item-reports.ts";
 import { migrateLabels } from "./label-migration.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
 import { parleyReaction } from "./parleys.ts";
+import { sendDeliveries } from "./project-deliveries.ts";
 import { ProjectStore } from "./project-store.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import { type HandledRequest, handleProject, projectAsk, type ProjectsHost } from "./requests.ts";
@@ -149,6 +150,8 @@ export default function projects(options: EntryOptions): Entry {
 				throw error;
 			}
 
+			// A delivery that a crash left pending goes now. Each one that fails stays, with its warning.
+			await sendDeliveries(host()).catch(warn);
 			await stopEndedWork(host());
 			await dropHeldOfEndedAgents(host());
 		},

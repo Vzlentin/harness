@@ -13,7 +13,7 @@ import { STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
 import { allItems, ItemCounterDoc, itemChange } from "./item-docs.ts";
 import { readParleys } from "./parleys.ts";
 import type { ProjectStore, StoreReader } from "./project-store.ts";
-import { projectChange, readHeld } from "./project.ts";
+import { projectChange } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -25,7 +25,7 @@ export type StoreFileHost = {
 	readonly harness: Harness;
 	/** The storage of `harness`, whose scan lists the items and the callers that have a list of todos. */
 	readonly storage: Pick<Storage, "scanDocuments">;
-	/** The project store, with the persons, the threads, the messages and the rules. */
+	/** The project store, with the persons, the threads, the messages, the rules and the held actions. */
 	readonly store: Pick<ProjectStore, keyof StoreReader | "subscribe">;
 	/** The root conversation, whose list is the list of the project. */
 	readonly root: Conversation;
@@ -88,11 +88,7 @@ export async function readStoreFile(
 		readonly todos: Pick<StoreFileTodos, "read" | "callers">;
 	},
 ): Promise<StoreFile> {
-	const [held, parleys, asked] = await Promise.all([
-		readHeld(harness, context),
-		readParleys(harness, context),
-		asks.read(harness, context),
-	]);
+	const [parleys, asked] = await Promise.all([readParleys(harness, context), asks.read(harness, context)]);
 
 	const todos = await lists.read(harness, root, context);
 	const callerTodos = await lists.callers(harness, storage, context);
@@ -105,7 +101,7 @@ export async function readStoreFile(
 		threads: store.threads().map((thread) => ({ ...thread, messages: store.messages(thread.id) })),
 		rules: store.rules({}),
 		lastRule: store.lastRule(),
-		held: held.held,
+		held: store.held(),
 		parleys: parleys.parleys,
 		asks: asked.asks,
 		todos: todos.todos,

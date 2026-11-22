@@ -23,7 +23,6 @@ import {
 import { readItems } from "./item-docs.ts";
 import { sessionDoc } from "./project-docs.ts";
 import type { OutMessage, StoreReader } from "./project-store.ts";
-import { readHeld } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -82,14 +81,15 @@ export async function nextDigest(
 	const threads = store.threads();
 	const outbox = store.outMessages();
 
-	const [held, open, digests] = await Promise.all([
-		readHeld(harness, context),
+	const held = store.held();
+
+	const [open, digests] = await Promise.all([
 		readItems(harness, host.storage, "open", context),
 		harness.snapshot(Digests, context),
 	]);
 
 	const waiting = outbox.filter((out) => isWaiting(out.state));
-	const own = held.held.filter((action) => action.state === "held" && action.agent === caller);
+	const own = held.filter((action) => action.state === "held" && action.agent === caller);
 	const last = digests?.callers[caller];
 
 	if (last === undefined && waiting.length === 0 && own.length === 0 && open.length === 0) return undefined;

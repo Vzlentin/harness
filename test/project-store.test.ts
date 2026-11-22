@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { ProjectStore, type StoreChange } from "../src/projects/project-store.ts";
+import { approveHeld, holdAction, runApproved } from "../src/projects/project.ts";
 import { root, setUp, tearDown } from "./helpers.ts";
 
 describe("project store", () => {
@@ -78,5 +79,35 @@ describe("project store", () => {
 			"A write of the project store is in progress",
 		);
 		expect(writes).toEqual([]);
+	});
+
+	it("adds the delivery of an approve only when another caller than the agent approves, and removes it when the action runs", () => {
+		const call = { agent: "khan", tool: "bash", command: "git push", reason: "No go." };
+		const own = store.write((tx) => holdAction(tx, { ...call, requestId: "call-1" }));
+		const other = store.write((tx) => holdAction(tx, { ...call, requestId: "call-2" }));
+
+		store.write((tx) => approveHeld(tx, own.id, "khan"));
+		expect(store.deliveries()).toEqual([]);
+
+		store.write((tx) => approveHeld(tx, other.id, "user"));
+		expect(store.deliveries()).toEqual([
+			{
+				key: `approve:${other.id}`,
+				target: "khan",
+				text: `The user approved held action ${other.id}: git push. Call it again: it runs one time with no question.`,
+				at: expect.any(Number),
+			},
+		]);
+		expect(writes.at(-1)).toEqual([
+			{ kind: "held", value: expect.objectContaining({ id: other.id, state: "approved" }) },
+		]);
+
+		// The approve of the agent runs first; the other one runs with the next call, and its delivery goes.
+		store.write((tx) => runApproved(tx, { ...call, requestId: "call-3" }));
+		expect(store.deliveries()).toHaveLength(1);
+		const ran = store.write((tx) => runApproved(tx, { ...call, requestId: "call-4" }));
+		expect(ran).toMatchObject({ id: other.id, ran: { requestId: "call-4" } });
+		expect(store.findHeld(other.id)).toEqual(ran);
+		expect(store.deliveries()).toEqual([]);
 	});
 });

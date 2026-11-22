@@ -12,17 +12,17 @@ import type { EntryHandles, EntryWatchOptions } from "../host/entries.ts";
 import { type StoreView, watchStore } from "../host/store-watch.ts";
 import type { StagedItem, WorkItem } from "../protocol/item.ts";
 import type { ProjectEvent, ProjectState } from "../protocol/project-watch.ts";
-import { ASKS_KIND, HELD_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
+import { ASKS_KIND, isWaiting, PARLEYS_KIND, type ProjectThread } from "../protocol/project.ts";
 import { changedItemId, readItem, readItems } from "./item-docs.ts";
 import { type StageHost, stageItems } from "./item-stage.ts";
 import { readParleys } from "./parleys.ts";
 import { type ProjectStore, replyMessage } from "./project-store.ts";
-import { projectChange, readHeld } from "./project.ts";
+import { projectChange } from "./project.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** The kinds of the documents whose changes can change the stage or `needsYou` of any item. */
-const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND, HELD_KIND]);
+const STAGE_DOCS: ReadonlySet<string> = new Set([PARLEYS_KIND, ASKS_KIND]);
 
 /**
  * What the watch uses of the host. `workersChange` tells the changes that can change a worker of a label, and so the
@@ -33,15 +33,15 @@ export type ProjectHost = StageHost &
 		readonly harness: Harness;
 		/** The storage of `harness`, whose scan of documents lists the items. */
 		readonly storage: Pick<Storage, "scanDocuments">;
-		/** The project store, with the persons, the rules, the threads and the messages. */
-		readonly store: Pick<ProjectStore, "persons" | "rules" | "threads" | "outMessages" | "subscribe">;
+		/** The project store, with the persons, the rules, the threads, the messages and the held actions. */
+		readonly store: Pick<ProjectStore, "persons" | "rules" | "threads" | "outMessages" | "held" | "subscribe">;
 		readonly degraded: Degraded;
 	};
 
 /**
  * Opens a watch of the store of the project with the calls of the entry watch `options`, and returns the reply, with
  * every object. A pass runs at once, and its events wait for the reply. After it, each write of the project store that
- * changes a person, a rule, a thread or a message, each commit that changes a held action, a parley, an ask, an item, a
+ * changes a person, a rule, a thread, a message or a held action, each commit that changes a parley, an ask, an item, a
  * child, a started task or a task that ends, and each change of the degraded states of the host start a pass: the host reads the objects again and
  * sends one `{ event: ProjectEvent }` with the objects that are new or changed, the IDs of those that went and every
  * degraded state, only when one of its lists is not empty or the degraded states changed. The passes run one at a
@@ -129,8 +129,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		const { store } = this.#host;
 		const items = this.#readItems();
 
-		const [held, parleys, asks] = await Promise.all([
-			readHeld(this.#host.harness, context),
+		const [parleys, asks] = await Promise.all([
 			readParleys(this.#host.harness, context),
 			this.#host.asks.read(this.#host.harness, context),
 		]);
@@ -146,7 +145,7 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 			persons: store.persons(),
 			rules: store.rules({}),
 			threads,
-			...held,
+			held: store.held(),
 			...parleys,
 			...asks,
 			items: await items,
@@ -226,10 +225,17 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 		return [...map.values(), ...leftStaged].sort((a, b) => a.id - b.id);
 	}
 
-	/** Requests a pass at each change of the degraded states, and at each write of the project store that changes it. */
+	/**
+	 * Requests a pass at each change of the degraded states, and at each write of the project store that changes it. A
+	 * change of a held action can change every stage.
+	 */
 	triggers(request: () => void): () => void {
 		const degraded = this.#host.degraded.subscribe(request);
-		const store = this.#host.store.subscribe(request);
+
+		const store = this.#host.store.subscribe((changes) => {
+			if (changes.some((change) => change.kind === "held")) this.#allStages = true;
+			request();
+		});
 
 		return () => {
 			degraded();

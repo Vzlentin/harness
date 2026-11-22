@@ -11,7 +11,7 @@ import type { Worker } from "../protocol/worker-labels.ts";
 import { itemEnds } from "./item-docs.ts";
 import { runAsker, runLive, taskRun } from "./items.ts";
 import { readParleys } from "./parleys.ts";
-import { readHeld } from "./project.ts";
+import type { StoreReader } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -21,6 +21,8 @@ const context = BACKGROUND_CONTEXT;
  */
 export type StageHost = Pick<EntryHandles, "asks" | "labelledTasks" | "liveWorkers"> & {
 	readonly harness: Pick<DocumentReader, "snapshot">;
+	/** The project store, with the held actions. */
+	readonly store: Pick<StoreReader, "held">;
 };
 
 /**
@@ -59,15 +61,14 @@ export async function stageItem(host: StageHost, item: WorkItem): Promise<Staged
 
 /** The inputs of the stage, as the store has them now. */
 async function readInputs(host: StageHost): Promise<StageInputs> {
-	const [{ parleys }, { asks }, { held }, tasks, workers] = await Promise.all([
+	const [{ parleys }, { asks }, tasks, workers] = await Promise.all([
 		readParleys(host.harness, context),
 		host.asks.open(host.harness, context),
-		readHeld(host.harness, context),
 		host.labelledTasks(),
 		host.liveWorkers(),
 	]);
 
-	return { parleys, asks, held, tasks, workers };
+	return { parleys, asks, held: host.store.held(), tasks, workers };
 }
 
 /**

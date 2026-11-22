@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
 	ClassifierApi,
 	ClassifierContext,
@@ -18,15 +17,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-
 import { request } from "../src/client/client.ts";
 import { askClassifier, classifierModel as settingClassifier } from "../src/host/classify.ts";
 import { Degraded } from "../src/host/degraded.ts";
-import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { library } from "../src/host/targets.ts";
 import { type GateHost, gateCall } from "../src/projects/gate.ts";
 import { changeRule } from "../src/projects/project-rules.ts";
 import { ProjectStore } from "../src/projects/project-store.ts";
-import { approveHeld, holdAction, readHeld } from "../src/projects/project.ts";
+import { approveHeld, holdAction } from "../src/projects/project.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { StagedItem } from "../src/protocol/item.ts";
+import { statePaths } from "../src/protocol/paths.ts";
 import {
 	AskList,
 	DigestReply,
@@ -42,10 +42,10 @@ import type { Replies, Request } from "../src/protocol/requests.ts";
 import {
 	agentTurn,
 	answerOf,
+	calls,
 	cellResults,
 	cli,
 	models,
-	openDurableHost,
 	root,
 	scripts,
 	setUp,
@@ -535,8 +535,12 @@ describe("gate", { timeout: 60_000 }, () => {
 		const merge = "glab mr merge 7 --yes";
 		const stderr = vi.spyOn(process.stderr, "write");
 
-		const inputOf = vi.spyOn(Push.prototype, "inputOf").mockResolvedValue(async () => {
-			throw new Error("The agent is gone");
+		const opened = library.opened.bind(library);
+
+		const gone = vi.spyOn(library, "opened").mockImplementation(async (tx, id) => {
+			if (id === "khan") throw new Error("The agent is gone");
+
+			return opened(tx, id);
 		});
 
 		try {
@@ -555,7 +559,7 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect(await gate("khan", "call-2", merge, project)).toEqual({ runs: true });
 			await until(() => watch.events.at(-1)?.degraded.length === 0);
 		} finally {
-			inputOf.mockRestore();
+			gone.mockRestore();
 			stderr.mockRestore();
 			watch.socket.destroy();
 			await host.close();
@@ -567,6 +571,7 @@ describe("gate", { timeout: 60_000 }, () => {
 		const host = await projectHost(project);
 		const merge = "glab mr merge 6 --yes";
 		const watch = await watchProject(project);
+		const stderr = vi.spyOn(process.stderr, "write");
 
 		try {
 			const source = await sourceMessage(project);
@@ -604,6 +609,10 @@ describe("gate", { timeout: 60_000 }, () => {
 			);
 			await until(() => watch.events.at(-1)?.held[0]?.state === "approved");
 
+			// khan is no conversation and no Pi session of the host, so its approve has no one to tell, as before.
+			expect(watch.events.at(-1)?.degraded).toEqual([]);
+			expect(stderr.mock.calls.map(([text]) => String(text)).filter((text) => text.startsWith("warning:"))).toEqual([]);
+
 			// Another agent, or another command, is not approved.
 			expect(heldOf(await gate("other", "call-2", merge, project))).toMatchObject({ id: 2, agent: "other" });
 			expect(heldOf(await gate("khan", "call-3", `${merge} --squash`, project))).toMatchObject({ id: 3 });
@@ -633,6 +642,7 @@ describe("gate", { timeout: 60_000 }, () => {
 				"Unknown held action: 9",
 			);
 		} finally {
+			stderr.mockRestore();
 			watch.socket.destroy();
 			await host.close();
 		}
@@ -699,7 +709,6 @@ describe("gate", { timeout: 60_000 }, () => {
 
 	it("runs one of two calls of an approved command that read the held actions together, and holds the other", async () => {
 		const dir = await mkdtemp(join(root, "gate-race-"));
-		const harness = await openDurableHost(join(dir, "store.sqlite"), []);
 		const store = ProjectStore.open(dir, 0);
 		const push = "git push origin main";
 
@@ -708,33 +717,14 @@ describe("gate", { timeout: 60_000 }, () => {
 			const rule = store.write((tx) => changeRule(tx, fields, "cli"));
 
 			const call = { agent: "khan", tool: "bash", command: push, rule: rule.id, reason: "No go." };
-			const held = await harness.commit((tx) => holdAction(tx, { ...call, requestId: "call-1" }), BACKGROUND_CONTEXT);
-			await harness.commit((tx) => approveHeld(tx, held.id, "user"), BACKGROUND_CONTEXT);
+			const held = store.write((tx) => holdAction(tx, { ...call, requestId: "call-1" }));
+			store.write((tx) => approveHeld(tx, held.id, "user"));
 			conduct = [String(rule.id)];
 			recorded.set(push, { writes: 0.98, rule: String(rule.id) });
-
-			// The first commit of each call waits for the other, so both calls read the approval before either runs it.
-			const both = Promise.withResolvers<void>();
-			let commits = 0;
-
-			const raced: GateHost["harness"] = {
-				snapshot: harness.snapshot.bind(harness),
-				commit: async (change, context, options) => {
-					commits += 1;
-
-					if (commits === 2) both.resolve();
-
-					if (commits <= 2) await both.promise;
-
-					return harness.commit(change, context, options);
-				},
-			};
-
 			const degraded = new Degraded(() => undefined);
 			const settings = SettingsManager.inMemory();
 
 			const host: GateHost = {
-				harness: raced,
 				store,
 				classifier: {
 					model: (key) => settingClassifier(settings, models, key, degraded),
@@ -758,7 +748,6 @@ describe("gate", { timeout: 60_000 }, () => {
 			]);
 		} finally {
 			store.close();
-			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});
 
@@ -817,7 +806,6 @@ describe("gate", { timeout: 60_000 }, () => {
 
 	it("rejects a call whose signal aborts during the classify, holds nothing and starts no degraded state", async () => {
 		const dir = await mkdtemp(join(root, "gate-abort-"));
-		const harness = await openDurableHost(join(dir, "store.sqlite"), []);
 		const store = ProjectStore.open(dir, 0);
 		const push = "git push origin main";
 
@@ -829,7 +817,6 @@ describe("gate", { timeout: 60_000 }, () => {
 			const abort = new AbortController();
 
 			const host: GateHost = {
-				harness,
 				store,
 				classifier: {
 					model: (key) => settingClassifier(settings, models, key, degraded),
@@ -845,11 +832,10 @@ describe("gate", { timeout: 60_000 }, () => {
 
 			const call = { type: "gate", requestId: "call-1", caller: "khan", tool: "bash", messages: [] } as const;
 			await expect(gateCall({ ...call, arguments: { command: push } }, host)).rejects.toThrow("Request aborted");
-			expect((await readHeld(harness, BACKGROUND_CONTEXT)).held).toEqual([]);
+			expect(store.held()).toEqual([]);
 			expect(degraded.list().map(({ kind }) => kind)).not.toContain("gate-classifier");
 		} finally {
 			store.close();
-			await harness.close(BACKGROUND_CONTEXT);
 		}
 	});
 
@@ -890,6 +876,49 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect(again).toContain(`Held as action 2: ${reason}`);
 			// The approval is a message of the host, not an input that the user typed.
 			expect(asked.at(-1)?.context.state).toMatchObject({ last_user_messages: ["Gate me"] });
+		} finally {
+			await host?.close();
+		}
+	});
+
+	it("tells the hosted agent of an approve that a crash left pending at the next start, and only once", async () => {
+		const command = "echo crashed";
+		let host: Host | undefined = await startHost();
+		let held: number;
+
+		try {
+			const source = await sourceMessage(MAIN_PROJECT);
+			const fields = { name: "crash", kind: "conduct", value: "Ask before you echo.", status: "decided" } as const;
+			const rule = await addRule(MAIN_PROJECT, source, fields);
+			conduct = [String(rule.id)];
+			recorded.set(command, { writes: 0.98, rule: String(rule.id) });
+			scripts.set("Gate the crash", [{ name: "bash", arguments: { command } }]);
+			await agentTurn("Gate the crash");
+			const [refused] = cellResults.get("Gate the crash") ?? [];
+			held = Number(/Held as action (\d+):/.exec(refused ?? "")?.[1]);
+			await host.close();
+			host = undefined;
+
+			// The approve commits its delivery, and the host stops before it sends it.
+			const store = ProjectStore.open(statePaths(MAIN_PROJECT).dir, 0);
+			store.write((tx) => approveHeld(tx, held, "user"));
+			store.close();
+
+			const approval = `The user approved held action ${held}: ${command}. Call it again: it runs one time with no question.`;
+			const told = () => calls.filter((call) => call.prompt === approval).length;
+			host = await startHost();
+			await until(() => told() === 1);
+			await host.close();
+
+			host = await startHost();
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			await host.close();
+			host = undefined;
+			expect(told()).toBe(1);
+
+			const after = ProjectStore.open(statePaths(MAIN_PROJECT).dir, 0);
+			expect(after.deliveries()).toEqual([]);
+			after.close();
 		} finally {
 			await host?.close();
 		}
