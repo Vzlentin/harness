@@ -84,9 +84,9 @@ type Hold = Pick<HeldInput, "rule" | "reason">;
  * no question. With no decided conduct rule, the call runs. Otherwise the classifier answers
  * step 1 with the command, and step 2 with the command, the messages and the rules, and a call that breaks a rule is
  * held with it. A failure of the classifier holds the call with no rule and the error as the reason, and is the
- * degraded state `gate-classifier` until a later classify succeeds. An approved action that runs ends the degraded
- * state `approve-tell` of its approve. A call that runs marks each draft that its command names with `draft:<id>` as
- * sent by the agent.
+ * degraded state `gate-classifier` until a later classify succeeds. An abort of the signal of the host rejects, and
+ * holds nothing. An approved action that runs ends the degraded state `approve-tell` of its approve. A call that runs
+ * marks each draft that its command names with `draft:<id>` as sent by the agent.
  */
 export async function gateCall(request: Extract<Request, { type: "gate" }>, host: GateHost): Promise<GateReply> {
 	if (asksNoQuestion(request.tool, request.arguments)) return RUNS;
@@ -138,9 +138,12 @@ async function checkCall(
 
 	if (rules.length === 0) return RUNS;
 
-	const hold = await brokenRule(host, command, request.messages, rules).catch((cause: unknown) => ({
-		reason: errorMessage(cause),
-	}));
+	const hold = await brokenRule(host, command, request.messages, rules).catch((cause: unknown) => {
+		// An abort, such as the stop of the agent, is not a failure of the classifier: it holds nothing.
+		if (host.signal.aborted) throw cause;
+
+		return { reason: errorMessage(cause) };
+	});
 
 	if (hold === undefined) return RUNS;
 	const input: HeldInput = { requestId, agent, tool, command, ...hold };
@@ -150,7 +153,8 @@ async function checkCall(
 
 /**
  * The rule of `rules` that the command breaks, as the classifier answers the two steps, or none. A failure of the
- * classifier throws, and starts the degraded state `gate-classifier` with no warning; its next answer ends it.
+ * classifier throws, and starts the degraded state `gate-classifier` with no warning; its next answer ends it. An abort
+ * of the signal of the host throws, and starts no degraded state.
  */
 async function brokenRule(
 	host: GateHost,
@@ -178,6 +182,7 @@ async function brokenRule(
 
 		return hold;
 	} catch (error) {
+		if (signal.aborted) throw error;
 		host.degraded.start("gate-classifier", GATE_CAUSE, errorMessage(error));
 		throw error;
 	}

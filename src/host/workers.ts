@@ -1,13 +1,14 @@
 /**
  * The workers of the labels: the children of the host and the started tasks that have a label, the started tasks of
- * each label in any state, the changes of a commit that can change a worker, and the stop of a worker.
+ * each label in any state, the changes of a commit that can change a worker, and the stop of a worker, at once or after
+ * its turn.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { CommitChange } from "@earendil-works/pi-durable";
+import { type CommitChange, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { CHILD_DOC_KIND } from "../children/library.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
 import { ChildRecords, recordOf, recordsByAge } from "./records.ts";
-import { childEnded, childOf, endChildren, heldState, type TargetHost } from "./targets.ts";
+import { childEnded, childOf, endChildren, heldState, type TargetHost, turnEnded, turnRunning } from "./targets.ts";
 import { liveTaskId, StartedTasks, TaskLabels, type TaskReader, taskWorker } from "./tasks.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -112,4 +113,47 @@ export async function stopWorker(host: WorkerHost, worker: Worker): Promise<void
 	const id = await liveTaskId(started, worker.key, (task) => harness.getTask(task, context));
 
 	if (id !== undefined) await harness.abortTask(id, context);
+}
+
+/**
+ * Stops the agent `worker` as `stopWorker` does, after the turn that it runs: at the first commit that ends its turn, or
+ * at once when it runs no turn. It rejects when the session closes before the turn ends.
+ */
+export async function stopAfterTurn(
+	host: WorkerHost,
+	worker: Extract<Worker, { readonly kind: "agent" }>,
+): Promise<void> {
+	const record = recordOf(await host.harness.snapshot(ChildRecords, context), worker.handle);
+
+	if (record === undefined) return;
+	await turnEnd(host.harness, record.conversationId);
+	await stopWorker(host, worker);
+}
+
+/**
+ * Resolves when the conversation `id` runs no turn: at once, or at the first commit that ends its turn. The observer
+ * attaches before the read, so no commit goes between them. It rejects when the session closes first.
+ */
+async function turnEnd(harness: Harness, id: ConversationId): Promise<void> {
+	const ended = Promise.withResolvers<void>();
+	// The close of the session can come before the wait: the wait below still gets the rejection.
+	ended.promise.catch(() => undefined);
+
+	const observation = harness.observeCommits({
+		advance: (publication) => {
+			if (
+				publication.changes.some(
+					(change) => change.type === "document" && change.conversationId === id && turnEnded(change),
+				)
+			)
+				ended.resolve();
+		},
+		end: () => ended.reject(new Error(`The session closed before the turn of conversation ${id} ended`)),
+	});
+
+	try {
+		if (await turnRunning(harness, id)) await ended.promise;
+	} finally {
+		observation.detach();
+	}
 }

@@ -288,6 +288,22 @@ export async function dropHeld(tx: Tx, id: number, by: string): Promise<HeldActi
 }
 
 /**
+ * Drops each action of `agent` in the state `held`, for the caller `agent`, and gives the dropped actions. A repeat
+ * changes nothing.
+ */
+export async function dropHeldOf(tx: Tx, agent: string): Promise<HeldAction[]> {
+	const ids = (await tx.doc(Held)).held
+		.filter((found) => found.state === "held" && found.agent === agent)
+		.map((found) => found.id);
+
+	const dropped: HeldAction[] = [];
+
+	for (const id of ids) dropped.push(await decide(tx, id, { state: "dropped", by: agent }));
+
+	return dropped;
+}
+
+/**
  * Marks the approved action of the call `call` as run by it, and gives it: the action of the same agent, tool and
  * command that ran for no call, or for this call. With no such action, it gives `undefined` and changes nothing.
  */

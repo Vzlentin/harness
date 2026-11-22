@@ -7,7 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { EntryOptions } from "../src/host/entries.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
+import { GateReply } from "../src/protocol/gate.ts";
 import { StagedItem } from "../src/protocol/item.ts";
+import { MAIN_PROJECT } from "../src/protocol/projects.ts";
 import { Todo } from "../src/protocol/todo.ts";
 import type { SpawnServes, Worker } from "../src/protocol/worker-labels.ts";
 import {
@@ -32,6 +34,7 @@ import {
 	until,
 	untilContract,
 	untilState,
+	watchProject,
 } from "./helpers.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
@@ -389,6 +392,37 @@ describe("the end of the work stops its workers", { timeout: 30_000 }, () => {
 		expect(await stateOf(agent.handle)).toBe("ended");
 		expect(await stateOf(child)).toBe("ended");
 		expect(aborted.has("Busy item work")).toBe(true);
+	});
+
+	it("drops the held actions of a worker that the end of its item stops, by that worker", async () => {
+		const item = await addItem("Held item");
+		const agent = await spawnWithId("held-item-session", { serves: { item } });
+
+		// A change of a rule by an agent is held with no question to the classifier.
+		const gated = {
+			type: "gate",
+			requestId: "held-item-call",
+			caller: agent.id,
+			tool: "bash",
+			arguments: { command: "harness rule decide 1" },
+			messages: [],
+		} as const;
+
+		const reply = Value.Parse(GateReply, await send(gated));
+
+		if (reply.runs) throw new Error("the gate let the call run");
+		await setItem(item, "done");
+		expect(await stateOf(agent.handle)).toBe("ended");
+		const watch = await watchProject(MAIN_PROJECT);
+
+		try {
+			expect(watch.state.held.find((held) => held.id === reply.held.id)).toMatchObject({
+				state: "dropped",
+				by: agent.id,
+			});
+		} finally {
+			watch.socket.destroy();
+		}
 	});
 
 	it("keeps the agent of an open parley at its contract, and stops it when the contract ends", async () => {

@@ -395,6 +395,11 @@ export type EntryHandles = {
 	 * It throws until the host is open.
 	 */
 	readonly stop: (worker: Worker) => Promise<void>;
+	/**
+	 * Stops the agent `worker` as `stop` does, after the turn that it runs: at the commit that ends its turn, or at once
+	 * when it runs no turn. It rejects when the session closes first. It throws until the host is open.
+	 */
+	readonly stopAfterTurn: (worker: Extract<Worker, { readonly kind: "agent" }>) => Promise<void>;
 };
 
 /** A delivery of an entry: the text that goes to the conversation or Pi session `to` once for the key `key`. */

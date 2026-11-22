@@ -18,6 +18,7 @@ import { type ItemArgs, runItemTool, sendAskNote, sendRuleChange, sendRuleList }
 import { setEntry } from "./protocol/entries.ts";
 import {
 	cliCaller,
+	HARNESS_INSPECT_PORT,
 	HARNESS_PROJECT,
 	PI_MODEL,
 	PI_PROVIDER,
@@ -796,12 +797,22 @@ function serverArgs(command: "inspect" | "page", args: string[]): ServerArgs {
 	return parsed;
 }
 
-function portNumber(value: string): number {
+/** The port of `value`, an integer from 0 to 65535. Another value fails with `error`. */
+function portNumber(value: string, error = "--port must be an integer from 0 to 65535"): number {
 	const port = Number(value);
 
-	if (!Number.isInteger(port) || port < 0 || port > 65535) fail("--port must be an integer from 0 to 65535");
+	if (!Number.isInteger(port) || port < 0 || port > 65535) fail(error);
 
 	return port;
+}
+
+/** The port of `inspect` and `page` without `--port`: `HARNESS_INSPECT_PORT` of `env` when it is set, else 7501. */
+function defaultPort(env: NodeJS.ProcessEnv): number {
+	const value = env[HARNESS_INSPECT_PORT];
+
+	if (value === undefined || value === "") return DEFAULT_PORT;
+
+	return portNumber(value, `Invalid ${HARNESS_INSPECT_PORT}: ${value}`);
 }
 
 /**
@@ -816,7 +827,8 @@ async function inspectCommand(args: string[], project: string | undefined): Prom
 			? undefined
 			: { project: projectOf(project, process.env, process.cwd()), target: ref ?? { kind: "agent" } };
 
-	const server = await startInspectServer({ hosts: await resolveBindHosts({ host, tailscale }), port });
+	const hosts = await resolveBindHosts({ host, tailscale });
+	const server = await startInspectServer({ hosts, port: port ?? defaultPort(process.env) });
 
 	// Before the URLs: a reader can stop the command as soon as it reads the first one.
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -849,7 +861,7 @@ function pageArgs(args: string[]): PageArgs {
  * log on stderr. When only some addresses listen, it starts nothing, and a line notes each address where none listens.
  */
 async function pageCommand(args: string[], project: string | undefined): Promise<void> {
-	const { folder, slug, ref, port = DEFAULT_PORT, host, tailscale } = pageArgs(args);
+	const { folder, slug, ref, port = defaultPort(process.env), host, tailscale } = pageArgs(args);
 	const dest = pageDir(slug);
 	const files = pageFiles(folder);
 	const name = projectOf(project, process.env, process.cwd());
@@ -1006,13 +1018,17 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			run: attachCommand,
 		},
 		inspect: {
-			usage: ["  harness inspect [<handle> | --conversation <id>] [--port <n>] [--host <ip> | --tailscale]"],
+			usage: [
+				"  harness inspect [<handle> | --conversation <id>] [--port <n>] [--host <ip> | --tailscale]",
+				"    (the port without --port: $HARNESS_INSPECT_PORT, else 7501)",
+			],
 			run: inspectCommand,
 		},
 		page: {
 			usage: [
 				"  harness page <folder> --slug <slug> [<handle> | --conversation <id>]",
 				"    [--port <n>] [--host <ip> | --tailscale]",
+				"    (the port without --port: $HARNESS_INSPECT_PORT, else 7501)",
 			],
 			run: pageCommand,
 		},

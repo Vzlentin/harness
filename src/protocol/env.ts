@@ -28,3 +28,6 @@ export const HARNESS_PROJECT = "HARNESS_PROJECT";
 
 /** The memory folder of the project, for the `memo` tool. */
 export const MEMORY_DIR = "MEMORY_DIR";
+
+/** The port of `harness inspect` and `harness page` without `--port`, before 7501. */
+export const HARNESS_INSPECT_PORT = "HARNESS_INSPECT_PORT";

@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -408,6 +409,17 @@ describe("harness inspect", { timeout: 30_000 }, () => {
 		});
 	});
 
+	it("listens on HARNESS_INSPECT_PORT without --port, and refuses an invalid one", async () => {
+		const port = await freePort();
+		const env = { ...STOP_AFTER_FIRST_WRITE, HARNESS_INSPECT_PORT: String(port) };
+
+		expect(await cli(["inspect"], env)).toMatchObject({ code: 0, stdout: `http://127.0.0.1:${port}/\n` });
+		expect(await cli(["inspect"], { HARNESS_INSPECT_PORT: "x" })).toMatchObject({
+			code: 1,
+			stderr: "Invalid HARNESS_INSPECT_PORT: x\n",
+		});
+	});
+
 	it("refuses arguments that it does not take", async () => {
 		expect(await cli(["inspect", "--host", "127.0.0.1", "--tailscale"])).toMatchObject({
 			code: 1,
@@ -427,3 +439,13 @@ describe("harness inspect", { timeout: 30_000 }, () => {
 		);
 	});
 });
+
+/** A TCP port of 127.0.0.1 that nothing listens on. */
+async function freePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = Value.Parse(Type.Object({ port: Type.Integer() }), server.address());
+	await new Promise((resolve) => server.close(resolve));
+
+	return port;
+}

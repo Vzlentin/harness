@@ -22,9 +22,10 @@ import { Push } from "../src/host/push.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { type GateHost, gateCall } from "../src/projects/gate.ts";
 import { changeRule } from "../src/projects/project-rules.ts";
-import { approveHeld, holdAction } from "../src/projects/project.ts";
+import { approveHeld, holdAction, readHeld } from "../src/projects/project.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { GateReply } from "../src/protocol/gate.ts";
+import { StagedItem } from "../src/protocol/item.ts";
 import {
 	AskList,
 	DigestReply,
@@ -115,6 +116,9 @@ const chosen = new Map<string, string>();
 /** The IDs of the decided conduct rules, which step 2 must give as its only choices with `none`. */
 let conduct: readonly string[] = [];
 
+/** The promises that step 1 of a command waits for before it answers, by command. An abort of the call rejects it. */
+const holding = new Map<string, Promise<void>>();
+
 /** Whether the classifier provider has a credential. */
 let loggedIn = true;
 
@@ -143,13 +147,14 @@ function classifierModel(id: string): ClassifierModel<ClassifierApi> {
 async function classify(
 	model: ClassifierModel<ClassifierApi>,
 	context: ClassifierContext,
-	_options?: ClassifierOptions,
+	options?: ClassifierOptions,
 ): Promise<ClassifierResult> {
 	asked.push({ model: model.id, context });
 	const result = { api: model.api, provider: model.provider, model: model.id, timestamp: Date.now() };
 	const { state, questions } = context;
 
 	if (Value.Check(WritesState, state) && questions.writes?.type === "bool") {
+		await heldAnswer(state.command, options?.signal);
 		const answer = recorded.get(state.command);
 
 		if (answer === undefined) return { ...result, answers: {}, stopReason: "error", errorMessage: "overloaded" };
@@ -173,6 +178,16 @@ async function classify(
 	const answers = { rule: { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 1 } } as const;
 
 	return { ...result, answers, stopReason: "stop" };
+}
+
+/** Waits for the promise of `holding` of `command`, when it has one. An abort of `signal` rejects. */
+async function heldAnswer(command: string, signal: AbortSignal | undefined): Promise<void> {
+	const hold = holding.get(command);
+
+	if (hold === undefined) return;
+	const abort = Promise.withResolvers<void>();
+	signal?.addEventListener("abort", () => abort.reject(new Error("Request aborted")), { once: true });
+	await Promise.race([hold, abort.promise]);
 }
 
 /** Sends `line` to the host of `project` through the socket. */
@@ -310,6 +325,7 @@ beforeEach(async () => {
 	asked.length = 0;
 	recorded.clear();
 	chosen.clear();
+	holding.clear();
 	conduct = [];
 	await setGateClassifier(undefined);
 });
@@ -736,6 +752,93 @@ describe("gate", { timeout: 60_000 }, () => {
 			expect(replies.flatMap((reply) => (reply.runs ? [] : [reply.held]))).toEqual([
 				expect.objectContaining({ id: 2, state: "held", rule: rule.id }),
 			]);
+		} finally {
+			await harness.close(BACKGROUND_CONTEXT);
+		}
+	});
+
+	it("ends the turn of an agent that closes its item in one message with a gated call: both calls run, and the agent then stops", async () => {
+		const project = "gate-batch";
+		const host = await projectHost(project);
+		const command = "echo batch";
+		const prompt = "Close and echo";
+		const watch = await watchProject(project);
+
+		try {
+			await decideEcho(project, command);
+			recorded.set(command, { writes: 0.02, rule: "none" });
+			const add = { type: "item", action: "add", caller: "cli", title: "Batch item" } as const;
+			const item = Value.Parse(StagedItem, await send(add, project)).id;
+			const set = { action: "set", id: item, state: "done" };
+			recorded.set(`item ${JSON.stringify(set)}`, { writes: 0.02, rule: "none" });
+			// The classifier answers the bash call only after the item is done, so its gate is in flight during the stop.
+			const answer = Promise.withResolvers<void>();
+			holding.set(command, answer.promise);
+			scripts.set(prompt, [
+				[
+					{ name: "item", arguments: set },
+					{ name: "bash", arguments: { command } },
+				],
+			]);
+
+			const child = await spawnAs("batch-spawner", prompt, { notify: false, project, serves: { item } });
+			await until(() =>
+				asked.some(({ context }) => Value.Check(WritesState, context.state) && context.state.command === command),
+			);
+			await vi.waitFor(
+				async () =>
+					expect(await send({ type: "item", action: "read", id: item }, project)).toMatchObject({ state: "done" }),
+				{ timeout: 10_000 },
+			);
+			answer.resolve();
+
+			await until(() => cellResults.get(prompt)?.length === 2);
+			const [closed, echoed] = cellResults.get(prompt) ?? [];
+			expect(closed).toContain("Batch item");
+			expect(echoed).toContain("batch");
+			expect(echoed).not.toContain("Held");
+			await vi.waitFor(
+				async () =>
+					expect(await send({ type: "status", handle: child.handle }, project)).toMatchObject({ state: "ended" }),
+				{ timeout: 10_000 },
+			);
+			expect(watch.events.flatMap((event) => event.held)).toEqual([]);
+			expect(watch.events.flatMap((event) => event.degraded)).toEqual([]);
+		} finally {
+			watch.socket.destroy();
+			await host.close();
+		}
+	});
+
+	it("rejects a call whose signal aborts during the classify, holds nothing and starts no degraded state", async () => {
+		const harness = await openDurableHost(join(await mkdtemp(join(root, "gate-abort-")), "store.sqlite"), []);
+		const push = "git push origin main";
+
+		try {
+			const fields = { action: "create", name: "go", kind: "conduct", value: "Push only with a go." } as const;
+			await harness.commit((tx) => changeRule(tx, fields, "cli"), BACKGROUND_CONTEXT);
+			const degraded = new Degraded(() => undefined);
+			const settings = SettingsManager.inMemory();
+			const abort = new AbortController();
+
+			const host: GateHost = {
+				harness,
+				classifier: {
+					model: (key) => settingClassifier(settings, models, key, degraded),
+					// The stop of the agent aborts the signal, and the request of the classifier then fails.
+					ask: async () => {
+						abort.abort();
+						throw new Error("Request aborted");
+					},
+				},
+				signal: abort.signal,
+				degraded,
+			};
+
+			const call = { type: "gate", requestId: "call-1", caller: "khan", tool: "bash", messages: [] } as const;
+			await expect(gateCall({ ...call, arguments: { command: push } }, host)).rejects.toThrow("Request aborted");
+			expect((await readHeld(harness, BACKGROUND_CONTEXT)).held).toEqual([]);
+			expect(degraded.list().map(({ kind }) => kind)).not.toContain("gate-classifier");
 		} finally {
 			await harness.close(BACKGROUND_CONTEXT);
 		}

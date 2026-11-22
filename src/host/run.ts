@@ -60,7 +60,15 @@ import { ChildRecords, labelChild, OldChildRecordsError } from "./records.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
 import { ENTRY_TODOS } from "./todo-lists.ts";
-import { labelledTasks, liveWorkers, stopWorker, type WorkerHost, workers, workersChange } from "./workers.ts";
+import {
+	labelledTasks,
+	liveWorkers,
+	stopAfterTurn,
+	stopWorker,
+	type WorkerHost,
+	workers,
+	workersChange,
+} from "./workers.ts";
 
 /** The host exits after this long with no connection, no live task, no busy entry and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -242,6 +250,7 @@ export async function runHost(options: {
 		workersChange,
 		labelChild: (conversation, label) => labelChild(openWorkerHost().harness, conversation, label),
 		stop: (worker) => stopWorker(openWorkerHost(), worker),
+		stopAfterTurn: (worker) => stopAfterTurn(openWorkerHost(), worker),
 	};
 
 	const entries = await loadEntries(projectCwd, agentDir, settings, place, library, CORE_TYPES, handles).catch(

@@ -5,7 +5,14 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import * as durable from "@earendil-works/pi-durable";
-import { type Conversation, type ConversationId, defineDoc, type Harness } from "@earendil-works/pi-durable";
+import {
+	type CommitChange,
+	type Conversation,
+	type ConversationId,
+	defineDoc,
+	type Harness,
+	LiveDoc,
+} from "@earendil-works/pi-durable";
 import {
 	type Child,
 	createChildren,
@@ -365,6 +372,13 @@ async function agentFields(
 	if (cwd === undefined) throw new Error(`The conversation ${conversation.id} has no working directory`);
 
 	return { provider: model.provider, model: model.modelId, thinking: agent.thinkingLevel, cwd };
+}
+
+/** Whether `change` ends a turn: a live document with no run, or retired. */
+export function turnEnded(change: CommitChange): boolean {
+	if (change.type !== "document" || change.record.kind !== LiveDoc.definition.kind) return false;
+
+	return change.kind === "retire" || change.value.run === undefined;
 }
 
 /** Whether the conversation `id` runs a turn of its own, whatever its children do. */

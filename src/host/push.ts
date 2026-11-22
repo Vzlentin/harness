@@ -5,7 +5,7 @@
  */
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { type CommitChange, type Conversation, LiveDoc } from "@earendil-works/pi-durable";
+import type { CommitChange, Conversation } from "@earendil-works/pi-durable";
 import type { Answer, Child, Input } from "../children/library.ts";
 import { deliveryText } from "../protocol/labels.ts";
 import { type Delivery, errorMessage, HOST_CLOSING } from "../protocol/requests.ts";
@@ -26,7 +26,7 @@ import {
 	unreadAnswers,
 	unreadNotify,
 } from "./records.ts";
-import { childOf, childTarget, type Found, library, type TargetHost, target } from "./targets.ts";
+import { childOf, childTarget, type Found, library, type TargetHost, target, turnEnded } from "./targets.ts";
 import { readUserAnswers, removeUserAnswer, USER_ANSWERS_KIND, type UserAnswer } from "./user-answers.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -650,7 +650,5 @@ function endsTurn(change: CommitChange): boolean {
 
 	if ([ChildRecords.definition.kind, USER_ANSWERS_KIND, DELIVERIES_KIND].includes(change.record.kind)) return true;
 
-	if (change.record.kind !== LiveDoc.definition.kind) return false;
-
-	return change.kind === "retire" || change.value.run === undefined;
+	return turnEnded(change);
 }

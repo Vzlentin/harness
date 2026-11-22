@@ -65,6 +65,7 @@ export type ProjectsHost = Pick<
 	| "labelledTasks"
 	| "workersChange"
 	| "stop"
+	| "stopAfterTurn"
 	| "tell"
 > &
 	EntryOpen & {
@@ -224,7 +225,7 @@ async function parley(
 				context,
 			);
 
-			await stopWork(host, [`parley:${ended.slug}`]);
+			await stopWork(host, [`parley:${ended.slug}`], { caller: request.caller });
 
 			return ended;
 		}
@@ -249,9 +250,11 @@ async function item(request: Extract<ProjectRequest, { type: "item" }>, host: Pr
 
 			const set = await host.harness.commit((tx) => setItem(tx, request, request.caller, host.items, workers), context);
 
-			// A closed item stops the workers of its label and of the contracts that it ended.
+			// A closed item stops the workers of its label and of the contracts that it ended, and the caller after its turn.
 			if (set.item.state !== "open") {
-				await stopWork(host, [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)]);
+				await stopWork(host, [`item:${set.item.id}`, ...set.ended.map((slug) => `parley:${slug}`)], {
+					caller: request.caller,
+				});
 			}
 
 			return stageItem(host, set.item);

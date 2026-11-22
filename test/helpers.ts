@@ -177,11 +177,14 @@ export const toolWaits = new Map<string, PromiseWithResolvers<string>>();
 /** One tool call of the model: the name of the tool and its arguments. */
 type ScriptedCall = { readonly name: string; readonly arguments: ToolCall["arguments"] };
 
+/** One round of the model: one tool call, or the tool calls of one message. */
+type ScriptStep = ScriptedCall | readonly ScriptedCall[];
+
 /**
- * The tool calls that the model of a prompt makes, one in each round, by prompt. After the last one, it answers
+ * The tool calls that the model of a prompt makes, one step in each round, by prompt. After the last one, it answers
  * `Tool said: <result>`.
  */
-export const scripts = new Map<string, readonly ScriptedCall[]>();
+export const scripts = new Map<string, readonly ScriptStep[]>();
 
 /** The cells that the model of a prompt runs with the `ipython` tool, as `scripts` runs its calls, by prompt. */
 export const cells = new Map<string, readonly string[]>();
@@ -234,11 +237,10 @@ async function respond(
 	if (script !== undefined && last?.role === "toolResult") {
 		const done = turn.flatMap((message) => (message.role === "toolResult" ? [textOf(message)] : []));
 		cellResults.set(prompt, done);
-		const next = script[done.length];
+		const rounds = turn.filter((message) => message.role === "assistant" && message.stopReason === "toolUse");
+		const next = script[rounds.length];
 
-		if (next !== undefined) {
-			return fauxAssistantMessage(fauxToolCall(next.name, next.arguments), { stopReason: "toolUse" });
-		}
+		if (next !== undefined) return stepMessage(next);
 	}
 
 	if (prompt === QUERIED) {
@@ -292,7 +294,7 @@ async function respond(
 	if (first !== undefined) {
 		cellResults.set(prompt, []);
 
-		return fauxAssistantMessage(fauxToolCall(first.name, first.arguments), { stopReason: "toolUse" });
+		return stepMessage(first);
 	}
 
 	if (child !== undefined) {
@@ -372,6 +374,16 @@ async function respond(
 	if (prompt === "Cut") return fauxAssistantMessage("cut", { stopReason: "length" });
 
 	return fauxAssistantMessage(`Answer to ${prompt}`);
+}
+
+/** The message of the model for the step `step`: its tool calls, in one message. */
+function stepMessage(step: ScriptStep): AssistantMessage {
+	const calls = "name" in step ? [step] : step;
+
+	return fauxAssistantMessage(
+		calls.map((call) => fauxToolCall(call.name, call.arguments)),
+		{ stopReason: "toolUse" },
+	);
 }
 
 export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
