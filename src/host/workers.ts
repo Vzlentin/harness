@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type CommitChange, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { CHILD_DOC_KIND } from "../children/library.ts";
 import type { Worker } from "../protocol/worker-labels.ts";
-import { ChildRecords, recordOf, recordsByAge } from "./records.ts";
+import { ChildRecords, conversationEntry, recordOf, recordsByAge } from "./records.ts";
 import { childEnded, childOf, type EndHost, endChildren, heldState, turnEnded, turnRunning } from "./targets.ts";
 import { liveTaskId, StartedTasks, TaskLabels, type TaskReader, taskWorker } from "./tasks.ts";
 
@@ -118,7 +118,7 @@ export async function stopWorker(host: WorkerHost, worker: Worker): Promise<void
 /** Whether the conversation `conversation` is a child of the host that ended. */
 export async function endedChild(host: WorkerHost, conversation: string): Promise<boolean> {
 	const records = await host.harness.snapshot(ChildRecords, context);
-	const record = Object.values(records?.children ?? {}).find((found) => String(found.conversationId) === conversation);
+	const record = conversationEntry(Object.entries(records?.children ?? {}), conversation)?.[1];
 
 	return record !== undefined && (await childEnded(host, record));
 }

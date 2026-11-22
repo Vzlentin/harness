@@ -55,6 +55,7 @@ import {
 	childInfo,
 	childOf,
 	childTarget,
+	type EndHost,
 	endChildren,
 	type Found,
 	library,
@@ -87,6 +88,7 @@ const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 /** What every request of the host uses. */
 export type Base = Omit<TaskHost, "signal"> &
 	TargetHost &
+	Pick<EndHost, "agentEnded"> &
 	CatchUpHost &
 	InputHooksHost & {
 		/**
@@ -100,8 +102,6 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly entryVersions: Readonly<Record<string, number>>;
 		/** The handlers of the reports of the entries, in load order. */
 		readonly reported: readonly ReportedHandler[];
-		/** Gives the entries the conversation ID of a child that ended. */
-		readonly agentEnded: (conversation: string) => Promise<void>;
 		/** The handler of the `ask` requests of an entry; without it, the host serves the asks with no parley. */
 		readonly ask: AskHandler | undefined;
 		/** The list that `classify-todos` takes without `list`, when an entry gives one. */

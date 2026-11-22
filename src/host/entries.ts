@@ -2,9 +2,8 @@
  * The entries that the host loads: the `piDurable` entries of Pi's packages and the entries of `entries.json`. Each
  * entry is a module whose default export gets the host's handles, and gives extensions, tasks, a catch-up hook, an input
  * hook, a handler of the answered asks, a handler of the reports of the workers, a handler of the ended children, the
- * request types that it serves, the
- * checks of its label kinds, the version of its protocol, its open and busy calls, the handler of the `ask` requests and
- * the list that `classify-todos` takes without `list` to the host.
+ * request types that it serves, the checks of its label kinds, the version of its protocol, its open and busy calls, the
+ * handler of the `ask` requests and the list that `classify-todos` takes without `list` to the host.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -135,8 +134,9 @@ export type ReportedHandler = (event: ReportedEvent) => Promise<void>;
 export type AgentEndedEvent = { readonly conversation: string };
 
 /**
- * The handler of the ended children of an entry. It runs after each end of a child, at least once for each end, and
- * also for a child that already ended, so it must do nothing for an end that it already handled.
+ * The handler of the ended children of an entry. The host gives each end once and keeps no queue of these events: an
+ * entry that must see every end checks the children that ended at its `open`, with `endedChild`. A child can end twice,
+ * such as after a resume, so a handler must do nothing for an end that it already handled.
  */
 export type AgentEndedHandler = (event: AgentEndedEvent) => Promise<void>;
 
@@ -207,10 +207,9 @@ const EntryProtocol = Type.Object({ name: Type.String({ minLength: 1 }), version
 /**
  * What the default export of an entry returns: its extensions, the tasks that `start` runs, its catch-up hook, its
  * input hook, its handler of the answered asks, its handler of the reports, its handler of the ended children, the
- * request types that it serves, the checks
- * of its label kinds, the version of its protocol, `open`, which the host calls once the root conversation and the
- * workers are there and before any task resumes, `busy`, which keeps the host from its idle exit, the handler of the
- * `ask` requests, the list of `classify-todos` without `list`, and `close`.
+ * request types that it serves, the checks of its label kinds, the version of its protocol, `open`, which the host
+ * calls once the root conversation and the workers are there and before any task resumes, `busy`, which keeps the host
+ * from its idle exit, the handler of the `ask` requests, the list of `classify-todos` without `list`, and `close`.
  */
 const EntryResult = Type.Object({
 	extensions: Type.Unsafe<readonly Extension[]>(Type.Array(Type.Unknown())),
