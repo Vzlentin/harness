@@ -1,6 +1,6 @@
 /**
- * `store.json`: the lists of the store of a project, which the host writes whole after each commit that changes one.
- * A file of version 1 has no items: its parse moves its open todos to items.
+ * The store file, such as `store.json`: the lists of the store of a project, which `harness store load` and the first
+ * start of a host import. A file of version 1 has no items: its parse moves its open todos to items.
  */
 import { readFileSync } from "node:fs";
 import { type Static, Type } from "typebox";

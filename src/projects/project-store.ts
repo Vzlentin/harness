@@ -4,7 +4,7 @@
  * `durable.sqlite`. The host is the only writer: a write is one synchronous transaction, and the store tells its
  * listeners what changed after the commit, or after the commit of `durable.sqlite` that the write is part of. Each
  * table gives the next ID of its list and never gives an ID again. The edges give the items of each end, and the
- * `needs` edges that go to an item. `store load` writes a store file into the empty tables with the IDs of the file.
+ * `needs` edges that go to an item. A load writes a store file into the empty tables with the IDs of the file.
  */
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
@@ -710,12 +710,12 @@ export class ProjectStore extends StoreReader {
 	#deferred: StoreChange[] = [];
 
 	/**
-	 * Opens `project.sqlite` in the directory `dir`, and creates its tables when they are not there. A lock that another
-	 * process holds makes a write wait up to `timeout` ms: node:sqlite waits synchronously, so the wait stops the event
-	 * loop.
+	 * Opens the file `file`, default `project.sqlite`, in the directory `dir`, and creates its tables when they are not
+	 * there. A lock that another process holds makes a write wait up to `timeout` ms: node:sqlite waits synchronously, so
+	 * the wait stops the event loop.
 	 */
-	static open(dir: string, timeout: number): ProjectStore {
-		const db = new DatabaseSync(join(dir, PROJECT_STORE_FILE), { timeout });
+	static open(dir: string, timeout: number, file = PROJECT_STORE_FILE): ProjectStore {
+		const db = new DatabaseSync(join(dir, file), { timeout });
 
 		try {
 			db.exec("PRAGMA journal_mode = WAL");

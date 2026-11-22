@@ -20,13 +20,12 @@ import {
 	createProject,
 	openDurableHost,
 	OPTIONS,
-	readStoreFile,
+	readStores,
 	send,
 	setUp,
 	spawnAs,
 	startHost,
 	tearDown,
-	until,
 	untilContract,
 } from "./helpers.ts";
 
@@ -233,8 +232,6 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 			await expect(send({ type: "item", action: "set", caller: "cli", id: 3, state: "done" }, PROJECT)).rejects.toThrow(
 				"Unknown item: 3",
 			);
-			await until(() => readStoreFile(PROJECT)?.items.length === 2);
-			expect(readStoreFile(PROJECT)).toMatchObject({ version: 2, lastItem: 5 });
 			await sleep(300);
 
 			for (const handle of [moved, finished, busy, asked]) expect(await stateOf(handle)).toBe("idle");
@@ -242,6 +239,10 @@ describe("the move of the todos of the project to items", { timeout: 60_000 }, (
 		} finally {
 			await host.close();
 		}
+
+		const stores = await readStores(PROJECT);
+		expect(stores.items).toHaveLength(2);
+		expect(stores.lastItem).toBe(5);
 
 		host = await startHost(PROJECT);
 

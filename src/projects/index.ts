@@ -4,8 +4,9 @@
  * the project, the `ask` requests with their parleys, the checks of the labels `parley:<slug>` and `item:<id>`, the
  * digest before each input, the contracts of the answered read-backs, and the items that the reports of their workers
  * close, and drops the held actions of each child that ended. At the open of the host, it opens the project store,
- * moves an old store to items and labels, writes `store.json`, sends the pending deliveries, stops the workers of the
- * work that ended, and drops the held actions of the children that ended while the host was down.
+ * which imports `store.json` at the first start, moves an old store to items and labels, sends the pending deliveries,
+ * stops the workers of the work that ended, and drops the held actions of the children that ended while the host was
+ * down.
  */
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import { type TSchema, Type } from "typebox";
@@ -24,11 +25,10 @@ import { migrateLabels } from "./label-migration.ts";
 import { Compressor, type HostMemory, memoryExtension } from "./memory.ts";
 import { parleyReaction } from "./parleys.ts";
 import { sendDeliveries } from "./project-deliveries.ts";
-import { ProjectStore } from "./project-store.ts";
 import { serveProjectWatch } from "./project-watch.ts";
 import { type HandledRequest, handleProject, projectAsk, type ProjectsHost } from "./requests.ts";
 import { rulesExtension } from "./rules-section.ts";
-import { type StoreFilePasses, storeFilePasses } from "./store-file.ts";
+import { openProjectStore } from "./store-import.ts";
 import { workLabelChecks } from "./work-state.ts";
 import { stopEndedWork } from "./work-workers.ts";
 
@@ -56,11 +56,8 @@ const PROJECT_PASSIVE = {
 	held: active,
 } satisfies { readonly [T in ProjectRequest["type"]]: (request: EntryLine) => boolean };
 
-/**
- * What the entry has once the host is open: the harness, the root conversation, the storage, the project store and the
- * passes of `store.json`.
- */
-type Opened = EntryOpen & Pick<ProjectsHost, "store"> & { readonly storeFile: StoreFilePasses };
+/** What the entry has once the host is open: the harness, the root conversation, the storage and the project store. */
+type Opened = EntryOpen & Pick<ProjectsHost, "store">;
 
 /** The projects entry, with the handles of the host in `options`. */
 export default function projects(options: EntryOptions): Entry {
@@ -111,31 +108,23 @@ export default function projects(options: EntryOptions): Entry {
 			host()
 				.store.items()
 				.map(({ id, title, state }) => ({ id, text: title, state })),
-		// The project store opens first. The first start moves the todos of the project to items, and the items that the
-		// children of an old store served to their labels, before any reader of the items or the labels. A worker of work
-		// that ended, such as one that a message resumed, stops at each start, and a child that ended while the host was
-		// down has its held actions dropped.
+		// The project store opens first, and imports `store.json` at the first start. The first start then moves the todos
+		// of the project to items, and the items that the children of an old store served to their labels, before any
+		// reader of the items or the labels. A worker of work that ended, such as one that a message resumed, stops at
+		// each start, and a child that ended while the host was down has its held actions dropped.
 		open: async ({ harness, root, storage }) => {
-			// The host is the only writer, so a write never waits for a lock.
-			const store = ProjectStore.open(options.stateDir, 0);
+			const store = await openProjectStore({
+				dir: options.stateDir,
+				file: statePaths(project).store,
+				harness,
+				storage,
+				asks: options.asks,
+			});
 
 			try {
 				await migrateTodos(harness, store, options.todos, root.id);
 				await migrateLabels(harness, store, options.labelChild);
-				const path = statePaths(project).store;
-
-				const storeFile = storeFilePasses({
-					harness,
-					storage,
-					store,
-					root,
-					asks: options.asks,
-					todos: options.todos,
-					path,
-					warn,
-				});
-
-				opened = { harness, root, storage, store, storeFile };
+				opened = { harness, root, storage, store };
 			} catch (error) {
 				store.close();
 				throw error;
@@ -148,7 +137,6 @@ export default function projects(options: EntryOptions): Entry {
 		},
 		busy: () => compressor.running > 0,
 		close: async () => {
-			await opened?.storeFile.close();
 			await compressor.close();
 			opened?.store.close();
 		},

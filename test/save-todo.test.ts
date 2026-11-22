@@ -5,13 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Host } from "../src/host/run.ts";
 import { Ask } from "../src/protocol/project.ts";
 import { MAIN_PROJECT } from "../src/protocol/projects.ts";
+import type { StoreFile } from "../src/protocol/store-file.ts";
 import type { Todo } from "../src/protocol/todo.ts";
 import {
 	answer,
 	framed,
 	listenAnswers,
 	OPTIONS,
-	readStoreFile,
+	readStores,
 	root,
 	round,
 	send,
@@ -62,6 +63,17 @@ async function knownSession(caller: string): Promise<() => void> {
 	await until(() => answers.deliveries.length === 1);
 
 	return () => answers.listener.close();
+}
+
+/** The lists of the stores of the main project, which a program reads while its host is down. The host starts again. */
+async function downLists(): Promise<StoreFile> {
+	await host?.close();
+
+	try {
+		return await readStores(MAIN_PROJECT);
+	} finally {
+		host = await startHost();
+	}
 }
 
 beforeAll(async () => {
@@ -145,8 +157,7 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		await note(AGENT, asked, "which-store");
 		expect((await todosOf(AGENT)).find((found) => found.ask === asked)).toEqual({ ...todo, state: "dropped" });
 
-		await until(() => readStoreFile(MAIN_PROJECT)?.todos.some((found) => found.ask === asked) === true);
-		expect(readStoreFile(MAIN_PROJECT)?.todos.find((found) => found.ask === asked)).toEqual({
+		expect((await downLists()).todos.find((found) => found.ask === asked)).toEqual({
 			...todo,
 			state: "dropped",
 		});
@@ -184,22 +195,20 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("goes to the list of a known Pi session, which store.json keeps with its ask", async () => {
+	it("goes to the list of a known Pi session, which the store keeps with its ask", async () => {
 		const close = await knownSession("pi-save");
+		let asked: number;
 
 		try {
-			const asked = await ask("pi-save", "Which vault");
+			asked = await ask("pi-save", "Which vault");
 			await answer([{ id: asked, answer: "own", label: "Mine", words: ["Mine."] }]);
-			const added = { id: 1, text: "Save to the vault: Which vault", state: "open", ask: asked };
-			expect(await todosOf("pi-save")).toEqual([added]);
-
-			await until(() => readStoreFile(MAIN_PROJECT)?.callerTodos.some((list) => list.caller === "pi-save") === true);
-			expect(readStoreFile(MAIN_PROJECT)?.callerTodos.find((list) => list.caller === "pi-save")?.todos).toEqual([
-				added,
-			]);
 		} finally {
 			close();
 		}
+
+		const added = { id: 1, text: "Save to the vault: Which vault", state: "open", ask: asked };
+		expect(await todosOf("pi-save")).toEqual([added]);
+		expect((await downLists()).callerTodos.find((list) => list.caller === "pi-save")?.todos).toEqual([added]);
 	});
 
 	it("is set to done at the note after the host no longer knows the Pi session of the asker", async () => {
@@ -235,24 +244,18 @@ describe("the todo Save to the vault", { timeout: 60_000 }, () => {
 			const open = await ask("pi-quiet", "Still open");
 			await note("pi-quiet", open, "still-open");
 
-			// The warm-up ask, answered before the host knew pi-quiet, has no todo.
-			const warm = () =>
-				readStoreFile(MAIN_PROJECT)?.asks.find((found) => found.asker === "pi-quiet" && found.state === "answered");
-
-			await until(() => warm() !== undefined);
-			const answered = warm();
-
-			if (answered === undefined) throw new Error("no answered ask");
-			await note("pi-quiet", answered.id, "warm-up");
-
-			// A later list change writes store.json, which then has no list of pi-quiet.
+			// The warm-up ask, the ask before, was answered before the host knew pi-quiet, and has no todo.
+			const warm = Value.Parse(Ask, await send({ type: "ask", action: "read", id: open - 1 }));
+			expect(warm).toMatchObject({ asker: "pi-quiet", state: "answered" });
+			await note("pi-quiet", warm.id, "warm-up");
 			await send({ type: "todo", action: "add", caller: "pi-other", text: "Mark" });
-			const lists = () => readStoreFile(MAIN_PROJECT)?.callerTodos.map((list) => list.caller) ?? [];
-			await until(() => lists().includes("pi-other"));
-			expect(lists()).not.toContain("pi-quiet");
 		} finally {
 			close();
 		}
+
+		const lists = (await downLists()).callerTodos.map((list) => list.caller);
+		expect(lists).toContain("pi-other");
+		expect(lists).not.toContain("pi-quiet");
 	});
 
 	it("is not added for an ask with a note, a read-back, or an asker with no list", async () => {

@@ -1,42 +1,22 @@
 import { existsSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { ProjectStore } from "../src/projects/project-store.ts";
 import { GateReply } from "../src/protocol/gate.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { Message, Person, Rule, Thread } from "../src/protocol/project.ts";
 import { StoreFile } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
-import {
-	cli,
-	createProject,
-	OPTIONS,
-	readStoreFile,
-	root,
-	send,
-	setUp,
-	startHost,
-	tearDown,
-	until,
-} from "./helpers.ts";
+import { cli, createProject, OPTIONS, readStores, root, send, setUp, startHost, tearDown } from "./helpers.ts";
 
-/** Starts a host of `project` with no `store.json`, takes the file that it writes, and stops it. */
+/** Starts a host of `project`, stops it, and gives the lists of its stores. */
 async function hostedFile(project: string): Promise<StoreFile> {
-	await rm(statePaths(project).store, { force: true });
 	const host = await startHost(project);
+	await host.close();
 
-	try {
-		await until(() => readStoreFile(project) !== undefined);
-	} finally {
-		await host.close();
-	}
-
-	const file = readStoreFile(project);
-
-	if (file === undefined) throw new Error("no store.json");
-
-	return file;
+	return readStores(project);
 }
 
 /** Runs `harness store load <path>` for `project`. */
@@ -123,7 +103,7 @@ afterAll(async () => {
 });
 
 describe("harness store load", { timeout: 60_000 }, () => {
-	it("loads store.json into an empty store, keeps the IDs of threads, messages and rules, and refuses what it cannot load", async () => {
+	it("loads a store file into an empty store, keeps the IDs of threads, messages and rules, and refuses what it cannot load", async () => {
 		await createProject("load-source");
 		await createProject("load-target");
 		await createProject("load-new");
@@ -138,10 +118,10 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			await host.close();
 		}
 
-		const hosted = readStoreFile("load-source");
-		const ask = hosted?.asks[0]?.id;
+		const hosted = await readStores("load-source");
+		const ask = hosted.asks[0]?.id;
 
-		if (hosted === undefined || ask === undefined) throw new Error("no store.json");
+		if (ask === undefined) throw new Error("no ask");
 		// Each todo names an ask of the file, as the todo `Save to the vault` does, and the load keeps the link.
 		const linked = (todos: StoreFile["todos"]) => todos.map((todo) => ({ ...todo, ask }));
 
@@ -206,7 +186,38 @@ describe("harness store load", { timeout: 60_000 }, () => {
 		}
 	});
 
-	it("writes the edits and deletes of messages into store.json, which loads", async () => {
+	it("writes into an empty project.sqlite, which keeps its ID counters and its deliveries", async () => {
+		await createProject("load-used");
+		const { dir } = statePaths("load-used");
+		await hostedFile("load-used");
+		const delivery = { key: "approve:1", target: "pi-1", text: "Approved.", at: 1 };
+		const rule = { name: "a", kind: "conduct", value: "A.", status: "open", saidBy: "user", at: 1, by: "cli" } as const;
+		const used = ProjectStore.open(dir, 0);
+
+		try {
+			used.write((tx) => {
+				for (let n = 0; n < 3; n++) tx.removeRule(tx.addRule(rule).id);
+				tx.addDelivery(delivery);
+			});
+		} finally {
+			used.close();
+		}
+
+		const path = join(root, "load-used.json");
+		await writeFile(path, JSON.stringify(Value.Create(StoreFile)));
+		expect(await load("load-used", path)).toMatchObject({ code: 0, stderr: "" });
+		const loaded = ProjectStore.open(dir, 0);
+
+		try {
+			expect(loaded.lastRule()).toBe(3);
+			expect(loaded.deliveries()).toEqual([delivery]);
+			expect(loaded.write((tx) => tx.addRule(rule)).id).toBe(4);
+		} finally {
+			loaded.close();
+		}
+	});
+
+	it("keeps the edits and deletes of messages in a store file, which loads", async () => {
 		await createProject("edit-source");
 		await createProject("edit-target");
 		const host = await startHost("edit-source");
@@ -257,9 +268,7 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			await host.close();
 		}
 
-		const source = readStoreFile("edit-source");
-
-		if (source === undefined) throw new Error("no store.json");
+		const source = await readStores("edit-source");
 		const { source: _source, thread: _thread, ...unsourced } = rule;
 		const { state, by, thread: _of, ...message } = draft;
 		expect(source.rules).toEqual([unsourced]);
@@ -292,10 +301,10 @@ describe("harness store load", { timeout: 60_000 }, () => {
 			await source.close();
 		}
 
-		const hosted = readStoreFile("link-source");
-		const ask = hosted?.asks[0]?.id;
+		const hosted = await readStores("link-source");
+		const ask = hosted.asks[0]?.id;
 
-		if (hosted === undefined || ask === undefined) throw new Error("no store.json");
+		if (ask === undefined) throw new Error("no ask");
 		const todo = { id: 1, text: "Save to the vault: Where", state: "open" as const, ask };
 		const path = join(root, "link-source.json");
 		await writeFile(path, JSON.stringify({ ...hosted, todos: [todo] }));

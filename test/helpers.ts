@@ -31,6 +31,7 @@ import {
 	createRegistry,
 	type Extension,
 	Harness,
+	ROOT_CONVERSATION_ID,
 	type SettledSubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -40,7 +41,11 @@ import { Value } from "typebox/value";
 import { expect, vi } from "vite-plus/test";
 import { AnswerListener, type AnswersOptions } from "../src/client/answers.ts";
 import { type Client, connect, request } from "../src/client/client.ts";
+import { ENTRY_ASKS } from "../src/host/asks.ts";
 import { type Host, runHost } from "../src/host/run.ts";
+import { ENTRY_TODOS } from "../src/host/todo-lists.ts";
+import { PROJECT_STORE_FILE, ProjectStore } from "../src/projects/project-store.ts";
+import { readStoreFile } from "../src/projects/store-file.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { ItemList } from "../src/protocol/item.ts";
 import { onLines } from "../src/protocol/lines.ts";
@@ -49,7 +54,7 @@ import { ProjectEvent, ProjectState } from "../src/protocol/project-watch.ts";
 import { AskWrite, ParleyAsks } from "../src/protocol/project.ts";
 import { MAIN_PROJECT, projectDir } from "../src/protocol/projects.ts";
 import type { ChildInfo, Delivery, Replies, Request, WatchLine } from "../src/protocol/requests.ts";
-import { StoreFile } from "../src/protocol/store-file.ts";
+import type { StoreFile } from "../src/protocol/store-file.ts";
 import { AGENT_HANDLE, type Target } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND } from "../src/protocol/todo.ts";
 import type { SpawnServes } from "../src/protocol/worker-labels.ts";
@@ -451,13 +456,32 @@ export async function projectHost(name: string): Promise<Host> {
 	return startHost(name);
 }
 
-/** `store.json` of `project`, as a program with no host reads it, or undefined while it does not exist. */
-export function readStoreFile(project: string): StoreFile | undefined {
-	const path = statePaths(project).store;
+/**
+ * The lists of the two stores of `project` as a store file, as a program reads them while no host writes: the lists of
+ * `project.sqlite`, empty when it does not exist, and of `durable.sqlite`.
+ */
+export async function readStores(project: string): Promise<StoreFile> {
+	const { dir } = statePaths(project);
+	const storage = await openNodeSqliteStorage(join(dir, "durable.sqlite"));
 
-	if (!existsSync(path)) return undefined;
+	const harness = await Harness.open(
+		storage,
+		{ models: createModels(), registry: createRegistry(), readOnly: true },
+		BACKGROUND_CONTEXT,
+	);
 
-	return Value.Parse(StoreFile, JSON.parse(readFileSync(path, "utf8")));
+	const store = existsSync(join(dir, PROJECT_STORE_FILE)) ? ProjectStore.open(dir, 5_000) : undefined;
+
+	try {
+		return await readStoreFile(harness, storage, ROOT_CONVERSATION_ID, {
+			store,
+			asks: ENTRY_ASKS,
+			todos: ENTRY_TODOS,
+		});
+	} finally {
+		store?.close();
+		await harness.close(BACKGROUND_CONTEXT);
+	}
 }
 
 /**

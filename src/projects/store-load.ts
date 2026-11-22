@@ -1,8 +1,8 @@
 /**
  * `harness store load <file>`: writes the lists and the items of a store file into the empty stores of a project
- * (`durable.sqlite` and `project.sqlite`), while no host runs.
+ * (`durable.sqlite` and `project.sqlite`), while no host runs, with the import of the first start of a host.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -13,8 +13,9 @@ import { takeLock } from "../host/lock.ts";
 import { statePaths } from "../protocol/paths.ts";
 import { STORE_LOCK_WAIT_MS } from "../protocol/requests.ts";
 import { parseStoreFile, type StoreCounts, storeCounts, type StoreFile } from "../protocol/store-file.ts";
-import { ProjectStore } from "./project-store.ts";
+import { PROJECT_STORE_FILE, ProjectStore } from "./project-store.ts";
 import { readStoreFile } from "./store-file.ts";
+import { importStoreFile, loadStoreFile } from "./store-import.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -24,9 +25,11 @@ export type StoreLoadHandles = Pick<EntryHandles, "asks" | "todos">;
 /**
  * Writes the lists of the store file at `path` into the stores of `project`, under the lock of the host, with the asks
  * and the lists of todos of `handles`, and gives the count of each list. The persons, the threads, the messages, the
- * rules, the parleys and the items keep the IDs of the file. The two stores are written as one: the transaction of the project store stays open
- * across the commit of `durable.sqlite`, and a commit that fails rolls it back. It fails before it writes when the file
- * is not a store file, when a host runs for `project`, or when a list of the stores is not empty.
+ * rules, the parleys and the items keep the IDs of the file. The two stores are written as one: the write into
+ * `project.sqlite` stays open across the commit of `durable.sqlite`, and a commit that fails rolls it back, or leaves no
+ * `project.sqlite` when there was none. It fails before it writes when the file is not a store file, when a host runs
+ * for `project`, or when a list of the stores is not empty. An empty `project.sqlite` keeps its ID counters and its
+ * deliveries.
  */
 export async function loadStore(project: string, path: string, handles: StoreLoadHandles): Promise<StoreCounts> {
 	const file = parseStoreFile(path);
@@ -40,7 +43,16 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 
 	try {
 		const durable = join(dir, "durable.sqlite");
-		const store = ProjectStore.open(dir, STORE_LOCK_WAIT_MS);
+
+		const writeDurable = () =>
+			withHarness(durable, false, async (harness) => {
+				await writeFile(harness, handles, file);
+
+				return (await handles.asks.read(harness, context)).asks;
+			});
+
+		// The check opens `project.sqlite` only when it exists, so a failed load leaves none.
+		const store = existsSync(join(dir, PROJECT_STORE_FILE)) ? ProjectStore.open(dir, STORE_LOCK_WAIT_MS) : undefined;
 
 		try {
 			// A read-only open recovers nothing, so a store that is not empty stays as it is.
@@ -52,9 +64,13 @@ export async function loadStore(project: string, path: string, handles: StoreLoa
 				throw new Error(`The store of ${project} is not empty: harness store load writes only into an empty store`);
 			}
 
-			await store.load(file, () => withHarness(durable, false, (harness) => writeFile(harness, handles, file)));
+			if (store === undefined) {
+				await importStoreFile(dir, file, writeDurable);
+			} else {
+				await loadStoreFile(store, file, writeDurable);
+			}
 		} finally {
-			store.close();
+			store?.close();
 		}
 
 		return storeCounts(file);

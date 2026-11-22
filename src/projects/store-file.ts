@@ -1,77 +1,32 @@
-/**
- * `store.json`: the host writes the lists and the items of the store of the project to it at its start, and after each
- * commit and each write of the project store that changes one, so a program can read them with no host and no store.
- */
+/** The lists and the items of the two stores of a project as a store file, which `store load` reads to check that they are empty. */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Conversation, ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import type { EntryAsks, EntryTodos } from "../host/entries.ts";
-import { CommitPasses } from "../host/passes.ts";
-import { writeJsonFile } from "../protocol/json-file.ts";
-import { errorMessage } from "../protocol/requests.ts";
 import { STORE_FILE_VERSION, type StoreFile } from "../protocol/store-file.ts";
-import type { ProjectStore, StoreReader } from "./project-store.ts";
+import type { StoreReader } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** What the file uses of the lists of todos. */
-type StoreFileTodos = Pick<EntryTodos, "read" | "callers" | "changed">;
+/** The lists of a store file that `project.sqlite` keeps. */
+type ProjectLists = Omit<StoreFile, "version" | "asks" | "todos" | "callerTodos">;
 
-/** What the file uses of the host. */
-export type StoreFileHost = {
-	readonly harness: Harness;
-	/** The storage of `harness`, whose scan lists the callers that have a list of todos. */
-	readonly storage: Pick<Storage, "scanDocuments">;
-	/**
-	 * The project store, with the persons, the threads, the messages, the rules, the held actions, the parleys and the
-	 * items.
-	 */
-	readonly store: Pick<ProjectStore, keyof StoreReader | "subscribe">;
-	/** The root conversation, whose list is the list of the project. */
-	readonly root: Conversation;
-	readonly asks: Pick<EntryAsks, "read" | "changed">;
-	readonly todos: StoreFileTodos;
-	/** The file, `store.json` in the state folder of the project. */
-	readonly path: string;
-	readonly warn: (cause: unknown) => void;
+/** The lists of a project with no `project.sqlite`. */
+const NO_PROJECT_LISTS: ProjectLists = {
+	persons: [],
+	threads: [],
+	rules: [],
+	lastRule: 0,
+	held: [],
+	parleys: [],
+	items: [],
+	lastItem: 0,
 };
-
-/** The passes that write the file. */
-export type StoreFilePasses = {
-	/** Stops the passes, and waits for the write in progress. */
-	close(): Promise<void>;
-};
-
-/**
- * The passes that write the file at once, and again after each commit and each write of the project store that changes
- * a list. A write that fails gives one warning and does not fail the commit. `close()` stops the passes and waits for
- * the write in progress.
- */
-export function storeFilePasses(host: StoreFileHost): StoreFilePasses {
-	const passes = new CommitPasses(
-		host.harness,
-		(change) => host.asks.changed(change) || host.todos.changed(change, host.root.id),
-		() =>
-			readStoreFile(host.harness, host.storage, host.root.id, host)
-				.then((file) => writeJsonFile(host.path, file))
-				.catch((cause: unknown) => host.warn(`Could not write ${host.path}: ${errorMessage(cause)}`)),
-	);
-
-	// The listener only requests a pass: it must not call the store.
-	const unsubscribe = host.store.subscribe(() => passes.request());
-
-	return {
-		close: async () => {
-			unsubscribe();
-			await passes.close();
-		},
-	};
-}
 
 /**
  * Every list of the file, as the store of `harness` and the project store `store` have them now, with the list of
  * the project from the root conversation `root`, the asks from `asks` and the lists of todos from `todos`. `storage`,
- * the storage of `harness`, lists the callers that have a list of todos. A store with no counter of the IDs of items
- * has `lastItem` 0.
+ * the storage of `harness`, lists the callers that have a list of todos. With no `store`, the lists of `project.sqlite`
+ * are empty. A store with no counter of the IDs of items has `lastItem` 0.
  */
 export async function readStoreFile(
 	harness: Harness,
@@ -82,9 +37,9 @@ export async function readStoreFile(
 		asks,
 		todos: lists,
 	}: {
-		readonly store: Pick<StoreReader, keyof StoreReader>;
+		readonly store: Pick<StoreReader, keyof StoreReader> | undefined;
 		readonly asks: Pick<EntryAsks, "read">;
-		readonly todos: Pick<StoreFileTodos, "read" | "callers">;
+		readonly todos: Pick<EntryTodos, "read" | "callers">;
 	},
 ): Promise<StoreFile> {
 	const asked = await asks.read(harness, context);
@@ -93,15 +48,22 @@ export async function readStoreFile(
 
 	return {
 		version: STORE_FILE_VERSION,
+		...(store === undefined ? NO_PROJECT_LISTS : projectLists(store)),
+		asks: asked.asks,
+		todos: todos.todos,
+		callerTodos,
+	};
+}
+
+/** The lists of `store`. */
+function projectLists(store: Pick<StoreReader, keyof StoreReader>): ProjectLists {
+	return {
 		persons: store.persons(),
 		threads: store.threads().map((thread) => ({ ...thread, messages: store.messages(thread.id) })),
 		rules: store.rules({}),
 		lastRule: store.lastRule(),
 		held: store.held(),
 		parleys: store.parleys(),
-		asks: asked.asks,
-		todos: todos.todos,
-		callerTodos,
 		items: store.items(),
 		lastItem: store.lastItem() ?? 0,
 	};

@@ -188,7 +188,7 @@ export async function runHost(options: {
 
 	// The store is there once the harness is open; entries get `place` before, and use the store in their tasks.
 	let harness: Harness | undefined;
-	// The storage of the harness, whose scan `store.json` uses for the lists of the callers.
+	// The storage of the harness, whose scans the entries use, such as for the lists of the callers.
 	let storage: Storage | undefined;
 	// The root conversation, which entry deliveries need to know, once the harness is open.
 	let rootId: ConversationId | undefined;
