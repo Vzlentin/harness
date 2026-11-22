@@ -142,42 +142,6 @@ describe("hosts", { timeout: 30_000 }, () => {
 		});
 	});
 
-	it("moves the projects.json of an older harness to hosts.json at the first read", async () => {
-		const config = join(root, "old-config");
-		const dir = join(realpathSync(root), "moved-dir");
-		await mkdir(join(config, "harness"), { recursive: true });
-		await mkdir(dir);
-		const old = join(config, "harness", "projects.json");
-		writeFileSync(old, JSON.stringify({ moved: dir }));
-
-		try {
-			expect(await cli(["--host", "moved", "list"], { XDG_CONFIG_HOME: config })).toMatchObject({ code: 0 });
-			expect(JSON.parse(readFileSync(join(config, "harness", "hosts.json"), "utf8"))).toEqual({ moved: dir });
-			expect(existsSync(old)).toBe(false);
-		} finally {
-			await stopHostProcess("moved", config);
-		}
-	});
-
-	it("refuses to run when both projects.json and hosts.json exist", async () => {
-		const config = join(root, "both-config");
-		await mkdir(join(config, "harness"), { recursive: true });
-		const old = join(config, "harness", "projects.json");
-		const path = join(config, "harness", "hosts.json");
-		writeFileSync(old, JSON.stringify({ a: dirA }));
-		writeFileSync(path, JSON.stringify({ b: dirB }));
-		const results = await Promise.all([["list"], ["hosts"]].map((args) => cli(args, { XDG_CONFIG_HOME: config })));
-
-		expect(results).toEqual(
-			results.map(() => ({
-				code: 1,
-				stdout: "",
-				stderr: `Both ${old} and ${path} exist: keep the hosts in ${path} and remove ${old}\n`,
-			})),
-		);
-		expect(existsSync(statePaths("main").socket)).toBe(false);
-	});
-
 	it("routes each command to its host", async () => {
 		const hostA = await startHost("a");
 		const hostB = await startHost("b");
@@ -303,20 +267,3 @@ describe("hosts", { timeout: 30_000 }, () => {
 		}
 	});
 });
-
-/** Stops the host process `name` that a CLI started with the config folder `config`, and waits until its socket is gone. */
-async function stopHostProcess(name: string, config: string): Promise<void> {
-	const saved = process.env.XDG_CONFIG_HOME;
-	process.env.XDG_CONFIG_HOME = config;
-
-	try {
-		const client = await connect({ start: false, host: name });
-		client?.close();
-
-		if (client !== undefined) process.kill(client.pid, "SIGTERM");
-	} finally {
-		process.env.XDG_CONFIG_HOME = saved;
-	}
-
-	await until(() => !existsSync(statePaths(name).socket));
-}

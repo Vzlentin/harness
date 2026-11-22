@@ -1,10 +1,10 @@
-import { existsSync, realpathSync, renameSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { HARNESS_HOST } from "./env.ts";
-import { hasCode, readJsonFile, updateJsonFile } from "./json-file.ts";
+import { readJsonFile, updateJsonFile } from "./json-file.ts";
 
 /** The host that has no directory. A cwd outside every host goes to it. */
 export const MAIN_HOST = "main";
@@ -42,36 +42,11 @@ export function hostsPath(): string {
 }
 
 /**
- * Moves the file of an older harness, `projects.json` in the folder of `hostsPath()`, to `hostsPath()` when only the old
- * file exists. It throws when both files exist.
- */
-function moveRegistry(): void {
-	const path = hostsPath();
-	const old = join(dirname(path), "projects.json");
-
-	// The new file first: another process can move the old file between the two checks, but cannot bring it back.
-	if (existsSync(path)) {
-		if (existsSync(old)) throw new Error(`Both ${old} and ${path} exist: keep the hosts in ${path} and remove ${old}`);
-
-		return;
-	}
-
-	try {
-		renameSync(old, path);
-	} catch (error) {
-		// No old file, or another process moved it first.
-		if (!hasCode(error, "ENOENT")) throw error;
-	}
-}
-
-/**
  * The hosts, name to absolute directory, in creation order. `create` saves real paths, but a hand-written file can
  * have a path through a symbolic link. It is empty when the file does not exist. It throws when the
- * file is not an object of valid names to absolute directories. It first moves the file of an older harness (see
- * `moveRegistry`).
+ * file is not an object of valid names to absolute directories.
  */
 export function readHosts(): Record<string, string> {
-	moveRegistry();
 	const path = hostsPath();
 	const hosts = readJsonFile(path);
 
