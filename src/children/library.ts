@@ -148,9 +148,9 @@ export type Lineage = {
 
 /**
  * What a turn returns: its text, or a named failure. `cut` stopped before its end, such as at its length limit, and
- * keeps its text. `no-respond` is a schema ask with no accepted `respond` call. `unanswered` settled with no answer,
- * after a provider error, an abort or an end; `cause` is the settlement's reason, or `queued` when the child stopped
- * with the request still queued after a failed turn.
+ * keeps its text, its stop reason, and its provider error message when it has one. `no-respond` is a schema ask with
+ * no accepted `respond` call. `unanswered` settled with no answer, after a provider error, an abort or an end; `cause`
+ * is the settlement's reason, or `queued` when the child stopped with the request still queued after a failed turn.
  */
 export type Answer = (Ok & { readonly value?: JsonValue }) | Failure;
 
@@ -159,13 +159,7 @@ export type Ok = { readonly status: "ok"; readonly text: string; readonly entry:
 
 /** A turn without an answer that counts. */
 export type Failure =
-	| {
-			readonly status: "failed";
-			readonly reason: "cut";
-			readonly text: string;
-			readonly entry: EntryId;
-			readonly stopReason: string;
-	  }
+	| Cut
 	| { readonly status: "failed"; readonly reason: "no-respond"; readonly text: string; readonly entry: EntryId }
 	| {
 			readonly status: "failed";
@@ -173,6 +167,16 @@ export type Failure =
 			readonly cause: string;
 			readonly detail?: JsonValue | undefined;
 	  };
+
+/** A turn that stopped before its end. */
+type Cut = {
+	readonly status: "failed";
+	readonly reason: "cut";
+	readonly text: string;
+	readonly entry: EntryId;
+	readonly stopReason: string;
+	readonly errorMessage?: string | undefined;
+};
 
 /** The state of a conversation's turns. */
 export type TurnState = "busy" | "idle" | "error";
@@ -478,7 +482,15 @@ export function createChildren(durable: typeof Durable): Children {
 			.trim();
 
 		if (!complete(message.stopReason)) {
-			return { status: "failed", reason: "cut", text, entry, stopReason: message.stopReason };
+			const cut: Cut = {
+				status: "failed",
+				reason: "cut",
+				text,
+				entry,
+				stopReason: message.stopReason,
+			};
+
+			return message.errorMessage === undefined ? cut : { ...cut, errorMessage: message.errorMessage };
 		}
 
 		return { status: "ok", text, entry };

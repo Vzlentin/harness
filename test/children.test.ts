@@ -503,11 +503,18 @@ describe("children library", { timeout: 30_000 }, () => {
 
 	it("gives a cut answer as cut", async () => {
 		const child = await library.open(place, owner, "t:cut", { root: "test", ...faux, cwd: root }, context);
-		expect(await child.ask({ type: "input", content: "Cut", requestId: "r1" }, context)).toMatchObject({
+		const answer = await child.ask({ type: "input", content: "Cut", requestId: "r1" }, context);
+		expect(answer).toMatchObject({ status: "failed", reason: "cut", text: "cut", stopReason: "length" });
+		expect(answer).not.toHaveProperty("errorMessage");
+	});
+
+	it("keeps the error message of a cut answer", async () => {
+		const child = await library.open(place, owner, "t:cut-error", { root: "test", ...faux, cwd: root }, context);
+		expect(await child.ask({ type: "input", content: "Cut error", requestId: "r1" }, context)).toMatchObject({
 			status: "failed",
 			reason: "cut",
-			text: "cut",
 			stopReason: "length",
+			errorMessage: "rate_limit_error",
 		});
 	});
 

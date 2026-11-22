@@ -368,6 +368,10 @@ async function respond(
 
 	if (prompt === "Cut") return fauxAssistantMessage("cut", { stopReason: "length" });
 
+	if (prompt === "Cut error") {
+		return fauxAssistantMessage("cut", { stopReason: "length", errorMessage: "rate_limit_error" });
+	}
+
 	return fauxAssistantMessage(`Answer to ${prompt}`);
 }
 
