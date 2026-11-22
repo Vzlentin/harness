@@ -37,7 +37,7 @@ export async function readStoreFile(
 		asks,
 		todos: lists,
 	}: {
-		readonly store: Pick<StoreReader, keyof StoreReader> | undefined;
+		readonly store: StoreReader | undefined;
 		readonly asks: Pick<EntryAsks, "read">;
 		readonly todos: Pick<EntryTodos, "read" | "callers">;
 	},
@@ -56,7 +56,7 @@ export async function readStoreFile(
 }
 
 /** The lists of `store`. */
-function projectLists(store: Pick<StoreReader, keyof StoreReader>): ProjectLists {
+function projectLists(store: StoreReader): ProjectLists {
 	return {
 		persons: store.persons(),
 		threads: store.threads().map((thread) => ({ ...thread, messages: store.messages(thread.id) })),

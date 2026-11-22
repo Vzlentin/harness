@@ -100,7 +100,7 @@ export default function projects(options: EntryOptions): Entry {
 		input: digestHook(host),
 		answeredAsk: (event, handlerOptions) => parleyReaction(host())(event, handlerOptions),
 		reported: (event) => itemReports(host())(event),
-		agentEnded: ({ conversation }) => dropHeldOfEnded(host(), conversation),
+		agentEnded: async ({ conversation }) => dropHeldOfEnded(host(), conversation),
 		labels: workLabelChecks(() => host().store),
 		protocol: { name: "projects", version: PROJECTS_PROTOCOL_VERSION },
 		ask: (request, { author }) => projectAsk(request, host(), author),

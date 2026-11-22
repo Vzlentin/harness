@@ -169,7 +169,7 @@ export type Rule = Static<typeof Rule>;
  * command as it runs, the decided conduct rule that it breaks, absent when the gate failed or the call changes a rule,
  * and the reason. `at` is the time of its last change, and `by` is the caller of that change.
  */
-const HeldFields = {
+export const HeldFields = {
 	id: LocalId,
 	requestId: Type.String(),
 	agent: Caller,
@@ -414,7 +414,8 @@ export const ParleyFrame = Type.Object({
 
 export type ParleyFrame = Static<typeof ParleyFrame>;
 
-const ParleyFields = {
+/** The fields of each parley, whatever its status. */
+export const ParleyFields = {
 	id: LocalId,
 	slug: Slug,
 	title: Plain,
@@ -602,18 +603,6 @@ export const RULES_KIND = "harness.rules";
 export const HELD_KIND = "harness.held";
 export const PARLEYS_KIND = "harness.parleys";
 export const ASKS_KIND = "harness.asks";
-
-/** The kind of the document of the session with the state of each message out. */
-export const OUTBOX_KIND = "harness.outbox";
-
-/** The kind of the entry of a message in the conversation of its thread. */
-export const MESSAGE_KIND = "harness.message";
-
-/** The kind of the entry of an edit of a message, in the conversation of its thread. */
-export const MESSAGE_EDIT_KIND = "harness.message.edit";
-
-/** The kind of the entry of a delete of a message, in the conversation of its thread. */
-export const MESSAGE_DELETE_KIND = "harness.message.delete";
 
 /** The kind of the entry of a digest in the conversation of a hosted agent. */
 export const DIGEST_KIND = "harness.digest";

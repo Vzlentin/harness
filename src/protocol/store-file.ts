@@ -17,13 +17,19 @@ export const STORE_FILE_VERSION = 2;
 /** The last change of the state of a message out: its time, and the caller of the change. */
 export const StateChange = Type.Object({ at: Message.properties.at, by: Message.properties.by });
 
-/**
- * A message of the file, with its state. A message out also has `changed`, the last change of its state; a message in
- * has none.
- */
+/** A message out of the file: its state, and `changed`, the last change of its state. */
+export const OutFileMessage = Type.Object({
+	...Message.properties,
+	direction: Type.Literal("out"),
+	changed: StateChange,
+});
+
+export type OutFileMessage = Static<typeof OutFileMessage>;
+
+/** A message of the file, with its state. A message out has `changed`; a message in has none. */
 export const FileMessage = Type.Union([
 	Type.Object({ ...Message.properties, direction: Type.Literal("in"), changed: Type.Optional(Type.Never()) }),
-	Type.Object({ ...Message.properties, direction: Type.Literal("out"), changed: StateChange }),
+	OutFileMessage,
 ]);
 
 export type FileMessage = Static<typeof FileMessage>;

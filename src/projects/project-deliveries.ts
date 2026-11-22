@@ -20,6 +20,15 @@ export function approveKey(id: number): string {
 	return `${APPROVE}${id}`;
 }
 
+/** The ID of the held action of the approve key `key`, as text. A key that `approveKey` did not give fails. */
+export function approvedId(key: string): string {
+	const id = key.slice(APPROVE.length);
+
+	if (!key.startsWith(APPROVE) || !/^[1-9]\d*$/.test(id)) throw new Error(`Not the key of an approve: ${key}`);
+
+	return id;
+}
+
 /** The delivery that tells the agent of the approved action `held` to call it again. */
 export function approveDelivery(held: HeldAction): PendingDelivery {
 	return { key: approveKey(held.id), target: held.agent, text: approvedText(held), at: Date.now() };
@@ -38,7 +47,7 @@ export type DeliveriesHost = Pick<EntryHandles, "deliver" | "warn" | "degraded">
  */
 export async function sendDeliveries(host: DeliveriesHost): Promise<void> {
 	for (const { key, target, text } of host.store.deliveries()) {
-		const id = key.slice(APPROVE.length);
+		const id = approvedId(key);
 
 		try {
 			await host.deliver({ key, to: target, text });

@@ -1,7 +1,8 @@
 /**
  * The import of a store file into `project.sqlite`: the open of the project store, which imports `store.json` at the
  * first start of a host that has no `project.sqlite`, and refuses an old `durable.sqlite` with the lists of the project
- * and no `store.json`. The import creates `project.sqlite` only once its write commits.
+ * and no `store.json`, and the write of a store file into the tables of an empty project store. The import creates
+ * `project.sqlite` only once its write commits.
  */
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import type { EntryAsks } from "../host/entries.ts";
 import { ITEM_KIND } from "../protocol/item.ts";
 import { type Ask, HELD_KIND, PARLEYS_KIND, PERSONS_KIND, RULES_KIND, THREADS_KIND } from "../protocol/project.ts";
 import { parseStoreFile, type StoreFile } from "../protocol/store-file.ts";
-import { PROJECT_STORE_FILE, ProjectStore } from "./project-store.ts";
+import { PROJECT_STORE_FILE, ProjectStore, type StoreTx } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -59,16 +60,19 @@ export async function openProjectStore(host: ProjectStoreHost): Promise<ProjectS
 }
 
 /**
- * Writes `file` into `store`, with the IDs of the file. `durable` runs inside the write, and gives the asks of
- * `durable.sqlite`: each ask of the file whose parley is in the file must be there, with the same ID and parley. A
- * failure rolls `store` back.
+ * Writes `file` into `store` in one transaction, with the IDs of the file. `durable` runs inside the transaction, and
+ * gives the asks of `durable.sqlite`: each ask of the file whose parley is in the file must be there, with the same ID
+ * and parley. A failure rolls `store` back. The write tells no listener.
  */
 export async function loadStoreFile(
 	store: ProjectStore,
 	file: StoreFile,
 	durable: () => Promise<readonly Ask[]>,
 ): Promise<void> {
-	await store.load(file, async () => checkAsks(file, await durable()));
+	await store.transaction(async (tx) => {
+		writeLists(tx, file);
+		checkAsks(file, await durable());
+	});
 }
 
 /**
@@ -96,6 +100,38 @@ export async function importStoreFile(
 		removeDatabase(join(dir, IMPORT_FILE));
 		throw error;
 	}
+}
+
+/**
+ * Writes the persons, the threads with their messages, the rules, the held actions, the parleys and the items with
+ * their edges of `file` with `tx`, with the IDs of the file. A rule with a source gets the thread of its source message.
+ * The highest ID that a rule had becomes `lastRule`, and the highest ID that an item had `lastItem`, when it is higher.
+ * It always writes the counter of the IDs of items.
+ */
+function writeLists(tx: StoreTx, file: StoreFile): void {
+	const threads = new Map<number, number>();
+
+	for (const person of file.persons) tx.addPerson(person);
+
+	for (const { messages, ...thread } of file.threads) {
+		tx.addThread(thread);
+
+		for (const message of messages) {
+			tx.addMessage(message);
+			threads.set(message.id, thread.id);
+		}
+	}
+
+	for (const { thread: _, ...rule } of file.rules) {
+		const thread = rule.source === undefined ? undefined : threads.get(rule.source);
+		tx.addRule(thread === undefined ? rule : { ...rule, thread });
+	}
+
+	for (const held of file.held) tx.addHeld(held);
+	tx.raiseLastRule(file.lastRule);
+
+	for (const parley of file.parleys) tx.addParley(parley);
+	tx.loadItems(file.items, file.lastItem);
 }
 
 /** Fails when an ask of a parley of `file` is not in `asks` with the same ID and parley. */

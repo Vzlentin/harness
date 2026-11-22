@@ -2,9 +2,10 @@
  * `project.sqlite`: the persons, the threads with their persons, the messages, the rules, the held actions, the
  * parleys, and the work items with their edges of the project, and the pending deliveries, as plain tables beside
  * `durable.sqlite`. The host is the only writer: a write is one synchronous transaction, and the store tells its
- * listeners what changed after the commit, or after the commit of `durable.sqlite` that the write is part of. Each
- * table gives the next ID of its list and never gives an ID again. The edges give the items of each end, and the
- * `needs` edges that go to an item. A load writes a store file into the empty tables with the IDs of the file.
+ * listeners the table and the ID of each object that it changed, after the commit, or after the commit of
+ * `durable.sqlite` that the write is part of. An async transaction, such as the import of a store file, tells no
+ * listener. Each table gives the next ID of its list and never gives an ID again. The edges give the items of each end,
+ * and the `needs` edges that go to an item.
  */
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
@@ -14,14 +15,16 @@ import { Edge, type EdgeInput, type EdgeItem, edgeItem, type ItemState, WorkItem
 import {
 	type Author,
 	HeldAction,
+	HeldFields,
 	Message,
 	Parley,
+	ParleyFields,
 	Person,
 	Rule,
 	type RuleFilter,
 	Thread,
 } from "../protocol/project.ts";
-import { FileMessage, type StoreFile } from "../protocol/store-file.ts";
+import { FileMessage, OutFileMessage } from "../protocol/store-file.ts";
 
 /** The file of the store, in the state directory of the project. */
 export const PROJECT_STORE_FILE = "project.sqlite";
@@ -129,7 +132,8 @@ const EDGE_COLUMNS = `"from", kind, "to", at, "by"`;
 
 /** A parley row, with its evidence as JSON text. */
 const ParleyRow = Type.Object({
-	...Parley.anyOf[0].properties,
+	...ParleyFields,
+	design_sense: Type.Optional(Type.String()),
 	evidence: Type.Optional(Type.String()),
 	status: Type.String(),
 });
@@ -145,10 +149,10 @@ type NewItem = Omit<WorkItem, "id" | "edges"> & { id?: number };
 
 /** A held action row, with the call that an approved action ran for in two columns. */
 const HeldRow = Type.Object({
-	...HeldAction.anyOf[0].properties,
+	...HeldFields,
 	state: Type.String(),
 	ranRequestId: Type.Optional(Type.String()),
-	ranAt: Type.Optional(HeldAction.anyOf[0].properties.at),
+	ranAt: Type.Optional(HeldFields.at),
 });
 
 /** A pending delivery: the text that goes once for its key to `target`, queued at `at`. */
@@ -168,26 +172,14 @@ const MessageRow = Type.Object({
 	changedBy: Type.Optional(Message.properties.by),
 });
 
-/** A message out: its state and the last change of its state. */
-export type OutMessage = Extract<FileMessage, { direction: "out" }>;
-
-/** The schema of a message out. */
-const OutMessage = FileMessage.anyOf[1];
+/** A table whose objects a write tells its listeners. */
+export type ChangedTable = "person" | "thread" | "message" | "rule" | "held" | "parley" | "item";
 
 /**
- * A change of a write: an object of a table that it added or changed, as the write committed it, or the ID of a message
- * or a rule that it removed.
+ * A change of a write: the table and the ID of an object that it added, changed or removed. A change of an edge is a
+ * change of its item.
  */
-export type StoreChange =
-	| { readonly kind: "person"; readonly value: Person }
-	| { readonly kind: "thread"; readonly value: Thread }
-	| { readonly kind: "message"; readonly value: FileMessage }
-	| { readonly kind: "rule"; readonly value: Rule }
-	| { readonly kind: "held"; readonly value: HeldAction }
-	| { readonly kind: "parley"; readonly value: Parley }
-	/** An item with its own edges. */
-	| { readonly kind: "item"; readonly value: WorkItem }
-	| { readonly kind: "removed"; readonly table: "message" | "rule"; readonly id: number };
+export type StoreChange = { readonly table: ChangedTable; readonly id: number };
 
 /**
  * A listener of the writes. It gets one change for each object that a write changed, in the order of their last change.
@@ -230,18 +222,16 @@ export class StoreReader {
 
 	/** The message `id`. An ID of no message fails with `Unknown message: <id>`. */
 	message(id: number): FileMessage {
-		return this.findMessage(id) ?? unknown("message", id);
-	}
-
-	/** The message `id`, or `undefined` when there is no such message. */
-	findMessage(id: number): FileMessage | undefined {
-		return this.#messages(FileMessage, `SELECT ${MESSAGE_COLUMNS} FROM message WHERE id = ?`, id)[0];
+		return (
+			this.#messages(FileMessage, `SELECT ${MESSAGE_COLUMNS} FROM message WHERE id = ?`, id)[0] ??
+			unknown("message", id)
+		);
 	}
 
 	/** The messages out, in ID order: with `thread`, only those of that thread. */
-	outMessages(thread?: number): OutMessage[] {
+	outMessages(thread?: number): OutFileMessage[] {
 		return this.#messages(
-			OutMessage,
+			OutFileMessage,
 			`SELECT ${MESSAGE_COLUMNS} FROM message WHERE direction = 'out' AND (?1 IS NULL OR thread = ?1) ORDER BY id`,
 			thread ?? null,
 		);
@@ -436,11 +426,11 @@ export class StoreReader {
 /** The writes of one transaction of the store, which record what they change. */
 export class StoreTx extends StoreReader {
 	/** The objects that the writes changed, by `<table>:<id>`, in the order of their last change. */
-	readonly #changed = new Map<string, { readonly table: ChangedTable; readonly id: number }>();
+	readonly #changed = new Map<string, StoreChange>();
 
-	/** One change for each object that the writes changed, with its state in the transaction, in order. */
+	/** One change for each object that the writes changed, in the order of their last change. */
 	changes(): StoreChange[] {
-		return [...this.#changed.values()].map(({ table, id }) => this.#change(table, id));
+		return [...this.#changed.values()];
 	}
 
 	/** Adds the person `person`, with the next ID when it has none, and gives it. */
@@ -670,36 +660,7 @@ export class StoreTx extends StoreReader {
 		this.#changed.delete(key);
 		this.#changed.set(key, { table, id });
 	}
-
-	#change(table: ChangedTable, id: number): StoreChange {
-		switch (table) {
-			case "person":
-				return { kind: table, value: this.person(id) };
-			case "thread":
-				return { kind: table, value: this.thread(id) };
-			case "message": {
-				const value = this.findMessage(id);
-
-				return value === undefined ? { kind: "removed", table, id } : { kind: table, value };
-			}
-
-			case "rule": {
-				const value = this.findRule(id);
-
-				return value === undefined ? { kind: "removed", table, id } : { kind: table, value };
-			}
-
-			case "held":
-				return { kind: table, value: this.heldAction(id) };
-			case "parley":
-				return { kind: table, value: this.parley(id) };
-			case "item":
-				return { kind: table, value: this.item(id) };
-		}
-	}
 }
-
-type ChangedTable = "person" | "thread" | "message" | "rule" | "held" | "parley" | "item";
 
 /** The store of a project, open on its file. */
 export class ProjectStore extends StoreReader {
@@ -774,20 +735,22 @@ export class ProjectStore extends StoreReader {
 	}
 
 	/**
-	 * Writes the persons, the threads with their messages, the rules, the held actions, the parleys and the items with
-	 * their edges of `file` into the store with the IDs of the file, then awaits `rest`, the write of the other lists, and
-	 * commits only when it succeeds. A rule with a source gets the thread of its source message. The highest ID that a
-	 * rule had becomes `lastRule`, and the highest ID that an item had `lastItem`, when it is higher. The load always
-	 * writes the counter of the IDs of items, and tells no listener.
+	 * Runs `fn` in one transaction, and gives its result. It commits once `fn` settles, and rolls back when `fn` fails. It
+	 * tells no listener. A write while it runs fails.
 	 */
-	async load(file: StoreFile, rest: () => Promise<void>): Promise<void> {
+	async transaction<T>(fn: (tx: StoreTx) => Promise<T>): Promise<T> {
+		const tx = new StoreTx(this.db);
 		this.#begin();
 
-		const [loaded] = await Promise.allSettled([this.#load(file, rest)]);
+		try {
+			const result = await fn(tx);
+			this.db.exec("COMMIT");
 
-		this.#end(() => {
-			if (loaded.status === "rejected") throw loaded.reason;
-		});
+			return result;
+		} catch (error) {
+			this.#rollback();
+			throw error;
+		}
 	}
 
 	/** Closes the store. A second close does nothing. */
@@ -800,34 +763,6 @@ export class ProjectStore extends StoreReader {
 	/** Gives `changes` to each listener, when there are any. */
 	#tell(changes: readonly StoreChange[]): void {
 		if (changes.length > 0) for (const listener of this.#listeners) listener(changes);
-	}
-
-	async #load(file: StoreFile, rest: () => Promise<void>): Promise<void> {
-		const tx = new StoreTx(this.db);
-		const threads = new Map<number, number>();
-
-		for (const person of file.persons) tx.addPerson(person);
-
-		for (const { messages, ...thread } of file.threads) {
-			tx.addThread(thread);
-
-			for (const message of messages) {
-				tx.addMessage(message);
-				threads.set(message.id, thread.id);
-			}
-		}
-
-		for (const { thread: _, ...rule } of file.rules) {
-			const thread = rule.source === undefined ? undefined : threads.get(rule.source);
-			tx.addRule(thread === undefined ? rule : { ...rule, thread });
-		}
-
-		for (const held of file.held) tx.addHeld(held);
-		tx.raiseLastRule(file.lastRule);
-
-		for (const parley of file.parleys) tx.addParley(parley);
-		tx.loadItems(file.items, file.lastItem);
-		await rest();
 	}
 
 	#begin(): void {
@@ -843,9 +778,13 @@ export class ProjectStore extends StoreReader {
 
 			return result;
 		} catch (error) {
-			if (this.db.isTransaction) this.db.exec("ROLLBACK");
+			this.#rollback();
 			throw error;
 		}
+	}
+
+	#rollback(): void {
+		if (this.db.isTransaction) this.db.exec("ROLLBACK");
 	}
 }
 

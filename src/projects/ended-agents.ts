@@ -12,7 +12,7 @@ export type EndedAgentsHost = Pick<EntryHandles, "endedChild" | "warn"> & {
 };
 
 /** Drops each held action of the agent `agent` that ended, for the caller `agent`. A repeat changes nothing. */
-export async function dropHeldOfEnded(host: Pick<EndedAgentsHost, "store">, agent: string): Promise<void> {
+export function dropHeldOfEnded(host: Pick<EndedAgentsHost, "store">, agent: string): void {
 	host.store.write((tx) => dropHeldOf(tx, agent));
 }
 
@@ -26,7 +26,7 @@ export async function dropHeldOfEndedAgents(host: EndedAgentsHost): Promise<void
 		const agents = new Set(held.map((action) => action.agent));
 
 		for (const agent of agents) {
-			if (await host.endedChild(agent)) await dropHeldOfEnded(host, agent);
+			if (await host.endedChild(agent)) dropHeldOfEnded(host, agent);
 		}
 	} catch (cause) {
 		host.warn(cause);

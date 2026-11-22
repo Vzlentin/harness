@@ -21,7 +21,7 @@ describe("project store", () => {
 		await tearDown();
 	});
 
-	it("tells one change for each object of a write, with its committed state", () => {
+	it("tells the table and the ID of each object of a write, in the order of their last change", () => {
 		store.write((tx) => {
 			const ann = tx.addPerson({ name: "Ann" });
 			const bob = tx.addPerson({ name: "Bob" });
@@ -45,10 +45,10 @@ describe("project store", () => {
 
 		expect(writes).toHaveLength(1);
 		expect(writes[0]).toEqual([
-			{ kind: "person", value: { id: 1, name: "Ann" } },
-			{ kind: "person", value: { id: 2, name: "Bob" } },
-			expect.objectContaining({ kind: "message", value: expect.objectContaining({ id: 1, state: "sent" }) }),
-			{ kind: "thread", value: { id: 1, topic: "launch", persons: [1, 2], last: 1 } },
+			{ table: "person", id: 1 },
+			{ table: "person", id: 2 },
+			{ table: "message", id: 1 },
+			{ table: "thread", id: 1 },
 		]);
 	});
 
@@ -59,7 +59,7 @@ describe("project store", () => {
 
 		store.write((tx) => tx.removeRule(rule.id));
 
-		expect(writes[1]).toEqual([{ kind: "removed", table: "rule", id: rule.id }]);
+		expect(writes[1]).toEqual([{ table: "rule", id: rule.id }]);
 	});
 
 	it("rolls a failed write back and tells no listener", () => {
@@ -71,6 +71,25 @@ describe("project store", () => {
 		).toThrow("stop");
 
 		expect(store.persons()).toEqual([]);
+		expect(writes).toEqual([]);
+	});
+
+	it("commits a transaction once it settles, rolls a failed one back, and tells no listener", async () => {
+		await store.transaction(async (tx) => {
+			tx.addPerson({ name: "Ann" });
+			await Promise.resolve();
+			expect(() => store.write(() => undefined)).toThrow("A write of the project store is in progress");
+		});
+
+		await expect(
+			store.transaction(async (tx) => {
+				tx.addPerson({ name: "Bob" });
+				await Promise.resolve();
+				throw new Error("stop");
+			}),
+		).rejects.toThrow("stop");
+
+		expect(store.persons()).toEqual([{ id: 1, name: "Ann" }]);
 		expect(writes).toEqual([]);
 	});
 
@@ -98,9 +117,7 @@ describe("project store", () => {
 				at: expect.any(Number),
 			},
 		]);
-		expect(writes.at(-1)).toEqual([
-			{ kind: "held", value: expect.objectContaining({ id: other.id, state: "approved" }) },
-		]);
+		expect(writes.at(-1)).toEqual([{ table: "held", id: other.id }]);
 
 		// The approve of the agent runs first; the other one runs with the next call, and its delivery goes.
 		store.write((tx) => runApproved(tx, { ...call, requestId: "call-3" }));
@@ -111,7 +128,7 @@ describe("project store", () => {
 		expect(store.deliveries()).toEqual([]);
 	});
 
-	it("tells the parleys and the items with their own edges that a write changes", () => {
+	it("tells the parleys and the items that a write changes, and an edge as a change of its item", () => {
 		const parley = store.write((tx) =>
 			tx.addParley({ slug: "place", title: "T", goal: "G", evidence: ["e"], status: "open", at: 1, by: "a" }),
 		);
@@ -125,13 +142,14 @@ describe("project store", () => {
 		});
 
 		expect(writes).toEqual([
-			[{ kind: "parley", value: parley }],
-			[{ kind: "item", value: { ...item, edges: [] } }],
+			[{ table: "parley", id: parley.id }],
+			[{ table: "item", id: item.id }],
 			[
-				{ kind: "item", value: { ...item, edges: [edge] } },
-				{ kind: "parley", value: { ...parley, status: "contract", design_sense: "D", at: 3 } },
+				{ table: "item", id: item.id },
+				{ table: "parley", id: parley.id },
 			],
 		]);
+		expect(store.item(item.id).edges).toEqual([edge]);
 		expect(store.parleyBySlug("place")).toMatchObject({ id: parley.id, status: "contract" });
 		expect(() => store.parley(9)).toThrow("Unknown parley: 9");
 		expect(() => store.parleyBySlug("none")).toThrow("Unknown parley: none");
@@ -177,7 +195,7 @@ describe("project store", () => {
 		expect(writes).toEqual([]);
 		outer.resolve();
 		await across;
-		expect(writes).toEqual([[{ kind: "person", value: { id: 1, name: "Ann" } }]]);
+		expect(writes).toEqual([[{ table: "person", id: 1 }]]);
 
 		await expect(
 			store.writeAcross(async () => {
@@ -185,6 +203,6 @@ describe("project store", () => {
 				throw new Error("stop");
 			}),
 		).rejects.toThrow("stop");
-		expect(writes.at(-1)).toEqual([{ kind: "person", value: { id: 2, name: "Bob" } }]);
+		expect(writes.at(-1)).toEqual([{ table: "person", id: 2 }]);
 	});
 });

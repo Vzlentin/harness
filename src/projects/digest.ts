@@ -20,8 +20,9 @@ import {
 	personNames,
 	type Thread,
 } from "../protocol/project.ts";
+import type { OutFileMessage } from "../protocol/store-file.ts";
 import { sessionDoc } from "./project-docs.ts";
-import type { OutMessage, StoreReader } from "./project-store.ts";
+import type { StoreReader } from "./project-store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -169,7 +170,11 @@ function board(project: string, open: readonly Readonly<WorkItem>[]) {
 }
 
 /** `waiting on: <persons> (<topic>, sent <time>)` or `(<topic>, draft not sent)` for each message, or `none`. */
-function waitsLine(waiting: readonly OutMessage[], threads: ReadonlyMap<number, Thread>, names: PersonNames): string {
+function waitsLine(
+	waiting: readonly OutFileMessage[],
+	threads: ReadonlyMap<number, Thread>,
+	names: PersonNames,
+): string {
 	const items = waiting.map((out) => {
 		const thread = threads.get(out.thread);
 		const persons = (thread?.persons ?? []).map((id) => names.get(id) ?? `person ${id}`).join(", ");

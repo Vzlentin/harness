@@ -1,7 +1,8 @@
 /**
  * The watch of the store of a project: the persons, rules, threads with their waits, held actions, parleys, asks and
  * open work items with their stages, then an event with the objects that changed and the IDs of those that went, after
- * the writes and the commits that change them.
+ * the writes and the commits that change them. A write of the project store gives the tables and the IDs that it
+ * changed: the watch reads the objects again from the store.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { copyJson, type JsonValue } from "@earendil-works/chord/json";
@@ -212,8 +213,8 @@ class ProjectView implements StoreView<ProjectState, ProjectEvent> {
 
 		const store = this.#host.store.subscribe((changes) => {
 			for (const change of changes) {
-				if (change.kind === "item") this.#freshItems.add(change.value.id);
-				else if (change.kind === "parley" || change.kind === "held") this.#allStages = true;
+				if (change.table === "item") this.#freshItems.add(change.id);
+				else if (change.table === "parley" || change.table === "held") this.#allStages = true;
 			}
 
 			request();
