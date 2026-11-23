@@ -23,10 +23,10 @@ import {
 	type Turn,
 	type Write,
 } from "../children/library.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { CLI_CALLER } from "../protocol/env.ts";
 import type { ChildInfo, ChildState } from "../protocol/requests.ts";
 import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
-import { boundedReplay } from "./checkpoint.ts";
 import {
 	type ChildRecord,
 	ChildRecords,

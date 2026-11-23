@@ -3,8 +3,8 @@
  * key for the started tasks.
  */
 import * as durable from "@earendil-works/pi-durable";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import type { WorkerId } from "../protocol/worker-labels.ts";
-import { boundedReplay } from "./checkpoint.ts";
 
 /** The references of each worker, each once, in the order of their first report. */
 export type WorkerRefLists = { agents: Record<string, string[]>; tasks: Record<string, string[]> };

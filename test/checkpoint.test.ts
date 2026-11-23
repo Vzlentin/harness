@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import * as durable from "@earendil-works/pi-durable";
 import {
 	type ConversationId,
 	createRegistry,
@@ -11,16 +12,34 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { overlayDoc } from "../src/children/overlay.ts";
+import { createAnswers } from "../src/children/respond.ts";
 import { addAsks, ENTRY_ASKS } from "../src/host/asks.ts";
 import { ChildRecords } from "../src/host/records.ts";
 import { AgentState } from "../src/host/targets.ts";
 import { addListTodo, CallerTodos, ConversationTodos, linkOwner, TaskTodos } from "../src/host/todo-lists.ts";
 import { queueAnswers, readUserAnswers, USER_ANSWERS_KIND } from "../src/host/user-answers.ts";
 import { ASKS_KIND } from "../src/protocol/asks.ts";
+import { boundedReplay } from "../src/protocol/checkpoint.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND } from "../src/protocol/todo.ts";
 import { models, root, setUp, tearDown } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+const answers = createAnswers(durable);
+
+const OverlayDoc = overlayDoc(durable);
+
+/** A reader of the ask of `createAnswers`, with the same kind as its document. */
+const AnswerSchema = durable.defineDoc<{ requestId?: string }>({
+	kind: "harness.answer-schema",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	checkpointWhen: boundedReplay,
+	initial: () => ({}),
+});
 
 /** The number of rounds of the test. The first round creates each document. */
 const ROUNDS = 66;
@@ -42,6 +61,8 @@ function addresses(conversationId: ConversationId) {
 		childRecords: { kind: ChildRecords.definition.kind, scope: session },
 		agentState: { kind: AgentState.definition.kind, scope: { kind: "conversation", conversationId } },
 		userAnswers: { kind: USER_ANSWERS_KIND, scope: session },
+		answerSchema: { kind: AnswerSchema.definition.kind, scope: { kind: "conversation", conversationId } },
+		overlay: { kind: OverlayDoc.definition.kind, scope: { kind: "conversation", conversationId } },
 	} satisfies Record<string, DocumentAddress>;
 }
 
@@ -55,6 +76,8 @@ async function writeRound(harness: Harness, conversationId: ConversationId, roun
 		(await tx.doc(ChildRecords)).requests[`r${round}`] = "h";
 		(await tx.doc(AgentState, conversationId)).lastRequest = `r${round}`;
 		await queueAnswers(tx, [{ asker: "cli", delivery: { source: "ask", ask: round, text: "x" } }]);
+		await answers.prepare(tx, conversationId, `r${round}`);
+		(await tx.doc(OverlayDoc, conversationId)).files[`/file-${round}`] = `${round}`;
 	}, context);
 }
 
@@ -90,6 +113,7 @@ async function lengths(tx: Tx, conversationId: ConversationId): Promise<Record<s
 		callerTodos: (await tx.doc(CallerTodos, "cli", null)).todos.length,
 		taskTodos: (await tx.doc(TaskTodos, "1", null)).todos.length,
 		childRecords: Object.keys((await tx.doc(ChildRecords)).requests).length,
+		overlay: Object.keys((await tx.doc(OverlayDoc, conversationId)).files).length,
 	};
 }
 
@@ -100,7 +124,7 @@ async function openStore(path: string): Promise<{ harness: Harness; storage: Sto
 	return { harness: await Harness.open(storage, { models, registry: createRegistry() }, context), storage };
 }
 
-describe("the checkpoint rule of the host's documents", () => {
+describe("the checkpoint rule of the documents of the harness store", () => {
 	it("stores a change as a base when 64 deltas follow the newest base, and keeps each change", async () => {
 		const path = join(await mkdtemp(join(root, "checkpoint-")), "store.sqlite");
 		const { harness, storage } = await openStore(path);
@@ -126,8 +150,12 @@ describe("the checkpoint rule of the host's documents", () => {
 				callerTodos: ROUNDS,
 				taskTodos: ROUNDS,
 				childRecords: ROUNDS,
+				overlay: ROUNDS,
 			});
 			expect(await reopened.commit(async (tx) => (await tx.doc(AgentState, conversationId)).lastRequest, context)).toBe(
+				`r${ROUNDS}`,
+			);
+			expect(await reopened.commit(async (tx) => (await tx.doc(AnswerSchema, conversationId)).requestId, context)).toBe(
 				`r${ROUNDS}`,
 			);
 			expect((await readUserAnswers(reopened, context)).map((answer) => answer.id)).toEqual(

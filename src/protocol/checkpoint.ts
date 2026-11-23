@@ -1,6 +1,7 @@
 /**
- * The checkpoint rule of the documents of the host's store. A rule that never checkpoints lets the replay tail of a
- * document grow without bound, and a rule that always checkpoints writes the whole document on each change.
+ * The checkpoint rule of the documents of the harness store, those of the host and those of the children. A rule that
+ * never checkpoints lets the replay tail of a document grow without bound, and a rule that always checkpoints writes
+ * the whole document on each change.
  */
 import type { Op } from "@earendil-works/chord/delta";
 import type { CheckpointInfo, JsonObject } from "@earendil-works/pi-durable";

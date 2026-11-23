@@ -6,8 +6,8 @@
  */
 import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
 import * as durable from "@earendil-works/pi-durable";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { TASK_TODO_LIST_KIND, TODO_LIST_KIND, type Todo, type TodoList } from "../protocol/todo.ts";
-import { boundedReplay } from "./checkpoint.ts";
 import type { EntryTodos } from "./entries.ts";
 import { readCallerTodos, readTodos, todoListChange } from "./todo.ts";
 

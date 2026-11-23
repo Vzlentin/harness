@@ -16,7 +16,8 @@ export default function subagentEntry({ durable }: { readonly durable: typeof Du
 		kind: "pi-subagent.store",
 		version: 1,
 		scope: "session",
-		checkpointWhen: () => false,
+		// The value is one ID that is written once, so a base costs no more than a delta.
+		checkpointWhen: () => true,
 		initial: () => ({ id: "" }),
 	});
 

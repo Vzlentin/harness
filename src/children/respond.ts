@@ -9,6 +9,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { ConversationId, Extension, HookApi, JsonObject, SubmissionId, Tx } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { errorMessage, Json } from "../protocol/requests.ts";
 
 /**
@@ -67,7 +68,7 @@ export function createAnswers(durable: typeof Durable): Answers {
 		scope: "conversation",
 		history: "latest",
 		fork: "current",
-		checkpointWhen: () => false,
+		checkpointWhen: boundedReplay,
 		initial: () => ({ answers: {} }),
 	});
 

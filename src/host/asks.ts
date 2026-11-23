@@ -26,6 +26,7 @@ import {
 	askTransition,
 	knownAsk,
 } from "../protocol/asks.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import {
 	type AnswerAuthorOf,
 	askGroup,
@@ -35,7 +36,6 @@ import {
 } from "../protocol/requests.ts";
 import { todoLine } from "../protocol/todo.ts";
 import { queueAskEvents } from "./ask-events.ts";
-import { boundedReplay } from "./checkpoint.ts";
 import type { AskAnswer, EntryAsks, NewAsk } from "./entries.ts";
 import { addSaveTodos, closeSaveTodo } from "./save-todo.ts";
 import { dropAnswers, queueAnswers } from "./user-answers.ts";

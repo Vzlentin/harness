@@ -6,7 +6,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import type { Ask } from "../protocol/asks.ts";
-import { boundedReplay } from "./checkpoint.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import type { AnsweredAskEvent, AnsweredAskHandler } from "./entries.ts";
 import { CommitPasses } from "./passes.ts";
 

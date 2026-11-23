@@ -8,9 +8,9 @@ import type { Conversation, Extension, Harness, Task, TaskId, TaskRecord } from 
 import * as durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import type { Request, TaskInfo } from "../protocol/requests.ts";
 import { SpawnServes, type Worker, workerLabels } from "../protocol/worker-labels.ts";
-import { boundedReplay } from "./checkpoint.ts";
 import { WorkerRefs, workerRefs } from "./worker-refs.ts";
 
 const context = BACKGROUND_CONTEXT;

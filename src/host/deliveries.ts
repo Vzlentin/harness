@@ -5,7 +5,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { boundedReplay } from "./checkpoint.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { EntryDelivery, UnknownDeliveryTarget } from "./entries.ts";
 import { knownSession } from "./sessions.ts";
 import { library } from "./targets.ts";

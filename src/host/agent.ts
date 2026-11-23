@@ -13,8 +13,8 @@ import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-d
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { resolveModel } from "../children/model.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { Json } from "../protocol/requests.ts";
-import { boundedReplay } from "./checkpoint.ts";
 import type { Degraded } from "./degraded.ts";
 import type { CatchUpHook, CatchUpPart } from "./entries.ts";
 import { type Found, passiveEntry } from "./targets.ts";

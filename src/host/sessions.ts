@@ -6,7 +6,7 @@
 import type { Socket } from "node:net";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { boundedReplay } from "./checkpoint.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { ChildRecords } from "./records.ts";
 import { type EndHost, endChildren } from "./targets.ts";
 

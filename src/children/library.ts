@@ -25,6 +25,7 @@ import type {
 	Tx,
 	UsageState,
 } from "@earendil-works/pi-durable";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { resolveModel } from "./model.ts";
 import { mergeOverlay, type Overlay, overlayDoc, resolveOverlay } from "./overlay.ts";
 import { complete, createAnswers } from "./respond.ts";
@@ -361,7 +362,7 @@ export function createChildren(durable: typeof Durable): Children {
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
-		checkpointWhen: () => false,
+		checkpointWhen: boundedReplay,
 		initial: () => ({
 			key: "",
 			root: "",
@@ -382,7 +383,7 @@ export function createChildren(durable: typeof Durable): Children {
 		kind: "pi-subagent.key",
 		version: 1,
 		scope: "session",
-		checkpointWhen: () => false,
+		checkpointWhen: boundedReplay,
 		family: true,
 		initial: () => ({ conversation: null }),
 	});

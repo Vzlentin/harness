@@ -10,8 +10,8 @@ import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Answer, Child } from "../children/library.ts";
 import { cutAnswer } from "../protocol/answer-cut.ts";
+import { boundedReplay } from "../protocol/checkpoint.ts";
 import { AGENT_HANDLE } from "../protocol/target.ts";
-import { boundedReplay } from "./checkpoint.ts";
 
 const context = BACKGROUND_CONTEXT;
 
