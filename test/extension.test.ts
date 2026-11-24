@@ -9,6 +9,8 @@ import type { ToolCall } from "@earendil-works/pi-ai";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
+	type AgentEndEvent,
+	type AgentStartEvent,
 	type AgentToolResult,
 	createEventBus,
 	type EventBus,
@@ -58,10 +60,11 @@ type Definition = {
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
 /** An event of Pi that the tests give to the extension's handlers. */
-type PiEvent = SessionStartEvent | SessionShutdownEvent;
+type PiEvent = SessionStartEvent | SessionShutdownEvent | AgentStartEvent | AgentEndEvent;
 
 /**
- * An event handler that the extension gives to `pi.on`; the tests call those of `session_start` and `session_shutdown`.
+ * An event handler that the extension gives to `pi.on`; the tests call those of `session_start`, `session_shutdown`,
+ * `agent_start` and `agent_end`.
  */
 type Handler = ExtensionHandler<PiEvent>;
 
@@ -544,6 +547,60 @@ describe("the Pi extension", () => {
 		expect(registered.messages[1]?.text).toContain("Answer to Task:\nThird");
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(registered.messages).toHaveLength(2);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("gives to a wait in a run of Pi's agent the answer that Pi would hold, and sends it no more", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+		await sessionEvent(registered, { type: "agent_start" });
+		gates.set("Task:\nA", Promise.withResolvers());
+
+		const a = /^Spawned ([a-z0-9]+)$/m.exec(
+			await callTool(registered, { action: "spawn", prompts: ["A"], ...FAUX }),
+		)?.[1];
+
+		const b = /^Spawned ([a-z0-9]+)$/m.exec(
+			await callTool(registered, { action: "spawn", prompts: ["B"], ...FAUX }),
+		)?.[1];
+
+		const waiting = callTool(registered, { action: "wait", handle: a ?? "" });
+		await untilState(b ?? "", "idle");
+		gates.get("Task:\nA")?.resolve();
+		expect(await waiting).toBe(`${a} finished\n\nAnswer to Task:\nA\n`);
+		expect(await callTool(registered, { action: "wait", handle: b ?? "" })).toBe(
+			`${b} finished\n\nAnswer to Task:\nB\n`,
+		);
+		expect(registered.messages).toEqual([]);
+		await sessionEvent(registered, { type: "agent_end", messages: [] });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(registered.messages).toEqual([]);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("sends at the end of a run of Pi's agent the answers that came in the run", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+		await sessionEvent(registered, { type: "agent_start" });
+
+		const c = /^Spawned ([a-z0-9]+)$/m.exec(
+			await callTool(registered, { action: "spawn", prompts: ["C"], ...FAUX }),
+		)?.[1];
+
+		await untilState(c ?? "", "idle");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(registered.messages).toEqual([]);
+		await sessionEvent(registered, { type: "agent_end", messages: [] });
+		expect(registered.messages).toEqual([
+			{
+				customType: "subagent-answer",
+				text: `subagent ${c} finished\n\nAnswer to Task:\nC`,
+				details: { source: "child", handle: c, text: "Answer to Task:\nC", failed: false },
+				options: { triggerTurn: true, deliverAs: "followUp" },
+			},
+		]);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 

@@ -1,13 +1,15 @@
 /**
  * The `subagent` tool, `/subagent`, the subagents widget, the messages with the answers of the children and the answers
- * of the user to the asks of the session, the `todo` tool, `/todo` and the todo widget, the mirror sessions of `/harness`,
- * the tools bridge in the IPython kernels of the session, and `/vc`, the visual copy of the transcript. They use the
+ * of the user to the asks of the session, the answers of the children held while Pi's agent runs, which a `wait` of
+ * that run gives, the `todo` tool, `/todo` and the todo widget, the mirror sessions of `/harness`, the tools bridge in
+ * the IPython kernels of the session, and `/vc`, the visual copy of the transcript. They use the
  * client of `@vzlentin/harness`, the dependency of this package, from its built `dist/`, and start the host of that
  * install. The `.bin` folder that holds its `harness` command goes last on `PATH`.
  */
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, join, resolve } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
 	type ExtensionAPI,
@@ -41,6 +43,9 @@ const CUSTOM_TYPES: Record<protocol.Delivery["source"], string> = {
 	parley: "user-answer",
 	entry: "entry-delivery",
 };
+
+/** A delivery of the answers of a child. */
+type ChildDelivery = Extract<protocol.Delivery, { source: "child" }>;
 
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
@@ -97,7 +102,12 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	// asks, as messages that start a turn.
 	let listener: answers.AnswerListener | undefined;
 
-	const deliver = (delivery: protocol.Delivery): void => {
+	// While Pi's agent runs, Pi would hold a follow-up in its queue until the run ends, so the extension holds the answers
+	// of the children: a `wait` gives them in this run, and the end of the run sends the others, oldest first.
+	let running = false;
+	let held: ChildDelivery[] = [];
+
+	const send = (delivery: protocol.Delivery): void => {
 		pi.sendMessage(
 			{
 				customType: CUSTOM_TYPES[delivery.source],
@@ -108,6 +118,64 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
 	};
+
+	const deliver = (delivery: protocol.Delivery): void => {
+		if (running && delivery.source === "child") held.push(delivery);
+		else send(delivery);
+	};
+
+	const showFailure = (ctx: ExtensionContext, reason: string): void => {
+		ctx.ui.notify(`Could not show an answer: ${reason}`, "error");
+	};
+
+	const release = (ctx: ExtensionContext): void => {
+		const deliveries = held;
+		held = [];
+
+		for (const delivery of deliveries) {
+			try {
+				send(delivery);
+			} catch (error) {
+				showFailure(ctx, protocol.errorMessage(error));
+			}
+		}
+	};
+
+	/**
+	 * The answer of a `wait` for `handle`: the held answers of the child, then `answer`, the answer of the host, unless it
+	 * is `NO_NEW_ANSWERS`. The push can come just after the reply of the `wait`, on its own connection, so with nothing
+	 * held, it looks again after one turn of the event loop. A failed last held answer is the error of the `wait`.
+	 */
+	const waitAnswer = async (handle: string, answer: string): Promise<string> => {
+		const noNew = answer === protocol.NO_NEW_ANSWERS;
+
+		if (noNew && !held.some((delivery) => delivery.handle === handle)) await setImmediate();
+		const mine = held.filter((delivery) => delivery.handle === handle);
+		const last = mine.at(-1);
+
+		if (last === undefined) return answer;
+		held = held.filter((delivery) => delivery.handle !== handle);
+		const text = [...mine.map((delivery) => delivery.text), ...(noNew ? [] : [answer])].join("\n\n");
+
+		if (noNew && last.failed) throw new Error(text);
+
+		return text;
+	};
+
+	/** Sends through the host's socket, and gives the answer of a `wait` with the answers that the extension holds. */
+	async function sendWithHeld<T extends protocol.Request["type"]>(
+		request: Extract<protocol.Request, { type: T }>,
+		signal: AbortSignal,
+	): Promise<protocol.Replies[T]>;
+	async function sendWithHeld(
+		request: protocol.Request,
+		signal: AbortSignal,
+	): Promise<protocol.Replies[protocol.Request["type"]]> {
+		if (request.type !== "wait") return tool.sendToHost(request, signal);
+		const { answer } = await tool.sendToHost(request, signal);
+
+		return { answer: await waitAnswer(request.handle, answer) };
+	}
 
 	const { parameters, output } = tool.toolSchemas({ Type });
 	pi.registerTool({
@@ -121,7 +189,7 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 			const { text, data } = await tool.runTool(args, {
 				...sessionScope(pi, ctx),
 				callKey: toolCallId,
-				send: tool.sendToHost,
+				send: sendWithHeld,
 				signal,
 			});
 
@@ -198,15 +266,26 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		// A write to stderr would break the TUI, so a delivery that fails is a notification.
 		listener = new harness.answers.AnswerListener(ctx.sessionManager.getSessionId(), deliver, {
 			start: hasSpawned(ctx),
-			onError: (error) => ctx.ui.notify(`Could not show an answer: ${protocol.errorMessage(error)}`, "error"),
+			onError: (error) => showFailure(ctx, protocol.errorMessage(error)),
 		});
 
 		subagents.start(ctx);
 	});
 
+	pi.on("agent_start", () => {
+		running = true;
+	});
+
+	pi.on("agent_end", (_event, ctx) => {
+		running = false;
+		release(ctx);
+	});
+
 	pi.on("session_shutdown", (_event, ctx) => {
 		listener?.close();
 		listener = undefined;
+		running = false;
+		release(ctx);
 		subagents.stop(ctx);
 	});
 }

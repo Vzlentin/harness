@@ -1,6 +1,9 @@
 import type { ChildInfo, Delivery } from "./requests.ts";
 import { AGENT_HANDLE } from "./target.ts";
 
+/** The answer of a `wait` for a turn whose answer a push already gave. */
+export const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
+
 /** The text of the message that brings `delivery` to its caller. */
 export function deliveryText(delivery: Delivery): string {
 	switch (delivery.source) {
