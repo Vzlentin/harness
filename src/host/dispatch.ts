@@ -12,7 +12,6 @@ import { Value } from "typebox/value";
 import type { Input, Spec } from "../children/library.ts";
 import { type ModelChoice, resolveModel, subagentModel } from "../children/model.ts";
 import type { AnswerAuthor } from "../protocol/asks.ts";
-import { NO_NEW_ANSWERS } from "../protocol/labels.ts";
 import {
 	type AnswerAuthorOf,
 	type AskRequest,
@@ -82,6 +81,9 @@ const DEPTH_LIMIT = 4;
 const DepthSetting = Type.Object({ agentDepthLimit: Type.Integer({ minimum: 1 }) });
 
 const ThinkingSetting = Type.Object({ subagentThinkingLevel: ThinkingLevel });
+
+/** The answer of a `wait` for a turn whose answer a push already gave. */
+const NO_NEW_ANSWERS = "No new answers: the last answer came as a message.";
 
 /** What every request of the host uses. */
 export type Base = Omit<TaskHost, "signal"> &

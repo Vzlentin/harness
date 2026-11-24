@@ -37,7 +37,7 @@ Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in pare
 
 ## Answers and wait
 
-When a child finishes, its answer comes to you as a message that starts a turn. While you work, the message comes when your work ends. Use `wait` only when you need the answer in this turn. `notify: false` on `spawn` or `send` turns off this message; then get the answers with `wait`.
+When a child finishes, its answer comes to you as a message that starts a turn. Use `wait` only when you need the answer in this turn. `notify: false` on `spawn` or `send` turns off this message; then get the answers with `wait`.
 
 ```json
 { "action": "status", "handle": "<handle>" }
@@ -47,7 +47,7 @@ When a child finishes, its answer comes to you as a message that starts a turn. 
 
 Use `list` at any time to find the subagents of this session again, with their handles, names, and current states.
 
-`wait` waits until the subagent answers its last message, up to `timeout` seconds (default 1800), and gives its answer. If an earlier answer of the spawn or a `send` was never given by a `wait`, it gives those answers first, oldest first, each under a `--- Answer <i> of <n> ---` line. It fails when the last turn failed, and the error still includes the earlier answers. While you work, an answer does not come as a message until your work ends, so a `wait` in that time gives it. An answer that a `wait` gave does not also come as a message. When a message already gave the answer, `wait` gives `No new answers: the last answer came as a message.` `subagent` tool calls in one message run in message order, so a `wait` after a `send` in the same message waits for the answer to that message.
+`wait` waits until the subagent answers its last message, up to `timeout` seconds (default 1800), and gives its answer. If an earlier answer of the spawn or a `send` was never given by a `wait`, it gives those answers first, oldest first, each under a `--- Answer <i> of <n> ---` line. It fails when the last turn failed, and the error still includes the earlier answers. When a message already gave the answer, `wait` gives `No new answers: the last answer came as a message.` `subagent` tool calls in one message run in message order, so a `wait` after a `send` in the same message waits for the answer to that message.
 
 ## Query
 
