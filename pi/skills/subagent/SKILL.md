@@ -37,7 +37,7 @@ Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in pare
 
 ## Answers and wait
 
-When a child finishes, its answer comes to you as a message that starts a turn. Use `wait` only when you need the answer in this turn. `notify: false` on `spawn` or `send` turns off this message; then get the answers with `wait`.
+When a child finishes, its answer comes to you as a message that starts a turn. Use `wait` only when you need the answer in this turn. `notify: false` on `spawn` or `send` turns off this message; then get the answers with `wait`. Give `notify: false` when you `wait` for the child in the same turn: else its answer can come as a message after your turn, and the `wait` gives `No new answers`.
 
 ```json
 { "action": "status", "handle": "<handle>" }
