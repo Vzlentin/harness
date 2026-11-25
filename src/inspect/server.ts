@@ -10,7 +10,7 @@ import { Value } from "typebox/value";
 import type { MirrorTarget } from "../client/mirror.ts";
 import { targetRef } from "../protocol/target.ts";
 import { createInspectHandler, type InspectHandler, isAddress } from "./handler.ts";
-import { PAGES } from "./pages.ts";
+import { pagePath } from "./pages.ts";
 
 /** The address of the server without `--host` and `--tailscale`: this machine only. */
 const LOOPBACK = "127.0.0.1";
@@ -137,10 +137,10 @@ function serverUrl(host: string, port: number): string {
 	return `http://${isIPv6(host) ? `[${host}]` : host}:${port}/`;
 }
 
-/** The link of the page `slug` of `harness page` on `port` of `host`, with the query of `target`, which its Send posts to. */
+/** The link of the page `slug` of `harness page` on `port` of `host`, with the target of its Send in its path. */
 export function pageLink(host: string, port: number, slug: string, target: MirrorTarget): string {
-	// `serverUrl` ends with the `/` that starts `PAGES`.
-	return `${serverUrl(host, port)}${PAGES.slice(1)}${slug}/${pageQuery(target)}`;
+	// `serverUrl` ends with the `/` that starts the page path.
+	return `${serverUrl(host, port)}${pagePath(target, slug).slice(1)}`;
 }
 
 /** Whether a server accepts a TCP connection on `port` of `host` within 1 s. */
@@ -196,7 +196,10 @@ function closeAll(servers: readonly Server[]): Promise<void> {
 	).then(() => undefined);
 }
 
-/** The query of the page that opens `target`: the host alone for its agent, else with the target's reference. */
+/**
+ * The query of the page of `harness inspect` that opens `target`: the host alone for its agent, else with the target's
+ * reference.
+ */
 export function pageQuery({ host, target }: MirrorTarget): string {
 	const fields = target.kind === "agent" ? { host } : { host, ...targetRef(target) };
 

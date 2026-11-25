@@ -221,9 +221,9 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 }
 
 /**
- * Serves a file of a page of `harness page`. An HTML file whose query has a target gets the script of the Send, which
- * posts to the input route with that target, and reads and answers the parley of the slug of the page; a query that is
- * not valid gets 400. Every other file goes as its bytes.
+ * Serves a file of a page of `harness page`. The host of the path must be a known host, else every file gets 400. An
+ * HTML file gets the script of the Send, which posts to the input route with the target of the path, and reads and
+ * answers the parley of the slug of the page. Every other file goes as its bytes.
  */
 async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
 	const file = req.method === "GET" ? await readPage(url.pathname) : undefined;
@@ -234,20 +234,19 @@ async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): P
 		return;
 	}
 
-	const headers = { "content-type": file.type, "cache-control": "no-cache" };
-	const targeted = Object.keys(TargetFields).some((key) => url.searchParams.has(key));
+	const { host } = file;
 
-	if (!file.html || !targeted) {
-		res.writeHead(200, headers).end(file.data);
+	try {
+		checkHost(host);
+	} catch (error) {
+		sendJson(res, 400, { error: errorMessage(error) });
 
 		return;
 	}
 
-	const target = queryTarget(res, url);
-
-	if (target === undefined) return;
-	const fields = { host: target.host, ...targetRef(target.target) };
-	res.writeHead(200, headers).end(addSend(file.data.toString("utf8"), fields, file.slug));
+	const headers = { "content-type": file.type, "cache-control": "no-cache" };
+	const data = file.html ? addSend(file.data.toString("utf8"), { host, ...file.ref }, file.slug) : file.data;
+	res.writeHead(200, headers).end(data);
 }
 
 /** Whether `host` is an IP address or `localhost`, which no DNS name of another site can be. */

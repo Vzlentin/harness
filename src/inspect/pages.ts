@@ -1,13 +1,15 @@
 /**
  * The pages that `harness page` copies to `$XDG_STATE_HOME/harness/pages/<slug>/`: the files of a page folder and their
- * copy, the file of a page path, and the script of the Send that the handler puts in an HTML page, which also reads the
- * asks of the parley of the page and writes the answers of the user.
+ * copy, the path of a page for a target, the file and the target of such a path, and the script of the Send that the
+ * handler puts in an HTML page, which also reads the asks of the parley of the page and writes the answers of the user.
  */
 import { copyFileSync, type Dirent, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
+import type { MirrorTarget } from "../client/mirror.ts";
 import { hasCode } from "../protocol/json-file.ts";
 import { pageDir } from "../protocol/paths.ts";
+import { AGENT_HANDLE, type TargetRef } from "../protocol/target.ts";
 
 /** The routes of the pages start with this path. */
 export const PAGES = "/pages/";
@@ -70,36 +72,81 @@ export function writePage(dest: string, folder: string, files: readonly string[]
 	}
 }
 
-/** A file of a page: its bytes, its content type, whether it is HTML, and the slug of its page. */
-export type PageFile = { readonly data: Buffer; readonly type: string; readonly html: boolean; readonly slug: string };
+/**
+ * The path of the page `slug` that opens `target`: `/pages/<host>/<slug>/` for the host agent,
+ * `/pages/<host>/child/<handle>/<slug>/` for a child, and `/pages/<host>/conversation/<id>/<slug>/` for a conversation,
+ * with each segment percent-encoded. `readPage` reads the same forms.
+ */
+export function pagePath({ host, target }: MirrorTarget, slug: string): string {
+	const ref =
+		target.kind === "agent" ? [] : target.kind === "child" ? ["child", target.handle] : ["conversation", target.id];
+
+	return `${PAGES}${[host, ...ref, slug].map((segment) => `${encodeURIComponent(segment)}/`).join("")}`;
+}
 
 /**
- * The file of `pathname`, `/pages/<slug>/<file>`, where an empty file is `index.html`. It is undefined for a path with
- * more or fewer parts, a slug that is not valid, a file name with `/`, `..` or a leading `.`, and a file that it cannot
- * read.
+ * A file of a page: its bytes, its content type, whether it is HTML, the slug of its page, and the host and the target
+ * reference of its path, as the path gives them.
+ */
+export type PageFile = {
+	readonly data: Buffer;
+	readonly type: string;
+	readonly html: boolean;
+	readonly slug: string;
+	readonly host: string;
+	readonly ref: TargetRef;
+};
+
+/**
+ * The file, the host and the target reference of `pathname`, a path that `pagePath` gives followed by the file:
+ * `/pages/<host>/<slug>/<file>`, `/pages/<host>/child/<handle>/<slug>/<file>` or
+ * `/pages/<host>/conversation/<id>/<slug>/<file>`, where an empty file is `index.html`. The number of segments selects
+ * the form. It is undefined for another path, an empty host, handle, conversation or slug, a segment that does not
+ * percent-decode, a slug that is not valid, a file name with `/`, `..` or a leading `.`, and a file that it cannot read.
  */
 export async function readPage(pathname: string): Promise<PageFile | undefined> {
 	if (!pathname.startsWith(PAGES)) return undefined;
-	const parts = pathname.slice(PAGES.length).split("/");
-
-	if (parts.length !== 2) return undefined;
-	const [slug = "", file = ""] = parts;
-	let name: string;
+	let parts: string[];
 
 	try {
-		name = decodeURIComponent(file || "index.html");
+		parts = pathname.slice(PAGES.length).split("/").map(decodeURIComponent);
 	} catch {
 		return undefined;
 	}
+
+	if (parts.slice(0, -1).includes("")) return undefined;
+	const found = pageParts(parts);
+
+	if (found === undefined) return undefined;
+	const { host, ref, slug, file } = found;
+	const name = file || "index.html";
 
 	if (name.includes("/") || name.includes("..") || name.startsWith(".")) return undefined;
 	const type = TYPES.get(extname(name).toLowerCase()) ?? OTHER_TYPE;
 
 	try {
-		return { data: await readFile(join(pageDir(slug), name)), type, html: type === TYPES.get(".html"), slug };
+		const data = await readFile(join(pageDir(slug), name));
+
+		return { data, type, html: type === TYPES.get(".html"), slug, host, ref };
 	} catch {
 		return undefined;
 	}
+}
+
+/** The host, the target reference, the slug and the file of the decoded segments of a page path, or undefined. */
+function pageParts(parts: readonly string[]): { host: string; ref: TargetRef; slug: string; file: string } | undefined {
+	if (parts.length === 3) {
+		const [host = "", slug = "", file = ""] = parts;
+
+		return { host, ref: { handle: AGENT_HANDLE }, slug, file };
+	}
+
+	if (parts.length !== 5) return undefined;
+	const [host = "", kind, id = "", slug = "", file = ""] = parts;
+
+	if (kind === "child") return { host, ref: { handle: id }, slug, file };
+
+	return kind === "conversation" ? { host, ref: { conversation: id }, slug, file } : undefined;
 }
 
 /**

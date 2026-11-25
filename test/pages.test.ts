@@ -150,7 +150,7 @@ type PageAnswer = { readonly n: number; readonly answer: string; readonly label?
 
 /** What a page script gets in place of the browser's `fetch` and `setTimeout`. */
 type PageGlobals = {
-	readonly fetch: (path: string, init: RequestInit) => Promise<Response>;
+	readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
 	readonly setTimeout: (callback: () => void, ms: number) => void;
 };
 
@@ -215,7 +215,7 @@ function fakePage(): FakePage {
 		fetch: (_path, init) =>
 			new Promise((resolve, reject) => {
 				posts.push({
-					body: new Response(init.body).text(),
+					body: new Response(init?.body).text(),
 					answer: (response) => (response instanceof Error ? reject(response) : resolve(response)),
 				});
 			}),
@@ -259,7 +259,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", folder, "--slug", "demo", "--port", port], session)).toEqual({
 			code: 0,
-			stdout: `${base}pages/demo/?host=main&handle=${child.handle}\n`,
+			stdout: `${base}pages/main/child/${child.handle}/demo/\n`,
 			stderr: "",
 		});
 		expect(readdirSync(pageDir("demo")).sort()).toEqual(["fig.svg", "index.html"]);
@@ -277,7 +277,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", pageDir("self"), "--slug", "self", "a1b2c3", "--port", port])).toEqual({
 			code: 0,
-			stdout: `${base}pages/self/?host=main&handle=a1b2c3\n`,
+			stdout: `${base}pages/main/child/a1b2c3/self/\n`,
 			stderr: "",
 		});
 		expect(readdirSync(pageDir("self")).sort()).toEqual(["fig.svg", "index.html"]);
@@ -309,12 +309,12 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", folder, "--slug", "agent-page", "--port", port], agent)).toMatchObject({
 			code: 0,
-			stdout: `${base}pages/agent-page/?host=main\n`,
+			stdout: `${base}pages/main/agent-page/\n`,
 		});
 		// An explicit target needs no PI_SESSION_ID.
 		expect(await cli(["page", folder, "--slug", "conv", "--conversation", "42", "--port", port])).toMatchObject({
 			code: 0,
-			stdout: `${base}pages/conv/?host=main&conversation=42\n`,
+			stdout: `${base}pages/main/conversation/42/conv/\n`,
 		});
 	});
 
@@ -327,7 +327,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 		const pid = Number(/pid (\d+)/.exec(result.stderr)?.[1]);
 
 		try {
-			const link = `http://127.0.0.1:${closed}/pages/closed/?host=main&handle=a1b2c3`;
+			const link = `http://127.0.0.1:${closed}/pages/main/child/a1b2c3/closed/`;
 			expect(result).toEqual({
 				code: 0,
 				stdout: `${link}\n`,
@@ -346,7 +346,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 
 		expect(await cli(["page", other, "--slug", "kept", "--port", port], { PI_SESSION_ID: "other" })).toEqual({
 			code: 0,
-			stdout: `${base}pages/kept/?host=main\n`,
+			stdout: `${base}pages/main/kept/\n`,
 			stderr: "",
 		});
 		expect(await readFile(join(pageDir("kept"), "index.html"), "utf8")).toBe("<p>other</p>\n");
@@ -377,7 +377,7 @@ describe("harness page", { timeout: 30_000 }, () => {
 		try {
 			expect(await cli(["page", folder, "--slug", "site", "--port", port], { PI_SESSION_ID: "other" }, dir)).toEqual({
 				code: 0,
-				stdout: `${base}pages/site/?host=site\n`,
+				stdout: `${base}pages/site/site/\n`,
 				stderr: "",
 			});
 		} finally {
@@ -441,7 +441,7 @@ describe("the Send of a page", { timeout: 30_000 }, () => {
 		const folder = await pageFolder({ "index.html": INDEX });
 		expect((await cli(["page", folder, "--slug", "refused", "a1b2c3", "--port", port])).code).toBe(0);
 		const handle = "</script><b>";
-		const link = `${base}pages/refused/?host=main&handle=${encodeURIComponent(handle)}`;
+		const link = `${base}pages/main/child/${encodeURIComponent(handle)}/refused/`;
 		const served = await (await fetch(link)).text();
 		expect(served).not.toContain(handle);
 		const page = runPage(addedScript(served, INDEX));
@@ -689,53 +689,89 @@ describe("the page route", { timeout: 30_000 }, () => {
 		expect((await cli(["page", other, "--slug", "other", "a1b2c3", "--port", port])).code).toBe(0);
 	});
 
-	it("serves each file as its bytes without a query, and an HTML file without the script", async () => {
-		const index = await rawRequest("/pages/files/");
-		expect(index).toMatchObject({ status: 200, type: "text/html; charset=utf-8" });
-		expect(index.body.equals(Buffer.from(INDEX))).toBe(true);
-		expect((await rawRequest("/pages/files/index.html")).body.equals(Buffer.from(INDEX))).toBe(true);
+	it("serves each file of each target form, with the script only in an HTML file", async () => {
+		for (const prefix of ["/pages/main/", "/pages/main/child/a1b2c3/", "/pages/main/conversation/42/"]) {
+			const index = await rawRequest(`${prefix}files/`);
+			expect({ prefix, status: index.status, type: index.type }).toEqual({
+				prefix,
+				status: 200,
+				type: "text/html; charset=utf-8",
+			});
+			addedScript(index.body.toString("utf8"), INDEX);
+			expect((await rawRequest(`${prefix}files/index.html`)).body.equals(index.body)).toBe(true);
 
-		// A target in the query adds the script only to an HTML file.
-		const svg = await rawRequest("/pages/files/fig.svg?host=main");
-		expect(svg).toMatchObject({ status: 200, type: "image/svg+xml" });
-		expect(svg.body.equals(Buffer.from(SVG))).toBe(true);
+			const svg = await rawRequest(`${prefix}files/fig.svg`);
+			expect(svg).toMatchObject({ status: 200, type: "image/svg+xml" });
+			expect(svg.body.equals(Buffer.from(SVG))).toBe(true);
 
-		const png = await rawRequest("/pages/files/pic.png");
-		expect(png).toMatchObject({ status: 200, type: "image/png" });
-		expect(png.body.equals(PNG)).toBe(true);
+			const png = await rawRequest(`${prefix}files/pic.png`);
+			expect(png).toMatchObject({ status: 200, type: "image/png" });
+			expect(png.body.equals(PNG)).toBe(true);
+		}
 	});
 
-	it("refuses a path out of the page, a hidden file, a folder, a missing file and a bad slug with 404", async () => {
-		expect((await rawRequest("/pages/other/")).status).toBe(200);
+	it("posts and reads with the target and the slug of the path", async () => {
+		const index = await rawRequest("/pages/main/conversation/42/files/");
+		const calls: Array<{ path: string; body: unknown }> = [];
+
+		const page = runPage(addedScript(index.body.toString("utf8"), INDEX), {
+			fetch: (path, init) => {
+				calls.push({ path, body: init?.body });
+
+				return Promise.resolve(inputReply(200, {}));
+			},
+			setTimeout: (callback) => callback(),
+		});
+
+		await sendPrompt(page, "hello");
+		await page.window.readAsks?.();
+		expect(calls).toEqual([
+			{
+				path: "/api/inspect/input",
+				body: JSON.stringify({ host: "main", conversation: "42", message: "hello" }),
+			},
+			{ path: "/api/inspect/asks?host=main&parley=files", body: undefined },
+		]);
+	});
+
+	it("refuses the form without a host, a path out of the page, a hidden file, a folder, a missing file and a bad slug with 404", async () => {
+		expect((await rawRequest("/pages/main/other/")).status).toBe(200);
 
 		for (const path of [
-			"/pages/files/..%2Fother%2Findex.html",
-			"/pages/files/.hidden",
-			"/pages/files/sub.html",
-			"/pages/files/missing.html",
-			"/pages/files/a%00.html",
-			"/pages/files/%E0%A4%A",
-			"/pages/files/sub/index.html",
-			"/pages/files",
-			"/pages/Bad/",
+			"/pages/files/",
+			"/pages/files/?host=main",
+			"/pages/files/index.html",
+			"/pages/main/files/..%2Fother%2Findex.html",
+			"/pages/main/files/.hidden",
+			"/pages/main/files/sub.html",
+			"/pages/main/files/missing.html",
+			"/pages/main/files/a%00.html",
+			"/pages/main/files/%E0%A4%A",
+			"/pages/main/files/sub/index.html",
+			"/pages/main/files",
+			"/pages/main/Bad/",
+			"/pages//files/",
+			"/pages/main/child//files/",
+			"/pages/main/conversation//files/",
+			"/pages/main/other-kind/a1/files/",
+			"/pages/%E0%A4%A/files/",
 		]) {
 			const reply = await rawRequest(path);
 			expect({ path, status: reply.status }).toEqual({ path, status: 404 });
-			expect(JSON.parse(reply.body.toString("utf8"))).toEqual({ error: `Not found: GET ${path}` });
+			const pathname = path.split("?")[0] ?? path;
+			expect(JSON.parse(reply.body.toString("utf8"))).toEqual({ error: `Not found: GET ${pathname}` });
 		}
 
-		expect((await rawRequest("/pages/files/", { method: "POST" })).status).toBe(404);
+		expect((await rawRequest("/pages/main/files/", { method: "POST" })).status).toBe(404);
 	});
 
-	it("refuses a Host header that is not an address with 403, and a query that is not valid with 400", async () => {
-		expect((await rawRequest("/pages/files/", { host: "evil.example" })).status).toBe(403);
+	it("refuses a Host header that is not an address with 403, and an unknown host in the path with 400", async () => {
+		expect((await rawRequest("/pages/main/files/", { host: "evil.example" })).status).toBe(403);
 
-		const unknown = await rawRequest("/pages/files/?host=nosuch");
-		expect(unknown.status).toBe(400);
-		expect(JSON.parse(unknown.body.toString("utf8"))).toEqual({ error: "Unknown harness host: nosuch" });
-
-		const both = await rawRequest("/pages/files/?host=main&handle=a&conversation=1");
-		expect(both.status).toBe(400);
-		expect(JSON.parse(both.body.toString("utf8"))).toEqual({ error: "Give handle or conversation, not both" });
+		for (const path of ["/pages/nosuch/files/", "/pages/nosuch/child/a1b2c3/files/fig.svg"]) {
+			const unknown = await rawRequest(path);
+			expect({ path, status: unknown.status }).toEqual({ path, status: 400 });
+			expect(JSON.parse(unknown.body.toString("utf8"))).toEqual({ error: "Unknown harness host: nosuch" });
+		}
 	});
 });
