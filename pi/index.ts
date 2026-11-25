@@ -261,9 +261,9 @@ function sessionScope(
 
 /**
  * The model and thinking level that a spawn inherits from the session of `ctx`: its own model and Pi's thinking level,
- * or, when it runs a pi virtual model, the physical model and thinking level of the latest response its branch records.
- * A virtual model names no physical model the host could run, so a session that recorded no response inherits none, and
- * the host picks `subagentModel` instead.
+ * or, when it runs a pi virtual model, the physical model and thinking level of the latest response its branch records
+ * after its latest model change. A virtual model names no physical model the host could run, so a session that recorded
+ * no such response inherits none, and the host picks `subagentModel` instead.
  */
 function inheritedModel(
 	pi: ExtensionAPI,
@@ -273,10 +273,13 @@ function inheritedModel(
 		return { provider: ctx.model?.provider, model: ctx.model?.id, thinking: pi.getThinkingLevel() };
 	}
 
-	const branch = [...ctx.sessionManager.getBranch()];
+	const branch = ctx.sessionManager.getBranch();
 
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
+
+		// A response before the latest model change answered on the model the session left.
+		if (entry?.type === "model_change") break;
 
 		if (entry?.type !== "message") continue;
 
