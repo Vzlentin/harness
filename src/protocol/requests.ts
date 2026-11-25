@@ -24,7 +24,7 @@ import { Label, SpawnServes } from "./worker-labels.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 44;
+export const PROTOCOL_VERSION = 45;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -205,6 +205,11 @@ export const RequestLine = Type.Union([
 	 * newer request of the same caller replaces this one, which then gets no reply. It needs a connection.
 	 */
 	Type.Object({ type: Type.Literal("answers"), caller: Type.String() }),
+	/**
+	 * Says whether `caller` works. While it works, the host does not reply to its open `answers` request, and its answers
+	 * stay unread, for a `wait` or for the reply after it stops to work.
+	 */
+	Type.Object({ type: Type.Literal("busy"), caller: Type.String(), busy: Type.Boolean() }),
 	Type.Object({ type: Type.Literal("rename"), caller: Type.String(), handle: Type.String(), name: Type.String() }),
 	/**
 	 * Ends the child of the target and the children it spawned. The records stay, so a `send` resumes a child. The caller
@@ -391,6 +396,7 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly whoami: { readonly handle?: string };
 	readonly answers: readonly Delivery[];
+	readonly busy: Record<string, never>;
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
 	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };

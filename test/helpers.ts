@@ -692,31 +692,40 @@ export async function untilState(handle: string, state: string): Promise<void> {
 	await vi.waitFor(async () => expect(await stateOf(handle)).toBe(state), { timeout: 10_000 });
 }
 
-/** An `answers` listener, every delivery that it gave, and every error of a delivery. */
-export type Answers = { readonly deliveries: Delivery[]; readonly errors: Error[]; readonly listener: AnswerListener };
+/**
+ * An `answers` listener, every delivery that it gave, the deliveries of each reply, and every error of a reply.
+ */
+export type Answers = {
+	readonly deliveries: Delivery[];
+	readonly replies: (readonly Delivery[])[];
+	readonly errors: Error[];
+	readonly listener: AnswerListener;
+};
 
 /**
- * The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. `onDelivery` runs
- * after each delivery is kept.
+ * The `answers` listener of `caller`, as the Pi extension opens it, with every delivery that came. `onReply` runs after
+ * the deliveries of each reply are kept.
  */
 export function listenAnswers(
 	caller: string,
 	options: Omit<AnswersOptions, "onError"> = { start: false },
-	onDelivery: (delivery: Delivery) => void = () => {},
+	onReply: (deliveries: readonly Delivery[]) => void = () => {},
 ): Answers {
 	const deliveries: Delivery[] = [];
+	const replies: (readonly Delivery[])[] = [];
 	const errors: Error[] = [];
 
 	const listener = new AnswerListener(
 		caller,
-		(delivery) => {
-			deliveries.push(delivery);
-			onDelivery(delivery);
+		(reply) => {
+			deliveries.push(...reply);
+			replies.push(reply);
+			onReply(reply);
 		},
 		{ ...options, onError: (error) => errors.push(error) },
 	);
 
-	return { deliveries, errors, listener };
+	return { deliveries, replies, errors, listener };
 }
 
 /** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */

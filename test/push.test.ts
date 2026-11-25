@@ -148,6 +148,59 @@ describe("push", { timeout: 30_000 }, () => {
 		expect((await cli(["wait", handle])).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nAfter close\n`);
 	});
 
+	it("holds the answers of a caller that works, for a wait, and gives the rest in one reply once it stops", async () => {
+		const caller = "busy-session";
+		const answers = listenAnswers(caller);
+
+		try {
+			await answers.listener.busy(true);
+			const first = (await spawnAs(caller, "Task:\nBusy first", { notify: true })).handle;
+			const second = (await spawnAs(caller, "Task:\nBusy second", { notify: true })).handle;
+			const waited = (await spawnAs(caller, "Task:\nBusy waited", { notify: true })).handle;
+			const stopped = (await spawnAs(caller, "Task:\nBusy stopped", { notify: true })).handle;
+
+			for (const handle of [first, second, waited, stopped]) await untilState(handle, "idle");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(answers.replies).toEqual([]);
+
+			// The answer was not pushed, so the wait gives it.
+			expect(await request({ type: "wait", handle: waited, timeout: 10 }, { start: false })).toEqual({
+				answer: "Answer to Task:\nBusy waited",
+			});
+			await request({ type: "stop", caller, handle: stopped }, { start: false });
+
+			await answers.listener.busy(false);
+			await until(() => answers.replies.length === 1);
+			expect(answers.replies[0]?.map(handleOf)).toEqual([first, second]);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(answers.replies).toHaveLength(1);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
+	it("tells a new host that the caller works when the listener connects", async () => {
+		const caller = "busy-restart-session";
+		const answers = listenAnswers(caller, { start: false, retryDelaysMs: [0, 200] });
+
+		try {
+			await answers.listener.busy(true);
+			await host?.close();
+			host = await startHost();
+			// The listener connects again within 200 ms, and tells the new host first.
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			const { handle } = await spawnAs(caller, "Task:\nBusy after restart", { notify: true });
+			await untilState(handle, "idle");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(answers.deliveries).toEqual([]);
+			await answers.listener.busy(false);
+			await until(() => answers.deliveries.length === 1);
+			expect(handleOf(answers.deliveries[0])).toBe(handle);
+		} finally {
+			answers.listener.close();
+		}
+	});
+
 	it("prompts a child that only its children hold", async () => {
 		const caller = "held-session";
 		const before = called("Task:\nTree leaf");

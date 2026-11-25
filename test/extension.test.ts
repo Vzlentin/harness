@@ -10,6 +10,8 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
+	type AgentSettledEvent,
+	type AgentStartEvent,
 	type AgentToolResult,
 	createEventBus,
 	type EventBus,
@@ -70,7 +72,7 @@ type Definition = {
 type ToolContext = Parameters<Parameters<ExtensionAPI["registerTool"]>[0]["execute"]>[4];
 
 /** An event of Pi that the tests give to the extension's handlers. */
-type PiEvent = SessionStartEvent | SessionShutdownEvent;
+type PiEvent = SessionStartEvent | SessionShutdownEvent | AgentStartEvent | AgentSettledEvent;
 
 /**
  * An event handler that the extension gives to `pi.on`; the tests call those of `session_start` and `session_shutdown`.
@@ -565,6 +567,18 @@ const CELL_SCRIPT = [
 	"print(json.dumps(asyncio.run(main())))",
 ].join("\n");
 
+/** Calls the handlers of the run event `event` of a session in the mode `mode`, as Pi does when a run starts or settles. */
+async function runEvent(
+	registered: Registered,
+	event: AgentStartEvent | AgentSettledEvent,
+	mode: ExtensionContext["mode"],
+): Promise<void> {
+	// SAFETY: the handlers of the run events read only the mode of the context.
+	const context = { mode } as ExtensionContext;
+
+	for (const handler of registered.handlers.get(event.type) ?? []) await handler(event, context);
+}
+
 /** A call of the Pi session after its cell ended: it prints the error of the call. */
 const LATE_SCRIPT = [
 	...KERNEL_START,
@@ -628,7 +642,7 @@ describe("the Pi extension", () => {
 		expect(registered.messages[0]).toEqual({
 			customType: "subagent-answer",
 			text: `subagent ${first} finished\n\nAnswer to Task:\nOne`,
-			details: { source: "child", handle: first, text: "Answer to Task:\nOne", failed: false },
+			details: [{ source: "child", handle: first, text: "Answer to Task:\nOne", failed: false }],
 			options: { triggerTurn: true, deliverAs: "followUp" },
 		});
 
@@ -651,6 +665,62 @@ describe("the Pi extension", () => {
 		expect(registered.messages[1]?.text).toContain("Answer to Task:\nThird");
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(registered.messages).toHaveLength(2);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("holds the answers while Pi works, and sends them as one message once the run settles", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+		await runEvent(registered, { type: "agent_start" }, "tui");
+		// The extension tells the host in the background, so the run does not wait for it.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		const first = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["First"], ...FAUX })) ?? "";
+		const second = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["Second"], ...FAUX })) ?? "";
+		const waited = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["Waited"], ...FAUX })) ?? "";
+		await untilState(first, "idle");
+		await untilState(second, "idle");
+		await untilState(waited, "idle");
+
+		// The agent did not see the answer yet, so a wait gives it, and it does not come again as a message.
+		expect(await callTool(registered, { action: "wait", handle: waited })).toBe(
+			`${waited} finished\n\nAnswer to Task:\nWaited\n`,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(registered.messages).toEqual([]);
+
+		await runEvent(registered, { type: "agent_settled", aborted: false }, "tui");
+		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
+
+		expect(registered.messages[0]).toEqual({
+			customType: "subagent-answer",
+			text: `subagent ${first} finished\n\nAnswer to Task:\nFirst\n\nsubagent ${second} finished\n\nAnswer to Task:\nSecond`,
+			details: [
+				{ source: "child", handle: first, text: "Answer to Task:\nFirst", failed: false },
+				{ source: "child", handle: second, text: "Answer to Task:\nSecond", failed: false },
+			],
+			options: { triggerTurn: true, deliverAs: "followUp" },
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(registered.messages).toHaveLength(1);
+		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
+	});
+
+	it("sends an answer at once while Pi works in print mode, which ends once the run settles", async () => {
+		host = await startHost();
+		const registered = await load();
+		await sessionEvent(registered, { type: "session_start", reason: "startup" });
+		await runEvent(registered, { type: "agent_start" }, "print");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		const handle = spawnedHandle(await callTool(registered, { action: "spawn", prompts: ["Printed"], ...FAUX }));
+
+		await vi.waitFor(() => expect(registered.messages).toHaveLength(1), { timeout: 10_000 });
+		expect(registered.messages[0]?.details).toEqual([
+			{ source: "child", handle, text: "Answer to Task:\nPrinted", failed: false },
+		]);
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });
 	});
 
@@ -812,7 +882,7 @@ describe("the Pi extension", () => {
 		expect(registered.messages[0]).toEqual({
 			customType: "user-answer",
 			text: `the user answered ask ${id}\n\n${text}`,
-			details: { source: "ask", ask: id, text },
+			details: [{ source: "ask", ask: id, text }],
 			options: { triggerTurn: true, deliverAs: "followUp" },
 		});
 		await sessionEvent(registered, { type: "session_shutdown", reason: "quit" });

@@ -142,6 +142,10 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return handler.push.whileActive(request.handle, () => waitChild(request, handler));
 		case "answers":
 			return answers(request, handler);
+		case "busy":
+			handler.push.busy(request.caller, request.busy);
+
+			return {};
 		case "status":
 			return childInfo(handler, request.handle);
 		case "abort":

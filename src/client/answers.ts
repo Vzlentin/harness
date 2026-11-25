@@ -5,7 +5,7 @@
  */
 
 import { type Delivery, errorMessage } from "../protocol/requests.ts";
-import { type Client, connect, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
+import { type Client, connect, RETRY_DELAYS_MS, request, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
 
 export type AnswersOptions = {
 	/** Whether the first try to connect starts the host when none runs. The later tries never do. */
@@ -15,27 +15,56 @@ export type AnswersOptions = {
 	 * Default 0, 2 and 5 s.
 	 */
 	readonly retryDelaysMs?: readonly number[];
-	/** Gets the error of each delivery that `onDelivery` threw. The next deliveries still come. */
+	/** Gets the error of each reply that `onDeliveries` threw. The next replies still come. */
 	readonly onError: (error: Error) => void;
 };
 
 /**
- * One open `answers` request of `caller`, on a connection of its own, that gives each answer to `onDelivery`, and each
- * error that `onDelivery` throws to `onError`. Until `close()`, it connects again after each closed connection, and
- * keeps trying while no host runs. Only the first try can start a host.
+ * One open `answers` request of `caller`, on a connection of its own, that gives the deliveries of each reply to
+ * `onDeliveries`, and each error that `onDeliveries` throws to `onError`. Until `close()`, it connects again after each
+ * closed connection, and keeps trying while no host runs. Only the first try can start a host. `busy()` tells the host
+ * whether the caller works, and each connection tells it first.
  */
 export class AnswerListener {
-	readonly #onDelivery: (delivery: Delivery) => void;
+	readonly #caller: string;
+	readonly #onDeliveries: (deliveries: readonly Delivery[]) => void;
 	readonly #onError: (error: Error) => void;
 	readonly #retryDelaysMs: readonly number[];
 	readonly #closing = new AbortController();
 	#client: Client | undefined;
+	/** Whether the caller works, as the last call of `busy()` says. */
+	#busy = false;
+	/** The `busy` requests in progress, which go one at a time, so the host gets them in order. */
+	#told: Promise<void> = Promise.resolve();
 
-	constructor(caller: string, onDelivery: (delivery: Delivery) => void, options: AnswersOptions) {
-		this.#onDelivery = onDelivery;
+	constructor(caller: string, onDeliveries: (deliveries: readonly Delivery[]) => void, options: AnswersOptions) {
+		this.#caller = caller;
+		this.#onDeliveries = onDeliveries;
 		this.#onError = options.onError;
 		this.#retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
 		void this.#run(caller, options.start);
+	}
+
+	/**
+	 * Tells the host whether the caller works, with a `busy` request on a connection of its own that starts no host.
+	 * While the caller works, the host keeps its answers unread, for a `wait` or for the reply after it stops to work. It
+	 * resolves once the host took the request, or once the request failed: the next connection of the listener then
+	 * tells the host.
+	 */
+	busy(busy: boolean): Promise<void> {
+		if (busy === this.#busy) return this.#told;
+		this.#busy = busy;
+		const line = { type: "busy", caller: this.#caller, busy } as const;
+		const signal = this.#closing.signal;
+
+		this.#told = this.#told.then(() =>
+			request(line, { start: false, signal }).then(
+				() => {},
+				() => {},
+			),
+		);
+
+		return this.#told;
 	}
 
 	/**
@@ -84,19 +113,27 @@ export class AnswerListener {
 		}
 	}
 
-	/** Gives the answers of each `answers` request on `client` until the connection closes. */
+	/**
+	 * Tells the host on `client` whether the caller works, then gives the deliveries of each `answers` request on
+	 * `client` until the connection closes.
+	 */
 	async #receive(caller: string, client: Client): Promise<void> {
+		const told = await client.request({ type: "busy", caller, busy: this.#busy }).then(
+			() => true,
+			() => false,
+		);
+
+		if (!told) return;
+
 		for (;;) {
 			const deliveries = await client.request({ type: "answers", caller }).catch(() => undefined);
 
 			if (deliveries === undefined || this.#closing.signal.aborted) return;
 
-			for (const delivery of deliveries) {
-				try {
-					this.#onDelivery(delivery);
-				} catch (error) {
-					this.#onError(error instanceof Error ? error : new Error(errorMessage(error)));
-				}
+			try {
+				this.#onDeliveries(deliveries);
+			} catch (error) {
+				this.#onError(error instanceof Error ? error : new Error(errorMessage(error)));
 			}
 		}
 	}

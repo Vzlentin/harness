@@ -60,7 +60,7 @@ describe("answer cut", { timeout: 30_000 }, () => {
 	it("cuts the answer that a push gives to an answers request", async () => {
 		const deliveries: Delivery[] = [];
 
-		const listener = new AnswerListener("cut-answers", (delivery) => deliveries.push(delivery), {
+		const listener = new AnswerListener("cut-answers", (reply) => deliveries.push(...reply), {
 			start: false,
 			onError: () => {},
 		});

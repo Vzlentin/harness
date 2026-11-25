@@ -56,7 +56,7 @@ type Listened = { readonly deliveries: Delivery[]; readonly listener: AnswerList
 function listen(caller: string): Listened {
 	const deliveries: Delivery[] = [];
 
-	const listener = new AnswerListener(caller, (delivery) => deliveries.push(delivery), {
+	const listener = new AnswerListener(caller, (reply) => deliveries.push(...reply), {
 		start: false,
 		retryDelaysMs: [0, 200, 500],
 		onError: () => {},

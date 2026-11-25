@@ -101,7 +101,8 @@ const MAX_RETRY_MS = 60_000;
  * while one runs give one more sweep. After a push of a child fails, the sweeps skip that child for a time that doubles
  * with each failure, and a timer sweeps again when it ends. The answers of the user go to their askers in the same
  * sweeps, after the answers of the children of the same caller, oldest first, with the same waits, and the deliveries
- * of the entries go after them, oldest first, as input only. A delivery whose
+ * of the entries go after them, oldest first, as input only. A caller that works, as its last `busy` request says, gets
+ * no reply to its `answers` request until it stops to work. A delivery whose
  * last push failed is the degraded state `push-failed` until a push of it succeeds or it goes, and an asker with
  * answers of the user and no destination is the degraded state `answer-waits` until it gets one or no answer waits for
  * it.
@@ -117,6 +118,8 @@ export class Push {
 	readonly #writing = new Map<string, Promise<void>>();
 	/** The open `answers` request of each caller that is not a conversation of the host. */
 	readonly #listeners = new Map<string, Listener>();
+	/** The callers that said with a `busy` request that they work: their `answers` requests get no reply. */
+	readonly #busy = new Set<string>();
 	/** Called at the end of the next sweep. */
 	readonly #sweepEnds = new Set<() => void>();
 	/** The deliveries whose last pushes failed, by key. */
@@ -257,6 +260,21 @@ export class Push {
 		return deliveries.promise;
 	}
 
+	/**
+	 * Keeps whether `caller` works, as its last `busy` request says. While it works, its open `answers` request gets no
+	 * reply, so its deliveries stay unread for a `wait`. When it stops to work, a sweep gives them in one reply.
+	 */
+	busy(caller: string, busy: boolean): void {
+		if (busy) {
+			this.#busy.add(caller);
+
+			return;
+		}
+
+		this.#busy.delete(caller);
+		this.schedule();
+	}
+
 	/** Whether `socket` has an open `answers` request. */
 	listens(socket: Socket): boolean {
 		return [...this.#listeners.values()].some((listener) => listener.socket === socket);
@@ -347,6 +365,12 @@ export class Push {
 		const waiting = new Set(queued.map(({ asker }) => asker));
 
 		for (const caller of new Set([...done.keys(), ...asked.keys(), ...fromEntries.keys()])) {
+			// A caller that works has a place for its deliveries: the reply after it stops to work.
+			if (this.#busy.has(caller) && this.#listeners.has(caller)) {
+				waiting.delete(caller);
+				continue;
+			}
+
 			const children = done.get(caller) ?? [];
 			const answers = asked.get(caller) ?? [];
 			const others = fromEntries.get(caller) ?? [];

@@ -42,6 +42,15 @@ const CUSTOM_TYPES: Record<protocol.Delivery["source"], string> = {
 	entry: "entry-delivery",
 };
 
+/** The type of the Pi message of a reply whose deliveries have more than one type of `CUSTOM_TYPES`. */
+const MIXED_TYPE = "harness-deliveries";
+
+/**
+ * The modes of Pi that end the process once the run settles. In them, the host does not hold the answers while Pi
+ * works: an answer that came during the run must reach Pi before it settles.
+ */
+const SINGLE_RUN_MODES: ReadonlySet<ExtensionContext["mode"]> = new Set(["print", "json"]);
+
 /** The modules of the harness install that the extension uses. */
 export type Harness = {
 	readonly answers: typeof answers;
@@ -98,16 +107,19 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 	registerBridge(pi, harness);
 	registerVisualCopy(pi, harness);
 	// One open `answers` request for each session brings the answers of its children, and the answers of the user to its
-	// asks, as messages that start a turn.
+	// asks, as one message for each reply, which starts a turn. While Pi works, the host holds them, so a `wait` gives
+	// them and they come in one reply once the run settles.
 	let listener: answers.AnswerListener | undefined;
 
-	const deliver = (delivery: protocol.Delivery): void => {
+	const deliver = (deliveries: readonly protocol.Delivery[]): void => {
+		const [type, ...others] = new Set(deliveries.map((delivery) => CUSTOM_TYPES[delivery.source]));
+
 		pi.sendMessage(
 			{
-				customType: CUSTOM_TYPES[delivery.source],
-				content: [{ type: "text", text: protocol.deliveryText(delivery) }],
+				customType: type !== undefined && others.length === 0 ? type : MIXED_TYPE,
+				content: [{ type: "text", text: deliveries.map(protocol.deliveryText).join("\n\n") }],
 				display: true,
-				details: delivery,
+				details: deliveries,
 			},
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
@@ -206,6 +218,14 @@ function registerHarness(pi: ExtensionAPI, harness: Harness): void {
 		});
 
 		subagents.start(ctx);
+	});
+
+	pi.on("agent_start", (_event, ctx) => {
+		if (!SINGLE_RUN_MODES.has(ctx.mode)) void listener?.busy(true);
+	});
+
+	pi.on("agent_settled", () => {
+		void listener?.busy(false);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

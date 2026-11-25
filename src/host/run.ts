@@ -95,6 +95,7 @@ const CORE_PASSIVE = {
 	list: passive,
 	status: passive,
 	answers: passive,
+	busy: passive,
 	tree: passive,
 	"watch-tree": passive,
 	"classify-todos": passive,
