@@ -197,6 +197,27 @@ const DISPATCHED: SessionEntry = {
 	message: { ...fauxAssistantMessage("Answer of the routed model"), thinkingLevel: "medium" },
 };
 
+/** An assistant entry of a request of the virtual model `router/auto` that ended with `stopReason`. */
+function unrouted(stopReason: "error" | "aborted"): SessionEntry {
+	return {
+		type: "message",
+		id: `unrouted-${stopReason}`,
+		parentId: null,
+		timestamp: "",
+		message: { ...fauxAssistantMessage("", { stopReason }), provider: "router", model: "auto" },
+	};
+}
+
+/** The entry of a change of the session's model to the virtual model `router/auto`. */
+const TO_VIRTUAL: SessionEntry = {
+	type: "model_change",
+	id: "to-virtual",
+	parentId: null,
+	timestamp: "",
+	provider: "router",
+	modelId: "auto",
+};
+
 /** The pi virtual model a session of the tests runs, as pi's catalog entry for one. */
 const VIRTUAL: ToolContext["model"] = {
 	id: "auto",
@@ -645,6 +666,54 @@ describe("the Pi extension", () => {
 		);
 
 		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-1, medium)");
+	});
+
+	it("spawns a child of a virtual model on the model of its latest response that did not fail", async () => {
+		host = await startHost();
+		const registered = await load();
+
+		for (const stopReason of ["error", "aborted"] as const) {
+			const spawned = spawnedHandle(
+				await callToolAs(registered, modelContext(VIRTUAL, [DISPATCHED, unrouted(stopReason)]), {
+					action: "spawn",
+					prompts: ["Virtual"],
+				}),
+			);
+
+			expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain(
+				"(faux/faux-1, medium)",
+			);
+		}
+	});
+
+	it("spawns a child of a virtual model at the session's thinking level when its response has none", async () => {
+		host = await startHost();
+		const registered = await load();
+		const response: SessionEntry = { ...DISPATCHED, message: fauxAssistantMessage("Answer of the routed model") };
+
+		const spawned = spawnedHandle(
+			await callToolAs(registered, modelContext(VIRTUAL, [response]), {
+				action: "spawn",
+				prompts: ["Virtual"],
+			}),
+		);
+
+		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-1, off)");
+	});
+
+	it("spawns a child of a virtual model chosen after the latest response on the subagent setting", async () => {
+		host = await startHost();
+		await setSettings({ subagentModel: "faux/faux-2" });
+		const registered = await load();
+
+		const spawned = spawnedHandle(
+			await callToolAs(registered, modelContext(VIRTUAL, [DISPATCHED, TO_VIRTUAL]), {
+				action: "spawn",
+				prompts: ["Virtual"],
+			}),
+		);
+
+		expect(await callTool(registered, { action: "status", handle: spawned ?? "" })).toContain("(faux/faux-2, off)");
 	});
 
 	it("spawns a child of a virtual model without a dispatched response on the subagent setting", async () => {
