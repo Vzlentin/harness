@@ -1,6 +1,6 @@
 /**
  * The asks of the store of the host, by ID: the questions that someone puts to the user, their answers, drops,
- * notes and takes, and their reads, and the handle of the entries to them. An ask keeps the parley that it serves as data
+ * notes, takes and new questions, and their reads, and the handle of the entries to them. An ask keeps the parley that it serves as data
  * from its caller, which this module does not read. The commit of an answer also adds the todos `Save to the vault`,
  * queues the deliveries of the answers for their askers, and queues one event for each answered ask. The plain asks
  * serve the `ask` requests of a host whose entries serve no parley asks.
@@ -20,6 +20,7 @@ import {
 	type AnswerInput,
 	type Ask,
 	type AskList,
+	type AskInput,
 	type AskOption,
 	type AskRef,
 	ASKS_KIND,
@@ -66,6 +67,7 @@ export const ENTRY_ASKS: EntryAsks = {
 	answer: answerAsks,
 	drop: dropAsk,
 	note: noteAsk,
+	replace: replaceAsk,
 	take: async (tx, ids, by) => {
 		await takeAsks(tx, ids, by);
 		await dropAnswers(tx, ids);
@@ -87,17 +89,7 @@ export async function addAsks(tx: Tx, asks: readonly NewAsk[], by: string, at: n
 	const written: Ask[] = [];
 
 	for (const { input, parley } of asks) {
-		const ask: Ask = { id: (list.at(-1)?.id ?? 0) + 1, title: input.title, state: "open", asker: by, at, by };
-
-		if (input.kind !== undefined) ask.kind = input.kind;
-
-		if (input.tension !== undefined) ask.tension = input.tension;
-
-		if (input.options !== undefined) ask.options = input.options.map(copyOption);
-
-		if (input.plan !== undefined) ask.plan = input.plan;
-
-		if (input.view !== undefined) ask.view = input.view;
+		const ask: Ask = { id: (list.at(-1)?.id ?? 0) + 1, ...questionFields(input), state: "open", asker: by, at, by };
 
 		if (parley !== undefined) ask.parley = { ...parley };
 
@@ -198,6 +190,26 @@ export async function noteAsk(tx: Tx, id: number, note: string, by: string): Pro
 	return Value.Clone(ask);
 }
 
+/**
+ * Replaces the question of the open ask `id` with `input`, at `at` for the caller `by`, and gives the ask. The ask keeps
+ * its ID, its parley, its note and its asker. A question field that `input` leaves out is removed. An ask that is not
+ * open fails.
+ */
+export async function replaceAsk(tx: Tx, id: number, input: AskInput, by: string, at: number): Promise<Ask> {
+	const asks = (await tx.doc(Asks)).asks;
+	const ask = knownAsk(asks, id);
+
+	if (ask.state !== "open") throw new Error(`Ask ${ask.id} is ${ask.state}: only an open ask takes a new question`);
+	const replaced: Ask = { id: ask.id, ...questionFields(input), state: "open", asker: ask.asker, at, by };
+
+	if (ask.parley !== undefined) replaced.parley = { ...ask.parley };
+
+	if (ask.note !== undefined) replaced.note = ask.note;
+	asks[asks.indexOf(ask)] = replaced;
+
+	return Value.Clone(replaced);
+}
+
 /** Makes the caller `by` the asker of each open ask of `ids`. An ask that is not open does not change. */
 async function takeAsks(tx: Tx, ids: readonly number[], by: string): Promise<void> {
 	const at = Date.now();
@@ -296,6 +308,23 @@ function askBase(ask: Ask): AskBase {
 	const { state: _state, author: _author, answer: _answer, label: _label, words: _words, ...base } = ask;
 
 	return base;
+}
+
+/** The question fields of `input`, with a copy of its options. A field that `input` leaves out is absent. */
+function questionFields(input: AskInput): AskInput {
+	const question: AskInput = { title: input.title };
+
+	if (input.kind !== undefined) question.kind = input.kind;
+
+	if (input.tension !== undefined) question.tension = input.tension;
+
+	if (input.options !== undefined) question.options = input.options.map(copyOption);
+
+	if (input.plan !== undefined) question.plan = input.plan;
+
+	if (input.view !== undefined) question.view = input.view;
+
+	return question;
 }
 
 /** The keys of the options of `ask`. */

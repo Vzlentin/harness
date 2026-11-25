@@ -147,6 +147,121 @@ describe("the asks handle of an entry", { timeout: 30_000 }, () => {
 		);
 	});
 
+	it("replaces the question of an open ask, and keeps its ID, parley, note and asker", async () => {
+		const { asks } = handles();
+		const parley = { id: 7, n: 2 };
+
+		const [added] = await commit((tx) =>
+			asks.add(
+				tx,
+				[
+					{
+						input: {
+							title: "Old question",
+							options: [
+								{ key: "a", label: "Old A" },
+								{ key: "b", label: "Old B" },
+							],
+							plan: "a",
+							view: "Old view",
+						},
+						parley,
+					},
+				],
+				"pi-stores",
+				5,
+			),
+		);
+
+		if (added === undefined) throw new Error("no ask");
+		await commit((tx) => asks.note(tx, added.id, "note-replace", "pi-stores"));
+		await commit((tx) => asks.take(tx, [added.id], "pi-taker"));
+		const options = [{ key: "c", label: "New C", gains: ["More"] }];
+
+		const replaced = await commit((tx) =>
+			asks.replace(tx, added.id, { title: "New question", options, plan: "c" }, "pi-replacer", 6),
+		);
+
+		const expected: Ask = {
+			id: added.id,
+			title: "New question",
+			options,
+			plan: "c",
+			parley,
+			note: "note-replace",
+			state: "open",
+			asker: "pi-taker",
+			at: 6,
+			by: "pi-replacer",
+		};
+
+		expect(replaced).toEqual(expected);
+		expect(await readAsk(added.id)).toEqual(expected);
+	});
+
+	it("refuses a new question for an ask that is not open, and keeps the ask", async () => {
+		const { asks } = handles();
+
+		const [answered, dropped] = await commit(async (tx) => {
+			const added = await asks.add(
+				tx,
+				[{ input: { title: "Answered" } }, { input: { title: "Dropped" } }],
+				"pi-stores",
+				7,
+			);
+
+			return added.map((ask) => ask.id);
+		});
+
+		if (answered === undefined || dropped === undefined) throw new Error("no asks");
+
+		await commit((tx) =>
+			asks.answer(
+				tx,
+				[{ id: answered, answer: "own", label: "Mine" }],
+				new Set(),
+				"user",
+				{ kind: "user" },
+				ROOT_CONVERSATION_ID,
+				(group) => group.map(askGroup),
+			),
+		);
+
+		await commit((tx) => asks.drop(tx, dropped, "pi-stores"));
+
+		for (const [id, state] of [
+			[answered, "answered"],
+			[dropped, "dropped"],
+		] as const) {
+			const before = await readAsk(id);
+
+			await expect(commit((tx) => asks.replace(tx, id, { title: "New" }, "pi-stores", 8))).rejects.toThrow(
+				`Ask ${id} is ${state}: only an open ask takes a new question`,
+			);
+
+			expect(await readAsk(id)).toEqual(before);
+		}
+	});
+
+	it("tells that the commit of a replace changes the asks", async () => {
+		const { asks } = handles();
+		const [added] = await commit((tx) => asks.add(tx, [{ input: { title: "Watched" } }], "pi-stores", 9));
+
+		if (added === undefined) throw new Error("no ask");
+		const changes: CommitChange[] = [];
+
+		const observation = opened().harness.observeCommits({
+			advance: (publication) => {
+				changes.push(...publication.changes);
+			},
+			end: () => {},
+		});
+
+		await commit((tx) => asks.replace(tx, added.id, { title: "Watched again" }, "pi-stores", 10));
+		await until(() => changes.some((change) => asks.changed(change)));
+		observation.detach();
+	});
+
 	it("reads the open asks with any reader", async () => {
 		const { asks, place } = handles();
 

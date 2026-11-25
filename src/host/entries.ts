@@ -320,6 +320,12 @@ export type EntryAsks = {
 	 */
 	readonly note: (tx: Tx, id: number, note: string, by: string) => Promise<Ask>;
 	/**
+	 * Replaces the question of the open ask `id` with `input`, at `at` for the caller `by`, and gives the ask. The ask
+	 * keeps its ID, its parley, its note and its asker, and a question field that `input` leaves out is removed. An ask
+	 * that is not open fails.
+	 */
+	readonly replace: (tx: Tx, id: number, input: AskInput, by: string, at: number) => Promise<Ask>;
+	/**
 	 * Makes the caller `by` the asker of each open ask of `ids`, and removes the answers of the asks of `ids` that wait
 	 * to go to their askers.
 	 */
