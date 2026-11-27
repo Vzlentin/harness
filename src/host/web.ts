@@ -32,13 +32,14 @@ import { readJsonFile, writeJsonFile } from "../protocol/json-file.ts";
 import { childTitle } from "../protocol/labels.ts";
 import { type ChildInfo, errorMessage, type Replies } from "../protocol/requests.ts";
 import { scriptLiteral } from "../protocol/send-script.ts";
-import { AGENT_HANDLE, type Target } from "../protocol/target.ts";
+import { type Target, targetTitle } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
 import { viewSummary } from "../protocol/view-state.ts";
+import { queueDelivery } from "./deliveries.ts";
 import type { Base } from "./dispatch.ts";
-import type { EntryDelivery } from "./entries.ts";
 import { addFolderSend, findFolder, folderPath, readFolderFile } from "./folders.ts";
-import { callerHandle, ChildRecords, recordsByAge } from "./records.ts";
+import { conversationEntry, ChildRecords, recordsByAge } from "./records.ts";
+import { library } from "./targets.ts";
 import { serveWatch, type WatchSink } from "./watch.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -57,8 +58,6 @@ export type WebOptions = {
 	readonly hosts: readonly string[];
 	/** Serves an input or an abort in the host process. */
 	readonly send: (request: InspectRequest["request"], signal: AbortSignal) => Promise<Replies["input" | "abort"]>;
-	/** Queues a delivery, and gives whether it queued it (see `queueDelivery`). */
-	readonly deliver: (delivery: EntryDelivery) => Promise<boolean>;
 	/** Runs at each request, which counts as activity for the idle exit. */
 	readonly activity: () => void;
 	/** Keeps the promise of a request, which the close of the host awaits. */
@@ -307,33 +306,27 @@ function openFrame(view: ConversationView, child: ChildInfo): string {
 	return frameEvent({ status: { kind: "open" }, title: childTitle(child), child, view, summary: viewSummary(view) });
 }
 
-/** The title of the agent of `ref` before the host gives its info. */
-function targetTitle(host: string, ref: Target): string {
-	switch (ref.kind) {
-		case "agent":
-			return `${host} agent`;
-		case "child":
-			return ref.handle;
-		case "conversation":
-			return ref.id;
-	}
-}
-
 /**
- * The page of the conversation `id`: the inspect UI of the host agent for the root, and of the child for the
- * conversation of a child by handle. Another ID gives 404.
+ * The page of the conversation `id`: the inspect UI of the host agent for the root, of the child by handle for the
+ * conversation of a child, and of the conversation by ID for another conversation that the children library opened.
+ * Another ID, such as a Pi session, gives 404.
  */
 async function conversationPage(base: Base, res: ServerResponse, id: string): Promise<void> {
-	const state = await base.harness.snapshot(ChildRecords, context);
-	const handle = callerHandle(base.root.id, recordsByAge(state), id);
+	const target = await base.harness.commit(async (tx): Promise<Readonly<Record<string, string>> | undefined> => {
+		if (id === String(base.root.id)) return { host: base.host };
 
-	if (handle === undefined) {
+		if ((await library.opened(tx, id)) === undefined) return undefined;
+		const handle = conversationEntry(recordsByAge(await tx.doc(ChildRecords)), id)?.[0];
+
+		return handle === undefined ? { host: base.host, conversation: id } : { host: base.host, handle };
+	}, context);
+
+	if (target === undefined) {
 		sendJson(res, 404, { error: `Unknown conversation: ${id}` });
 
 		return;
 	}
 
-	const target = handle === AGENT_HANDLE ? { host: base.host } : { host: base.host, handle };
 	res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" }).end(page(target));
 }
 
@@ -387,6 +380,7 @@ async function sendToCaller(
 		return;
 	}
 
-	const queued = await options.deliver({ key: body.key, to: caller, text: body.message });
+	const { harness, root } = options.base;
+	const queued = await queueDelivery(harness, root.id, { key: body.key, to: caller, text: body.message }, context);
 	sendJson(res, 200, { ok: true, repeated: !queued });
 }

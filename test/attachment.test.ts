@@ -93,7 +93,9 @@ class FakeMirror {
 
 	/** The title as `Mirror` gives it, from the same functions. */
 	get title(): string {
-		return this.child === undefined ? mirror.targetTitle(this.target) : protocol.childTitle(this.child);
+		return this.child === undefined
+			? protocol.targetTitle(this.target.host, this.target.target)
+			: protocol.childTitle(this.child);
 	}
 
 	get busy(): boolean {

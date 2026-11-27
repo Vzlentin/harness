@@ -513,7 +513,6 @@ export async function runHost(options: {
 			stateDir,
 			hosts: await webHosts(settings, warn),
 			send: (request, signal) => send(request, signal),
-			deliver: (delivery) => queueDelivery(opened, root.id, delivery, context),
 			activity: () => (lastActivity = Date.now()),
 			track,
 		});

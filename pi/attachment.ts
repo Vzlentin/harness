@@ -65,7 +65,9 @@ export class Attachment {
 		this.#frame = frame;
 		this.#todos = todos;
 		this.#frame.clear();
-		this.#frame.addChild(this.#line("muted", () => `Connecting to the ${harness.mirror.targetTitle(target)}...`));
+		this.#frame.addChild(
+			this.#line("muted", () => `Connecting to the ${harness.protocol.targetTitle(target.host, target.target)}...`),
+		);
 		// Pi calls the factory at once, which gives the TUI that the tool cards need.
 		ctx.ui.setWidget(
 			WIDGET,

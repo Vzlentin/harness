@@ -10,7 +10,7 @@ import { Value } from "typebox/value";
 import type { InspectStatus } from "../protocol/http.ts";
 import { childTitle } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
-import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
+import { parseTarget, type Target, targetRef, targetTitle, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
 import { inboxOf, withdrawnTexts } from "../protocol/view-state.ts";
 import { type Client, connect, HOST_CLOSED, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
@@ -78,18 +78,6 @@ export function harnessArgs({ host, target }: MirrorTarget): string[] {
 			return ["--host", host, "attach", target.handle];
 		case "conversation":
 			return ["--host", host, "attach", "--conversation", target.id];
-	}
-}
-
-/** The title of the agent of `target` before the host gives its name: the handle or the conversation ID of a child. */
-export function targetTitle({ host, target }: MirrorTarget): string {
-	switch (target.kind) {
-		case "agent":
-			return `${host} agent`;
-		case "child":
-			return target.handle;
-		case "conversation":
-			return target.id;
 	}
 }
 
@@ -176,7 +164,7 @@ export class Mirror {
 
 	/** The title of the agent: from its info once a connection gave it, else from the target. */
 	get title(): string {
-		return this.#child === undefined ? targetTitle(this.target) : childTitle(this.#child);
+		return this.#child === undefined ? targetTitle(this.target.host, this.target.target) : childTitle(this.#child);
 	}
 
 	/** Whether the conversation works, as an open connection tells. */

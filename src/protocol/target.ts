@@ -15,6 +15,18 @@ export type Target =
 	| { readonly kind: "agent" }
 	| { readonly kind: "conversation"; readonly id: string };
 
+/** The title of the agent of `target` of the host `host` before the host gives its info. */
+export function targetTitle(host: string, target: Target): string {
+	switch (target.kind) {
+		case "agent":
+			return `${host} agent`;
+		case "child":
+			return target.handle;
+		case "conversation":
+			return target.id;
+	}
+}
+
 /**
  * The two objects with `fields` and a target on the wire: one with `handle`, one with `conversation`. Each refuses the
  * other key, because an object schema accepts extra keys. A caller that needs one schema wraps them in a union.

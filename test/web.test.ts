@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { connect } from "../src/client/client.ts";
+import { connect, request } from "../src/client/client.ts";
 import type { Host } from "../src/host/run.ts";
+import { setEntry } from "../src/protocol/entries.ts";
 import { statePaths } from "../src/protocol/paths.ts";
 import { called, cli, root, send, setSettings, setUp, spawnWithId, startHost, tearDown, until } from "./helpers.ts";
 
@@ -24,6 +26,9 @@ const INDEX = `<!doctype html>
 </html>
 `;
 
+/** The fixture entry, whose task opens a library conversation that is not a child. */
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "tasks");
+
 let host: Host | undefined;
 
 /** The child whose conversation serves the folder of the tests, by handle and conversation ID. */
@@ -36,7 +41,8 @@ let origin = "";
 
 beforeAll(async () => {
 	await setUp();
-	await setSettings({ defaultProvider: "faux", defaultModel: "faux-1" });
+	setEntry("fixture", join(FIXTURE, "ask.ts"));
+	await setSettings({ defaultProvider: "faux", defaultModel: "faux-1", packages: [FIXTURE] });
 	host = await startHost();
 	child = await spawnWithId("pi-web");
 	folder = await mkdtemp(join(root, "site-"));
@@ -248,6 +254,16 @@ describe("the web server of the host", { timeout: 30_000 }, () => {
 			`{"host":"main","handle":"${child.handle}"}`,
 		);
 		expect((await rawRequest("/unknown/")).status).toBe(404);
+	});
+
+	it("serves the page of a library conversation that is not a child", async () => {
+		const idFile = join(root, "web-task.ids.json");
+		const input = { cwd: root, prompt: "Web task", idFile };
+		await request({ type: "start", kind: "fixture.ask", key: "web-task", input }, { start: false });
+		await until(() => called("Web task") === 1);
+		const ids: { child: string } = JSON.parse(await readFile(idFile, "utf8"));
+		const page = (await rawRequest(`/${ids.child}/`)).body.toString("utf8");
+		expect(page).toContain(`{"host":"main","conversation":"${ids.child}"}`);
 	});
 
 	it("prints the links with harness serve, and refuses a caller that is not of the host", async () => {
