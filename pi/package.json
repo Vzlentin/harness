@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/pi-agents",
-	"version": "0.6.2",
+	"version": "0.7.0",
 	"description": "The Pi extension of harness: the subagent tool, the /subagent command, the subagents widget, the todo tool, the todo widget, /vc, the visual copy, the /harness mirror sessions, the tools bridge in the IPython kernels and the subagent skill",
 	"keywords": [
 		"pi-package"
@@ -14,7 +14,7 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@vzlentin/harness": "0.6.2"
+		"@vzlentin/harness": "0.7.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
