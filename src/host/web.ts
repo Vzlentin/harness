@@ -1,7 +1,7 @@
 /**
- * The web server of the host: the inspect UI of its conversations, the folders that its callers serve, and the Send of
- * their pages, which queues a delivery to the caller. It listens on one port of each bound address, and keeps the port
- * in `<state dir>/web.json`, so the links stay valid after a restart.
+ * The web server of the host: the page of each of its conversations, the folders that its callers serve, and the Send
+ * of their pages, which queues a delivery to the caller. It listens on one port of each bound address, and keeps the
+ * port in `<state dir>/web.json`, so the links stay valid after a restart.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -9,6 +9,16 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { readJsonFile, writeJsonFile } from "../protocol/json-file.ts";
+import { childTitle } from "../protocol/labels.ts";
+import { type ChildInfo, errorMessage, type Replies } from "../protocol/requests.ts";
+import { scriptLiteral } from "../protocol/send-script.ts";
+import { type Target, targetTitle } from "../protocol/target.ts";
+import { applyChange } from "../protocol/view-change.ts";
+import { viewSummary } from "../protocol/view-state.ts";
+import { queueDelivery } from "./deliveries.ts";
+import type { Base } from "./dispatch.ts";
+import { addFolderSend, findFolder, folderPath, readFolderFile } from "./folders.ts";
 import {
 	addressHost,
 	bodyOf,
@@ -27,17 +37,7 @@ import {
 	sendJson,
 	serverUrl,
 	TargetQuery,
-} from "../protocol/http.ts";
-import { readJsonFile, writeJsonFile } from "../protocol/json-file.ts";
-import { childTitle } from "../protocol/labels.ts";
-import { type ChildInfo, errorMessage, type Replies } from "../protocol/requests.ts";
-import { scriptLiteral } from "../protocol/send-script.ts";
-import { type Target, targetTitle } from "../protocol/target.ts";
-import { applyChange } from "../protocol/view-change.ts";
-import { viewSummary } from "../protocol/view-state.ts";
-import { queueDelivery } from "./deliveries.ts";
-import type { Base } from "./dispatch.ts";
-import { addFolderSend, findFolder, folderPath, readFolderFile } from "./folders.ts";
+} from "./http.ts";
 import { conversationEntry, ChildRecords, recordsByAge } from "./records.ts";
 import { library } from "./targets.ts";
 import { serveWatch, type WatchSink } from "./watch.ts";
@@ -242,9 +242,8 @@ async function toHost(
 }
 
 /**
- * Streams the frames of the target of the query as Server-Sent Events, as the stream of `harness inspect` does: a frame
- * at once, then one after each line of the watch. When the watch fails, the one frame has the reason. The watch stops
- * when the response closes.
+ * Streams the frames of the target of the query as Server-Sent Events: a frame at once, then one after each line of
+ * the watch. When the watch fails, the one frame has the reason. The watch stops when the response closes.
  */
 async function stream(base: Base, res: ServerResponse, url: URL, live: Live): Promise<void> {
 	let ref: Target;
@@ -291,8 +290,7 @@ async function stream(base: Base, res: ServerResponse, url: URL, live: Live): Pr
 		current = await serveWatch({ ...base, signal: AbortSignal.any([closed.signal, live.signal]) }, ref, sink);
 	} catch (error) {
 		const status = { kind: "failed", reason: errorMessage(error) } as const;
-		const title = targetTitle(base.host, ref);
-		res.end(frameEvent({ status, title, child: undefined, view: undefined, summary: undefined }));
+		res.end(frameEvent({ status, title: targetTitle(base.host, ref) }));
 
 		return;
 	}
@@ -307,7 +305,7 @@ function openFrame(view: ConversationView, child: ChildInfo): string {
 }
 
 /**
- * The page of the conversation `id`: the inspect UI of the host agent for the root, of the child by handle for the
+ * The page of the conversation `id`: the live view of the host agent for the root, of the child by handle for the
  * conversation of a child, and of the conversation by ID for another conversation that the children library opened.
  * Another ID, such as a Pi session, gives 404.
  */

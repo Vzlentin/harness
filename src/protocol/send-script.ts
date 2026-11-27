@@ -1,7 +1,7 @@
 /**
- * The part of the Send script that the served HTML pages share: the posts to the server, and the feedback of a post,
- * with a layer that blocks clicks and a line at the top that says what happened. Each server puts it in a script with
- * its own calls of the page on top.
+ * The part of the Send script of the HTML files that the host web server serves: the posts to the server, and the
+ * feedback of a post, with a layer that blocks clicks and a line at the top that says what happened. The server puts it
+ * in a script with the calls of the file on top.
  */
 
 /**

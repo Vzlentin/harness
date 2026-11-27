@@ -1,7 +1,7 @@
 /**
- * What the Pi extension and the inspect UI read from a durable conversation view: its live state, its inbox, its usage,
- * its list of todos, the texts of its user messages, and the summary of the footer of the UI. It imports no Pi package
- * at run time, so the Pi extension can load it.
+ * What the Pi extension and the conversation pages read from a durable conversation view: its live state, its inbox,
+ * its usage, its list of todos, the texts of its user messages, and the summary of the footer of the UI. It imports no
+ * Pi package at run time, so the Pi extension can load it.
  */
 import type { JsonRepresentation } from "@earendil-works/chord/json";
 import type { Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -141,7 +141,7 @@ export function statusText(live: LiveState): string {
 	return "";
 }
 
-/** What the footer of the inspect UI shows: the work of the agent, its queued messages, and its usage. */
+/** What the footer of a conversation page shows: the work of the agent, its queued messages, and its usage. */
 export type InspectSummary = {
 	readonly statusText: string;
 	readonly queued: { mode: "steer" | "followUp"; text: string }[];
@@ -149,7 +149,7 @@ export type InspectSummary = {
 	readonly lastAnswerUsage: Usage | undefined;
 };
 
-/** The summary of `view` that the footer of the inspect UI shows. */
+/** The summary of `view` that the footer of a conversation page shows. */
 export function viewSummary(view: ConversationView): InspectSummary {
 	return {
 		statusText: statusText(liveOf(view)),

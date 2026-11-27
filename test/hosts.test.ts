@@ -102,7 +102,7 @@ describe("hosts", { timeout: 30_000 }, () => {
 			[["create", "main", "--cwd", dirA], "A host cannot have the name main"],
 			[["create", "spawn", "--cwd", dirA], "A host cannot have the name spawn"],
 			[["create", "todo", "--cwd", dirA], "A host cannot have the name todo"],
-			[["create", "page", "--cwd", dirA], "A host cannot have the name page"],
+			[["create", "serve", "--cwd", dirA], "A host cannot have the name serve"],
 			[["create", "tree", "--cwd", dirA], "A host cannot have the name tree"],
 			[["create", "missing", "--cwd", join(root, "missing")], `No such directory: ${join(root, "missing")}`],
 		];

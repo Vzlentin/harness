@@ -26,7 +26,6 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Pointer, Value } from "typebox/value";
 import { childContext, PI_TRUST, type ResourcesReport } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
-import { LOOPBACK, resolveBindHosts } from "../protocol/http.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
 import {
@@ -52,6 +51,7 @@ import { queueDelivery } from "./deliveries.ts";
 import { type Base, handleLine, type Line } from "./dispatch.ts";
 import { type EntryHandles, EntryLine, type EntryRequest, loadEntries } from "./entries.ts";
 import { ConversationEnvs } from "./envs.ts";
+import { LOOPBACK, tailscaleAddresses } from "./http.ts";
 import { type AwakeSystem, keepAwake, NODE_AWAKE_SYSTEM } from "./keep-awake.ts";
 import { checkLabels } from "./label-checks.ts";
 import { takeLock } from "./lock.ts";
@@ -117,7 +117,6 @@ const CORE_PASSIVE = {
 	"wait-task": active,
 	"abort-task": active,
 	report: active,
-	whoami: active,
 	serve: active,
 	rename: active,
 	stop: active,
@@ -727,8 +726,10 @@ const TailscaleSetting = Type.Object({ harnessTailscale: Type.Literal(true) });
 async function webHosts(settings: SettingsManager, warn: (cause: unknown) => void): Promise<string[]> {
 	const tailscale = Value.Check(TailscaleSetting, settings.getGlobalSettings());
 
+	if (!tailscale) return [LOOPBACK];
+
 	try {
-		return await resolveBindHosts({ tailscale });
+		return await tailscaleAddresses();
 	} catch (error) {
 		warn(error);
 

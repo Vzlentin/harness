@@ -3,14 +3,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The CLI of this install, which the detached starts of the host and of inspect, and the hc terminals of `openChildTab` and `openConversationPane` run
- * with this Node: `cli.js` next to the built modules, or `cli.ts` in a checkout, which Node runs with type stripping.
+ * The CLI of this install, which the detached starts of the host and the hc terminals of `openChildTab` and
+ * `openConversationPane` run with this Node: `cli.js` next to the built modules, or `cli.ts` in a checkout, which Node
+ * runs with type stripping.
  */
 export function cliPath(): string {
 	return fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js", import.meta.url));
 }
 
-/** The slug of a page or of a parley: lowercase words of letters and digits, joined by hyphens, as the parley skill gives it. */
+/** The slug of a parley: lowercase words of letters and digits, joined by hyphens, as the parley skill gives it. */
 export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** The state folder of harness: `$XDG_STATE_HOME/harness`, default `~/.local/state/harness`. */
@@ -24,20 +25,4 @@ export function statePaths(host: string): StatePaths {
 	const dir = join(stateRoot(), host);
 
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log"), store: join(dir, "store.json") };
-}
-
-export type InspectPaths = { dir: string; log: string };
-
-/** The folder and the log of an inspect server that `harness page` starts: the state folder and its `inspect.log`. */
-export function inspectPaths(): InspectPaths {
-	const dir = stateRoot();
-
-	return { dir, log: join(dir, "inspect.log") };
-}
-
-/** The folder of the page `slug`, which the inspect routes serve. It throws for a slug that is not valid. */
-export function pageDir(slug: string): string {
-	if (!SLUG.test(slug)) throw new Error(`The slug must be lowercase words with hyphens: ${slug}`);
-
-	return join(stateRoot(), "pages", slug);
 }

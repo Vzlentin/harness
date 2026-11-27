@@ -1,14 +1,14 @@
 /**
- * The browser side of harness inspect, with no dependencies. `mountInspect` draws one conversation of a harness host,
- * live, with a form that sends to it. `mountPage` is the page of `harness inspect`: the target of its query, or the
- * picker of the hosts and their targets. Both need the routes of `createInspectHandler` on the same origin.
+ * The browser side of the conversation pages of the host web server, with no dependencies. `mountInspect` draws one
+ * conversation of a harness host, live, with a form that sends to it. It needs the `/api/inspect` routes of the host
+ * web server on the same origin.
  *
  * Every text goes into the page with `textContent`: the transcript is the output of agents, so it is never HTML.
  */
 
 const API = "/api/inspect";
 
-/** The keys that name a target, in the query of the page and in the routes. */
+/** The keys that name a target in the routes. */
 const TARGET_KEYS = ["host", "handle", "conversation"];
 
 /** The block of diagnostics that pi-durable adds to a tool result for the model, such as `[error] Command exited`. */
@@ -33,19 +33,6 @@ function el(tag, className, text) {
 	if (text !== undefined) node.textContent = text;
 
 	return node;
-}
-
-/** The target in `values`: its host, and the handle or the conversation, without the keys that are empty. */
-function targetOf(values) {
-	const target = {};
-
-	for (const key of TARGET_KEYS) {
-		const value = values.get(key);
-
-		if (value) target[key] = value;
-	}
-
-	return target;
 }
 
 function targetQuery(target) {
@@ -513,7 +500,7 @@ export function mountInspect(container, target, { onTitle } = {}) {
 
 	events.addEventListener("error", () => {
 		if (events.readyState === EventSource.CONNECTING) {
-			connection.textContent = "the inspect server is not reachable";
+			connection.textContent = "the host is not reachable";
 
 			return;
 		}
@@ -529,108 +516,6 @@ export function mountInspect(container, target, { onTitle } = {}) {
 		interrupt,
 		close() {
 			events.close();
-			root.remove();
-		},
-	};
-}
-
-/** The list of the targets of `host` in `list`: the host agent and the children, when the host runs. */
-async function listTargets(host, list) {
-	const reply = await call(`targets?${targetQuery({ host })}`);
-
-	if (!reply.ok) {
-		list.append(el("li", "error-line", reply.error));
-
-		return;
-	}
-
-	const { running, targets } = reply.value;
-
-	if (!running) {
-		const item = el("li");
-		const link = el("a", "", "agent");
-		link.href = `?${targetQuery({ host })}`;
-		item.append(link, el("span", "muted-line", " the host is not running: opening it starts the host"));
-		list.append(item);
-
-		return;
-	}
-
-	if (targets.length === 0) list.append(el("li", "muted-line", "the host runs, with no target to show"));
-
-	for (const child of targets) {
-		const item = el("li");
-		const link = el("a", "", child.title);
-		link.href = `?${targetQuery({ host, handle: child.handle })}`;
-		item.append(link, el("span", `badge ${child.state}`, ` ${child.state}`));
-		item.append(el("span", "inspect-model", ` ${modelText(child)}`));
-		list.append(item);
-	}
-}
-
-/** The picker: each host, with its directory, and the list of its targets. */
-async function listHosts(root) {
-	const reply = await call("hosts");
-
-	if (!reply.ok) {
-		root.append(el("p", "error-line", reply.error));
-
-		return;
-	}
-
-	for (const host of reply.value.hosts) {
-		const section = el("section", "inspect-host");
-		const head = el("h2", "", host.name);
-
-		if (host.dir) head.append(el("span", "muted-line", ` ${host.dir}`));
-		const list = el("ul");
-		section.append(head, list);
-		root.append(section);
-		void listTargets(host.name, list);
-	}
-}
-
-/**
- * The page of `harness inspect` in `container`: the target of the query of the page, `host` with `handle` or
- * `conversation`, or the picker of the hosts and their targets without `host`.
- */
-export function mountPage(container) {
-	const target = targetOf(new URLSearchParams(location.search));
-
-	if (target.host) {
-		const back = el("a", "inspect-back", "← hosts");
-		back.href = location.pathname;
-		const body = el("div", "inspect-body");
-		container.replaceChildren(back, body);
-
-		const view = mountInspect(body, target, {
-			onTitle: (title) => {
-				document.title = `${title} · harness inspect`;
-			},
-		});
-
-		// The page is the view, so Esc works wherever the focus is, also on the body after a clicked button is disabled.
-		const onKey = (event) => {
-			if (event.key === "Escape" && !event.defaultPrevented) view.interrupt();
-		};
-
-		document.addEventListener("keydown", onKey);
-
-		return {
-			close() {
-				document.removeEventListener("keydown", onKey);
-				view.close();
-			},
-		};
-	}
-
-	const root = el("div", "inspect-picker");
-	root.append(el("h1", "", "harness inspect"));
-	container.replaceChildren(root);
-	void listHosts(root);
-
-	return {
-		close() {
 			root.remove();
 		},
 	};

@@ -24,8 +24,6 @@ const COMMANDS = [
 	"host",
 	"create",
 	"hosts",
-	"inspect",
-	"page",
 	"serve",
 ] as const;
 

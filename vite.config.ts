@@ -84,10 +84,6 @@ export default defineConfig({
 				group: ["../**", "!../protocol/**"],
 				message: "client/ imports only protocol/ from src/.",
 			}),
-			restrictImports(["src/inspect/**"], {
-				group: ["../**", "!../protocol/**", "!../client/**"],
-				message: "inspect/ imports only protocol/ and client/ from src/.",
-			}),
 			restrictImports(
 				["src/bridge/**"],
 				{

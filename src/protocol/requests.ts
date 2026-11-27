@@ -24,7 +24,7 @@ import { Label, SpawnServes } from "./worker-labels.ts";
  * The version of the protocol between the CLI and the host. A client refuses a host with another version, and the host
  * refuses the `hello` of a client with another version, unless the `hello` has `external: true`.
  */
-export const PROTOCOL_VERSION = 46;
+export const PROTOCOL_VERSION = 47;
 
 /** The error of each open request of a host that stops. */
 export const HOST_CLOSING = "The host is closing";
@@ -197,8 +197,6 @@ export const RequestLine = Type.Union([
 	Type.Object({ type: Type.Literal("wait"), handle: Type.String(), timeout: Type.Number() }),
 	Type.Object({ type: Type.Literal("status"), handle: Type.String() }),
 	Type.Object({ type: Type.Literal("list"), caller: Type.String() }),
-	/** The handle of `caller` when it is a child of this host by handle, or `agent` when it is the host agent. */
-	Type.Object({ type: Type.Literal("whoami"), caller: Type.String() }),
 	/**
 	 * Serves the folder `dir` of `caller` on the web server of the host, and replies with its links. `caller` must be a
 	 * conversation or a Pi session of the host.
@@ -399,7 +397,6 @@ export type Replies = {
 	readonly wait: { readonly answer: string };
 	readonly status: ChildInfo;
 	readonly list: readonly ChildInfo[];
-	readonly whoami: { readonly handle?: string };
 	/** The link of the folder on each address of the web server of the host. */
 	readonly serve: { readonly urls: readonly string[] };
 	readonly answers: readonly Delivery[];

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { connect, request } from "../src/client/client.ts";
+import { tailscaleAddresses } from "../src/host/http.ts";
 import type { Host } from "../src/host/run.ts";
 import { setEntry } from "../src/protocol/entries.ts";
 import { statePaths } from "../src/protocol/paths.ts";
@@ -131,6 +132,33 @@ async function firstFrame(query: string): Promise<{ status: { kind: string }; ch
 	return JSON.parse(/^data: (.*)\n\n/.exec(text)?.[1] ?? "null");
 }
 
+/** A `tailscale` on `PATH` that runs the shell commands `body`. */
+async function fakeTailscale(body: string): Promise<void> {
+	const bin = await mkdtemp(join(root, "bin-"));
+	await writeFile(join(bin, "tailscale"), `#!/bin/sh\n${body}\n`);
+	await chmod(join(bin, "tailscale"), 0o755);
+	process.env.PATH = `${bin}:${process.env.PATH}`;
+}
+
+describe("tailscaleAddresses", () => {
+	it("adds the IPv4 addresses of tailscale ip -4 once, and fails without one", async () => {
+		const before = process.env.PATH;
+
+		try {
+			await fakeTailscale('printf "100.64.0.7\\nfd7a:115c:a1e0::7\\n100.64.0.7\\n127.0.0.1\\n"');
+			expect(await tailscaleAddresses()).toEqual(["127.0.0.1", "100.64.0.7"]);
+
+			await fakeTailscale('printf "fd7a:115c:a1e0::7\\n"');
+			await expect(tailscaleAddresses()).rejects.toThrow("tailscale ip -4 gave no IPv4 address");
+
+			await fakeTailscale('echo "Tailscale is stopped." >&2; exit 1');
+			await expect(tailscaleAddresses()).rejects.toThrow("tailscale ip -4 failed: Tailscale is stopped.");
+		} finally {
+			process.env.PATH = before;
+		}
+	});
+});
+
 describe("the web server of the host", { timeout: 30_000 }, () => {
 	it("gives the links of a folder on the port that web.json keeps", () => {
 		const { port } = JSON.parse(readFileSync(join(statePaths("main").dir, "web.json"), "utf8"));
@@ -168,6 +196,30 @@ describe("the web server of the host", { timeout: 30_000 }, () => {
 		expect(await sendPost("  ", "k3")).toMatchObject({ error: "The message is empty" });
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		expect(called("Web send")).toBe(1);
+	});
+
+	it("sends the message of the input route to the child, and refuses a body that is not valid", async () => {
+		const input = (body: Record<string, string>) =>
+			rawRequest("/api/inspect/input", { method: "POST", body: JSON.stringify(body) });
+
+		const sent = await input({ host: "main", handle: child.handle, message: "Input prompt" });
+		expect(JSON.parse(sent.body.toString("utf8"))).toEqual({ ok: true });
+		await until(() => called("Input prompt") === 1);
+
+		const refusals: [Record<string, string>, string][] = [
+			[{ host: "main", handle: child.handle, message: " " }, "The message is empty"],
+			[
+				{ host: "main", handle: child.handle, conversation: child.id, message: "Hi" },
+				"Give handle or conversation, not both",
+			],
+			[{ host: "other", handle: child.handle, message: "Hi" }, "This host is main, not other"],
+		];
+
+		for (const [body, error] of refusals) {
+			const reply = await input(body);
+			expect(reply.status, error).toBe(400);
+			expect(JSON.parse(reply.body.toString("utf8"))).toEqual({ error });
+		}
 	});
 
 	it("aborts with the abort route and does not send a message of its body", async () => {

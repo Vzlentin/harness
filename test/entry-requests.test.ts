@@ -468,7 +468,10 @@ describe("the open and busy calls of an entry", () => {
 		try {
 			expect(seams.opened).toEqual([{ root: expect.any(String), store: true, workers: 0 }]);
 			const caller = seams.opened[0]?.root ?? "";
-			expect(await send({ type: "whoami", caller }, host)).toEqual({ handle: "agent" });
+			const child = await spawnAs(caller, "Seams child", { notify: false, host });
+			await answerOf(child.handle, host);
+			const { nodes } = await send({ type: "tree" }, host);
+			expect(nodes.find((node) => node.id === child.handle)?.parent).toBe("agent");
 		} finally {
 			await opened.close();
 			seams.opened.length = 0;

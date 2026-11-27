@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import type { InspectStatus } from "../protocol/http.ts";
 import { childTitle } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
 import { parseTarget, type Target, targetRef, targetTitle, withTarget } from "../protocol/target.ts";
@@ -88,7 +87,9 @@ export type MirrorConfigure = Omit<Extract<Request, { type: "configure" }>, "typ
  * The connection of a mirror: before the first one, open, connecting again after the host closed it, or failed for
  * good, with the reason.
  */
-export type MirrorStatus = InspectStatus;
+export type MirrorStatus =
+	| { readonly kind: "connecting" | "open" | "reconnecting" }
+	| { readonly kind: "failed"; readonly reason: string };
 
 export type MirrorOptions = {
 	/** The waits before the tries to connect again after the host closed the connection. Default 0, 2 and 5 s. */

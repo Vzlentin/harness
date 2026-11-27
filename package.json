@@ -68,10 +68,6 @@
 			"types": "./dist/host/run.d.ts",
 			"default": "./dist/host/run.js"
 		},
-		"./inspect": {
-			"types": "./dist/inspect/index.d.ts",
-			"default": "./dist/inspect/index.js"
-		},
 		"./label-checks": {
 			"types": "./dist/host/label-checks.d.ts",
 			"default": "./dist/host/label-checks.js"

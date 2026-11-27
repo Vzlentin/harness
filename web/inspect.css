@@ -1,6 +1,6 @@
-/* The terminal theme of harness inspect: the colors of Pi's dark theme, and a monospace font. */
+/* The terminal theme of the conversation pages: the colors of Pi's dark theme, and a monospace font. */
 
-:where(.inspect-page, .inspect, .inspect-picker) {
+:where(.inspect-page, .inspect) {
 	--bg: #333333;
 	--fg: #ffffff;
 	--accent: #c0a172;
@@ -42,13 +42,8 @@
 	height: 100%;
 }
 
-.inspect-page a,
-.inspect-picker a {
+.inspect-page a {
 	color: var(--accent);
-}
-
-.inspect-back {
-	padding: 0.4em 0.75em 0;
 }
 
 .inspect-body {
@@ -87,12 +82,12 @@
 
 .inspect-model,
 .inspect-connection,
-:is(.inspect, .inspect-picker) .muted-line {
+.inspect .muted-line {
 	color: var(--muted);
 }
 
 .inspect-connection.failed,
-:is(.inspect, .inspect-picker) .error-line {
+.inspect .error-line {
 	color: var(--error);
 }
 
@@ -101,19 +96,19 @@
 	color: var(--warning);
 }
 
-:is(.inspect, .inspect-picker) .badge.busy {
+.inspect .badge.busy {
 	color: var(--warning);
 }
 
-:is(.inspect, .inspect-picker) .badge.idle {
+.inspect .badge.idle {
 	color: var(--success);
 }
 
-:is(.inspect, .inspect-picker) .badge.error {
+.inspect .badge.error {
 	color: var(--error);
 }
 
-:is(.inspect, .inspect-picker) .badge.ended {
+.inspect .badge.ended {
 	color: var(--dim);
 }
 
@@ -285,23 +280,4 @@
 .inspect-buttons button:disabled {
 	cursor: default;
 	opacity: 0.5;
-}
-
-.inspect-picker {
-	padding: 0.75em 1em;
-}
-
-.inspect-picker h1 {
-	font-size: 1.2em;
-	color: var(--accent);
-}
-
-.inspect-picker h2 {
-	font-size: 1em;
-	margin: 1em 0 0.25em;
-}
-
-.inspect-picker ul {
-	margin: 0;
-	padding-left: 1.5em;
 }

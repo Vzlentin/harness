@@ -8,9 +8,9 @@ import { basename, extname, join, sep } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Conversation, defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { boundedReplay } from "../protocol/checkpoint.ts";
-import { contentType, HTML_TYPE } from "../protocol/http.ts";
 import { SEND_FEEDBACK, scriptLiteral, withScript } from "../protocol/send-script.ts";
 import { deliveryTarget } from "./deliveries.ts";
+import { contentType, HTML_TYPE } from "./http.ts";
 
 const context = BACKGROUND_CONTEXT;
 

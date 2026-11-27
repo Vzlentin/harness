@@ -4,36 +4,20 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { exitText, request, startDetached } from "./client/client.ts";
+import { request } from "./client/client.ts";
 import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
-import { pageFiles, writePage } from "./inspect/pages.ts";
-import { DEFAULT_PORT, listens, pageLink, pageQuery, startInspectServer } from "./inspect/server.ts";
 import { LocalId } from "./protocol/asks.ts";
-import {
-	cliCaller,
-	HARNESS_INSPECT_PORT,
-	HARNESS_HOST,
-	PI_MODEL,
-	PI_PROVIDER,
-	PI_REASONING_LEVEL,
-	PI_SESSION_ID,
-} from "./protocol/env.ts";
+import { cliCaller, HARNESS_HOST, PI_MODEL, PI_PROVIDER, PI_REASONING_LEVEL } from "./protocol/env.ts";
 import { addHost, type CommandName, checkHost, MAIN_HOST, hostDir, hostOf, readHosts } from "./protocol/hosts.ts";
-import { resolveBindHosts } from "./protocol/http.ts";
-import { inspectPaths, pageDir } from "./protocol/paths.ts";
 import { type ChildInfo, errorMessage, isThinkingLevel } from "./protocol/requests.ts";
-import { type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
+import { type ListRef, type ListTarget, parseTarget, targetRef } from "./protocol/target.ts";
 import { answerLine, Todo, TodoState } from "./protocol/todo.ts";
 import { treeLines } from "./protocol/tree.ts";
 import { runQuery, runStop, runTodoTool, runTool, type TodoToolArgs, type ToolArgs, type ToolScope } from "./tool.ts";
-
-/** How long `harness page` waits for the inspect server that it starts. */
-const INSPECT_START_MS = 10_000;
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -480,132 +464,6 @@ function runPi(target: MirrorTarget): void {
 	process.exitCode = result.status ?? 1;
 }
 
-/** The arguments of `inspect` and `page` after their own: the target, if any, and where the server listens. */
-type ServerArgs = {
-	ref: Target | undefined;
-	port: number | undefined;
-	host: string | undefined;
-	tailscale: boolean;
-};
-
-function serverArgs(command: "inspect" | "page", args: string[]): ServerArgs {
-	const parsed: ServerArgs = { ref: undefined, port: undefined, host: undefined, tailscale: false };
-
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i] ?? "";
-
-		switch (arg) {
-			case "--conversation":
-				if (parsed.ref !== undefined) usage();
-				parsed.ref = parseTarget({ conversation: valueAfter(args, i, arg) });
-				i++;
-				break;
-			case "--port":
-				parsed.port = portNumber(valueAfter(args, i, arg));
-				i++;
-				break;
-			case "--host":
-				parsed.host = valueAfter(args, i, arg);
-				i++;
-				break;
-			case "--tailscale":
-				parsed.tailscale = true;
-				break;
-			default:
-				if (arg.startsWith("--")) fail(`Unknown ${command} argument: ${arg}`);
-
-				if (parsed.ref !== undefined) usage();
-				parsed.ref = parseTarget({ handle: arg });
-		}
-	}
-
-	return parsed;
-}
-
-/** The port of `value`, an integer from 0 to 65535. Another value fails with `error`. */
-function portNumber(value: string, error = "--port must be an integer from 0 to 65535"): number {
-	const port = Number(value);
-
-	if (!Number.isInteger(port) || port < 0 || port > 65535) fail(error);
-
-	return port;
-}
-
-/** The port of `inspect` and `page` without `--port`: `HARNESS_INSPECT_PORT` of `env` when it is set, else 7501. */
-function defaultPort(env: NodeJS.ProcessEnv): number {
-	const value = env[HARNESS_INSPECT_PORT];
-
-	if (value === undefined || value === "") return DEFAULT_PORT;
-
-	return portNumber(value, `Invalid ${HARNESS_INSPECT_PORT}: ${value}`);
-}
-
-/**
- * Serves the inspect UI until SIGINT or SIGTERM, and prints its URL on each bound address: with the target of the
- * arguments in the query, the host agent with `--host <name>` alone, or the picker of the hosts without either.
- */
-async function inspectCommand(args: string[], name: string | undefined): Promise<void> {
-	const { ref, port, host, tailscale } = serverArgs("inspect", args);
-
-	const target: MirrorTarget | undefined =
-		ref === undefined && name === undefined
-			? undefined
-			: { host: hostOf(name, process.env, process.cwd()), target: ref ?? { kind: "agent" } };
-
-	const hosts = await resolveBindHosts({ host, tailscale });
-	const server = await startInspectServer({ hosts, port: port ?? defaultPort(process.env) });
-
-	// Before the URLs: a reader can stop the command as soon as it reads the first one.
-	for (const signal of ["SIGINT", "SIGTERM"] as const) {
-		process.once(signal, () => void server.close().then(() => process.exit(0)));
-	}
-
-	for (const url of server.urls) process.stdout.write(`${url}${target === undefined ? "" : pageQuery(target)}\n`);
-}
-
-/** The arguments of `page`: the folder and the slug of the page, then those of `serverArgs`. */
-type PageArgs = ServerArgs & { folder: string; slug: string };
-
-function pageArgs(args: string[]): PageArgs {
-	const [folder, ...rest] = args;
-
-	if (folder === undefined || folder.startsWith("--")) usage();
-	const at = rest.indexOf("--slug");
-
-	if (at === -1) usage();
-	const slug = valueAfter(rest, at, "--slug");
-	rest.splice(at, 2);
-
-	return { folder, slug, ...serverArgs("page", rest) };
-}
-
-/**
- * Copies the page in `<folder>` to the pages of the inspect routes, and prints its link on each address, with the target
- * that its Send posts to: the target of the arguments, else the child of `PI_SESSION_ID`, else the host agent. When
- * no address listens, it starts `harness inspect` in the background on the same addresses, and prints its PID and its
- * log on stderr. When only some addresses listen, it starts nothing, and a line notes each address where none listens.
- */
-async function pageCommand(args: string[], hostName: string | undefined): Promise<void> {
-	const { folder, slug, ref, port = defaultPort(process.env), host, tailscale } = pageArgs(args);
-	const dest = pageDir(slug);
-	const files = pageFiles(folder);
-	const name = hostOf(hostName, process.env, process.cwd());
-	const target: MirrorTarget = { host: name, target: ref ?? (await callerTarget(name)) };
-	const hosts = await resolveBindHosts({ host, tailscale });
-	writePage(dest, folder, files);
-	const seen = await listening(hosts, port);
-	const bind = [...(host === undefined ? [] : ["--host", host]), ...(tailscale ? ["--tailscale"] : [])];
-
-	const open = seen.includes(true)
-		? seen
-		: await startInspect(["inspect", "--port", String(port), ...bind], hosts, port);
-
-	for (const [index, address] of hosts.entries()) {
-		const note = open[index] === true ? "" : "  (no server listens: harness inspect serves the pages)";
-		process.stdout.write(`${pageLink(address, port, slug, target)}${note}\n`);
-	}
-}
-
 /**
  * Serves `<folder>` on the web server of the host for the caller of this process, `PI_SESSION_ID`, and prints its link on
  * each address of the server. It starts the host when none runs.
@@ -620,53 +478,6 @@ async function serveCommand(args: string[], host: string | undefined): Promise<v
 	if (reply === undefined) fail("The harness host is not running");
 
 	for (const url of reply.urls) process.stdout.write(`${url}\n`);
-}
-
-/** For each of `hosts`, whether a server listens on it at `port`. */
-async function listening(hosts: readonly string[], port: number): Promise<boolean[]> {
-	return Promise.all(hosts.map((address) => listens(address, port)));
-}
-
-/**
- * Starts `harness inspect` with `args` in the background, waits up to `INSPECT_START_MS` until it listens on each of
- * `hosts` at `port`, and gives the listen state that it saw last. It prints the PID and the log of the server on
- * stderr, and fails when the server exits or does not listen in time.
- */
-async function startInspect(args: readonly string[], hosts: readonly string[], port: number): Promise<boolean[]> {
-	const { dir, log } = inspectPaths();
-	const started = startDetached(args, dir, log);
-	const deadline = Date.now() + INSPECT_START_MS;
-	let open = await listening(hosts, port);
-
-	while (open.includes(false)) {
-		if (started.exited !== undefined) fail(`harness inspect did not start: ${exitText(started.exited)}; see ${log}`);
-
-		if (Date.now() > deadline) {
-			fail(`harness inspect did not start: no server listens after ${INSPECT_START_MS / 1000} s; see ${log}`);
-		}
-
-		await sleep(100);
-		open = await listening(hosts, port);
-	}
-
-	process.stderr.write(`harness inspect runs as pid ${started.pid}; log ${log}\n`);
-
-	return open;
-}
-
-/**
- * The target of the caller of this process in the host `host`: its child by handle, else the host agent, also
- * for a caller that the host does not run, such as a Pi session.
- */
-async function callerTarget(host: string): Promise<Target> {
-	const caller = process.env[PI_SESSION_ID];
-
-	if (!caller) fail("Give <handle> or --conversation <id>: PI_SESSION_ID is not set");
-	const reply = await request({ type: "whoami", caller }, { start: false, host });
-
-	if (reply === undefined) fail(`The harness host ${host} is not running`);
-
-	return reply.handle === undefined ? { kind: "agent" } : parseTarget({ handle: reply.handle });
 }
 
 function versionCommand(args: string[], host: string | undefined): void {
@@ -734,21 +545,6 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 		attach: {
 			usage: ["  harness attach (<handle> | --conversation <id>) [--side]"],
 			run: attachCommand,
-		},
-		inspect: {
-			usage: [
-				"  harness inspect [<handle> | --conversation <id>] [--port <n>] [--host <ip> | --tailscale]",
-				"    (the port without --port: $HARNESS_INSPECT_PORT, else 7501)",
-			],
-			run: inspectCommand,
-		},
-		page: {
-			usage: [
-				"  harness page <folder> --slug <slug> [<handle> | --conversation <id>]",
-				"    [--port <n>] [--host <ip> | --tailscale]",
-				"    (the port without --port: $HARNESS_INSPECT_PORT, else 7501)",
-			],
-			run: pageCommand,
 		},
 		serve: { usage: ["  harness serve <folder>"], run: serveCommand },
 		host: { usage: [], run: (args, host) => hostCommand(args, checkHost(host ?? MAIN_HOST)) },

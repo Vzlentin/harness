@@ -208,18 +208,6 @@ export const AnswerInputs = Type.Refine(
 	() => "must answer each ask once",
 );
 
-/** The fields of an answer that a page writes: `n`, and no `slug` or `id`, as the page answers only its own parley. */
-function pageAnswerOf<F extends TProperties>(fields: F) {
-	const absent = Type.Optional(Type.Never());
-
-	return Type.Object({ ...fields, n: LocalId, slug: absent, id: absent });
-}
-
-/** An answer of a page to an ask of its parley, which it names by `n`, its number in that parley. */
-export const PageAnswer = Type.Union([pageAnswerOf(OwnAnswer), pageAnswerOf(KeyAnswer)]);
-
-export type PageAnswer = Static<typeof PageAnswer>;
-
 /** The statuses that end a contract. */
 export const ParleyEnd = Type.Union([Type.Literal("done"), Type.Literal("dropped")]);
 

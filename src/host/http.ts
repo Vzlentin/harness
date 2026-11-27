@@ -1,8 +1,8 @@
 /**
- * What the HTTP servers of harness share: the addresses they bind, the listen on them and the close, their URLs, the
+ * The HTTP parts of the host web server: the addresses it binds, the listen on them and the close, their URLs, the
  * `Host` header guard, the target fields, the JSON body parser and the host requests of the inspect routes, the JSON
- * replies, the browser files of the inspect UI, the content types of the served files, and the frames of the inspect
- * streams with their Server-Sent Events writer.
+ * replies, the browser files of the conversation pages, the content types of the served files, and the frames of the
+ * inspect streams with their Server-Sent Events writer.
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -14,20 +14,20 @@ import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import { type ChildInfo, errorMessage, type Request } from "./requests.ts";
-import { AGENT_HANDLE, parseTarget, type Target, targetRef } from "./target.ts";
-import type { InspectSummary } from "./view-state.ts";
+import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
+import { AGENT_HANDLE, parseTarget, type Target, targetRef } from "../protocol/target.ts";
+import type { InspectSummary } from "../protocol/view-state.ts";
 
-/** The address of a server without `--host` and `--tailscale`: this machine only. */
+/** The address of this machine only, which each server binds. */
 export const LOOPBACK = "127.0.0.1";
 
 /** The largest body of a POST route. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
-/** The browser files of the inspect UI, next to `src/` and `dist/` in the package. */
+/** The browser files of the conversation pages, next to `src/` and `dist/` in the package. */
 const WEB = new URL("../../web/", import.meta.url);
 
-/** The browser files of the inspect UI, by the path that serves them. */
+/** The browser files of the conversation pages, by the path that serves them. */
 const ASSETS: ReadonlyMap<string, string> = new Map([
 	["/assets/inspect.js", "inspect.js"],
 	["/assets/inspect.css", "inspect.css"],
@@ -165,22 +165,19 @@ export function inspectAbort(body: Static<typeof TargetQuery>): InspectRequest {
 	return { host: body.host, request: { type: "abort", ...targetRef(inspectTarget(body)) } };
 }
 
-/** The connection of an inspect stream to its agent: as a mirror gives it, or failed for good with the reason. */
-export type InspectStatus =
-	| { readonly kind: "connecting" | "open" | "reconnecting" }
-	| { readonly kind: "failed"; readonly reason: string };
-
 /**
- * One frame of an inspect stream: the connection to the host, the title of the agent, its info and its conversation,
- * and the summary of the conversation. `child`, `view` and `summary` are undefined before the first connection.
+ * One frame of an inspect stream: open, with the title of the agent, its info, its conversation and the summary of the
+ * conversation, or failed for good, with the title of the target and the reason.
  */
-export type InspectFrame = {
-	readonly status: InspectStatus;
-	readonly title: string;
-	readonly child: ChildInfo | undefined;
-	readonly view: ConversationView | undefined;
-	readonly summary: InspectSummary | undefined;
-};
+type InspectFrame =
+	| {
+			readonly status: { readonly kind: "open" };
+			readonly title: string;
+			readonly child: ChildInfo;
+			readonly view: ConversationView;
+			readonly summary: InspectSummary;
+	  }
+	| { readonly status: { readonly kind: "failed"; readonly reason: string }; readonly title: string };
 
 /** The Server-Sent Event of `frame`: one `data:` line, because JSON has no raw newline. */
 export function frameEvent(frame: InspectFrame): string {
@@ -199,25 +196,10 @@ export function contentType(extension: string): string {
 }
 
 /**
- * The addresses of a server: `127.0.0.1` by default, `host` alone with `host`, and `127.0.0.1` with the IPv4 addresses
- * of `tailscale ip -4` with `tailscale`. It binds `0.0.0.0` only when `host` is `0.0.0.0`. It refuses a `host` that is
- * not an IP address or `localhost`, because the routes refuse its name in the `Host` header.
+ * `127.0.0.1` with the IPv4 addresses of `tailscale ip -4`, each once. It throws when `tailscale ip -4` fails or gives
+ * no IPv4 address.
  */
-export async function resolveBindHosts(options: {
-	readonly host?: string | undefined;
-	readonly tailscale?: boolean | undefined;
-}): Promise<string[]> {
-	const { host, tailscale = false } = options;
-
-	if (host !== undefined && tailscale) throw new Error("Use --host or --tailscale, not both");
-
-	if (host !== undefined) {
-		checkBindHost(host);
-
-		return [host];
-	}
-
-	if (!tailscale) return [LOOPBACK];
+export async function tailscaleAddresses(): Promise<string[]> {
 	const addresses = (await tailscaleIp()).split("\n").map((line) => line.trim());
 	const ipv4 = addresses.filter((address) => isIPv4(address));
 
@@ -236,13 +218,8 @@ function tailscaleIp(): Promise<string> {
 	});
 }
 
-/** Refuses a bind host that is not an IP address or `localhost`, because the routes refuse its name in `Host`. */
-export function checkBindHost(host: string): void {
-	if (!isAddress(host)) throw new Error(`The host must be an IP address or localhost: ${host}`);
-}
-
 /** Whether `host` is an IP address or `localhost`, which no DNS name of another site can be. */
-export function isAddress(host: string): boolean {
+function isAddress(host: string): boolean {
 	return host === "localhost" || isIP(host) !== 0;
 }
 
@@ -289,7 +266,7 @@ export function sendJson<B>(res: ServerResponse, status: number, body: B): void 
 }
 
 /** The error of a query or a body that does not match its schema: the path and the message of its first error. */
-export function invalid(what: string, [error]: readonly TLocalizedValidationError[]): Error {
+function invalid(what: string, [error]: readonly TLocalizedValidationError[]): Error {
 	return new Error(`Invalid ${what}: ${[error?.instancePath, error?.message].filter((part) => part).join(" ")}`);
 }
 

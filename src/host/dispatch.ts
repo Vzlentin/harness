@@ -38,7 +38,6 @@ import { queryConversation } from "./query.ts";
 import {
 	addRecord,
 	addRequest,
-	callerHandle,
 	ChildRecords,
 	childRecord,
 	markRead,
@@ -181,8 +180,6 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return watchTree(handler);
 		case "list":
 			return list(request, handler);
-		case "whoami":
-			return whoami(request.caller, handler);
 		case "serve":
 			return serve(request, handler);
 		case "rename":
@@ -366,17 +363,6 @@ async function list(request: Extract<Request, { type: "list" }>, handler: Handle
 	const own = recordsByAge(state).filter(([, record]) => record.caller === request.caller);
 
 	return Promise.all(own.map(([handle, record]) => childInfo(handler, handle, record)));
-}
-
-/**
- * The handle of `caller`: `agent` for the host agent, or the handle of the child whose conversation it is. Another
- * caller, such as a Pi session, gets no handle.
- */
-async function whoami(caller: string, handler: Handler): Promise<Replies["whoami"]> {
-	const state = await handler.harness.snapshot(ChildRecords, context);
-	const handle = callerHandle(handler.root.id, recordsByAge(state), caller);
-
-	return handle === undefined ? {} : { handle };
 }
 
 /** Records the folder of `request` for the web server of the host, and gives its links. */
