@@ -1,5 +1,5 @@
 /**
- * The process of a host: its lock, its store, its socket and its idle exit.
+ * The process of a host: its lock, its store, its socket, its web server and its idle exit.
  */
 import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -26,6 +26,7 @@ import type { TLocalizedValidationError } from "typebox/error";
 import { Pointer, Value } from "typebox/value";
 import { childContext, PI_TRUST, type ResourcesReport } from "../children/context.ts";
 import type { Place } from "../children/library.ts";
+import { LOOPBACK, resolveBindHosts } from "../protocol/http.ts";
 import { onLines } from "../protocol/lines.ts";
 import { statePaths } from "../protocol/paths.ts";
 import {
@@ -60,6 +61,7 @@ import { ChildRecords, labelChild, OldChildRecordsError } from "./records.ts";
 import { SESSION_END_MS, Sessions } from "./sessions.ts";
 import { library } from "./targets.ts";
 import { ENTRY_TODOS } from "./todo-lists.ts";
+import { startWeb, type Web } from "./web.ts";
 import {
 	endedChild,
 	labelledTasks,
@@ -116,6 +118,7 @@ const CORE_PASSIVE = {
 	"abort-task": active,
 	report: active,
 	whoami: active,
+	serve: active,
 	rename: active,
 	stop: active,
 } satisfies { readonly [T in Request["type"]]: (request: Extract<Request, { type: T }>) => boolean };
@@ -197,6 +200,8 @@ export async function runHost(options: {
 	let workerHost: WorkerHost | undefined;
 	// The push of the answers and the inputs, once the harness is open.
 	let openPush: Push | undefined;
+	// The web server, once it listens.
+	let web: Web | undefined;
 	// The names of the extensions that no child inherits, once the entries are loaded.
 	let uninherited: readonly string[] = [];
 
@@ -424,6 +429,11 @@ export async function runHost(options: {
 		checkLabels: (labels) => checkLabels(entries.labelChecks, labels),
 		warn,
 		degraded,
+		webLinks: (path) => {
+			if (web === undefined) throw new Error("The host is not open yet");
+
+			return web.links(path);
+		},
 	};
 	// The resumed tasks call the host, such as the tool of a child, so they resume only once `base` is set.
 	harness.resume();
@@ -497,13 +507,26 @@ export async function runHost(options: {
 		});
 	});
 
-	await new Promise<void>((resolveListen, rejectListen) => {
-		server.once("error", rejectListen);
-		server.listen(socketPath, () => {
-			server.off("error", rejectListen);
-			resolveListen();
+	await (async () => {
+		web = await startWeb({
+			base,
+			stateDir,
+			hosts: await webHosts(settings, warn),
+			send: (request, signal) => send(request, signal),
+			deliver: (delivery) => queueDelivery(opened, root.id, delivery, context),
+			activity: () => (lastActivity = Date.now()),
+			track,
 		});
-	}).catch(async (cause: unknown) => {
+
+		await new Promise<void>((resolveListen, rejectListen) => {
+			server.once("error", rejectListen);
+			server.listen(socketPath, () => {
+				server.off("error", rejectListen);
+				resolveListen();
+			});
+		});
+	})().catch(async (cause: unknown) => {
+		await web?.close();
 		await push.close();
 		await sessions.close();
 		await askEvents.close();
@@ -526,6 +549,8 @@ export async function runHost(options: {
 			const askEventsClosed = askEvents.close();
 			awake.close();
 			server.close();
+			// The close of the web server ends its streams, whose watches stop.
+			const webClosed = web?.close();
 			const reason = new Error(HOST_CLOSING);
 
 			for (const abort of aborts) abort.abort(reason);
@@ -539,6 +564,7 @@ export async function runHost(options: {
 				await waitAtMost(Promise.allSettled(writes), REPLY_WRITE_MS);
 
 				for (const socket of connections) socket.destroy();
+				await webClosed;
 
 				// Entries close first: an entry may still need the open harness. The sandbox closes before the harness, so a
 				// script that runs gets no outcome and continues after a restart.
@@ -563,8 +589,9 @@ export async function runHost(options: {
 	const timer = setInterval(
 		() => {
 			// A connection with an open `answers` request alone does not keep the host running; a busy entry, such as one
-			// that compresses the memory of the host agent, does.
-			const busy = () => [...connections].some((socket) => !push.listens(socket)) || entries.busy();
+			// that compresses the memory of the host agent, does, and so does an open stream of the web server.
+			const busy = () =>
+				[...connections].some((socket) => !push.listens(socket)) || entries.busy() || web?.busy() === true;
 
 			if (busy() || Date.now() - lastActivity < idleExitMs) return;
 			harness
@@ -690,6 +717,25 @@ function requestError(schema: TSchema, error: TLocalizedValidationError): string
 
 /** A schema with a description. */
 const Described = Type.Object({ description: Type.String() });
+
+/** Pi's global setting that adds the tailnet addresses of this machine to the addresses of the web server. */
+const TailscaleSetting = Type.Object({ harnessTailscale: Type.Literal(true) });
+
+/**
+ * The addresses of the web server: `127.0.0.1`, with the IPv4 addresses of `tailscale ip -4` when Pi's global settings
+ * have `harnessTailscale: true`. When `tailscale` fails, it warns and gives `127.0.0.1` alone.
+ */
+async function webHosts(settings: SettingsManager, warn: (cause: unknown) => void): Promise<string[]> {
+	const tailscale = Value.Check(TailscaleSetting, settings.getGlobalSettings());
+
+	try {
+		return await resolveBindHosts({ tailscale });
+	} catch (error) {
+		warn(error);
+
+		return [LOOPBACK];
+	}
+}
 
 /** Waits for `promise`, or for `ms` at most. */
 async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {

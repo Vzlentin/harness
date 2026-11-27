@@ -7,12 +7,13 @@ import { randomUUID } from "node:crypto";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import type { InspectStatus } from "../protocol/http.ts";
 import { childTitle } from "../protocol/labels.ts";
 import type { ChildInfo, Request, WatchLine } from "../protocol/requests.ts";
 import { parseTarget, type Target, targetRef, withTarget } from "../protocol/target.ts";
 import { applyChange } from "../protocol/view-change.ts";
+import { inboxOf, withdrawnTexts } from "../protocol/view-state.ts";
 import { type Client, connect, HOST_CLOSED, RETRY_DELAYS_MS, SHORT_CONNECTION_MS, tryEach } from "./client.ts";
-import { inboxOf, withdrawnTexts } from "./view-state.ts";
 
 /** The `customType` of the session entry that holds the target of a mirror session. */
 export const MIRROR_ENTRY = "harness-mirror";
@@ -99,9 +100,7 @@ export type MirrorConfigure = Omit<Extract<Request, { type: "configure" }>, "typ
  * The connection of a mirror: before the first one, open, connecting again after the host closed it, or failed for
  * good, with the reason.
  */
-export type MirrorStatus =
-	| { readonly kind: "connecting" | "open" | "reconnecting" }
-	| { readonly kind: "failed"; readonly reason: string };
+export type MirrorStatus = InspectStatus;
 
 export type MirrorOptions = {
 	/** The waits before the tries to connect again after the host closed the connection. Default 0, 2 and 5 s. */

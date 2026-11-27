@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { request } from "../src/client/client.ts";
-import { todosOf } from "../src/client/view-state.ts";
 import type { Host } from "../src/host/run.ts";
 import { type Target, targetRef } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type TodoState } from "../src/protocol/todo.ts";
 import { applyChange } from "../src/protocol/view-change.ts";
+import { todosOf } from "../src/protocol/view-state.ts";
 import { cli, handleOf, listsOf, openWatch, setUp, startHost, tearDown, until } from "./helpers.ts";
 
 let host: Host | undefined;

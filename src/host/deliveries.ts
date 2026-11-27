@@ -34,30 +34,44 @@ export function deliveryRequest(key: string): string {
 }
 
 /**
- * Queues `delivery` for the push, in the store of `harness` whose root conversation is `root`. Its `to` must be the
- * root, a conversation that the children library opened, or a Pi session of the host. It does nothing when the key
- * waits for `to`, or when `to` took it. It throws for an invalid delivery, and for another `to`.
+ * The target of a delivery to `to` in `tx`, for the root conversation `root`: the conversation of `to` when it is the
+ * root or a conversation that the children library opened, or undefined when it is a Pi session of the host. It throws
+ * `UnknownDeliveryTarget` for another `to`.
+ */
+export async function deliveryTarget(tx: Tx, root: ConversationId, to: string): Promise<ConversationId | undefined> {
+	const id = to === String(root) ? root : await library.opened(tx, to);
+
+	if (id === undefined && !(await knownSession(tx, to))) throw new UnknownDeliveryTarget(to);
+
+	return id;
+}
+
+/**
+ * Queues `delivery` for the push, in the store of `harness` whose root conversation is `root`. Its `to` must be a
+ * target of `deliveryTarget`. It does nothing when the key
+ * waits for `to`, or when `to` took it, and gives whether it queued the delivery. It throws for an invalid delivery,
+ * and for another `to`.
  */
 export async function queueDelivery(
 	harness: Pick<Harness, "commit">,
 	root: ConversationId,
 	delivery: EntryDelivery,
 	context: Context,
-): Promise<void> {
+): Promise<boolean> {
 	if (!Value.Check(EntryDelivery, delivery)) throw new Error("Invalid delivery: it needs a key, a to and a text");
 	const { key, to, text } = delivery;
 
-	await harness.commit(async (tx) => {
-		const id = to === String(root) ? root : await library.opened(tx, to);
-
-		if (id === undefined && !(await knownSession(tx, to))) throw new UnknownDeliveryTarget(to);
+	return harness.commit(async (tx) => {
+		const id = await deliveryTarget(tx, root, to);
 		const queue = await tx.doc(Deliveries);
 		const same = (each: Sent) => each.key === key && each.to === to;
 
-		if (queue.deliveries.some(same) || queue.sent.some(same)) return;
+		if (queue.deliveries.some(same) || queue.sent.some(same)) return false;
 
-		if (id !== undefined && (await tx.submissionByRequest(id, deliveryRequest(key))) !== undefined) return;
+		if (id !== undefined && (await tx.submissionByRequest(id, deliveryRequest(key))) !== undefined) return false;
 		queue.deliveries.push({ key, to, text });
+
+		return true;
 	}, context);
 }
 

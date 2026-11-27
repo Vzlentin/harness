@@ -21,12 +21,12 @@ import {
 	PossiblySentError,
 	toMirrorEntry,
 } from "../src/client/mirror.ts";
-import * as viewState from "../src/client/view-state.ts";
 import * as hosts from "../src/protocol/hosts.ts";
 import * as protocol from "../src/protocol/index.ts";
 import type { ChildInfo } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
 import { TODO_LIST_KIND, type Todo } from "../src/protocol/todo.ts";
+import * as viewState from "../src/protocol/view-state.ts";
 import { drawWidget, FakeTerminal, until } from "./helpers.ts";
 
 const AGENT: MirrorTarget = { host: "main", target: { kind: "agent" } };

@@ -22,12 +22,12 @@ import {
 	PossiblySentError,
 	piArgs,
 } from "../src/client/mirror.ts";
-import * as viewState from "../src/client/view-state.ts";
-import { inboxOf } from "../src/client/view-state.ts";
 import type { Host } from "../src/host/run.ts";
 import { addHost } from "../src/protocol/hosts.ts";
 import { type ChildInfo, errorMessage } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import * as viewState from "../src/protocol/view-state.ts";
+import { inboxOf } from "../src/protocol/view-state.ts";
 import {
 	answerOf,
 	called,

@@ -7,25 +7,14 @@ import { copyFileSync, type Dirent, mkdirSync, readdirSync, renameSync, rmSync }
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import type { MirrorTarget } from "../client/mirror.ts";
+import { contentType, HTML_TYPE } from "../protocol/http.ts";
 import { hasCode } from "../protocol/json-file.ts";
 import { pageDir } from "../protocol/paths.ts";
+import { SEND_FEEDBACK, scriptLiteral, withScript } from "../protocol/send-script.ts";
 import { AGENT_HANDLE, type TargetRef } from "../protocol/target.ts";
 
 /** The routes of the pages start with this path. */
 export const PAGES = "/pages/";
-
-/** The content type of a page file, by its extension. */
-const TYPES: ReadonlyMap<string, string> = new Map([
-	[".html", "text/html; charset=utf-8"],
-	[".svg", "image/svg+xml"],
-	[".css", "text/css; charset=utf-8"],
-	[".js", "text/javascript; charset=utf-8"],
-	[".png", "image/png"],
-	[".json", "application/json; charset=utf-8"],
-]);
-
-/** The content type of a page file with another extension. */
-const OTHER_TYPE = "application/octet-stream";
 
 /**
  * The names of the files of the page in `folder`: the regular files at its top level whose names do not start with `.`.
@@ -122,12 +111,12 @@ export async function readPage(pathname: string): Promise<PageFile | undefined> 
 	const name = file || "index.html";
 
 	if (name.includes("/") || name.includes("..") || name.startsWith(".")) return undefined;
-	const type = TYPES.get(extname(name).toLowerCase()) ?? OTHER_TYPE;
+	const type = contentType(extname(name));
 
 	try {
 		const data = await readFile(join(pageDir(slug), name));
 
-		return { data, type, html: type === TYPES.get(".html"), slug, host, ref };
+		return { data, type, html: type === HTML_TYPE, slug, host, ref };
 	} catch {
 		return undefined;
 	}
@@ -163,64 +152,26 @@ function pageParts(parts: readonly string[]): { host: string; ref: TargetRef; sl
  * of the last success posts nothing, shows `already sent ✓`, and resolves as that success did.
  */
 export function addSend(html: string, fields: Readonly<Record<string, string>>, parley: string): string {
-	const head = html.search(/<\/head>/i);
-
-	if (head === -1) return html;
-
-	return `${html.slice(0, head)}${sendScript(fields, parley)}${html.slice(head)}`;
-}
-
-/** A value as a script literal, with `<` escaped, so that it cannot end the script. */
-function literal(value: Readonly<Record<string, string>> | string): string {
-	return JSON.stringify(value).replaceAll("<", "\\u003c");
+	return withScript(html, sendScript(fields, parley));
 }
 
 /** The script of the Send. */
 function sendScript(fields: Readonly<Record<string, string>>, parley: string): string {
 	return `<script>
 (() => {
-	const fields = ${literal(fields)};
-	const parley = ${literal(parley)};
-	const call = async (path, init) => {
-		try {
-			const response = await fetch(path, init);
-			const body = await response.json().catch(() => ({}));
-			return response.ok ? { body } : { reason: body?.error ?? response.status };
-		} catch (error) {
-			return { reason: error.message };
-		}
-	};
-	const post = (path, body) =>
-		call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-	let line;
-	let layer;
-	let lastSent;
+	const fields = ${scriptLiteral(fields)};
+	const parley = ${scriptLiteral(parley)};
+${SEND_FEEDBACK}	let lastSent;
 	let lastValue;
 	const send = async (key, path, body) => {
-		if (layer !== undefined) return undefined;
-		if (line === undefined) {
-			line = document.createElement("div");
-			line.className = "harness-send";
-			line.style.cssText = "position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:4px 12px;font:16px monospace;background:#222;color:#eee";
-			document.body.append(line);
-		}
+		if (busy()) return undefined;
 		if (key === lastSent) {
-			line.textContent = "already sent \\u2713";
+			say("already sent \\u2713");
 			return lastValue;
 		}
-		layer = document.createElement("div");
-		layer.className = "harness-send-layer";
-		layer.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.08);z-index:2147483646";
-		document.body.append(layer);
-		line.textContent = "sending\\u2026";
-		const [result] = await Promise.all([post(path, body), new Promise((resolve) => setTimeout(resolve, 400))]);
-		layer.remove();
-		layer = undefined;
-		if ("reason" in result) {
-			line.textContent = \`not sent: \${result.reason}\`;
-			return undefined;
-		}
-		line.textContent = "sent \\u2713";
+		const result = await posting(path, body);
+		if ("reason" in result) return undefined;
+		say("sent \\u2713");
 		lastSent = key;
 		lastValue = result.body;
 		return lastValue;

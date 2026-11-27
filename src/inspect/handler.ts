@@ -4,48 +4,39 @@
  * `/assets/`, and the pages of `harness page` under `/pages/`. `harness inspect` serves them alone, and another server,
  * such as `workflows web`, can mount them on its own port.
  */
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isIP } from "node:net";
-import type { Usage } from "@earendil-works/pi-ai";
-import type { ConversationView } from "@earendil-works/pi-durable";
-import { type Static, type TSchema, Type } from "typebox";
-import type { TLocalizedValidationError } from "typebox/error";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { connect, HostUnreachableError, request, requestEntry } from "../client/client.ts";
-import { Mirror, type MirrorStatus, type MirrorTarget } from "../client/mirror.ts";
-import {
-	inboxOf,
-	lastAnswerUsage,
-	liveOf,
-	queued,
-	statusText,
-	type UsageTotals,
-	usageTotals,
-} from "../client/view-state.ts";
+import { Mirror, type MirrorTarget } from "../client/mirror.ts";
 import { PageAnswer, Slug } from "../protocol/asks.ts";
 import { cliCaller } from "../protocol/env.ts";
 import { checkHost, MAIN_HOST, readHosts } from "../protocol/hosts.ts";
+import {
+	addressHost,
+	bodyOf,
+	frameEvent,
+	frameWriter,
+	InputBody,
+	type InspectFrame,
+	type InspectRequest,
+	inspectAbort,
+	inspectInput,
+	inspectTarget,
+	invalid,
+	queryOf,
+	sendAsset,
+	sendJson,
+	TargetQuery,
+} from "../protocol/http.ts";
 import { childTitle } from "../protocol/labels.ts";
-import { type ChildInfo, errorMessage, type Request } from "../protocol/requests.ts";
-import { AGENT_HANDLE, parseTarget, targetRef } from "../protocol/target.ts";
+import { type ChildInfo, errorMessage } from "../protocol/requests.ts";
+import { AGENT_HANDLE } from "../protocol/target.ts";
+import { viewSummary } from "../protocol/view-state.ts";
 import { addSend, PAGES, readPage } from "./pages.ts";
 
 /** The routes of the API start with this path. */
 const API = "/api/inspect/";
-
-/** The browser files, next to `src/` and `dist/` in the package. */
-const WEB = new URL("../../web/", import.meta.url);
-
-/** The browser files, by the path that serves them. */
-const ASSETS: ReadonlyMap<string, { readonly file: string; readonly type: string }> = new Map([
-	["/assets/inspect.js", { file: "inspect.js", type: "text/javascript; charset=utf-8" }],
-	["/assets/inspect.css", { file: "inspect.css", type: "text/css; charset=utf-8" }],
-]);
-
-/** The largest body of a POST route. */
-const MAX_BODY_BYTES = 1024 * 1024;
 
 export type InspectOptions = {
 	/** Whether a stream, an input and an abort start the host when none runs. Default true. */
@@ -54,26 +45,6 @@ export type InspectOptions = {
 
 /** Serves a request of the inspect UI, and tells whether it was one. Another request is left to the caller. */
 export type InspectHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
-
-/** What the footer of the UI shows: the work of the agent, its queued messages, and its usage. */
-export type InspectSummary = {
-	readonly statusText: string;
-	readonly queued: { mode: "steer" | "followUp"; text: string }[];
-	readonly usageTotals: UsageTotals;
-	readonly lastAnswerUsage: Usage | undefined;
-};
-
-/**
- * One frame of a stream: the connection to the host, the title of the agent, its info and its conversation, and the
- * summary of the conversation. `child`, `view` and `summary` are undefined before the first connection.
- */
-export type InspectFrame = {
-	readonly status: MirrorStatus;
-	readonly title: string;
-	readonly child: ChildInfo | undefined;
-	readonly view: ConversationView | undefined;
-	readonly summary: InspectSummary | undefined;
-};
 
 /** A target in the reply of `/api/inspect/targets`: the info of the agent, with its title, as a mirror gives it. */
 export type InspectTarget = ChildInfo & { readonly title: string };
@@ -88,26 +59,15 @@ export type InspectTargets = {
 	readonly targets: readonly InspectTarget[];
 };
 
-/** The host and the target of a stream, an input and an abort. Without `handle` and `conversation`, the host agent. */
-const TargetFields = {
-	host: Type.String({ minLength: 1 }),
-	handle: Type.Optional(Type.String({ minLength: 1 })),
-	conversation: Type.Optional(Type.String({ minLength: 1 })),
-};
-
-const TargetQuery = Type.Object(TargetFields);
-
-const InputBody = Type.Object({ ...TargetFields, message: Type.String(), followUp: Type.Optional(Type.Boolean()) });
-
 /** The host and the parley of `/api/inspect/asks`. */
-const AsksQuery = Type.Object({ host: TargetFields.host, parley: Slug });
+const AsksQuery = Type.Object({ host: TargetQuery.properties.host, parley: Slug });
 
 /**
  * The body of `/api/inspect/answers`: the answers of the user to asks of the parley `parley`. Each answer names its ask
  * by `n`, its number in the parley, and has the other fields of an answer.
  */
 const AnswersBody = Type.Object({
-	host: TargetFields.host,
+	host: TargetQuery.properties.host,
 	parley: Slug,
 	answers: Type.Array(PageAnswer, { minItems: 1 }),
 });
@@ -131,13 +91,8 @@ export function createInspectHandler(options: InspectOptions = {}): InspectHandl
 
 	return async (req, res) => {
 		const url = new URL(req.url ?? "/", "http://localhost");
-		const asset = ASSETS.get(url.pathname);
 
-		if (asset !== undefined && req.method === "GET") {
-			await sendAsset(res, asset.file, asset.type);
-
-			return true;
-		}
+		if (req.method === "GET" && (await sendAsset(res, url.pathname))) return true;
 
 		const page = url.pathname.startsWith(PAGES);
 
@@ -160,20 +115,6 @@ export function createInspectHandler(options: InspectOptions = {}): InspectHandl
 	};
 }
 
-async function sendAsset(res: ServerResponse, file: string, type: string): Promise<void> {
-	let text: string;
-
-	try {
-		text = await readFile(new URL(file, WEB), "utf8");
-	} catch (error) {
-		res.writeHead(500, { "content-type": "text/plain; charset=utf-8" }).end(`${errorMessage(error)}\n`);
-
-		return;
-	}
-
-	res.writeHead(200, { "content-type": type, "cache-control": "no-cache" }).end(text);
-}
-
 async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, start: boolean): Promise<void> {
 	switch (`${req.method} ${url.pathname}`) {
 		case "GET /api/inspect/hosts":
@@ -185,13 +126,13 @@ async function serveApi(req: IncomingMessage, res: ServerResponse, url: URL, sta
 		case "POST /api/inspect/input":
 			return answer(
 				res,
-				() => inputOf(req),
+				async () => hostRequest(inspectInput(await bodyOf(req, InputBody))),
 				(sent) => toHost(sent, start),
 			);
 		case "POST /api/inspect/abort":
 			return answer(
 				res,
-				() => abortOf(req),
+				async () => hostRequest(inspectAbort(await bodyOf(req, TargetQuery))),
 				(sent) => toHost(sent, start),
 			);
 		case "GET /api/inspect/asks":
@@ -249,25 +190,6 @@ async function servePage(req: IncomingMessage, res: ServerResponse, url: URL): P
 	res.writeHead(200, headers).end(data);
 }
 
-/** Whether `host` is an IP address or `localhost`, which no DNS name of another site can be. */
-export function isAddress(host: string): boolean {
-	return host === "localhost" || isIP(host) !== 0;
-}
-
-/** Whether the `Host` header names an address, as `isAddress` tells. */
-function addressHost(header: string | undefined): boolean {
-	if (header === undefined) return false;
-	let hostname: string;
-
-	try {
-		hostname = new URL(`http://${header}`).hostname;
-	} catch {
-		return false;
-	}
-
-	return isAddress(hostname.replace(/^\[(.*)\]$/, "$1"));
-}
-
 /**
  * Replies with the value that `act` gives for what `parse` gives: 400 with the error of `parse`, which the request
  * causes, and with a `BadRequest` of `act`, and 500 with another error of `act`, such as the refusal of the host on the
@@ -299,55 +221,6 @@ function notFound(req: IncomingMessage, res: ServerResponse, url: URL): void {
 	sendJson(res, 404, { error: `Not found: ${req.method} ${url.pathname}` });
 }
 
-function sendJson<B>(res: ServerResponse, status: number, body: B): void {
-	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-	res.end(JSON.stringify(body));
-}
-
-function invalid(what: string, [error]: readonly TLocalizedValidationError[]): Error {
-	return new Error(`Invalid ${what}: ${[error?.instancePath, error?.message].filter((part) => part).join(" ")}`);
-}
-
-/** The host and the target of the query of `url`. Other keys are ignored. */
-function queryOf(url: URL): Static<typeof TargetQuery> {
-	const query = Object.fromEntries(url.searchParams);
-
-	if (!Value.Check(TargetQuery, query)) throw invalid("query", Value.Errors(TargetQuery, query));
-
-	return query;
-}
-
-/**
- * The JSON body of `req`, as `schema` gives it. It throws when the body is not `application/json`, is longer than 1
- * MiB, is not JSON, or does not match. A longer body is read to its end, so that the reply can go on the connection.
- */
-async function bodyOf<T extends TSchema>(req: IncomingMessage, schema: T): Promise<Static<T>> {
-	const type = req.headers["content-type"]?.split(";")[0]?.trim().toLowerCase();
-
-	if (type !== "application/json") throw new Error("The body must be application/json");
-	const chunks: Buffer[] = [];
-	let size = 0;
-
-	for await (const chunk of req) {
-		size += chunk.length;
-
-		if (size <= MAX_BODY_BYTES) chunks.push(chunk);
-	}
-
-	if (size > MAX_BODY_BYTES) throw new Error("The body is longer than 1 MiB");
-	let body: unknown;
-
-	try {
-		body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-	} catch {
-		throw new Error("The body is not JSON");
-	}
-
-	if (!Value.Check(schema, body)) throw invalid("body", Value.Errors(schema, body));
-
-	return body;
-}
-
 /** The target of the query of `url`, or undefined after a reply of 400 for a query that is not valid. */
 function queryTarget(res: ServerResponse, url: URL): MirrorTarget | undefined {
 	try {
@@ -360,11 +233,8 @@ function queryTarget(res: ServerResponse, url: URL): MirrorTarget | undefined {
 }
 
 /** The target of the fields of a query or a body. It throws for both `handle` and `conversation`, and for an unknown host. */
-function mirrorTarget({ host, handle, conversation }: Static<typeof TargetQuery>): MirrorTarget {
-	if (handle !== undefined && conversation !== undefined) throw new Error("Give handle or conversation, not both");
-	const ref = conversation === undefined ? { handle: handle ?? AGENT_HANDLE } : { conversation };
-
-	return { host: checkHost(host), target: parseTarget(ref) };
+function mirrorTarget(fields: Static<typeof TargetQuery>): MirrorTarget {
+	return { host: checkHost(fields.host), target: inspectTarget(fields) };
 }
 
 /** A host in the reply of `/api/inspect/hosts`. `main` has no directory. */
@@ -407,27 +277,13 @@ async function targetsOf(host: string): Promise<InspectTargets> {
 	}
 }
 
-/** A request of a POST route, for the host `host`. */
-type HostRequest = { readonly host: string; readonly request: Extract<Request, { type: "input" | "abort" }> };
-
-async function inputOf(req: IncomingMessage): Promise<HostRequest> {
-	const { message, followUp, ...fields } = await bodyOf(req, InputBody);
-
-	if (message.trim() === "") throw new Error("The message is empty");
-	const { host, target } = mirrorTarget(fields);
-	const input = { type: "input", requestId: randomUUID(), message, followUp: Boolean(followUp) } as const;
-
-	return { host, request: { ...input, ...targetRef(target) } };
-}
-
-async function abortOf(req: IncomingMessage): Promise<HostRequest> {
-	const { host, target } = mirrorTarget(await bodyOf(req, TargetQuery));
-
-	return { host, request: { type: "abort", ...targetRef(target) } };
+/** An input or an abort, whose host must be a known host. */
+function hostRequest({ host, request }: InspectRequest): InspectRequest {
+	return { host: checkHost(host), request };
 }
 
 /** Sends `sent` to its host. It throws as `hostReply` does. */
-async function toHost(sent: HostRequest, start: boolean): Promise<{ ok: true }> {
+async function toHost(sent: InspectRequest, start: boolean): Promise<{ ok: true }> {
 	await hostReply(request(sent.request, { start, host: sent.host }), sent.host);
 
 	return { ok: true };
@@ -510,33 +366,9 @@ function stream(res: ServerResponse, url: URL, start: boolean): void {
 	write(eventOf(mirror));
 }
 
-/** The event of the current frame of `mirror`: one `data:` line, because JSON has no raw newline. */
+/** The event of the current frame of `mirror`. */
 function eventOf(mirror: Mirror): string {
-	return `data: ${JSON.stringify(frameOf(mirror))}\n\n`;
-}
-
-/**
- * Writes frames to `res`. While `res` waits for its socket to drain, it keeps only the newest frame, and writes it after
- * the drain: each frame has the whole view, so the older ones are not needed.
- */
-function frameWriter(res: ServerResponse): (frame: string) => void {
-	let draining = false;
-	let held: string | undefined;
-
-	const write = (frame: string) => {
-		if (draining) held = frame;
-		else draining = !res.write(frame);
-	};
-
-	res.on("drain", () => {
-		const frame = held;
-		draining = false;
-		held = undefined;
-
-		if (frame !== undefined) write(frame);
-	});
-
-	return write;
+	return frameEvent(frameOf(mirror));
 }
 
 function frameOf(mirror: Mirror): InspectFrame {
@@ -547,15 +379,6 @@ function frameOf(mirror: Mirror): InspectFrame {
 		title,
 		child,
 		view,
-		summary: view === undefined ? undefined : summaryOf(view),
-	};
-}
-
-function summaryOf(view: ConversationView): InspectSummary {
-	return {
-		statusText: statusText(liveOf(view)),
-		queued: queued(inboxOf(view)),
-		usageTotals: usageTotals(view),
-		lastAnswerUsage: lastAnswerUsage(view),
+		summary: view === undefined ? undefined : viewSummary(view),
 	};
 }

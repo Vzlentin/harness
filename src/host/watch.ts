@@ -1,6 +1,6 @@
 /**
- * The watch of a mirror: the view of one conversation with its list of todos, then a line for each of its commits, each
- * change of its list and each rename.
+ * The watch of a mirror or of a page of the host web server: the view of one conversation with its list of todos, then
+ * a line for each of its commits, each change of its list and each rename, to a sink such as a socket.
  */
 import { once } from "node:events";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -20,23 +20,53 @@ import { watchTodos } from "./todo.ts";
 const context = BACKGROUND_CONTEXT;
 
 /**
- * Opens a watch of `ref` on `connection` and returns the reply, with the view and the child. After the reply, each
- * commit to the child's conversation gives one `{ event: WatchLine }` line with its change, each change of its list of
- * todos one with the list in `docs`, and each rename one with an empty change. The reply and each line of the whole
- * view have the list in `docs` when the conversation has one. It waits for a slow socket to drain, so the watches
- * replace the frames they hold back with one frame of the whole view or of the newest list. The watches stop when the
- * socket closes, when setup fails, or when the connection ends; a wait for `drain` then stays on the closed socket and
- * goes with it. An end or a resume of the conversation gives one line with an empty change, so the info has the new
- * state. When the conversation watch or the list watch ends, the connection ends.
+ * Where the lines of a watch go: the socket of a `watch` request, or the stream of a page of the host web server.
+ * `write` is false when the sink holds the line until it drains, and `drained()` resolves once it drained. `afterReply`
+ * runs `run` once the reply is out, and `end()` ends the sink.
+ */
+export type WatchSink = {
+	readonly writable: boolean;
+	write(event: WatchLine): boolean;
+	drained(): Promise<void>;
+	end(): void;
+	afterReply(run: () => void): void;
+};
+
+/** The sink of a watch on the socket of `connection`: one `{ event: WatchLine }` line for each line. */
+export function socketSink(connection: Connection): WatchSink {
+	const { socket } = connection;
+
+	return {
+		get writable() {
+			return socket.writable;
+		},
+		write: (event) => socket.write(`${JSON.stringify({ event })}\n`),
+		// A wait for `drain` stays on a closed socket and goes with it.
+		drained: () =>
+			once(socket, "drain").then(
+				() => undefined,
+				() => undefined,
+			),
+		end: () => socket.end(),
+		afterReply: (run) => connection.afterReply(() => run()),
+	};
+}
+
+/**
+ * Opens a watch of `ref` on `sink` and returns the reply, with the view and the child. After the reply, each commit to
+ * the child's conversation gives one line with its change, each change of its list of todos one with the list in
+ * `docs`, and each rename one with an empty change. The reply and each line of the whole view have the list in `docs`
+ * when the conversation has one. It waits for a slow sink to drain, so the watches replace the frames they hold back
+ * with one frame of the whole view or of the newest list. The watches stop when `handler.signal` aborts, such as on a
+ * socket close, when setup fails, or when the sink ends. An end or a resume of the conversation gives one line with an
+ * empty change, so the info has the new state. When the conversation watch or the list watch ends, the sink ends.
  */
 export async function serveWatch(
 	handler: TargetHost & { readonly signal: AbortSignal },
 	ref: Target,
-	connection: Connection,
+	sink: WatchSink,
 ): Promise<Replies["watch"]> {
 	const { harness } = handler;
-	const { socket } = connection;
-	const write = (event: WatchLine) => socket.write(`${JSON.stringify({ event })}\n`);
 	// The watches stop when `signal` aborts: on socket close, or when `watching` aborts.
 	const watching = new AbortController();
 	const watchContext = withAbortSignal(AbortSignal.any([handler.signal, watching.signal]), context);
@@ -44,7 +74,7 @@ export async function serveWatch(
 	const end = () => {
 		watching.abort();
 
-		if (socket.writable) socket.end();
+		if (sink.writable) sink.end();
 	};
 
 	let found: Found;
@@ -90,7 +120,7 @@ export async function serveWatch(
 
 	const childrenWatch = children;
 	// A watch delivers the frames held before `start` in a microtask, so the watches start after the reply is written.
-	connection.afterReply(() => {
+	sink.afterReply(() => {
 		// Only microtasks run between the last `await` above and this call, so a socket close cannot abort the signal
 		// before the watches start.
 		void conversation.closed.then(end);
@@ -106,11 +136,11 @@ export async function serveWatch(
 			// line.
 			const child = await found.info().catch(() => undefined);
 
-			if (child === undefined || !socket.writable) return;
+			if (child === undefined || !sink.writable) return;
 			// pi-durable's view has no list, so a line of the whole view gets the newest list of the list watch.
 			const whole = "view" in change ? { view: withTodos(change.view, todos.value) } : change;
 
-			if (!write({ change: whole, child })) await once(socket, "drain").catch(() => {});
+			if (!sink.write({ change: whole, child })) await sink.drained();
 		};
 
 		const send = (change: ViewChange) => {
@@ -124,7 +154,7 @@ export async function serveWatch(
 
 			// A retired `ChildRecords` document has no records. Durable never calls with a failure.
 			watch.start(async (call) => {
-				if (!socket.writable || call.kind !== "value") return;
+				if (!sink.writable || call.kind !== "value") return;
 				const next = recordOf(call.retired ? undefined : call.value, handle);
 
 				if (next !== undefined && next.name !== found.record?.name) {

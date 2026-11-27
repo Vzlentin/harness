@@ -93,4 +93,6 @@ harness stop (<handle> | --conversation <id>)
 
 A terminal that is not an agent (`PI_SESSION_ID` is not set) can stop any subagent, also the subagent of another session.
 
+To show the user a page, write it in a folder with an `index.html`, run `harness serve <folder>`, and give the user the link that it prints. The host serves the files as they are, so a change shows when the user reloads the page. A Send button of the page that calls `window.sendPrompt(text)` sends the text to you as a message.
+
 The CLI takes the provider, model, and reasoning level from the bash environment. Never pass `$PI_PROVIDER`, `$PI_MODEL`, or `$PI_REASONING_LEVEL` back to it explicitly. Repeat `--prompt` and `--file` as needed; `--tools` is a comma-separated list. Run `harness spawn` and `harness wait` directly, without piping or redirecting their output, so the bash tool returns it. Set the bash timeout above the default 1800-second deadline of `wait`.

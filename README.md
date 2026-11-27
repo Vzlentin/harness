@@ -57,6 +57,7 @@ harness query <handle> "Which files did it change?"  # ask a model about its tra
 harness attach <handle>     # open it in Pi
 harness inspect <handle>    # open it in a browser, at the URL that it prints
 harness page <folder> --slug <slug>  # serve a page with harness inspect, which it starts when none runs; its Send posts to you
+harness serve <folder>      # serve a folder on the web server of the host; its Send posts to you
 harness stop <handle>
 harness todo add <text>     # add a todo to your list (todo list, todo set <id> <state>)
 harness tree                # print the agents and the runs of the host, with their todos

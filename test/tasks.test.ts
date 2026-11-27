@@ -5,13 +5,13 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { connect, request } from "../src/client/client.ts";
 import { Mirror, type MirrorTarget } from "../src/client/mirror.ts";
-import { inboxOf } from "../src/client/view-state.ts";
 import { type Host, runHost } from "../src/host/run.ts";
 import { entriesPath, readEntries, setEntry } from "../src/protocol/entries.ts";
 import { MAIN_HOST, hostDir } from "../src/protocol/hosts.ts";
 import { childTitle } from "../src/protocol/labels.ts";
 import type { TaskInfo, WatchLine } from "../src/protocol/requests.ts";
 import { AGENT_HANDLE } from "../src/protocol/target.ts";
+import { inboxOf } from "../src/protocol/view-state.ts";
 import {
 	aborted,
 	CLI,

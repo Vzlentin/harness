@@ -1,6 +1,7 @@
 /**
- * What the Pi extension reads from a durable conversation view: its live state, its inbox, its usage, its list of todos
- * and the texts of its user messages. It imports no Pi package at run time, so the Pi extension can load it.
+ * What the Pi extension and the inspect UI read from a durable conversation view: its live state, its inbox, its usage,
+ * its list of todos, the texts of its user messages, and the summary of the footer of the UI. It imports no Pi package
+ * at run time, so the Pi extension can load it.
  */
 import type { JsonRepresentation } from "@earendil-works/chord/json";
 import type { Usage, UserMessage } from "@earendil-works/pi-ai";
@@ -12,8 +13,8 @@ import type {
 	LiveState,
 	UsageState,
 } from "@earendil-works/pi-durable";
-import { TODO_LIST_KIND, type TodoList } from "../protocol/todo.ts";
-import { TYPED_KIND } from "../protocol/typed.ts";
+import { TODO_LIST_KIND, type TodoList } from "./todo.ts";
+import { TYPED_KIND } from "./typed.ts";
 
 /** The document of the kind `kind` in `view`, if the conversation has it: a built-in one, or the list of todos. */
 function docOf<T extends JsonObject>(view: ConversationView, kind: string): T | undefined {
@@ -138,4 +139,22 @@ export function statusText(live: LiveState): string {
 	if (live.run !== undefined) return "Working... (esc to interrupt)";
 
 	return "";
+}
+
+/** What the footer of the inspect UI shows: the work of the agent, its queued messages, and its usage. */
+export type InspectSummary = {
+	readonly statusText: string;
+	readonly queued: { mode: "steer" | "followUp"; text: string }[];
+	readonly usageTotals: UsageTotals;
+	readonly lastAnswerUsage: Usage | undefined;
+};
+
+/** The summary of `view` that the footer of the inspect UI shows. */
+export function viewSummary(view: ConversationView): InspectSummary {
+	return {
+		statusText: statusText(liveOf(view)),
+		queued: queued(inboxOf(view)),
+		usageTotals: usageTotals(view),
+		lastAnswerUsage: lastAnswerUsage(view),
+	};
 }

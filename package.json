@@ -129,8 +129,8 @@
 			"default": "./dist/protocol/trust.js"
 		},
 		"./view-state": {
-			"types": "./dist/client/view-state.d.ts",
-			"default": "./dist/client/view-state.js"
+			"types": "./dist/protocol/view-state.d.ts",
+			"default": "./dist/protocol/view-state.js"
 		},
 		"./package.json": "./package.json"
 	},

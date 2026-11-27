@@ -2,18 +2,13 @@
  * The standalone server of the inspect UI: the page at `/` and the routes of `createInspectHandler`, on one port of each
  * bound address.
  */
-import { execFile } from "node:child_process";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { connect, isIPv4, isIPv6 } from "node:net";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { connect } from "node:net";
 import type { MirrorTarget } from "../client/mirror.ts";
+import { checkBindHost, closeAll, listenAll, LOOPBACK, serverUrl } from "../protocol/http.ts";
 import { targetRef } from "../protocol/target.ts";
-import { createInspectHandler, type InspectHandler, isAddress } from "./handler.ts";
+import { createInspectHandler, type InspectHandler } from "./handler.ts";
 import { pagePath } from "./pages.ts";
-
-/** The address of the server without `--host` and `--tailscale`: this machine only. */
-const LOOPBACK = "127.0.0.1";
 
 /** The port of the server without `--port`. */
 export const DEFAULT_PORT = 7501;
@@ -40,9 +35,6 @@ mountPage(document.getElementById("inspect"));
 </html>
 `;
 
-/** The address of a listening server. */
-const ListenAddress = Type.Object({ port: Type.Integer() });
-
 export type InspectServerOptions = {
 	/** The addresses to listen on. Default `127.0.0.1`. */
 	readonly hosts?: readonly string[] | undefined;
@@ -60,49 +52,6 @@ export type InspectServer = {
 };
 
 /**
- * The addresses of the server: `127.0.0.1` by default, `host` alone with `host`, and `127.0.0.1` with the IPv4
- * addresses of `tailscale ip -4` with `tailscale`. It binds `0.0.0.0` only when `host` is `0.0.0.0`. It refuses a `host`
- * that is not an IP address or `localhost`, as `startInspectServer` does.
- */
-export async function resolveBindHosts(options: {
-	readonly host?: string | undefined;
-	readonly tailscale?: boolean | undefined;
-}): Promise<string[]> {
-	const { host, tailscale = false } = options;
-
-	if (host !== undefined && tailscale) throw new Error("Use --host or --tailscale, not both");
-
-	if (host !== undefined) {
-		checkHost(host);
-
-		return [host];
-	}
-
-	if (!tailscale) return [LOOPBACK];
-	const addresses = (await tailscaleIp()).split("\n").map((line) => line.trim());
-	const ipv4 = addresses.filter((address) => isIPv4(address));
-
-	if (ipv4.length === 0) throw new Error("tailscale ip -4 gave no IPv4 address");
-
-	return [...new Set([LOOPBACK, ...ipv4])];
-}
-
-/** The output of `tailscale ip -4`. It rejects with its stderr, or with the error of `execFile`. */
-function tailscaleIp(): Promise<string> {
-	return new Promise((resolve, reject) => {
-		execFile("tailscale", ["ip", "-4"], (error, stdout, stderr) => {
-			if (error) reject(new Error(`tailscale ip -4 failed: ${stderr.trim() || error.message}`));
-			else resolve(stdout);
-		});
-	});
-}
-
-/** Refuses a host that is not an IP address or `localhost`, because the routes refuse its name in the `Host` header. */
-function checkHost(host: string): void {
-	if (!isAddress(host)) throw new Error(`The host must be an IP address or localhost: ${host}`);
-}
-
-/**
  * Serves the page and the inspect routes on each address of `hosts`, with one server for each. The first address takes
  * the port, and the others listen on the same one. When an address fails, the servers that listen close. It refuses a
  * host that is not an IP address or `localhost` before it listens.
@@ -110,37 +59,22 @@ function checkHost(host: string): void {
 export async function startInspectServer(options: InspectServerOptions = {}): Promise<InspectServer> {
 	const hosts = options.hosts ?? [LOOPBACK];
 
-	for (const host of hosts) checkHost(host);
+	for (const host of hosts) checkBindHost(host);
 	const handler = createInspectHandler({ start: options.start });
-	const servers: Server[] = [];
-	let port = options.port ?? DEFAULT_PORT;
 
-	try {
-		for (const host of hosts) {
-			const server = createServer((req, res) => void serve(handler, req, res).catch(() => res.destroy()));
-			servers.push(server);
-			port = await listen(server, host, port);
-		}
-	} catch (error) {
-		await closeAll(servers);
-		throw error;
-	}
+	const { servers, port } = await listenAll(hosts, options.port ?? DEFAULT_PORT, (req, res) => {
+		void serve(handler, req, res).catch(() => res.destroy());
+	});
 
 	return {
-		urls: hosts.map((host) => serverUrl(host, port)),
+		urls: hosts.map((host) => serverUrl(host, port, "/")),
 		close: () => closeAll(servers),
 	};
 }
 
-/** The URL of `/` of a server on `port` of `host`, with an IPv6 address in brackets. */
-function serverUrl(host: string, port: number): string {
-	return `http://${isIPv6(host) ? `[${host}]` : host}:${port}/`;
-}
-
 /** The link of the page `slug` of `harness page` on `port` of `host`, with the target of its Send in its path. */
 export function pageLink(host: string, port: number, slug: string, target: MirrorTarget): string {
-	// `serverUrl` ends with the `/` that starts the page path.
-	return `${serverUrl(host, port)}${pagePath(target, slug).slice(1)}`;
+	return serverUrl(host, port, pagePath(target, slug));
 }
 
 /** Whether a server accepts a TCP connection on `port` of `host` within 1 s. */
@@ -170,30 +104,6 @@ async function serve(handler: InspectHandler, req: IncomingMessage, res: ServerR
 
 	if (await handler(req, res)) return;
 	res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found\n");
-}
-
-/** Listens on `port` of `host`, and gives the port, which the system picks for 0. */
-function listen(server: Server, host: string, port: number): Promise<number> {
-	return new Promise((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(port, host, () => {
-			server.off("error", reject);
-			resolve(Value.Parse(ListenAddress, server.address()).port);
-		});
-	});
-}
-
-function closeAll(servers: readonly Server[]): Promise<void> {
-	return Promise.all(
-		servers.map(
-			(server) =>
-				new Promise<void>((resolve) => {
-					// A server that did not listen calls back with an error, and has nothing to close.
-					server.close(() => resolve());
-					server.closeAllConnections();
-				}),
-		),
-	).then(() => undefined);
 }
 
 /**

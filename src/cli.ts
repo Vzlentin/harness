@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -12,7 +12,7 @@ import { exitText, request, startDetached } from "./client/client.ts";
 import { inHerdr, openInHerdr } from "./client/herdr.ts";
 import { type MirrorTarget, piArgs } from "./client/mirror.ts";
 import { pageFiles, writePage } from "./inspect/pages.ts";
-import { DEFAULT_PORT, listens, pageLink, pageQuery, resolveBindHosts, startInspectServer } from "./inspect/server.ts";
+import { DEFAULT_PORT, listens, pageLink, pageQuery, startInspectServer } from "./inspect/server.ts";
 import { LocalId } from "./protocol/asks.ts";
 import {
 	cliCaller,
@@ -24,6 +24,7 @@ import {
 	PI_SESSION_ID,
 } from "./protocol/env.ts";
 import { addHost, type CommandName, checkHost, MAIN_HOST, hostDir, hostOf, readHosts } from "./protocol/hosts.ts";
+import { resolveBindHosts } from "./protocol/http.ts";
 import { inspectPaths, pageDir } from "./protocol/paths.ts";
 import { type ChildInfo, errorMessage, isThinkingLevel } from "./protocol/requests.ts";
 import { type ListRef, type ListTarget, parseTarget, type Target, targetRef } from "./protocol/target.ts";
@@ -605,6 +606,22 @@ async function pageCommand(args: string[], hostName: string | undefined): Promis
 	}
 }
 
+/**
+ * Serves `<folder>` on the web server of the host for the caller of this process, `PI_SESSION_ID`, and prints its link on
+ * each address of the server. It starts the host when none runs.
+ */
+async function serveCommand(args: string[], host: string | undefined): Promise<void> {
+	const [folder] = args;
+
+	if (folder === undefined || args.length !== 1) usage();
+	const caller = cliCaller(process.env);
+	const reply = await request({ type: "serve", caller, dir: resolve(folder) }, { start: true, host });
+
+	if (reply === undefined) fail("The harness host is not running");
+
+	for (const url of reply.urls) process.stdout.write(`${url}\n`);
+}
+
 /** For each of `hosts`, whether a server listens on it at `port`. */
 async function listening(hosts: readonly string[], port: number): Promise<boolean[]> {
 	return Promise.all(hosts.map((address) => listens(address, port)));
@@ -733,6 +750,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map(
 			],
 			run: pageCommand,
 		},
+		serve: { usage: ["  harness serve <folder>"], run: serveCommand },
 		host: { usage: [], run: (args, host) => hostCommand(args, checkHost(host ?? MAIN_HOST)) },
 		create: { usage: ["  harness create <name> --cwd <dir>"], run: createCommand },
 		hosts: { usage: ["  harness hosts"], run: hostsCommand },

@@ -31,6 +31,7 @@ import { plainAsk } from "./asks.ts";
 import { classifierModel, classifyTodos } from "./classify.ts";
 import type { AskHandler, EntryLine, EntryRequest, ReportedHandler } from "./entries.ts";
 import { serveEntryRequest } from "./entry-requests.ts";
+import { folderPath, serveFolder } from "./folders.ts";
 import { beforeInput, type InputHooksHost } from "./input-hooks.ts";
 import type { Connection, Push } from "./push.ts";
 import { queryConversation } from "./query.ts";
@@ -72,7 +73,7 @@ import { abortTask, startTask, type TaskHost, taskId, taskInfo, waitTask } from 
 import { addTodo, readTodos, setTodo, type TodoOwner } from "./todo.ts";
 import { serveTreeWatch } from "./tree-watch.ts";
 import { treeNodes } from "./tree.ts";
-import { serveWatch } from "./watch.ts";
+import { serveWatch, socketSink } from "./watch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -110,6 +111,8 @@ export type Base = Omit<TaskHost, "signal"> &
 		readonly sessions: Sessions;
 		/** The storage of the harness: its reads of tasks and conversations give the tree. */
 		readonly storage: Pick<Storage, "task" | "scanTasks" | "scanConversations" | "findLatestHeadMarker">;
+		/** The links of the path `path`, such as `/<caller>/<name>/`, on each address of the web server of the host. */
+		readonly webLinks: (path: string) => readonly string[];
 	};
 
 export type Handler = Base &
@@ -180,6 +183,8 @@ export async function handleRequest(request: Request, handler: Handler): Promise
 			return list(request, handler);
 		case "whoami":
 			return whoami(request.caller, handler);
+		case "serve":
+			return serve(request, handler);
 		case "rename":
 			return rename(request, handler);
 		case "stop":
@@ -250,7 +255,7 @@ async function answers(request: Extract<Request, { type: "answers" }>, handler: 
 function watch(ref: Target, handler: Handler): Promise<Replies["watch"]> {
 	if (handler.connection === undefined) throw new Error("A watch needs a connection");
 
-	return serveWatch(handler, ref, handler.connection);
+	return serveWatch(handler, ref, socketSink(handler.connection));
 }
 
 function watchTree(handler: Handler): Promise<Replies["watch-tree"]> {
@@ -372,6 +377,13 @@ async function whoami(caller: string, handler: Handler): Promise<Replies["whoami
 	const handle = callerHandle(handler.root.id, recordsByAge(state), caller);
 
 	return handle === undefined ? {} : { handle };
+}
+
+/** Records the folder of `request` for the web server of the host, and gives its links. */
+async function serve(request: Extract<Request, { type: "serve" }>, handler: Handler): Promise<Replies["serve"]> {
+	const { caller, name } = await serveFolder(handler, request.caller, request.dir);
+
+	return { urls: handler.webLinks(folderPath(caller, name)) };
 }
 
 async function rename(request: Extract<Request, { type: "rename" }>, handler: Handler): Promise<Replies["rename"]> {
